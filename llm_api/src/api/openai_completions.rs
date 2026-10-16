@@ -1,16 +1,18 @@
-//! Streaming Chat Completions client for OpenRouter-compatible endpoints.
+//! Streaming client for OpenAI-compatible Chat Completions endpoints.
 //!
-//! The URL is the complete endpoint URL, not a base URL. This adapter identifies
-//! as `Openrouter`, including when pointed at a compatible local server, and uses
-//! OpenRouter's `reasoning: { effort }` rather than OpenAI's `reasoning_effort`.
-//! Native `reasoning` text and `reasoning_details` are retained for replay.
-//! Display-only reasoning summaries without native replay state are unsupported.
+//! The URL is the complete endpoint URL, not a base URL. Provider identity is
+//! supplied by the caller and is independent of the selected wire dialect.
+//! Standard `reasoning_effort` is the default. Opting into OpenRouter reasoning
+//! fields sends `reasoning: { effort }` and supports native `reasoning` text and
+//! `reasoning_details` replay. Without that opt-in, native reasoning is rejected;
+//! display-only summaries without native replay state are always unsupported.
 //! Tool identity can be fragmented without an end marker, so tool calls first
 //! appear at `finish_reason`, with their buffered arguments already populated.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use base64::Engine;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::Error;
@@ -27,17 +29,36 @@ use super::{
     validate_request,
 };
 
+/// Wire-dialect settings, independent of the client's provider identity.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenAiCompletionsConfig {
+    /// Use OpenRouter's `reasoning` request option and accept/replay its native
+    /// reasoning fields. False uses standard `reasoning_effort` and rejects native
+    /// reasoning instead of dropping it or forwarding it to a standard endpoint.
+    #[serde(default)]
+    pub openrouter_reasoning_fields: bool,
+}
+
 /// Cloneable HTTP client. Clones share the underlying connection pool.
 #[derive(Clone)]
 pub struct OpenAiCompletions {
     client: ApiClient,
+    provider: ProviderType,
+    config: OpenAiCompletionsConfig,
 }
 
 impl OpenAiCompletions {
     /// Construct a client using the supplied full endpoint URL verbatim.
-    pub fn new(api_url: impl Into<String>, api_key: impl Into<String>) -> Result<Self, Error> {
+    pub fn new(
+        api_url: impl Into<String>,
+        api_key: impl Into<String>,
+        provider: ProviderType,
+        config: OpenAiCompletionsConfig,
+    ) -> Result<Self, Error> {
         Ok(Self {
             client: ApiClient::new(api_url, api_key)?,
+            provider,
+            config,
         })
     }
 }
@@ -51,7 +72,7 @@ impl ApiProvider for OpenAiCompletions {
     type Stream = OpenAiCompletionsStream;
 
     fn provider_type(&self) -> ProviderType {
-        ProviderType::Openrouter
+        self.provider
     }
 
     async fn generate_inner(
@@ -60,13 +81,13 @@ impl ApiProvider for OpenAiCompletions {
         input: &ModelTurnInput,
         config: &RequestConfig,
     ) -> Result<Self::Stream, Error> {
-        let body = request_body(history, input, config)?;
+        let body = request_body(history, input, config, self.provider, self.config)?;
         let response = self.client.post(&body).await?;
         Ok(OpenAiCompletionsStream {
             inner: StreamingResponse::new(
                 response,
                 ModelTurnOutput::default_for_model(history.config.clone()),
-                CompletionsDecoder::default(),
+                CompletionsDecoder::new(self.config.openrouter_reasoning_fields),
             ),
         })
     }
@@ -100,24 +121,37 @@ fn request_body(
     history: &AgentHistory,
     input: &ModelTurnInput,
     config: &RequestConfig,
+    provider: ProviderType,
+    adapter_config: OpenAiCompletionsConfig,
 ) -> Result<Value, Error> {
     // Also protect direct generate_inner callers; all checks precede HTTP.
-    validate_request(history, ProviderType::Openrouter, input, config)?;
+    validate_request(history, provider, input, config)?;
+    if !adapter_config.openrouter_reasoning_fields
+        && history.config.effort == crate::providers::Effort::Max
+    {
+        return Err(unsupported(
+            "max reasoning effort in standard Chat Completions",
+        ));
+    }
     let mut messages = Vec::new();
     for turn in &history.turns {
-        append_messages(&turn.input.items, &mut messages)?;
+        append_messages(&turn.input.items, &mut messages, provider, adapter_config)?;
         let output = turn.output.as_ref().expect("validated historical output");
-        append_messages(&output.items, &mut messages)?;
+        append_messages(&output.items, &mut messages, provider, adapter_config)?;
     }
-    append_messages(&input.items, &mut messages)?;
+    append_messages(&input.items, &mut messages, provider, adapter_config)?;
 
     let mut body = json!({
         "model": history.config.model.api_name(),
         "messages": messages,
         "stream": true,
         "stream_options": {"include_usage": true},
-        "reasoning": {"effort": history.config.effort.as_str()},
     });
+    if adapter_config.openrouter_reasoning_fields {
+        body["reasoning"] = json!({"effort": history.config.effort.as_str()});
+    } else {
+        body["reasoning_effort"] = json!(history.config.effort.as_str());
+    }
     if let Some(limit) = config.max_output_tokens {
         body["max_completion_tokens"] = json!(limit);
     }
@@ -195,7 +229,12 @@ impl AssistantMessage {
 
 /// Each input/output slice is a grouping boundary. In particular, calls from a
 /// new output must never attach to an assistant message from a previous turn.
-fn append_messages(items: &[HistoryItem], messages: &mut Vec<Value>) -> Result<(), Error> {
+fn append_messages(
+    items: &[HistoryItem],
+    messages: &mut Vec<Value>,
+    provider: ProviderType,
+    config: OpenAiCompletionsConfig,
+) -> Result<(), Error> {
     let mut assistant = AssistantMessage::default();
     for item in items {
         if !item.metadata.provider_metadata.is_empty() {
@@ -222,12 +261,17 @@ fn append_messages(items: &[HistoryItem], messages: &mut Vec<Value>) -> Result<(
                 }));
             }
             HistoryItemKind::Reasoning(reasoning) => {
+                if !config.openrouter_reasoning_fields {
+                    return Err(unsupported(
+                        "native reasoning replay requires openrouter_reasoning_fields",
+                    ));
+                }
                 let state = reasoning.opaque_state.as_ref().ok_or_else(|| {
                     unsupported("reasoning replay without native OpenRouter state")
                 })?;
-                if state.provider != ProviderType::Openrouter {
+                if state.provider != provider {
                     return Err(Error::ProviderMismatch {
-                        expected: ProviderType::Openrouter,
+                        expected: provider,
                         actual: state.provider,
                     });
                 }
@@ -406,6 +450,7 @@ struct PendingCall {
 
 #[derive(Default)]
 struct CompletionsDecoder {
+    openrouter_reasoning_fields: bool,
     message: Option<usize>,
     text: Option<usize>,
     refusal: Option<usize>,
@@ -445,6 +490,7 @@ impl Decoder for CompletionsDecoder {
         if event.event.as_deref() == Some("error") {
             return Err(provider_error(&value));
         }
+        self.validate_reasoning_fields(object)?;
         let mut metadata_changed = false;
         if let Some(id) = object.get("id").filter(|id| !id.is_null()) {
             let id = id
@@ -514,6 +560,7 @@ impl Decoder for CompletionsDecoder {
         let choice = choices[0]
             .as_object()
             .ok_or_else(|| protocol("choice must be an object"))?;
+        self.validate_reasoning_fields(choice)?;
         let delta = match choice.get("delta") {
             Some(Value::Object(delta)) => delta,
             None | Some(Value::Null)
@@ -575,12 +622,33 @@ fn outcome(reason: &str) -> Outcome {
 }
 
 impl CompletionsDecoder {
+    fn new(openrouter_reasoning_fields: bool) -> Self {
+        Self {
+            openrouter_reasoning_fields,
+            ..Self::default()
+        }
+    }
+
+    fn validate_reasoning_fields(&self, fields: &Map<String, Value>) -> Result<(), Error> {
+        if !self.openrouter_reasoning_fields
+            && ["reasoning", "reasoning_content", "reasoning_details"]
+                .iter()
+                .any(|key| fields.get(*key).is_some_and(|value| !value.is_null()))
+        {
+            return Err(unsupported(
+                "native reasoning fields require openrouter_reasoning_fields",
+            ));
+        }
+        Ok(())
+    }
+
     fn decode_delta(
         &mut self,
         delta: &Map<String, Value>,
         output: &mut ModelTurnOutput,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
+        self.validate_reasoning_fields(delta)?;
         for (key, value) in delta {
             if !value.is_null()
                 && !matches!(
@@ -624,7 +692,7 @@ impl CompletionsDecoder {
                 {
                     text.annotations.extend(annotations.iter().map(|raw| {
                         Annotation {
-                            provider: ProviderType::Openrouter,
+                            provider: output.config.provider,
                             annotation_type: raw
                                 .get("type")
                                 .and_then(Value::as_str)
@@ -931,7 +999,7 @@ impl CompletionsDecoder {
         }
         if let HistoryItemKind::Reasoning(reasoning) = &mut output.items[index].kind {
             reasoning.opaque_state = Some(ProviderOpaqueData {
-                provider: ProviderType::Openrouter,
+                provider: output.config.provider,
                 data: Value::Object(data),
             });
         }
@@ -1027,6 +1095,39 @@ mod tests {
     use super::*;
     use crate::api::{AudioBlock, ImageBlock, ModelTurn, ToolDefinition, ToolResult};
     use crate::providers::{Effort, Model, ModelConfig};
+
+    const ROUTER_CONFIG: OpenAiCompletionsConfig = OpenAiCompletionsConfig {
+        openrouter_reasoning_fields: true,
+    };
+
+    // Existing behavior tests explicitly exercise the opt-in dialect.
+    fn request_body(
+        history: &AgentHistory,
+        input: &ModelTurnInput,
+        config: &RequestConfig,
+    ) -> Result<Value, Error> {
+        super::request_body(
+            history,
+            input,
+            config,
+            history.config.provider,
+            ROUTER_CONFIG,
+        )
+    }
+
+    fn append_messages(items: &[HistoryItem], messages: &mut Vec<Value>) -> Result<(), Error> {
+        super::append_messages(items, messages, ProviderType::Openrouter, ROUTER_CONFIG)
+    }
+
+    fn model_for(provider: ProviderType) -> ModelConfig {
+        ModelConfig {
+            model: Model {
+                model_slug: "test-model".into(),
+            },
+            provider,
+            effort: Effort::High,
+        }
+    }
 
     fn model() -> ModelConfig {
         ModelConfig {
@@ -1127,6 +1228,208 @@ mod tests {
             output,
             events,
         )
+    }
+
+    #[test]
+    fn provider_identity_and_reasoning_dialect_are_independent() {
+        assert_eq!(
+            OpenAiCompletionsConfig::default(),
+            serde_json::from_str::<OpenAiCompletionsConfig>("{}").unwrap()
+        );
+        assert!(!OpenAiCompletionsConfig::default().openrouter_reasoning_fields);
+        for provider in [ProviderType::OpenAiCodex, ProviderType::Openrouter] {
+            for enabled in [false, true] {
+                let adapter_config = OpenAiCompletionsConfig {
+                    openrouter_reasoning_fields: enabled,
+                };
+                let client = OpenAiCompletions::new(
+                    "https://example.com/custom",
+                    "key",
+                    provider,
+                    adapter_config,
+                )
+                .unwrap();
+                assert_eq!(client.provider_type(), provider);
+                assert_eq!(client.clone().provider_type(), provider);
+                assert_eq!(
+                    serde_json::from_value::<OpenAiCompletionsConfig>(
+                        serde_json::to_value(adapter_config).unwrap()
+                    )
+                    .unwrap(),
+                    adapter_config
+                );
+                let history = AgentHistory::new(model_for(provider));
+                let body = super::request_body(
+                    &history,
+                    &ModelTurnInput {
+                        items: vec![message(Role::User, "hi")],
+                    },
+                    &RequestConfig::default(),
+                    provider,
+                    adapter_config,
+                )
+                .unwrap();
+                if enabled {
+                    assert_eq!(body["reasoning"], json!({"effort":"high"}));
+                    assert!(body.get("reasoning_effort").is_none());
+                } else {
+                    assert_eq!(body["reasoning_effort"], "high");
+                    assert!(body.get("reasoning").is_none());
+                    assert!(body.get("reasoning_details").is_none());
+                    assert!(body["messages"][0].get("reasoning").is_none());
+                    assert!(body["messages"][0].get("reasoning_details").is_none());
+                }
+                let other = match provider {
+                    ProviderType::OpenAiCodex => ProviderType::Openrouter,
+                    ProviderType::Openrouter => ProviderType::OpenAiCodex,
+                };
+                assert!(
+                    matches!(super::request_body(&history, &ModelTurnInput::default(), &RequestConfig::default(), other, adapter_config), Err(Error::ProviderMismatch { expected, actual }) if expected == other && actual == provider)
+                );
+                let mut max_history = history;
+                max_history.config.effort = Effort::Max;
+                let max = super::request_body(
+                    &max_history,
+                    &ModelTurnInput::default(),
+                    &RequestConfig::default(),
+                    provider,
+                    adapter_config,
+                );
+                if enabled {
+                    assert_eq!(max.unwrap()["reasoning"]["effort"], "max");
+                } else {
+                    assert!(matches!(max, Err(Error::Unsupported { .. })));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_reasoning_replay_requires_opt_in_and_matching_actual_provider() {
+        for provider in [ProviderType::OpenAiCodex, ProviderType::Openrouter] {
+            let mut reasoning = native_reasoning();
+            if let HistoryItemKind::Reasoning(reasoning) = &mut reasoning.kind {
+                let state = reasoning.opaque_state.as_mut().unwrap();
+                state.provider = provider;
+                state.data["reasoning"] = json!("native text");
+            }
+            let mut saved = ModelTurnOutput::default_for_model(model_for(provider));
+            saved.outcome = Outcome::Completed {
+                reason: StopReason::EndTurn,
+            };
+            saved.items = vec![reasoning, message(Role::Assistant, "answer")];
+            let mut history = AgentHistory::new(model_for(provider));
+            history.turns.push(ModelTurn {
+                input: ModelTurnInput::default(),
+                output: Some(saved),
+            });
+            let body = super::request_body(
+                &history,
+                &ModelTurnInput::default(),
+                &RequestConfig::default(),
+                provider,
+                ROUTER_CONFIG,
+            )
+            .unwrap();
+            assert_eq!(body["messages"][0]["reasoning"], "native text");
+            assert_eq!(
+                body["messages"][0]["reasoning_details"][0]["data"],
+                "secret"
+            );
+            assert!(matches!(
+                super::request_body(
+                    &history,
+                    &ModelTurnInput::default(),
+                    &RequestConfig::default(),
+                    provider,
+                    OpenAiCompletionsConfig::default()
+                ),
+                Err(Error::Unsupported { .. })
+            ));
+            let other = match provider {
+                ProviderType::OpenAiCodex => ProviderType::Openrouter,
+                ProviderType::Openrouter => ProviderType::OpenAiCodex,
+            };
+            if let HistoryItemKind::Reasoning(reasoning) =
+                &mut history.turns[0].output.as_mut().unwrap().items[0].kind
+            {
+                reasoning.opaque_state.as_mut().unwrap().provider = other;
+            }
+            for config in [OpenAiCompletionsConfig::default(), ROUTER_CONFIG] {
+                assert!(
+                    matches!(super::request_body(&history, &ModelTurnInput::default(), &RequestConfig::default(), provider, config), Err(Error::ProviderMismatch { expected, actual }) if expected == provider && actual == other)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decoder_dialect_gates_native_fields_and_uses_actual_provider_tags() {
+        for provider in [ProviderType::OpenAiCodex, ProviderType::Openrouter] {
+            for enabled in [false, true] {
+                let mut decoder = CompletionsDecoder::new(enabled);
+                let mut output = ModelTurnOutput::default_for_model(model_for(provider));
+                let mut events = VecDeque::new();
+                let mut delta = json!({"content":"answer", "annotations":[{"type":"url_citation","url":"https://example.com"}]});
+                if enabled {
+                    delta["reasoning"] = json!("native text");
+                    delta["reasoning_details"] =
+                        json!([{"index":0,"id":"r","type":"reasoning.encrypted","data":"secret"}]);
+                } else {
+                    delta["reasoning"] = Value::Null;
+                    delta["reasoning_content"] = Value::Null;
+                    delta["reasoning_details"] = Value::Null;
+                }
+                decode(
+                    &mut decoder,
+                    &mut output,
+                    &mut events,
+                    chunk(delta, json!("stop")),
+                )
+                .unwrap();
+                done(&mut decoder, &mut output, &mut events).unwrap();
+                let HistoryItemKind::Message(message) = &output.items[0].kind else {
+                    panic!()
+                };
+                let ContentBlock::Text(text) = &message.content[0] else {
+                    panic!()
+                };
+                assert_eq!(text.annotations[0].provider, provider);
+                if enabled {
+                    let HistoryItemKind::Reasoning(reasoning) = &output.items[1].kind else {
+                        panic!()
+                    };
+                    assert_eq!(reasoning.opaque_state.as_ref().unwrap().provider, provider);
+                    assert_eq!(
+                        reasoning.opaque_state.as_ref().unwrap().data["reasoning"],
+                        "native text"
+                    );
+                } else {
+                    assert_eq!(output.items.len(), 1);
+                }
+            }
+            for (field, value) in [
+                ("reasoning", json!("")),
+                ("reasoning_content", json!("native")),
+                ("reasoning_details", json!([])),
+            ] {
+                let mut decoder = CompletionsDecoder::new(false);
+                let mut output = ModelTurnOutput::default_for_model(model_for(provider));
+                let mut events = VecDeque::new();
+                let mut delta = json!({"content":"must not silently discard native state"});
+                delta[field] = value;
+                assert!(matches!(
+                    decode(
+                        &mut decoder,
+                        &mut output,
+                        &mut events,
+                        chunk(delta, Value::Null)
+                    ),
+                    Err(Error::Unsupported { .. })
+                ));
+                assert!(output.items.is_empty());
+            }
+        }
     }
 
     #[test]
@@ -1348,7 +1651,7 @@ mod tests {
 
     #[test]
     fn decodes_text_refusal_and_replace_only_reported_usage() {
-        let mut decoder = CompletionsDecoder::default();
+        let mut decoder = CompletionsDecoder::new(true);
         let mut output = ModelTurnOutput::default_for_model(model());
         let mut events = VecDeque::new();
         assert!(
@@ -1436,7 +1739,7 @@ mod tests {
 
     #[test]
     fn buffers_fragmented_interleaved_tool_identity_and_arguments() {
-        let mut decoder = CompletionsDecoder::default();
+        let mut decoder = CompletionsDecoder::new(true);
         let mut output = ModelTurnOutput::default_for_model(model());
         let mut events = VecDeque::new();
         decode(&mut decoder, &mut output, &mut events, chunk(json!({"tool_calls":[
@@ -1516,7 +1819,7 @@ mod tests {
 
     #[test]
     fn incomplete_calls_cannot_be_replayed() {
-        let mut decoder = CompletionsDecoder::default();
+        let mut decoder = CompletionsDecoder::new(true);
         let mut output = ModelTurnOutput::default_for_model(model());
         let mut events = VecDeque::new();
         decode(&mut decoder, &mut output, &mut events, chunk(json!({"tool_calls":[{"index":0,"id":"a","function":{"name":"test","arguments":"{"}}]}), json!("length"))).unwrap();
@@ -1547,7 +1850,7 @@ mod tests {
 
     #[test]
     fn replays_plain_native_reasoning_in_a_tool_loop() {
-        let mut decoder = CompletionsDecoder::default();
+        let mut decoder = CompletionsDecoder::new(true);
         let mut output = ModelTurnOutput::default_for_model(model());
         let mut events = VecDeque::new();
         decode(
@@ -1593,7 +1896,7 @@ mod tests {
 
     #[test]
     fn null_reasoning_fields_are_absent_and_identity_can_arrive_later() {
-        let mut decoder = CompletionsDecoder::default();
+        let mut decoder = CompletionsDecoder::new(true);
         let mut output = ModelTurnOutput::default_for_model(model());
         let mut events = VecDeque::new();
         for detail in [
@@ -1636,7 +1939,7 @@ mod tests {
 
     #[test]
     fn unindexed_reasoning_details_use_ids_not_delta_array_positions() {
-        let mut decoder = CompletionsDecoder::default();
+        let mut decoder = CompletionsDecoder::new(true);
         let mut output = ModelTurnOutput::default_for_model(model());
         let mut events = VecDeque::new();
         for detail in [
@@ -1677,7 +1980,7 @@ mod tests {
 
     #[test]
     fn retains_and_replays_fragmented_native_reasoning() {
-        let mut decoder = CompletionsDecoder::default();
+        let mut decoder = CompletionsDecoder::new(true);
         let mut output = ModelTurnOutput::default_for_model(model());
         let mut events = VecDeque::new();
         decode(&mut decoder, &mut output, &mut events, chunk(json!({"reasoning":"think", "reasoning_details":[{"index":0,"type":"reasoning.encrypted","data":"ab","id":"r","format":"native"}]}), Value::Null)).unwrap();
@@ -1707,7 +2010,7 @@ mod tests {
         ] {
             assert!(
                 decode(
-                    &mut CompletionsDecoder::default(),
+                    &mut CompletionsDecoder::new(true),
                     &mut ModelTurnOutput::default_for_model(model()),
                     &mut VecDeque::new(),
                     payload
@@ -1715,7 +2018,7 @@ mod tests {
                 .is_err()
             );
         }
-        let mut decoder = CompletionsDecoder::default();
+        let mut decoder = CompletionsDecoder::new(true);
         let mut output = ModelTurnOutput::default_for_model(model());
         let mut events = VecDeque::new();
         assert!(done(&mut decoder, &mut output, &mut events).is_err());
@@ -1737,7 +2040,7 @@ mod tests {
             .is_err()
         );
         assert_eq!(serde_json::to_value(&output.items).unwrap(), frozen);
-        let mut decoder = CompletionsDecoder::default();
+        let mut decoder = CompletionsDecoder::new(true);
         assert!(
             decode(
                 &mut decoder,
@@ -1754,7 +2057,7 @@ mod tests {
 
     #[test]
     fn error_finish_reason_is_a_failed_provider_outcome() {
-        let mut decoder = CompletionsDecoder::default();
+        let mut decoder = CompletionsDecoder::new(true);
         let mut output = ModelTurnOutput::default_for_model(model());
         let mut events = VecDeque::new();
         decode(
@@ -1776,7 +2079,7 @@ mod tests {
 
     #[test]
     fn provider_errors_and_unsupported_output_are_explicit() {
-        let mut decoder = CompletionsDecoder::default();
+        let mut decoder = CompletionsDecoder::new(true);
         let mut output = ModelTurnOutput::default_for_model(model());
         let mut events = VecDeque::new();
         assert!(

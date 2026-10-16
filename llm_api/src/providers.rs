@@ -6,6 +6,18 @@ pub enum ProviderType {
     Openrouter,
 }
 
+impl ProviderType {
+    /// API root, without the operation-specific `/responses` or
+    /// `/chat/completions` path. Codex uses the ChatGPT subscription endpoint,
+    /// not the separately billed OpenAI platform API.
+    pub const fn api_base_url(self) -> &'static str {
+        match self {
+            Self::OpenAiCodex => "https://chatgpt.com/backend-api/codex",
+            Self::Openrouter => "https://openrouter.ai/api/v1",
+        }
+    }
+}
+
 /// Model with model slug, includes provider prefix with slashes
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Model {
@@ -98,7 +110,19 @@ impl ModelConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{Effort, Model};
+    use super::{Effort, Model, ProviderType};
+
+    #[test]
+    fn api_base_urls_exclude_operation_paths() {
+        assert_eq!(
+            ProviderType::OpenAiCodex.api_base_url(),
+            "https://chatgpt.com/backend-api/codex"
+        );
+        assert_eq!(
+            ProviderType::Openrouter.api_base_url(),
+            "https://openrouter.ai/api/v1"
+        );
+    }
 
     #[test]
     fn api_name_strips_only_the_provider_prefix() {

@@ -159,6 +159,72 @@ fn responses_stream() -> String {
 }
 
 #[tokio::test]
+async fn combined_provider_streams_delegate_both_protocols_and_cleanup() {
+    for provider in [ProviderType::OpenAiCodex, ProviderType::Openrouter] {
+        for mode in 0..3 {
+            let body = match provider {
+                ProviderType::OpenAiCodex => responses_stream(),
+                ProviderType::Openrouter => chat_stream(true),
+            };
+            let (url, request) = server("200 OK", "text/event-stream", "", body).await;
+            // Public variants also permit custom endpoints for proxies/testing.
+            let client = match provider {
+                ProviderType::OpenAiCodex => {
+                    Provider::Responses(OpenAiResponses::new(url, "key", provider).unwrap())
+                }
+                ProviderType::Openrouter => Provider::Completions(
+                    OpenAiCompletions::new(
+                        url,
+                        "key",
+                        provider,
+                        OpenAiCompletionsConfig {
+                            openrouter_reasoning_fields: true,
+                        },
+                    )
+                    .unwrap(),
+                ),
+            };
+            let mut stream = client
+                .generate(&history(provider), &input(), &RequestConfig::default())
+                .await
+                .unwrap();
+            assert!(matches!(
+                (&stream, provider),
+                (ProviderStream::Responses(_), ProviderType::OpenAiCodex)
+                    | (ProviderStream::Completions(_), ProviderType::Openrouter)
+            ));
+            match mode {
+                0 => {
+                    let mut finished = 0;
+                    while let Some(event) = stream.next_event().await {
+                        if matches!(event.unwrap(), TurnEvent::Finished) {
+                            finished += 1;
+                        }
+                    }
+                    assert_eq!(finished, 1);
+                    assert_eq!(text(stream.current()), "héllo");
+                    stream.close();
+                    let output = stream.into_output();
+                    assert!(matches!(output.outcome, Outcome::Completed { .. }));
+                    assert_eq!(output.usage.total_tokens, Some(12));
+                }
+                1 => {
+                    stream.close();
+                    assert!(matches!(stream.current().outcome, Outcome::Cancelled));
+                    assert!(stream.next_event().await.is_none());
+                }
+                _ => assert!(matches!(stream.into_output().outcome, Outcome::Cancelled)),
+            }
+            let body = request.await.unwrap().body;
+            match provider {
+                ProviderType::OpenAiCodex => assert_eq!(body["store"], false),
+                ProviderType::Openrouter => assert_eq!(body["reasoning"]["effort"], "medium"),
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn completions_http_round_trip() {
     let (url, request) = server(
         "200 OK",
@@ -167,7 +233,15 @@ async fn completions_http_round_trip() {
         chat_stream(true),
     )
     .await;
-    let client = OpenAiCompletions::new(url, "test-key").unwrap();
+    let client = OpenAiCompletions::new(
+        url,
+        "test-key",
+        ProviderType::Openrouter,
+        OpenAiCompletionsConfig {
+            openrouter_reasoning_fields: true,
+        },
+    )
+    .unwrap();
     let mut stream = client
         .generate(
             &history(ProviderType::Openrouter),
@@ -209,7 +283,7 @@ async fn completions_http_round_trip() {
 #[tokio::test]
 async fn responses_http_round_trip() {
     let (url, request) = server("200 OK", "text/event-stream", "", responses_stream()).await;
-    let client = OpenAiResponses::new(url, "test-key").unwrap();
+    let client = OpenAiResponses::new(url, "test-key", ProviderType::OpenAiCodex).unwrap();
     let mut stream = client
         .generate(
             &history(ProviderType::OpenAiCodex),
@@ -237,9 +311,116 @@ async fn responses_http_round_trip() {
 }
 
 #[tokio::test]
+async fn standard_completions_uses_supplied_identity_and_standard_reasoning_field() {
+    let (url, request) = server("200 OK", "text/event-stream", "", chat_stream(true)).await;
+    let client = OpenAiCompletions::new(
+        url,
+        "test-key",
+        ProviderType::OpenAiCodex,
+        OpenAiCompletionsConfig::default(),
+    )
+    .unwrap();
+    assert_eq!(client.provider_type(), ProviderType::OpenAiCodex);
+    let mut stream = client
+        .generate(
+            &history(ProviderType::OpenAiCodex),
+            &input(),
+            &RequestConfig::default(),
+        )
+        .await
+        .unwrap();
+    while let Some(event) = stream.next_event().await {
+        event.unwrap();
+    }
+    assert_eq!(stream.current().config.provider, ProviderType::OpenAiCodex);
+    assert_eq!(text(stream.current()), "héllo");
+    let body = request.await.unwrap().body;
+    assert_eq!(body["reasoning_effort"], "medium");
+    assert!(body.get("reasoning").is_none());
+}
+
+#[tokio::test]
+async fn responses_retags_and_replays_native_state_for_supplied_identity() {
+    let message = json!({
+        "id":"msg-generic", "type":"message", "role":"assistant", "status":"completed",
+        "content":[{"type":"output_text","text":"source","annotations":[{
+            "type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com","title":"Source"
+        }]}],
+    });
+    let terminal = json!({"type":"response.completed","response":{
+        "id":"resp-generic","status":"completed","output":[
+            {"id":"rs-generic","type":"reasoning","summary":[],"encrypted_content":"opaque-state"}, message,
+        ],
+    }});
+    let (url, _) = server(
+        "200 OK",
+        "text/event-stream",
+        "",
+        format!("data: {terminal}\n\n"),
+    )
+    .await;
+    let client = OpenAiResponses::new(url, "test-key", ProviderType::Openrouter).unwrap();
+    assert_eq!(client.provider_type(), ProviderType::Openrouter);
+    let mut stream = client
+        .generate(
+            &history(ProviderType::Openrouter),
+            &input(),
+            &RequestConfig::default(),
+        )
+        .await
+        .unwrap();
+    while let Some(event) = stream.next_event().await {
+        event.unwrap();
+    }
+    let output = stream.into_output();
+    let HistoryItemKind::Reasoning(reasoning) = &output.items[0].kind else {
+        panic!("missing reasoning")
+    };
+    assert_eq!(
+        reasoning.opaque_state.as_ref().unwrap().provider,
+        ProviderType::Openrouter
+    );
+    let HistoryItemKind::Message(message) = &output.items[1].kind else {
+        panic!("missing message")
+    };
+    let ContentBlock::Text(text) = &message.content[0] else {
+        panic!("missing text")
+    };
+    assert_eq!(text.annotations[0].provider, ProviderType::Openrouter);
+
+    let mut history = history(ProviderType::Openrouter);
+    history.turns.push(ModelTurn {
+        input: input(),
+        output: Some(output),
+    });
+    let (url, request) = server("200 OK", "text/event-stream", "", responses_stream()).await;
+    let client = OpenAiResponses::new(url, "test-key", ProviderType::Openrouter).unwrap();
+    let stream = client
+        .generate(&history, &input(), &RequestConfig::default())
+        .await
+        .unwrap();
+    drop(stream);
+    let body = request.await.unwrap().body;
+    assert_eq!(body["input"][1]["encrypted_content"], "opaque-state");
+    assert_eq!(
+        body["input"][2]["content"][0]["annotations"][0]["url"],
+        "https://example.com"
+    );
+    assert_eq!(body["input"].as_array().unwrap().len(), 4);
+}
+
+#[tokio::test]
 async fn unexpected_eof_retains_partial_output_and_errors_once() {
     let (url, _) = server("200 OK", "text/event-stream", "", chat_stream(false)).await;
-    let client = OpenAiCompletions::new(url, "test-key").unwrap();
+    let client = OpenAiCompletions::new(
+        url,
+        "test-key",
+        ProviderType::Openrouter,
+        OpenAiCompletionsConfig {
+            openrouter_reasoning_fields: true,
+        },
+    )
+    .unwrap();
     let mut stream = client
         .generate(
             &history(ProviderType::Openrouter),
@@ -263,7 +444,15 @@ async fn unexpected_eof_retains_partial_output_and_errors_once() {
 #[tokio::test]
 async fn close_and_into_output_preserve_terminal_or_partial_state() {
     let (url, _) = server("200 OK", "text/event-stream", "", chat_stream(true)).await;
-    let client = OpenAiCompletions::new(url, "test-key").unwrap();
+    let client = OpenAiCompletions::new(
+        url,
+        "test-key",
+        ProviderType::Openrouter,
+        OpenAiCompletionsConfig {
+            openrouter_reasoning_fields: true,
+        },
+    )
+    .unwrap();
     let mut stream = client
         .generate(
             &history(ProviderType::Openrouter),
@@ -280,7 +469,7 @@ async fn close_and_into_output_preserve_terminal_or_partial_state() {
     assert!(matches!(output.outcome, Outcome::Cancelled));
 
     let (url, _) = server("200 OK", "text/event-stream", "", responses_stream()).await;
-    let client = OpenAiResponses::new(url, "test-key").unwrap();
+    let client = OpenAiResponses::new(url, "test-key", ProviderType::OpenAiCodex).unwrap();
     let mut stream = client
         .generate(
             &history(ProviderType::OpenAiCodex),
@@ -304,7 +493,7 @@ async fn http_errors_retain_status_and_retry_delay() {
         json!({"error":{"message":"rate limited"}}).to_string(),
     )
     .await;
-    let client = OpenAiResponses::new(url, "test-key").unwrap();
+    let client = OpenAiResponses::new(url, "test-key", ProviderType::OpenAiCodex).unwrap();
     let error = match client
         .generate(
             &history(ProviderType::OpenAiCodex),
@@ -335,7 +524,12 @@ async fn truncated_error_body_keeps_http_status() {
         let _ = read_request(&mut socket).await;
         socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 100\r\nRetry-After: 3\r\nConnection: close\r\n\r\n{}").await.unwrap();
     });
-    let client = OpenAiResponses::new(format!("http://{address}/api"), "test-key").unwrap();
+    let client = OpenAiResponses::new(
+        format!("http://{address}/api"),
+        "test-key",
+        ProviderType::OpenAiCodex,
+    )
+    .unwrap();
     assert!(matches!(
         client
             .generate(
@@ -372,7 +566,12 @@ async fn dropping_a_stream_closes_the_http_body() {
             Ok(_) => panic!("unexpected client bytes after generation request"),
         }
     });
-    let client = OpenAiResponses::new(format!("http://{address}/api"), "test-key").unwrap();
+    let client = OpenAiResponses::new(
+        format!("http://{address}/api"),
+        "test-key",
+        ProviderType::OpenAiCodex,
+    )
+    .unwrap();
     let stream = client
         .generate(
             &history(ProviderType::OpenAiCodex),
@@ -390,7 +589,12 @@ async fn dropping_a_stream_closes_the_http_body() {
 
 #[tokio::test]
 async fn validation_fails_before_http() {
-    let client = OpenAiResponses::new("http://127.0.0.1:9/no-server", "test-key").unwrap();
+    let client = OpenAiResponses::new(
+        "http://127.0.0.1:9/no-server",
+        "test-key",
+        ProviderType::OpenAiCodex,
+    )
+    .unwrap();
     assert!(matches!(
         client
             .generate(
@@ -416,7 +620,15 @@ async fn validation_fails_before_http() {
 #[tokio::test]
 async fn rejects_non_sse_success_response() {
     let (url, _) = server("200 OK", "application/json", "", "{}".into()).await;
-    let client = OpenAiCompletions::new(url, "test-key").unwrap();
+    let client = OpenAiCompletions::new(
+        url,
+        "test-key",
+        ProviderType::Openrouter,
+        OpenAiCompletionsConfig {
+            openrouter_reasoning_fields: true,
+        },
+    )
+    .unwrap();
     assert!(matches!(
         client
             .generate(
@@ -442,7 +654,15 @@ async fn cancelling_next_event_does_not_lose_buffered_output() {
         wait.await.unwrap();
         socket.write_all(b"\"choices\":[{\"index\":0,\"delta\":{\"content\":\"resumed\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n").await.unwrap();
     });
-    let client = OpenAiCompletions::new(format!("http://{address}/api"), "test-key").unwrap();
+    let client = OpenAiCompletions::new(
+        format!("http://{address}/api"),
+        "test-key",
+        ProviderType::Openrouter,
+        OpenAiCompletionsConfig {
+            openrouter_reasoning_fields: true,
+        },
+    )
+    .unwrap();
     let mut stream = client
         .generate(
             &history(ProviderType::Openrouter),

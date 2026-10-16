@@ -41,6 +41,7 @@
 pub mod agent_history;
 pub mod openai_completions;
 pub mod openai_responses;
+pub mod provider;
 mod schema;
 mod transport;
 pub mod types;
@@ -54,8 +55,9 @@ use crate::Error;
 use crate::providers::ProviderType;
 
 pub use agent_history::{AgentHistory, validate_request};
-pub use openai_completions::{OpenAiCompletions, OpenAiCompletionsStream};
+pub use openai_completions::{OpenAiCompletions, OpenAiCompletionsConfig, OpenAiCompletionsStream};
 pub use openai_responses::{OpenAiResponses, OpenAiResponsesStream};
+pub use provider::{Provider, ProviderStream};
 pub use types::*;
 
 /// Per-request settings. The model comes from `AgentHistory::config`.

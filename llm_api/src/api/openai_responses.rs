@@ -16,19 +16,25 @@ use super::transport::{
 };
 use super::*;
 
-const PROVIDER: ProviderType = ProviderType::OpenAiCodex;
 const RAW_ITEM: &str = "openai_responses_item";
 
 /// An authenticated, reusable Responses client. Clones share the HTTP client.
 #[derive(Clone)]
 pub struct OpenAiResponses {
     client: ApiClient,
+    provider: ProviderType,
 }
 
 impl OpenAiResponses {
-    pub fn new(api_url: impl Into<String>, api_key: impl Into<String>) -> Result<Self, Error> {
+    /// Select the provider identity independently of the Responses wire format.
+    pub fn new(
+        api_url: impl Into<String>,
+        api_key: impl Into<String>,
+        provider: ProviderType,
+    ) -> Result<Self, Error> {
         Ok(Self {
             client: ApiClient::new(api_url.into(), api_key.into())?,
+            provider,
         })
     }
 }
@@ -37,7 +43,7 @@ impl ApiProvider for OpenAiResponses {
     type Stream = OpenAiResponsesStream;
 
     fn provider_type(&self) -> ProviderType {
-        PROVIDER
+        self.provider
     }
 
     async fn generate_inner(
@@ -46,6 +52,7 @@ impl ApiProvider for OpenAiResponses {
         input: &ModelTurnInput,
         config: &RequestConfig,
     ) -> Result<Self::Stream, Error> {
+        same_provider(self.provider, history.config.provider)?;
         let body = request_body(history, input, config)?;
         let response = self.client.post(&body).await?;
         Ok(OpenAiResponsesStream {
@@ -87,12 +94,9 @@ fn unsupported(feature: impl Into<String>) -> Error {
     }
 }
 
-fn same_provider(provider: ProviderType) -> Result<(), Error> {
-    if provider != PROVIDER {
-        return Err(Error::ProviderMismatch {
-            expected: PROVIDER,
-            actual: provider,
-        });
+fn same_provider(expected: ProviderType, actual: ProviderType) -> Result<(), Error> {
+    if actual != expected {
+        return Err(Error::ProviderMismatch { expected, actual });
     }
     Ok(())
 }
@@ -108,20 +112,21 @@ fn request_body(
     for tool in &history.tools {
         super::schema::validate_tool(tool)?;
     }
+    let provider = history.config.provider;
     let mut items = Vec::new();
     for turn in &history.turns {
         for item in &turn.input.items {
-            items.push(serialize_item(item)?);
+            items.push(serialize_item(provider, item)?);
         }
         let output = turn.output.as_ref().ok_or_else(|| Error::InvalidHistory {
             message: "cannot replay a turn without output".into(),
         })?;
         for item in &output.items {
-            items.push(serialize_item(item)?);
+            items.push(serialize_item(provider, item)?);
         }
     }
     for item in &input.items {
-        items.push(serialize_item(item)?);
+        items.push(serialize_item(provider, item)?);
     }
     let mut body = json!({
         "model": history.config.model.api_name(),
@@ -185,7 +190,7 @@ fn native(value: &Value, expected_type: &str) -> Result<Value, Error> {
     Ok(value.clone())
 }
 
-fn serialize_item(item: &HistoryItem) -> Result<Value, Error> {
+fn serialize_item(provider: ProviderType, item: &HistoryItem) -> Result<Value, Error> {
     let mut value = raw_item(item)?;
     match &item.kind {
         HistoryItemKind::Message(message) => {
@@ -231,7 +236,12 @@ fn serialize_item(item: &HistoryItem) -> Result<Value, Error> {
                         // The normalized history still retains RefusalBlock.
                         return Ok(json!({"type":"input_text","text":refusal.text}));
                     }
-                    serialize_content(block, native_output, prior.and_then(|v| v.get(index)))
+                    serialize_content(
+                        provider,
+                        block,
+                        native_output,
+                        prior.and_then(|v| v.get(index)),
+                    )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             value["type"] = json!("message");
@@ -269,7 +279,7 @@ fn serialize_item(item: &HistoryItem) -> Result<Value, Error> {
                 result
                     .content
                     .iter()
-                    .map(|block| serialize_content(block, false, None))
+                    .map(|block| serialize_content(provider, block, false, None))
                     .collect::<Result<Vec<_>, _>>()?,
             );
             // is_error is a harness flag, not a separate Responses wire field.
@@ -311,7 +321,7 @@ fn serialize_item(item: &HistoryItem) -> Result<Value, Error> {
             value["summary"] = Value::Array(summary);
             value.as_object_mut().unwrap().remove("encrypted_content");
             if let Some(state) = &reasoning.opaque_state {
-                same_provider(state.provider)?;
+                same_provider(provider, state.provider)?;
                 let encrypted = if state.data.is_string() {
                     &state.data
                 } else {
@@ -327,7 +337,7 @@ fn serialize_item(item: &HistoryItem) -> Result<Value, Error> {
             }
         }
         HistoryItemKind::ProviderItem(item) => {
-            same_provider(item.provider)?;
+            same_provider(provider, item.provider)?;
             value = native(&item.raw, &item.item_type)?;
         }
     }
@@ -342,6 +352,7 @@ fn serialize_item(item: &HistoryItem) -> Result<Value, Error> {
 }
 
 fn serialize_content(
+    provider: ProviderType,
     block: &ContentBlock,
     assistant: bool,
     prior: Option<&Value>,
@@ -349,7 +360,7 @@ fn serialize_content(
     match block {
         ContentBlock::Text(text) => {
             for annotation in &text.annotations {
-                same_provider(annotation.provider)?;
+                same_provider(provider, annotation.provider)?;
             }
             let kind = if assistant {
                 "output_text"
@@ -393,8 +404,11 @@ fn serialize_content(
                     }
                     value["image_url"] = json!(data_url(mime_type, data));
                 }
-                MediaSource::ProviderFile { provider, file_id } => {
-                    same_provider(*provider)?;
+                MediaSource::ProviderFile {
+                    provider: actual,
+                    file_id,
+                } => {
+                    same_provider(provider, *actual)?;
                     value["file_id"] = json!(file_id);
                 }
             }
@@ -421,8 +435,11 @@ fn serialize_content(
                     }
                     value["file_data"] = json!(data_url(mime_type, data));
                 }
-                MediaSource::ProviderFile { provider, file_id } => {
-                    same_provider(*provider)?;
+                MediaSource::ProviderFile {
+                    provider: actual,
+                    file_id,
+                } => {
+                    same_provider(provider, *actual)?;
                     value["file_id"] = json!(file_id);
                 }
             }
@@ -432,7 +449,7 @@ fn serialize_content(
             Ok(value)
         }
         ContentBlock::ProviderContent(content) => {
-            same_provider(content.provider)?;
+            same_provider(provider, content.provider)?;
             native(&content.raw, &content.content_type)
         }
         ContentBlock::Audio(_) => Err(unsupported("audio input/replay in the Responses adapter")),
@@ -496,7 +513,7 @@ impl ResponsesDecoder {
     ) -> Result<(), Error> {
         if index < output.items.len() {
             let slot = &self.slots[&index];
-            let item = parse_item(&slot.raw, slot.completed)?
+            let item = parse_item(output.config.provider, &slot.raw, slot.completed)?
                 .ok_or_else(|| protocol("published function identity disappeared"))?;
             compatible(&output.items[index], &item)?;
             output.items[index] = item;
@@ -506,7 +523,7 @@ impl ResponsesDecoder {
         }
         // Never expose index N before N-1, or a call before its identity is known.
         while let Some(slot) = self.slots.get_mut(&output.items.len()) {
-            let Some(item) = parse_item(&slot.raw, slot.completed)? else {
+            let Some(item) = parse_item(output.config.provider, &slot.raw, slot.completed)? else {
                 break;
             };
             let index = output.items.len();
@@ -540,7 +557,7 @@ impl ResponsesDecoder {
         }
         if let Some(slot) = self.slots.get_mut(&index) {
             if slot.completed {
-                if done && completed_equivalent(&slot.raw, &raw)? {
+                if done && completed_equivalent(output.config.provider, &slot.raw, &raw)? {
                     return Ok(());
                 }
                 return Err(protocol("snapshot changed a completed output item"));
@@ -1035,7 +1052,11 @@ fn check_item_id(raw: &mut Value, event: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-fn parse_item(raw: &Value, complete: bool) -> Result<Option<HistoryItem>, Error> {
+fn parse_item(
+    provider: ProviderType,
+    raw: &Value,
+    complete: bool,
+) -> Result<Option<HistoryItem>, Error> {
     let kind = match string(raw, "type")? {
         "message" => {
             let role = match raw
@@ -1058,7 +1079,7 @@ fn parse_item(raw: &Value, complete: bool) -> Result<Option<HistoryItem>, Error>
                 .transpose()?
                 .into_iter()
                 .flatten()
-                .map(parse_content)
+                .map(|part| parse_content(provider, part))
                 .collect::<Result<Vec<_>, _>>()?;
             HistoryItemKind::Message(Message { role, content })
         }
@@ -1094,7 +1115,7 @@ fn parse_item(raw: &Value, complete: bool) -> Result<Option<HistoryItem>, Error>
                     .as_array()
                     .ok_or_else(|| protocol("function output is neither text nor typed content"))?
                     .iter()
-                    .map(parse_content)
+                    .map(|part| parse_content(provider, part))
                     .collect::<Result<Vec<_>, _>>()?
             };
             HistoryItemKind::ToolResult(ToolResult {
@@ -1121,13 +1142,13 @@ fn parse_item(raw: &Value, complete: bool) -> Result<Option<HistoryItem>, Error>
                     .get("encrypted_content")
                     .filter(|v| !v.is_null())
                     .map(|data| ProviderOpaqueData {
-                        provider: PROVIDER,
+                        provider,
                         data: data.clone(),
                     }),
             })
         }
         item_type => HistoryItemKind::ProviderItem(ProviderItem {
-            provider: PROVIDER,
+            provider,
             item_type: item_type.into(),
             raw: raw.clone(),
         }),
@@ -1142,7 +1163,7 @@ fn parse_item(raw: &Value, complete: bool) -> Result<Option<HistoryItem>, Error>
     }))
 }
 
-fn parse_content(raw: &Value) -> Result<ContentBlock, Error> {
+fn parse_content(provider: ProviderType, raw: &Value) -> Result<ContentBlock, Error> {
     Ok(match string(raw, "type")? {
         "output_text" | "input_text" => ContentBlock::Text(TextBlock {
             text: string(raw, "text")?.into(),
@@ -1156,7 +1177,7 @@ fn parse_content(raw: &Value) -> Result<ContentBlock, Error> {
                 .into_iter()
                 .flatten()
                 .map(|raw| Annotation {
-                    provider: PROVIDER,
+                    provider,
                     annotation_type: raw
                         .get("type")
                         .and_then(Value::as_str)
@@ -1170,7 +1191,7 @@ fn parse_content(raw: &Value) -> Result<ContentBlock, Error> {
             text: string(raw, "refusal")?.into(),
         }),
         content_type => ContentBlock::ProviderContent(ProviderContent {
-            provider: PROVIDER,
+            provider,
             content_type: content_type.into(),
             raw: raw.clone(),
         }),
@@ -1180,9 +1201,13 @@ fn parse_content(raw: &Value) -> Result<ContentBlock, Error> {
 // A terminal envelope may add provider-only fields to an already final typed
 // item. Retain that envelope in response metadata, but never mutate an item
 // after ItemCompleted. Changes to portable content/identity remain errors.
-fn completed_equivalent(previous: &Value, next: &Value) -> Result<bool, Error> {
-    let mut previous = parse_item(previous, true)?.unwrap();
-    let mut next = parse_item(next, true)?.unwrap();
+fn completed_equivalent(
+    provider: ProviderType,
+    previous: &Value,
+    next: &Value,
+) -> Result<bool, Error> {
+    let mut previous = parse_item(provider, previous, true)?.unwrap();
+    let mut next = parse_item(provider, next, true)?.unwrap();
     previous.metadata.provider_metadata.clear();
     next.metadata.provider_metadata.clear();
     previous.metadata.item_status = None;
@@ -1230,6 +1255,30 @@ fn compatible(previous: &HistoryItem, next: &HistoryItem) -> Result<(), Error> {
 mod tests {
     use super::*;
     use crate::providers::{Effort, Model, ModelConfig};
+
+    const PROVIDER: ProviderType = ProviderType::OpenAiCodex;
+
+    // Keep the original wire-format fixtures concise; generic-identity tests
+    // below exercise the explicit provider-taking helpers directly.
+    fn serialize_item(item: &HistoryItem) -> Result<Value, Error> {
+        super::serialize_item(PROVIDER, item)
+    }
+
+    fn serialize_content(
+        block: &ContentBlock,
+        assistant: bool,
+        prior: Option<&Value>,
+    ) -> Result<Value, Error> {
+        super::serialize_content(PROVIDER, block, assistant, prior)
+    }
+
+    fn parse_item(raw: &Value, complete: bool) -> Result<Option<HistoryItem>, Error> {
+        super::parse_item(PROVIDER, raw, complete)
+    }
+
+    fn parse_content(raw: &Value) -> Result<ContentBlock, Error> {
+        super::parse_content(PROVIDER, raw)
+    }
 
     fn model() -> ModelConfig {
         ModelConfig {
@@ -1992,11 +2041,166 @@ mod tests {
     }
 
     #[test]
+    fn responses_decoder_and_replay_use_the_actual_provider_identity() {
+        let provider = ProviderType::Openrouter;
+        let mut h = Harness::new();
+        h.output.config.provider = provider;
+        h.output.config.model.model_slug = "openrouter/vendor/responses-model".into();
+        let raw = json!([
+            {"id":"reason","type":"reasoning","summary":[{"type":"summary_text","text":"summary"}],"encrypted_content":"encrypted"},
+            {"id":"msg","type":"message","role":"assistant","status":"completed","content":[
+                {"type":"output_text","text":"answer","annotations":[{"type":"url_citation","url":"https://example.test"}]},
+                {"type":"future_content","payload":42}
+            ]},
+            {"id":"search","type":"web_search_call","status":"completed","action":{"query":"query"}}
+        ]);
+        h.finish(raw.clone());
+        let HistoryItemKind::Reasoning(reasoning) = &h.output.items[0].kind else {
+            panic!()
+        };
+        assert_eq!(reasoning.opaque_state.as_ref().unwrap().provider, provider);
+        let HistoryItemKind::Message(message) = &h.output.items[1].kind else {
+            panic!()
+        };
+        let ContentBlock::Text(text) = &message.content[0] else {
+            panic!()
+        };
+        assert_eq!(text.annotations[0].provider, provider);
+        let ContentBlock::ProviderContent(content) = &message.content[1] else {
+            panic!()
+        };
+        assert_eq!(content.provider, provider);
+        let HistoryItemKind::ProviderItem(native_item) = &h.output.items[2].kind else {
+            panic!()
+        };
+        assert_eq!(native_item.provider, provider);
+        for (index, item) in h.output.items.iter().enumerate() {
+            assert_eq!(super::serialize_item(provider, item).unwrap(), raw[index]);
+        }
+        let mut history = AgentHistory::new(h.output.config.clone());
+        history.turns.push(ModelTurn {
+            input: ModelTurnInput::default(),
+            output: Some(h.output),
+        });
+        let input = ModelTurnInput {
+            items: vec![item(HistoryItemKind::Message(Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::Image(ImageBlock {
+                        source: MediaSource::ProviderFile {
+                            provider,
+                            file_id: "image".into(),
+                        },
+                        detail: None,
+                    }),
+                    ContentBlock::File(FileBlock {
+                        source: MediaSource::ProviderFile {
+                            provider,
+                            file_id: "file".into(),
+                        },
+                        filename: None,
+                        mime_type: None,
+                    }),
+                ],
+            }))],
+        };
+        let body = request_body(&history, &input, &RequestConfig::default()).unwrap();
+        assert_eq!(body["model"], "vendor/responses-model");
+        assert_eq!(body["input"][0], raw[0]);
+        assert_eq!(body["input"][1], raw[1]);
+        assert_eq!(body["input"][2], raw[2]);
+        assert_eq!(body["input"][3]["content"][0]["file_id"], "image");
+        assert_eq!(body["input"][3]["content"][1]["file_id"], "file");
+    }
+
+    #[test]
+    fn generic_provider_rejects_foreign_replay_state_and_file_ids() {
+        let provider = ProviderType::Openrouter;
+        for raw in [
+            json!({"id":"reason","type":"reasoning","summary":[],"encrypted_content":"encrypted"}),
+            json!({"id":"msg","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"text","annotations":[{"type":"url_citation","url":"https://example.test"}]}]}),
+            json!({"id":"msg","type":"message","role":"assistant","status":"completed","content":[{"type":"future_content","payload":42}]}),
+            json!({"id":"search","type":"web_search_call","status":"completed"}),
+        ] {
+            let foreign = super::parse_item(PROVIDER, &raw, true).unwrap().unwrap();
+            assert!(matches!(
+                super::serialize_item(provider, &foreign),
+                Err(Error::ProviderMismatch {
+                    expected: ProviderType::Openrouter,
+                    actual: ProviderType::OpenAiCodex
+                })
+            ));
+        }
+        for block in [
+            ContentBlock::Image(ImageBlock {
+                source: MediaSource::ProviderFile {
+                    provider: PROVIDER,
+                    file_id: "image".into(),
+                },
+                detail: None,
+            }),
+            ContentBlock::File(FileBlock {
+                source: MediaSource::ProviderFile {
+                    provider: PROVIDER,
+                    file_id: "file".into(),
+                },
+                filename: None,
+                mime_type: None,
+            }),
+        ] {
+            assert!(matches!(
+                super::serialize_content(provider, &block, false, None),
+                Err(Error::ProviderMismatch {
+                    expected: ProviderType::Openrouter,
+                    actual: ProviderType::OpenAiCodex
+                })
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_client_rejects_mismatched_history_before_http() {
+        let client = OpenAiResponses::new(
+            "http://127.0.0.1:1/responses",
+            "key",
+            ProviderType::Openrouter,
+        )
+        .unwrap();
+        assert_eq!(client.clone().provider_type(), ProviderType::Openrouter);
+        let history = AgentHistory::new(model());
+        let input = ModelTurnInput::default();
+        let config = RequestConfig::default();
+        assert!(matches!(
+            client.generate(&history, &input, &config).await,
+            Err(Error::ProviderMismatch {
+                expected: ProviderType::Openrouter,
+                actual: ProviderType::OpenAiCodex
+            })
+        ));
+        // Even direct generate_inner calls cannot send a different provider's
+        // history to this client. No HTTP listener is needed for these checks.
+        assert!(matches!(
+            client.generate_inner(&history, &input, &config).await,
+            Err(Error::ProviderMismatch {
+                expected: ProviderType::Openrouter,
+                actual: ProviderType::OpenAiCodex
+            })
+        ));
+    }
+
+    #[test]
     fn constructor_validation_and_clone() {
-        assert!(OpenAiResponses::new("not a URL", "key").is_err());
-        assert!(OpenAiResponses::new("https://example.test/full-endpoint", "bad\nkey").is_err());
-        let client =
-            OpenAiResponses::new("https://example.test/full-endpoint?version=1", "key").unwrap();
+        assert!(OpenAiResponses::new("not a URL", "key", PROVIDER).is_err());
+        assert!(
+            OpenAiResponses::new("https://example.test/full-endpoint", "bad\nkey", PROVIDER)
+                .is_err()
+        );
+        let client = OpenAiResponses::new(
+            "https://example.test/full-endpoint?version=1",
+            "key",
+            PROVIDER,
+        )
+        .unwrap();
         assert_eq!(client.clone().provider_type(), PROVIDER);
     }
 }
