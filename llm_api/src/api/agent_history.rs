@@ -41,7 +41,6 @@ impl AgentHistory {
     /// than silently dropping attachments. Audio IDs require an alternate source.
     /// Callers must re-upload/replace such media before retrying. A tool result
     /// whose entire content would be lost also fails instead of fabricating data.
-    /// The next RequestConfig must use the updated configuration.
     pub fn update_model_config(&mut self, config: ModelConfig) -> Result<(), Error> {
         config.validate()?;
         let changed = self.config.provider != config.provider || self.config.model != config.model;
@@ -75,17 +74,8 @@ pub fn validate_request(
     input: &ModelTurnInput,
     config: &RequestConfig,
 ) -> Result<(), Error> {
-    config.model.validate()?;
     history.config.validate()?;
-    require_provider(provider, config.model.provider)?;
     require_provider(provider, history.config.provider)?;
-    if history.config != config.model {
-        return Err(Error::InvalidConfig {
-            field: "model".into(),
-            message: "request and history configurations differ; call update_model_config first"
-                .into(),
-        });
-    }
     if config.max_output_tokens == Some(0) {
         return Err(Error::InvalidConfig {
             field: "max_output_tokens".into(),
@@ -375,21 +365,15 @@ mod tests {
                 content: vec![text()],
             }))],
         };
-        validate_request(
-            &history,
-            config.provider,
-            &input,
-            &RequestConfig::new(config),
-        )
-        .unwrap();
+        validate_request(&history, config.provider, &input, &RequestConfig::default()).unwrap();
         assert!(history.turns.is_empty());
     }
 
     #[test]
-    fn rejects_mismatched_provider_and_configuration() {
+    fn rejects_mismatched_provider_and_invalid_model() {
         let config = config(ProviderType::OpenAiCodex);
-        let history = AgentHistory::new(config.clone());
-        let mut request = RequestConfig::new(config);
+        let mut history = AgentHistory::new(config);
+        let request = RequestConfig::default();
         assert!(matches!(
             validate_request(
                 &history,
@@ -399,7 +383,7 @@ mod tests {
             ),
             Err(Error::ProviderMismatch { .. })
         ));
-        request.model.effort = Effort::Low;
+        history.config.model.model_slug = " ".into();
         assert!(matches!(
             validate_request(
                 &history,
@@ -415,7 +399,7 @@ mod tests {
     fn checks_tool_definitions_and_choice() {
         let config = config(ProviderType::OpenAiCodex);
         let mut history = AgentHistory::new(config.clone());
-        let mut request = RequestConfig::new(config.clone());
+        let mut request = RequestConfig::default();
         let input = ModelTurnInput::default();
         request.tool_choice = Some(ToolChoice::Required);
         assert!(matches!(
@@ -471,7 +455,7 @@ mod tests {
                 }))],
             )),
         });
-        let request = RequestConfig::new(config.clone());
+        let request = RequestConfig::default();
         assert!(matches!(
             validate_request(
                 &history,
@@ -534,7 +518,7 @@ mod tests {
             &history,
             new.provider,
             &ModelTurnInput::default(),
-            &RequestConfig::new(new),
+            &RequestConfig::default(),
         )
         .unwrap();
     }

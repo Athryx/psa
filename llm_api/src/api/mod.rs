@@ -46,15 +46,15 @@ pub mod types;
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
-use crate::providers::{ModelConfig, ProviderType};
+use crate::providers::ProviderType;
 
 pub use agent_history::{AgentHistory, validate_request};
 pub use types::*;
 
-/// Per-request settings. Unset options use provider/model defaults.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Per-request settings. The model comes from `AgentHistory::config`.
+/// Unset options use provider/model defaults.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RequestConfig {
-    pub model: ModelConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,17 +62,6 @@ pub struct RequestConfig {
     /// Allows multiple tool calls in one response, not concurrent execution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
-}
-
-impl RequestConfig {
-    pub fn new(model: ModelConfig) -> Self {
-        Self {
-            model,
-            max_output_tokens: None,
-            tool_choice: None,
-            parallel_tool_calls: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,7 +86,7 @@ pub trait ApiProvider: Send + Sync {
 
     /// Validates and sends a new request without modifying history.
     /// Success means the HTTP stream is established and `current()` is initialized
-    /// with the requested model and an in-progress outcome. Provider response IDs
+    /// with `history.config` and an in-progress outcome. Provider response IDs
     /// may arrive later and are reported via `TurnEvent::MetadataUpdated`.
     /// Validation failures occur before HTTP; subsequent failures use the stream.
     fn generate(
@@ -156,6 +145,14 @@ pub trait ModelTurnStream: Send {
     /// Subsequent `next_event` calls return `None` without a `Finished` event.
     /// This does not send a server-side cancellation request.
     fn close(&mut self);
+
+    /// Consumes the handle and moves out the accumulated response without cloning.
+    /// If still streaming, performs the same cleanup as `close`, marking the
+    /// output cancelled and retaining partial items/usage. Terminal outcomes are
+    /// preserved. No further events are emitted and no server cancel is sent.
+    fn into_output(self) -> ModelTurnOutput
+    where
+        Self: Sized;
 }
 
 /// Notifications describe changes already applied to `current()`.
