@@ -8,13 +8,6 @@ use serde_json::Value;
 use crate::Error;
 use crate::providers::{ModelConfig, ProviderType};
 
-/// Canonical, editable history and tools available to the next model request.
-#[derive(Debug, Clone, Default)]
-pub struct AgentHistory {
-    pub turns: Vec<ModelTurn>,
-    pub tools: Vec<ToolDefinition>,
-}
-
 /// A function tool the model can request. Execution belongs to the caller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
@@ -27,15 +20,16 @@ pub struct ToolDefinition {
     pub strict: Option<bool>,
 }
 
-/// 1 request response pair in model history
-/// output may be None if response not yet performed
+/// A prior request/response pair retained for replay.
+/// `generate` requires an output with a terminal outcome for each stored turn.
+/// `None` may be used while assembling history but is not valid for replay.
 #[derive(Debug, Clone, Default)]
 pub struct ModelTurn {
     pub input: ModelTurnInput,
     pub output: Option<ModelTurnOutput>,
 }
 
-/// Input turn for model
+/// Only the new items for a single request, not a repeated copy of history.
 #[derive(Debug, Clone, Default)]
 pub struct ModelTurnInput {
     pub items: Vec<HistoryItem>,

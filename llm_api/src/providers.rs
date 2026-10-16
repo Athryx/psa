@@ -57,6 +57,45 @@ pub struct ModelConfig {
     // TODO: openrouter pinning stuff (decide how to represent well)
 }
 
+impl ModelConfig {
+    /// Validate the harness provider prefix and nonempty API model name.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        let slug = self.model.model_slug.as_str();
+        if slug.trim().is_empty() || slug.trim() != slug {
+            return Err(crate::Error::InvalidConfig {
+                field: "model.model_slug".into(),
+                message: "model name must be nonempty and have no surrounding whitespace".into(),
+            });
+        }
+        if let Some((prefix, name)) = slug.split_once('/') {
+            let actual =
+                match prefix {
+                    "openai-codex" => ProviderType::OpenAiCodex,
+                    "openrouter" => ProviderType::Openrouter,
+                    _ => return Err(crate::Error::InvalidConfig {
+                        field: "model.model_slug".into(),
+                        message:
+                            "slash-containing names must start with openai-codex/ or openrouter/"
+                                .into(),
+                    }),
+                };
+            if actual != self.provider {
+                return Err(crate::Error::ProviderMismatch {
+                    expected: self.provider,
+                    actual,
+                });
+            }
+            if name.trim().is_empty() {
+                return Err(crate::Error::InvalidConfig {
+                    field: "model.model_slug".into(),
+                    message: "API model name must be nonempty".into(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Effort, Model};

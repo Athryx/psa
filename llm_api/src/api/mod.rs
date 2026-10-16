@@ -17,7 +17,28 @@
 //! than append the final text a second time. Completed items receive no further
 //! updates. Usage notifications replace reported counts, never increment them;
 //! unreported counts remain `None`.
+//!
+//! # Request validation
+//!
+//! Before sending HTTP, adapters must validate the history, new input, tool
+//! definitions, and request configuration. Reject duplicate/empty tool names,
+//! invalid parameter schemas, missing forced tools, required tools with an
+//! empty tool list, zero output-token limits, and model/provider mismatches.
+//! Reject malformed tool-call/result relationships (missing, duplicate, or
+//! unresolved calls), and history containing nonterminal outputs. Do not require
+//! historical tool names to remain in the current tool list.
+//!
+//! Unsupported settings, content, or provider-specific replay state must return
+//! an explicit error, never be silently dropped. Validate what is knowable
+//! locally; provider-side schema/capability validation may still reject requests.
+//!
+//! History contains prior input/output pairs, each input holding only new items
+//! for that request. Serialize those pairs in order, then append the separately
+//! supplied new input exactly once. Incomplete/cancelled/failed output may be
+//! replayed only if structurally valid for the target API; otherwise the caller
+//! must repair or remove it. Never execute a partial tool call during replay.
 
+pub mod agent_history;
 mod openai_completions;
 mod openai_responses;
 pub mod types;
@@ -25,8 +46,9 @@ pub mod types;
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
-use crate::providers::ModelConfig;
+use crate::providers::{ModelConfig, ProviderType};
 
+pub use agent_history::{AgentHistory, validate_request};
 pub use types::*;
 
 /// Per-request settings. Unset options use provider/model defaults.
@@ -64,16 +86,41 @@ pub enum ToolChoice {
     },
 }
 
-pub trait ApiProvider {
-    /// Owned stream with provider-specific parsing and response accumulation.
-    /// It must not borrow the provider, history, or request configuration.
-    type Stream: ModelTurnStream;
+/// Providers support use from multithreaded executors; generation futures are Send.
+pub trait ApiProvider: Send + Sync {
+    /// Owned, Send stream with provider-specific parsing and accumulation.
+    /// It must not borrow the provider, history, input, or request configuration.
+    type Stream: ModelTurnStream + 'static;
 
-    async fn generate(
+    /// Provider served by this client instance.
+    fn provider_type(&self) -> ProviderType;
+
+    /// Validates and sends a new request without modifying history.
+    /// Success means the HTTP stream is established and `current()` is initialized
+    /// with the requested model and an in-progress outcome. Provider response IDs
+    /// may arrive later and are reported via `TurnEvent::MetadataUpdated`.
+    /// Validation failures occur before HTTP; subsequent failures use the stream.
+    fn generate(
         &self,
         history: &AgentHistory,
+        input: &ModelTurnInput,
         config: &RequestConfig,
-    ) -> Result<Self::Stream, Error>;
+    ) -> impl std::future::Future<Output = Result<Self::Stream, Error>> + Send {
+        async move {
+            validate_request(history, self.provider_type(), input, config)?;
+            self.generate_inner(history, input, config).await
+        }
+    }
+
+    /// Implement adapter-specific validation, serialization, and HTTP setup.
+    /// Called by `generate` only after common validation. Implementors should
+    /// override this method, not `generate`; direct calls bypass common checks.
+    fn generate_inner(
+        &self,
+        history: &AgentHistory,
+        input: &ModelTurnInput,
+        config: &RequestConfig,
+    ) -> impl std::future::Future<Output = Result<Self::Stream, Error>> + Send;
 }
 
 /// Provider-specific streaming response handle.
@@ -84,7 +131,8 @@ pub trait ApiProvider {
 /// dropping nor closing guarantees immediate server-side cancellation or stops
 /// billing for work already performed. Background jobs require separate
 /// provider-specific server cancellation.
-pub trait ModelTurnStream {
+/// Handles and their polling futures must be Send; handles need not be Sync.
+pub trait ModelTurnStream: Send {
     /// Latest accumulated response, including any partial output.
     fn current(&self) -> &ModelTurnOutput;
 
@@ -98,7 +146,9 @@ pub trait ModelTurnStream {
     /// Must be cancellation-safe: dropping this future must not lose buffered
     /// bytes, pending events, or state changes. Parser state belongs to the
     /// handle, so polling again resumes without skipped or duplicated updates.
-    async fn next_event(&mut self) -> Option<Result<TurnEvent, Error>>;
+    fn next_event(
+        &mut self,
+    ) -> impl std::future::Future<Output = Option<Result<TurnEvent, Error>>> + Send;
 
     /// Immediately stops local streaming and releases the HTTP response.
     /// Idempotent. Preserves partial items and usage. If still in progress,
@@ -111,8 +161,6 @@ pub trait ModelTurnStream {
 /// Notifications describe changes already applied to `current()`.
 #[derive(Debug, Clone)]
 pub enum TurnEvent {
-    /// Provider response identity/start metadata is available in the snapshot.
-    ResponseStarted,
     /// The item already exists. Tool calls have a complete name and call ID.
     ItemAdded {
         index: usize,
@@ -127,6 +175,7 @@ pub enum TurnEvent {
     },
     /// Usage is an updated snapshot, not a token-count increment.
     UsageUpdated,
+    /// Response metadata changed, including a newly available provider response ID.
     MetadataUpdated,
     /// Terminal outcome, including incomplete, failed, or cancelled responses.
     Finished,

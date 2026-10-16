@@ -5,12 +5,35 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::providers::ProviderType;
+
 /// Errors are normalized to owned data so they can be cloned into response
 /// state and serialized. Conversions retain messages, not native error sources.
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
 pub enum Error {
     #[error("invalid request: {message}")]
     InvalidRequest { message: String },
+
+    #[error("invalid request setting {field}: {message}")]
+    InvalidConfig { field: String, message: String },
+
+    #[error("duplicate tool name: {name}")]
+    DuplicateToolName { name: String },
+
+    #[error("invalid tool definition {name}: {message}")]
+    InvalidToolDefinition { name: String, message: String },
+
+    #[error("requested tool is not defined: {name}")]
+    UnknownTool { name: String },
+
+    #[error("invalid history or input: {message}")]
+    InvalidHistory { message: String },
+
+    #[error("provider mismatch: expected {expected:?}, got {actual:?}")]
+    ProviderMismatch {
+        expected: ProviderType,
+        actual: ProviderType,
+    },
 
     #[error("unsupported feature: {feature}")]
     Unsupported { feature: String },
