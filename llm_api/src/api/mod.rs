@@ -39,9 +39,14 @@
 //! must repair or remove it. Never execute a partial tool call during replay.
 
 pub mod agent_history;
-mod openai_completions;
-mod openai_responses;
+pub mod openai_completions;
+pub mod openai_responses;
+mod schema;
+mod transport;
 pub mod types;
+
+#[cfg(test)]
+mod tests;
 
 use serde::{Deserialize, Serialize};
 
@@ -49,6 +54,8 @@ use crate::Error;
 use crate::providers::ProviderType;
 
 pub use agent_history::{AgentHistory, validate_request};
+pub use openai_completions::{OpenAiCompletions, OpenAiCompletionsStream};
+pub use openai_responses::{OpenAiResponses, OpenAiResponsesStream};
 pub use types::*;
 
 /// Per-request settings. The model comes from `AgentHistory::config`.

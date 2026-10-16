@@ -95,14 +95,9 @@ pub fn validate_request(
                 name: tool.name.clone(),
             });
         }
-        // Full schema validation is adapter-specific; require an object here
-        // without restricting valid schemas using $ref, allOf, etc.
-        if !tool.parameters.is_object() {
-            return Err(Error::InvalidToolDefinition {
-                name: tool.name.clone(),
-                message: "parameters must be a JSON Schema object".into(),
-            });
-        }
+        // Check structural errors without restricting valid schemas using $ref,
+        // allOf, etc. Full dialect/model validation remains provider-specific.
+        super::schema::validate_tool(tool)?;
     }
     match &config.tool_choice {
         Some(ToolChoice::Function { name }) if !names.contains(name.as_str()) => {
@@ -179,13 +174,11 @@ impl ToolCalls {
                     }
                     self.pending.insert(call.call_id.clone());
                 }
-                HistoryItemKind::ToolResult(result) => {
-                    if !self.pending.remove(&result.call_id) {
-                        return Err(invalid_history(format!(
-                            "unmatched or duplicate tool result {}",
-                            result.call_id
-                        )));
-                    }
+                HistoryItemKind::ToolResult(result) if !self.pending.remove(&result.call_id) => {
+                    return Err(invalid_history(format!(
+                        "unmatched or duplicate tool result {}",
+                        result.call_id
+                    )));
                 }
                 _ => {}
             }
