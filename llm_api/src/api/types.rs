@@ -5,40 +5,67 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::Error;
 use crate::providers::{ModelConfig, ProviderType};
 
-pub trait ApiProvider {}
-
-/// Canonical, editable history. Ranges use indices into `items`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Canonical, editable history and tools available to the next model request.
+#[derive(Debug, Clone, Default)]
 pub struct AgentHistory {
-    pub items: Vec<HistoryItem>,
-    pub exchanges: Vec<ModelExchange>,
-    /// Editing history invalidates checkpoints that depend on the edited items.
-    pub checkpoints: Vec<ContinuationCheckpoint>,
+    pub turns: Vec<ModelTurn>,
+    pub tools: Vec<ToolDefinition>,
 }
 
-/// One API request/response exchange, not an entire agent tool loop.
+/// A function tool the model can request. Execution belongs to the caller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelExchange {
-    /// History supplied to the model, including any prior conversation.
-    pub input: std::ops::Range<usize>,
-    /// Items appended by this response.
-    pub output: std::ops::Range<usize>,
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema describing the tool's argument object.
+    pub parameters: Value,
+    /// Whether to require strict schema adherence. None uses provider defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
+}
+
+/// 1 request response pair in model history
+/// output may be None if response not yet performed
+#[derive(Debug, Clone, Default)]
+pub struct ModelTurn {
+    pub input: ModelTurnInput,
+    pub output: Option<ModelTurnOutput>,
+}
+
+/// Input turn for model
+#[derive(Debug, Clone, Default)]
+pub struct ModelTurnInput {
+    pub items: Vec<HistoryItem>,
+}
+
+/// One API response
+#[derive(Debug, Clone)]
+pub struct ModelTurnOutput {
+    /// Model config which returned the request
     pub config: ModelConfig,
     pub response_id: Option<String>,
     pub outcome: Outcome,
+    pub items: Vec<HistoryItem>,
     pub usage: Usage,
+    /// Extra fields provider adds
     pub provider_metadata: ProviderMetadata,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContinuationCheckpoint {
-    pub provider: ProviderType,
-    /// Exclusive end of the history prefix represented by this checkpoint.
-    pub history_end: usize,
-    /// Provider response/conversation IDs and other continuation state.
-    pub state: Value,
+impl ModelTurnOutput {
+    /// Initial default state before data starts streaming in
+    pub fn default_for_model(config: ModelConfig) -> Self {
+        Self {
+            config,
+            response_id: None,
+            outcome: Outcome::InProgress,
+            items: Vec::new(),
+            usage: Usage::default(),
+            provider_metadata: ProviderMetadata::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,9 +222,11 @@ pub enum MediaSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Outcome {
+    // used when response is still streaming
+    InProgress,
     Completed { reason: StopReason },
     Incomplete { reason: StopReason },
-    Failed(ApiError),
+    Failed(Error),
     Cancelled,
 }
 
@@ -209,13 +238,6 @@ pub enum StopReason {
     TokenLimit,
     ContentFilter,
     Other(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiError {
-    pub code: Option<String>,
-    pub message: String,
-    pub provider_metadata: ProviderMetadata,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

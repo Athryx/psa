@@ -1,4 +1,5 @@
-mod api;
-mod openai_completions;
-mod openai_responses;
-mod providers;
+pub mod api;
+pub mod error;
+pub mod providers;
+
+pub use error::Error;

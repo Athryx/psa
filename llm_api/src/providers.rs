@@ -13,9 +13,14 @@ pub struct Model {
 }
 
 impl Model {
-    /// Returns name we would submit to api
+    /// Strip the harness provider prefix, preserving the remaining model path.
+    /// For example, `openrouter/anthropic/claude-sonnet-4` becomes
+    /// `anthropic/claude-sonnet-4`. Unprefixed names are returned unchanged.
     pub fn api_name(&self) -> String {
-        todo!()
+        self.model_slug
+            .split_once('/')
+            .map_or(self.model_slug.as_str(), |(_, name)| name)
+            .to_owned()
     }
 }
 
@@ -24,7 +29,8 @@ pub enum Effort {
     Low,
     Medium,
     High,
-    Xhixh,
+    #[serde(alias = "Xhixh")]
+    Xhigh,
     Max,
 }
 
@@ -34,7 +40,7 @@ impl Effort {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
-            Self::Xhixh => "xhigh",
+            Self::Xhigh => "xhigh",
             Self::Max => "max",
         }
     }
@@ -49,4 +55,36 @@ pub struct ModelConfig {
     // but in modern llm, they often trained for specific defaults
     // and this can mess them up changing it
     // TODO: openrouter pinning stuff (decide how to represent well)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Effort, Model};
+
+    #[test]
+    fn api_name_strips_only_the_provider_prefix() {
+        for (slug, expected) in [
+            ("openai-codex/gpt-5", "gpt-5"),
+            (
+                "openrouter/anthropic/claude-sonnet-4",
+                "anthropic/claude-sonnet-4",
+            ),
+            ("gpt-5", "gpt-5"),
+        ] {
+            let model = Model {
+                model_slug: slug.into(),
+            };
+            assert_eq!(model.api_name(), expected);
+        }
+    }
+
+    #[test]
+    fn xhigh_keeps_its_api_spelling_and_reads_the_old_variant() {
+        assert_eq!(Effort::Xhigh.as_str(), "xhigh");
+        assert_eq!(
+            serde_json::from_str::<Effort>("\"Xhixh\"").unwrap(),
+            Effort::Xhigh
+        );
+        assert_eq!(serde_json::to_string(&Effort::Xhigh).unwrap(), "\"Xhigh\"");
+    }
 }
