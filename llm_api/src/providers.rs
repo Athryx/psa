@@ -41,7 +41,6 @@ pub enum Effort {
     Low,
     Medium,
     High,
-    #[serde(alias = "Xhixh")]
     Xhigh,
     Max,
 }
