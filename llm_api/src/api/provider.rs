@@ -26,6 +26,7 @@ impl Provider {
     pub fn new(provider: ProviderType, api_key: impl Into<String>) -> Result<Self, Error> {
         let api_key = api_key.into();
         let base_url = provider.api_base_url();
+
         match provider {
             ProviderType::OpenAiCodex => Ok(Self::Responses(OpenAiResponses::new(
                 format!("{base_url}/responses"),
@@ -119,6 +120,7 @@ mod tests {
         let codex = Provider::new(ProviderType::OpenAiCodex, "token").unwrap();
         assert!(matches!(codex, Provider::Responses(_)));
         assert_eq!(codex.clone().provider_type(), ProviderType::OpenAiCodex);
+
         let router = Provider::new(ProviderType::Openrouter, "key").unwrap();
         assert!(matches!(router, Provider::Completions(_)));
         assert_eq!(router.clone().provider_type(), ProviderType::Openrouter);
@@ -147,6 +149,7 @@ mod tests {
                 model: Model::new("test-model").unwrap(),
                 effort: Effort::Medium,
             });
+
             assert!(
                 matches!(client.generate(&history, &ModelTurnInput::default(), &RequestConfig::default()).await,
                 Err(Error::ProviderMismatch { expected, actual }) if expected == provider && actual == other)

@@ -7,7 +7,7 @@ use crate::providers::{ModelConfig, ProviderType};
 
 use super::{
     ContentBlock, HistoryItem, HistoryItemKind, HistoryItemMetadata, MediaSource, ModelTurn,
-    ModelTurnInput, Outcome, RequestConfig, ToolChoice, ToolDefinition,
+    ModelTurnInput, Outcome, RequestConfig, ToolCall, ToolChoice, ToolDefinition,
 };
 
 /// Prior input/output pairs and tools available to the next request.
@@ -44,6 +44,7 @@ impl AgentHistory {
     pub fn update_model_config(&mut self, config: ModelConfig) -> Result<(), Error> {
         let changed = self.config.provider != config.provider || self.config.model != config.model;
         let mut converted = self.clone();
+
         if changed {
             for turn in &mut converted.turns {
                 convert_items(&mut turn.input.items, config.provider)?;
@@ -52,6 +53,7 @@ impl AgentHistory {
                 }
             }
         }
+
         for turn in &converted.turns {
             validate_provider_items(&turn.input.items, config.provider)?;
             if let Some(output) = &turn.output {
@@ -60,6 +62,7 @@ impl AgentHistory {
         }
         converted.config = config;
         *self = converted;
+
         Ok(())
     }
 }
@@ -80,8 +83,14 @@ pub fn validate_request(
             message: "must be greater than zero".into(),
         });
     }
+
+    validate_tools(&history.tools, config.tool_choice.as_ref())?;
+    validate_turns(&history.turns, provider, input)
+}
+
+fn validate_tools(tools: &[ToolDefinition], choice: Option<&ToolChoice>) -> Result<(), Error> {
     let mut names = HashSet::new();
-    for tool in &history.tools {
+    for tool in tools {
         if tool.name.trim().is_empty() || tool.name.trim() != tool.name {
             return Err(Error::InvalidToolDefinition {
                 name: tool.name.clone(),
@@ -93,11 +102,13 @@ pub fn validate_request(
                 name: tool.name.clone(),
             });
         }
+
         // Check structural errors without restricting valid schemas using $ref,
         // allOf, etc. Full dialect/model validation remains provider-specific.
         super::schema::validate_tool(tool)?;
     }
-    match &config.tool_choice {
+
+    match choice {
         Some(ToolChoice::Function { name }) if !names.contains(name.as_str()) => {
             return Err(Error::UnknownTool { name: name.clone() });
         }
@@ -109,8 +120,17 @@ pub fn validate_request(
         }
         _ => {}
     }
+
+    Ok(())
+}
+
+fn validate_turns(
+    turns: &[ModelTurn],
+    provider: ProviderType,
+    input: &ModelTurnInput,
+) -> Result<(), Error> {
     let mut calls = ToolCalls::default();
-    for (index, turn) in history.turns.iter().enumerate() {
+    for (index, turn) in turns.iter().enumerate() {
         let output = turn
             .output
             .as_ref()
@@ -120,12 +140,14 @@ pub fn validate_request(
                 "turn {index} is still in progress"
             )));
         }
+
         validate_provider_items(&turn.input.items, provider)?;
         calls.scan(&turn.input.items)?;
         calls.require_resolved()?;
         validate_provider_items(&output.items, provider)?;
         calls.scan(&output.items)?;
     }
+
     validate_provider_items(&input.items, provider)?;
     calls.scan(&input.items)?;
     calls.require_resolved()
@@ -154,24 +176,7 @@ impl ToolCalls {
     fn scan(&mut self, items: &[HistoryItem]) -> Result<(), Error> {
         for item in items {
             match &item.kind {
-                HistoryItemKind::ToolCall(call) => {
-                    if call.call_id.is_empty() || call.name.trim().is_empty() {
-                        return Err(invalid_history("tool calls require a name and call ID"));
-                    }
-                    if matches!(
-                        item.metadata.item_status.as_deref(),
-                        Some("in_progress" | "incomplete")
-                    ) {
-                        return Err(invalid_history("cannot replay an unfinished tool call"));
-                    }
-                    if !self.seen.insert(call.call_id.clone()) {
-                        return Err(invalid_history(format!(
-                            "duplicate tool call ID {}",
-                            call.call_id
-                        )));
-                    }
-                    self.pending.insert(call.call_id.clone());
-                }
+                HistoryItemKind::ToolCall(call) => self.record_call(call, &item.metadata)?,
                 HistoryItemKind::ToolResult(result) if !self.pending.remove(&result.call_id) => {
                     return Err(invalid_history(format!(
                         "unmatched or duplicate tool result {}",
@@ -181,6 +186,32 @@ impl ToolCalls {
                 _ => {}
             }
         }
+        Ok(())
+    }
+
+    fn record_call(
+        &mut self,
+        call: &ToolCall,
+        metadata: &HistoryItemMetadata,
+    ) -> Result<(), Error> {
+        if call.call_id.is_empty() || call.name.trim().is_empty() {
+            return Err(invalid_history("tool calls require a name and call ID"));
+        }
+        if matches!(
+            metadata.item_status.as_deref(),
+            Some("in_progress" | "incomplete")
+        ) {
+            return Err(invalid_history("cannot replay an unfinished tool call"));
+        }
+
+        if !self.seen.insert(call.call_id.clone()) {
+            return Err(invalid_history(format!(
+                "duplicate tool call ID {}",
+                call.call_id
+            )));
+        }
+        self.pending.insert(call.call_id.clone());
+
         Ok(())
     }
 
@@ -248,6 +279,7 @@ fn validate_provider_items(items: &[HistoryItem], provider: ProviderType) -> Res
 
 fn convert_content(content: &mut Vec<ContentBlock>, provider: ProviderType) -> Result<(), Error> {
     content.retain(|block| !matches!(block, ContentBlock::ProviderContent(_)));
+
     for block in content {
         match block {
             ContentBlock::Text(text) => text.annotations.clear(),
@@ -271,32 +303,41 @@ fn convert_items(items: &mut Vec<HistoryItem>, provider: ProviderType) -> Result
             HistoryItemKind::Reasoning(_) | HistoryItemKind::ProviderItem(_)
         )
     });
+
     for item in items.iter_mut() {
-        match &mut item.kind {
-            HistoryItemKind::Message(message) => convert_content(&mut message.content, provider)?,
-            HistoryItemKind::ToolResult(result) => {
-                let was_empty = result.content.is_empty();
-                convert_content(&mut result.content, provider)?;
-                if !was_empty && result.content.is_empty() {
-                    return Err(Error::Unsupported {
-                        feature: "model switching would erase an entire tool result".into(),
-                    });
-                }
-            }
-            _ => {}
-        }
-        // An incomplete native call must not become valid by losing its status.
-        if matches!(item.kind, HistoryItemKind::ToolCall(_))
-            && matches!(
-                item.metadata.item_status.as_deref(),
-                Some("in_progress" | "incomplete")
-            )
-        {
-            return Err(invalid_history("cannot convert an unfinished tool call"));
-        }
-        item.metadata = HistoryItemMetadata::default();
+        convert_item(item, provider)?;
     }
+
     items.retain(|item| !matches!(&item.kind, HistoryItemKind::Message(message) if message.content.is_empty()));
+    Ok(())
+}
+
+fn convert_item(item: &mut HistoryItem, provider: ProviderType) -> Result<(), Error> {
+    match &mut item.kind {
+        HistoryItemKind::Message(message) => convert_content(&mut message.content, provider)?,
+        HistoryItemKind::ToolResult(result) => {
+            let was_empty = result.content.is_empty();
+            convert_content(&mut result.content, provider)?;
+            if !was_empty && result.content.is_empty() {
+                return Err(Error::Unsupported {
+                    feature: "model switching would erase an entire tool result".into(),
+                });
+            }
+        }
+        _ => {}
+    }
+
+    // An incomplete native call must not become valid by losing its status.
+    if matches!(item.kind, HistoryItemKind::ToolCall(_))
+        && matches!(
+            item.metadata.item_status.as_deref(),
+            Some("in_progress" | "incomplete")
+        )
+    {
+        return Err(invalid_history("cannot convert an unfinished tool call"));
+    }
+    item.metadata = HistoryItemMetadata::default();
+
     Ok(())
 }
 

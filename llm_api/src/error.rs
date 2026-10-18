@@ -68,6 +68,7 @@ impl From<reqwest::Error> for Error {
         // Avoid retaining credentials or sensitive query parameters in URLs.
         let error = error.without_url();
         let message = error.to_string();
+
         if let Some(status) = error.status() {
             Self::Http {
                 status: status.as_u16(),
@@ -107,6 +108,7 @@ mod tests {
         };
         let json = serde_json::to_string(&error).unwrap();
         let restored: Error = serde_json::from_str(&json).unwrap();
+
         assert_eq!(error.to_string(), restored.to_string());
         assert!(matches!(
             restored,

@@ -53,8 +53,10 @@ impl ApiProvider for OpenAiResponses {
         config: &RequestConfig,
     ) -> Result<Self::Stream, Error> {
         same_provider(self.provider, history.config.provider)?;
+
         let body = request_body(history, input, config)?;
         let response = self.client.post(&body).await?;
+
         Ok(OpenAiResponsesStream {
             inner: StreamingResponse::new(
                 response,
@@ -98,6 +100,7 @@ fn same_provider(expected: ProviderType, actual: ProviderType) -> Result<(), Err
     if actual != expected {
         return Err(Error::ProviderMismatch { expected, actual });
     }
+
     Ok(())
 }
 
@@ -112,22 +115,9 @@ fn request_body(
     for tool in &history.tools {
         super::schema::validate_tool(tool)?;
     }
-    let provider = history.config.provider;
-    let mut items = Vec::new();
-    for turn in &history.turns {
-        for item in &turn.input.items {
-            items.push(serialize_item(provider, item)?);
-        }
-        let output = turn.output.as_ref().ok_or_else(|| Error::InvalidHistory {
-            message: "cannot replay a turn without output".into(),
-        })?;
-        for item in &output.items {
-            items.push(serialize_item(provider, item)?);
-        }
-    }
-    for item in &input.items {
-        items.push(serialize_item(provider, item)?);
-    }
+
+    let items = request_items(history, input)?;
+
     let mut body = json!({
         "model": history.config.model.api_name,
         "input": items,
@@ -136,6 +126,7 @@ fn request_body(
         "include": ["reasoning.encrypted_content"],
         "reasoning": {"effort": history.config.effort.as_str()},
     });
+
     if let Some(limit) = config.max_output_tokens {
         body["max_output_tokens"] = json!(limit);
     }
@@ -150,27 +141,51 @@ fn request_body(
             ToolChoice::Function { name } => json!({"type":"function", "name":name}),
         };
     }
+
     if !history.tools.is_empty() {
-        body["tools"] = Value::Array(
-            history
-                .tools
-                .iter()
-                .map(|tool| {
-                    let mut value = json!({
-                        "type": "function",
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
-                    });
-                    if let Some(strict) = tool.strict {
-                        value["strict"] = json!(strict);
-                    }
-                    value
-                })
-                .collect(),
-        );
+        body["tools"] = Value::Array(history.tools.iter().map(serialize_tool).collect());
     }
+
     Ok(body)
+}
+
+fn request_items(history: &AgentHistory, input: &ModelTurnInput) -> Result<Vec<Value>, Error> {
+    let provider = history.config.provider;
+    let mut items = Vec::new();
+
+    for turn in &history.turns {
+        for item in &turn.input.items {
+            items.push(serialize_item(provider, item)?);
+        }
+
+        let output = turn.output.as_ref().ok_or_else(|| Error::InvalidHistory {
+            message: "cannot replay a turn without output".into(),
+        })?;
+        for item in &output.items {
+            items.push(serialize_item(provider, item)?);
+        }
+    }
+
+    for item in &input.items {
+        items.push(serialize_item(provider, item)?);
+    }
+
+    Ok(items)
+}
+
+fn serialize_tool(tool: &ToolDefinition) -> Value {
+    let mut value = json!({
+        "type": "function",
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.parameters,
+    });
+
+    if let Some(strict) = tool.strict {
+        value["strict"] = json!(strict);
+    }
+
+    value
 }
 
 fn raw_item(item: &HistoryItem) -> Result<Value, Error> {
@@ -192,66 +207,10 @@ fn native(value: &Value, expected_type: &str) -> Result<Value, Error> {
 
 fn serialize_item(provider: ProviderType, item: &HistoryItem) -> Result<Value, Error> {
     let mut value = raw_item(item)?;
+
     match &item.kind {
         HistoryItemKind::Message(message) => {
-            // Portable/converted assistant messages use EasyInputMessage,
-            // whose content is input_text. OutputMessage (output_text/refusal)
-            // is only valid with a real provider id and status envelope.
-            let native_output = message.role == Role::Assistant
-                && item
-                    .metadata
-                    .item_id
-                    .as_deref()
-                    .or_else(|| value.get("id").and_then(Value::as_str))
-                    .is_some_and(|id| !id.is_empty())
-                && item
-                    .metadata
-                    .item_status
-                    .as_deref()
-                    .or_else(|| value.get("status").and_then(Value::as_str))
-                    .is_some();
-            if message.role == Role::Assistant
-                && !native_output
-                && (item.metadata.item_id.is_some()
-                    || item.metadata.item_status.is_some()
-                    || value.get("id").is_some()
-                    || value.get("status").is_some())
-            {
-                return Err(unsupported(
-                    "assistant output-message replay requires both native id and status",
-                ));
-            }
-            let prior = value.get("content").and_then(Value::as_array);
-            let content = message
-                .content
-                .iter()
-                .enumerate()
-                .map(|(index, block)| {
-                    if message.role == Role::Assistant
-                        && !native_output
-                        && let ContentBlock::Refusal(refusal) = block
-                    {
-                        // EasyInputMessage has no refusal part: preserve its
-                        // exact visible text as input_text on portable replay.
-                        // The normalized history still retains RefusalBlock.
-                        return Ok(json!({"type":"input_text","text":refusal.text}));
-                    }
-                    serialize_content(
-                        provider,
-                        block,
-                        native_output,
-                        prior.and_then(|v| v.get(index)),
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            value["type"] = json!("message");
-            value["role"] = json!(match message.role {
-                Role::System => "system",
-                Role::Developer => "developer",
-                Role::User => "user",
-                Role::Assistant => "assistant",
-            });
-            value["content"] = Value::Array(content);
+            serialize_message(provider, &item.metadata, message, &mut value)?;
         }
         HistoryItemKind::ToolCall(call) => {
             if matches!(
@@ -262,6 +221,7 @@ fn serialize_item(provider: ProviderType, item: &HistoryItem) -> Result<Value, E
                     message: "cannot replay an unfinished function call".into(),
                 });
             }
+
             // arguments is a wire string, not a parsed JSON value. A completed
             // call containing malformed JSON can be replayed with a tool error
             // so the model can recover; it must not be repaired here.
@@ -285,62 +245,14 @@ fn serialize_item(provider: ProviderType, item: &HistoryItem) -> Result<Value, E
             // is_error is a harness flag, not a separate Responses wire field.
         }
         HistoryItemKind::Reasoning(reasoning) => {
-            if item
-                .metadata
-                .item_id
-                .as_deref()
-                .or_else(|| value.get("id").and_then(Value::as_str))
-                .is_none_or(str::is_empty)
-            {
-                return Err(unsupported(
-                    "reasoning replay requires a native Responses item id",
-                ));
-            }
-            if reasoning.opaque_state.is_none() {
-                return Err(unsupported(
-                    "stateless reasoning replay requires encrypted_content",
-                ));
-            }
-            value["type"] = json!("reasoning");
-            let prior = value.get("summary").and_then(Value::as_array);
-            let summary = reasoning
-                .summary
-                .iter()
-                .enumerate()
-                .map(|(index, text)| {
-                    let mut part = prior
-                        .and_then(|v| v.get(index))
-                        .filter(|v| v.is_object())
-                        .cloned()
-                        .unwrap_or_else(|| json!({}));
-                    part["type"] = json!("summary_text");
-                    part["text"] = json!(text);
-                    part
-                })
-                .collect();
-            value["summary"] = Value::Array(summary);
-            value.as_object_mut().unwrap().remove("encrypted_content");
-            if let Some(state) = &reasoning.opaque_state {
-                same_provider(provider, state.provider)?;
-                let encrypted = if state.data.is_string() {
-                    &state.data
-                } else {
-                    state
-                        .data
-                        .get("encrypted_content")
-                        .filter(|v| v.is_string())
-                        .ok_or_else(|| {
-                            unsupported("reasoning state without Responses encrypted_content")
-                        })?
-                };
-                value["encrypted_content"] = encrypted.clone();
-            }
+            serialize_reasoning(provider, &item.metadata, reasoning, &mut value)?;
         }
         HistoryItemKind::ProviderItem(item) => {
             same_provider(provider, item.provider)?;
             value = native(&item.raw, &item.item_type)?;
         }
     }
+
     let object = value.as_object_mut().unwrap();
     if let Some(id) = &item.metadata.item_id {
         object.insert("id".into(), json!(id));
@@ -348,6 +260,7 @@ fn serialize_item(provider: ProviderType, item: &HistoryItem) -> Result<Value, E
     if let Some(status) = &item.metadata.item_status {
         object.insert("status".into(), json!(status));
     }
+
     Ok(value)
 }
 
@@ -362,6 +275,7 @@ fn serialize_content(
             for annotation in &text.annotations {
                 same_provider(provider, annotation.provider)?;
             }
+
             let kind = if assistant {
                 "output_text"
             } else {
@@ -373,6 +287,7 @@ fn serialize_content(
                 .unwrap_or_else(|| json!({}));
             value["type"] = json!(kind);
             value["text"] = json!(text.text);
+
             if assistant {
                 value["annotations"] =
                     Value::Array(text.annotations.iter().map(|a| a.raw.clone()).collect());
@@ -392,62 +307,8 @@ fn serialize_content(
             value["refusal"] = json!(refusal.text);
             Ok(value)
         }
-        ContentBlock::Image(image) if !assistant => {
-            let mut value = json!({"type":"input_image"});
-            match &image.source {
-                MediaSource::Url(url) => value["image_url"] = json!(url),
-                MediaSource::Inline { mime_type, data } => {
-                    if !mime_type.starts_with("image/") {
-                        return Err(unsupported(
-                            "Responses image data requires an image MIME type",
-                        ));
-                    }
-                    value["image_url"] = json!(data_url(mime_type, data));
-                }
-                MediaSource::ProviderFile {
-                    provider: actual,
-                    file_id,
-                } => {
-                    same_provider(provider, *actual)?;
-                    value["file_id"] = json!(file_id);
-                }
-            }
-            if let Some(detail) = image.detail {
-                value["detail"] = json!(match detail {
-                    ImageDetail::Auto => "auto",
-                    ImageDetail::Low => "low",
-                    ImageDetail::High => "high",
-                });
-            }
-            Ok(value)
-        }
-        ContentBlock::File(file) if !assistant => {
-            let mut value = json!({"type":"input_file"});
-            match &file.source {
-                MediaSource::Url(url) => value["file_url"] = json!(url),
-                MediaSource::Inline { mime_type, data } => {
-                    if file
-                        .mime_type
-                        .as_ref()
-                        .is_some_and(|hint| hint != mime_type)
-                    {
-                        return Err(unsupported("conflicting inline file MIME types"));
-                    }
-                    value["file_data"] = json!(data_url(mime_type, data));
-                }
-                MediaSource::ProviderFile {
-                    provider: actual,
-                    file_id,
-                } => {
-                    same_provider(provider, *actual)?;
-                    value["file_id"] = json!(file_id);
-                }
-            }
-            if let Some(filename) = &file.filename {
-                value["filename"] = json!(filename);
-            }
-            Ok(value)
-        }
+        ContentBlock::Image(image) if !assistant => serialize_image(provider, image),
+        ContentBlock::File(file) if !assistant => serialize_file(provider, file),
         ContentBlock::ProviderContent(content) => {
             same_provider(provider, content.provider)?;
             native(&content.raw, &content.content_type)
@@ -458,6 +319,194 @@ fn serialize_content(
             "image/file content in assistant Responses messages",
         )),
     }
+}
+
+fn serialize_message(
+    provider: ProviderType,
+    metadata: &HistoryItemMetadata,
+    message: &Message,
+    value: &mut Value,
+) -> Result<(), Error> {
+    // Portable/converted assistant messages use EasyInputMessage,
+    // whose content is input_text. OutputMessage (output_text/refusal)
+    // is only valid with a real provider id and status envelope.
+    let native_output = message.role == Role::Assistant
+        && metadata
+            .item_id
+            .as_deref()
+            .or_else(|| value.get("id").and_then(Value::as_str))
+            .is_some_and(|id| !id.is_empty())
+        && metadata
+            .item_status
+            .as_deref()
+            .or_else(|| value.get("status").and_then(Value::as_str))
+            .is_some();
+    if message.role == Role::Assistant
+        && !native_output
+        && (metadata.item_id.is_some()
+            || metadata.item_status.is_some()
+            || value.get("id").is_some()
+            || value.get("status").is_some())
+    {
+        return Err(unsupported(
+            "assistant output-message replay requires both native id and status",
+        ));
+    }
+
+    let prior = value.get("content").and_then(Value::as_array);
+    let content = message
+        .content
+        .iter()
+        .enumerate()
+        .map(|(index, block)| {
+            if message.role == Role::Assistant
+                && !native_output
+                && let ContentBlock::Refusal(refusal) = block
+            {
+                // EasyInputMessage has no refusal part: preserve its
+                // exact visible text as input_text on portable replay.
+                // The normalized history still retains RefusalBlock.
+                return Ok(json!({"type":"input_text","text":refusal.text}));
+            }
+
+            serialize_content(
+                provider,
+                block,
+                native_output,
+                prior.and_then(|v| v.get(index)),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    value["type"] = json!("message");
+    value["role"] = json!(match message.role {
+        Role::System => "system",
+        Role::Developer => "developer",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+    });
+    value["content"] = Value::Array(content);
+
+    Ok(())
+}
+
+fn serialize_reasoning(
+    provider: ProviderType,
+    metadata: &HistoryItemMetadata,
+    reasoning: &Reasoning,
+    value: &mut Value,
+) -> Result<(), Error> {
+    if metadata
+        .item_id
+        .as_deref()
+        .or_else(|| value.get("id").and_then(Value::as_str))
+        .is_none_or(str::is_empty)
+    {
+        return Err(unsupported(
+            "reasoning replay requires a native Responses item id",
+        ));
+    }
+
+    let state = reasoning
+        .opaque_state
+        .as_ref()
+        .ok_or_else(|| unsupported("stateless reasoning replay requires encrypted_content"))?;
+
+    value["type"] = json!("reasoning");
+    let prior = value.get("summary").and_then(Value::as_array);
+    let summary = reasoning
+        .summary
+        .iter()
+        .enumerate()
+        .map(|(index, text)| {
+            let mut part = prior
+                .and_then(|v| v.get(index))
+                .filter(|v| v.is_object())
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            part["type"] = json!("summary_text");
+            part["text"] = json!(text);
+            part
+        })
+        .collect();
+    value["summary"] = Value::Array(summary);
+
+    value.as_object_mut().unwrap().remove("encrypted_content");
+    same_provider(provider, state.provider)?;
+    let encrypted = if state.data.is_string() {
+        &state.data
+    } else {
+        state
+            .data
+            .get("encrypted_content")
+            .filter(|v| v.is_string())
+            .ok_or_else(|| unsupported("reasoning state without Responses encrypted_content"))?
+    };
+    value["encrypted_content"] = encrypted.clone();
+
+    Ok(())
+}
+
+fn serialize_image(provider: ProviderType, image: &ImageBlock) -> Result<Value, Error> {
+    let mut value = json!({"type":"input_image"});
+    match &image.source {
+        MediaSource::Url(url) => value["image_url"] = json!(url),
+        MediaSource::Inline { mime_type, data } => {
+            if !mime_type.starts_with("image/") {
+                return Err(unsupported(
+                    "Responses image data requires an image MIME type",
+                ));
+            }
+            value["image_url"] = json!(data_url(mime_type, data));
+        }
+        MediaSource::ProviderFile {
+            provider: actual,
+            file_id,
+        } => {
+            same_provider(provider, *actual)?;
+            value["file_id"] = json!(file_id);
+        }
+    }
+
+    if let Some(detail) = image.detail {
+        value["detail"] = json!(match detail {
+            ImageDetail::Auto => "auto",
+            ImageDetail::Low => "low",
+            ImageDetail::High => "high",
+        });
+    }
+
+    Ok(value)
+}
+
+fn serialize_file(provider: ProviderType, file: &FileBlock) -> Result<Value, Error> {
+    let mut value = json!({"type":"input_file"});
+    match &file.source {
+        MediaSource::Url(url) => value["file_url"] = json!(url),
+        MediaSource::Inline { mime_type, data } => {
+            if file
+                .mime_type
+                .as_ref()
+                .is_some_and(|hint| hint != mime_type)
+            {
+                return Err(unsupported("conflicting inline file MIME types"));
+            }
+            value["file_data"] = json!(data_url(mime_type, data));
+        }
+        MediaSource::ProviderFile {
+            provider: actual,
+            file_id,
+        } => {
+            same_provider(provider, *actual)?;
+            value["file_id"] = json!(file_id);
+        }
+    }
+
+    if let Some(filename) = &file.filename {
+        value["filename"] = json!(filename);
+    }
+
+    Ok(value)
 }
 
 fn data_url(mime_type: &str, data: &[u8]) -> String {
@@ -501,6 +550,7 @@ impl ResponsesDecoder {
         if slot.completed {
             return Err(protocol("update received after output item completion"));
         }
+
         Ok(slot)
     }
 
@@ -521,6 +571,7 @@ impl ResponsesDecoder {
                 events.push_back(TurnEvent::ItemUpdated { index, update });
             }
         }
+
         // Never expose index N before N-1, or a call before its identity is known.
         while let Some(slot) = self.slots.get_mut(&output.items.len()) {
             let Some(item) = parse_item(output.config.provider, &slot.raw, slot.completed)? else {
@@ -534,6 +585,7 @@ impl ResponsesDecoder {
                 events.push_back(TurnEvent::ItemCompleted { index });
             }
         }
+
         if index < output.items.len() {
             let slot = self.slots.get_mut(&index).unwrap();
             if slot.completed && !slot.completion_emitted {
@@ -555,6 +607,7 @@ impl ResponsesDecoder {
         if !raw.is_object() {
             return Err(protocol("output item is not an object"));
         }
+
         if let Some(slot) = self.slots.get_mut(&index) {
             if slot.completed {
                 if done && completed_equivalent(output.config.provider, &slot.raw, &raw)? {
@@ -562,20 +615,22 @@ impl ResponsesDecoder {
                 }
                 return Err(protocol("snapshot changed a completed output item"));
             }
+
             let mut raw = raw;
-            if !done {
-                // Some compatible servers reveal a function's identity late.
-                // An added identity snapshot must not erase buffered arguments.
-                if raw.get("type").and_then(Value::as_str) == Some("function_call")
-                    && raw
-                        .get("arguments")
-                        .and_then(Value::as_str)
-                        .is_none_or(str::is_empty)
-                    && let Some(arguments) = slot.raw.get("arguments")
-                {
-                    raw["arguments"] = arguments.clone();
-                }
+
+            // Some compatible servers reveal a function's identity late.
+            // An added identity snapshot must not erase buffered arguments.
+            if !done
+                && raw.get("type").and_then(Value::as_str) == Some("function_call")
+                && raw
+                    .get("arguments")
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+                && let Some(arguments) = slot.raw.get("arguments")
+            {
+                raw["arguments"] = arguments.clone();
             }
+
             slot.raw = raw;
             slot.completed = done;
         } else {
@@ -583,6 +638,7 @@ impl ResponsesDecoder {
             slot.completed = done;
             self.slots.insert(index, slot);
         }
+
         self.sync(
             index,
             output,
@@ -604,6 +660,7 @@ impl ResponsesDecoder {
             .as_object()
             .ok_or_else(|| protocol("response snapshot is not an object"))?;
         let mut changed = false;
+
         if let Some(id) = response.get("id").and_then(Value::as_str) {
             if output.response_id.as_deref().is_some_and(|old| old != id) {
                 return Err(protocol("response ID changed during streaming"));
@@ -613,6 +670,7 @@ impl ResponsesDecoder {
                 changed = true;
             }
         }
+
         for (key, value) in object {
             if output.provider_metadata.get(key) != Some(value) {
                 output.provider_metadata.insert(key.clone(), value.clone());
@@ -622,23 +680,41 @@ impl ResponsesDecoder {
         if changed {
             events.push_back(TurnEvent::MetadataUpdated);
         }
+
         if let Some(value) = response.get("usage").filter(|v| !v.is_null()) {
-            let previous = &output.usage;
-            let mut latest = usage(value, false);
-            latest.input_tokens = latest.input_tokens.or(previous.input_tokens);
-            latest.output_tokens = latest.output_tokens.or(previous.output_tokens);
-            latest.total_tokens = latest.total_tokens.or(previous.total_tokens);
-            latest.cached_input_tokens =
-                latest.cached_input_tokens.or(previous.cached_input_tokens);
-            latest.reasoning_output_tokens = latest
-                .reasoning_output_tokens
-                .or(previous.reasoning_output_tokens);
-            let mut details = previous.provider_details.clone();
-            details.extend(latest.provider_details);
-            latest.provider_details = details;
-            output.usage = latest;
+            output.usage.merge_reported(usage(value, false));
             events.push_back(TurnEvent::UsageUpdated);
         }
+        Ok(())
+    }
+
+    fn complete_remaining(
+        &mut self,
+        status: &str,
+        output: &mut ModelTurnOutput,
+        events: &mut VecDeque<TurnEvent>,
+    ) -> Result<(), Error> {
+        // Tolerate servers omitting redundant terminal output snapshots,
+        // but still require all indices and complete function identities.
+        let indices: Vec<_> = self.slots.keys().copied().collect();
+        for index in indices {
+            let slot = self.slots.get_mut(&index).unwrap();
+            if slot.completed {
+                continue;
+            }
+
+            if slot.raw.get("status").and_then(Value::as_str) == Some("in_progress") {
+                slot.raw["status"] = json!(if status == "completed" {
+                    "completed"
+                } else {
+                    "incomplete"
+                });
+            }
+
+            slot.completed = true;
+            self.sync(index, output, events, None)?;
+        }
+
         Ok(())
     }
 
@@ -657,6 +733,7 @@ impl ResponsesDecoder {
         if !matches!(status, "completed" | "incomplete" | "failed" | "cancelled") {
             return Err(protocol("terminal response has no terminal status"));
         }
+
         if let Some(items) = response.get("output") {
             let items = items
                 .as_array()
@@ -672,61 +749,253 @@ impl ResponsesDecoder {
                 self.snapshot(index, item.clone(), true, output, events)?;
             }
         } else {
-            // Tolerate servers omitting redundant terminal output snapshots,
-            // but still require all indices and complete function identities.
-            let indices: Vec<_> = self.slots.keys().copied().collect();
-            for index in indices {
-                let slot = self.slots.get_mut(&index).unwrap();
-                if !slot.completed {
-                    if slot.raw.get("status").and_then(Value::as_str) == Some("in_progress") {
-                        slot.raw["status"] = json!(if status == "completed" {
-                            "completed"
-                        } else {
-                            "incomplete"
-                        });
-                    }
-                    slot.completed = true;
-                    self.sync(index, output, events, None)?;
-                }
-            }
+            self.complete_remaining(status, output, events)?;
         }
+
         if output.items.len() != self.slots.len() {
             return Err(protocol(
                 "terminal response has missing output indices or function identity",
             ));
         }
-        output.outcome = match status {
-            "completed" => Outcome::Completed {
-                reason: if output
-                    .items
-                    .iter()
-                    .any(|item| matches!(item.kind, HistoryItemKind::ToolCall(_)))
-                {
-                    StopReason::ToolCalls
-                } else {
-                    StopReason::EndTurn
-                },
-            },
-            "incomplete" => Outcome::Incomplete {
-                reason: match response
-                    .pointer("/incomplete_details/reason")
-                    .and_then(Value::as_str)
-                {
-                    Some("max_output_tokens") => StopReason::TokenLimit,
-                    Some("content_filter") => StopReason::ContentFilter,
-                    Some(reason) => StopReason::Other(reason.into()),
-                    None => StopReason::Other("incomplete".into()),
-                },
-            },
-            "cancelled" => Outcome::Cancelled,
-            "failed" => Outcome::Failed(provider_error(
-                response
-                    .get("error")
-                    .filter(|v| !v.is_null())
-                    .unwrap_or(response),
-            )),
-            _ => unreachable!(),
+
+        output.outcome = terminal_outcome(status, response, output);
+
+        Ok(())
+    }
+
+    fn content_part(
+        &mut self,
+        kind: &str,
+        value: &Value,
+        output: &mut ModelTurnOutput,
+        events: &mut VecDeque<TurnEvent>,
+    ) -> Result<(), Error> {
+        let index = index(value, "output_index")?;
+        let ci = index_field(value, "content_index")?;
+        let slot = self.slot(index)?;
+        check_item_id(&mut slot.raw, value)?;
+        expect_type(&slot.raw, "message")?;
+
+        let part = required(value, "part")?.clone();
+        let content = array_mut(&mut slot.raw, "content")?;
+        let added = ci == content.len();
+        replace_part(content, ci, part)?;
+
+        let update = if kind.ends_with(".done") {
+            if slot.content_done.insert(ci) {
+                ItemUpdate::ContentCompleted { content_index: ci }
+            } else {
+                ItemUpdate::ContentUpdated { content_index: ci }
+            }
+        } else if added {
+            ItemUpdate::ContentAdded { content_index: ci }
+        } else {
+            ItemUpdate::ContentUpdated { content_index: ci }
         };
+
+        self.sync(index, output, events, Some(update))?;
+
+        Ok(())
+    }
+
+    fn text_content(
+        &mut self,
+        kind: &str,
+        value: &Value,
+        output: &mut ModelTurnOutput,
+        events: &mut VecDeque<TurnEvent>,
+    ) -> Result<(), Error> {
+        let index = index(value, "output_index")?;
+        let ci = index_field(value, "content_index")?;
+        let slot = self.slot(index)?;
+        check_item_id(&mut slot.raw, value)?;
+        expect_type(&slot.raw, "message")?;
+
+        let refusal = kind.starts_with("response.refusal.");
+        let done = kind.ends_with(".done");
+        if !done && slot.content_done.contains(&ci) {
+            return Err(protocol("delta received after content completion"));
+        }
+
+        let content = array_mut(&mut slot.raw, "content")?;
+        let added = ci == content.len();
+        if added {
+            content.push(if refusal {
+                json!({"type":"refusal","refusal":""})
+            } else {
+                json!({"type":"output_text","text":"","annotations":[]})
+            });
+        }
+        let part = content
+            .get_mut(ci)
+            .ok_or_else(|| protocol("non-contiguous content index"))?;
+        expect_type(part, if refusal { "refusal" } else { "output_text" })?;
+
+        let field = if refusal { "refusal" } else { "text" };
+        let fragment = string(value, if done { field } else { "delta" })?;
+        if done {
+            part[field] = json!(fragment);
+        } else {
+            append(part, field, fragment)?;
+        }
+
+        let update = if done {
+            slot.content_done.insert(ci);
+            ItemUpdate::ContentCompleted { content_index: ci }
+        } else {
+            ItemUpdate::ContentDelta {
+                content_index: ci,
+                delta: if refusal {
+                    ContentDelta::Refusal(fragment.into())
+                } else {
+                    ContentDelta::Text(fragment.into())
+                },
+            }
+        };
+
+        if added && index < output.items.len() {
+            // Both updates refer to a block already reflected in current().
+            self.sync(
+                index,
+                output,
+                events,
+                Some(ItemUpdate::ContentAdded { content_index: ci }),
+            )?;
+        }
+
+        self.sync(index, output, events, Some(update))?;
+
+        Ok(())
+    }
+
+    fn annotation(
+        &mut self,
+        value: &Value,
+        output: &mut ModelTurnOutput,
+        events: &mut VecDeque<TurnEvent>,
+    ) -> Result<(), Error> {
+        let index = index(value, "output_index")?;
+        let ci = index_field(value, "content_index")?;
+        let slot = self.slot(index)?;
+        check_item_id(&mut slot.raw, value)?;
+
+        let content = array_mut(&mut slot.raw, "content")?;
+        let part = content
+            .get_mut(ci)
+            .ok_or_else(|| protocol("unknown annotation content index"))?;
+        expect_type(part, "output_text")?;
+        let annotations = array_mut(part, "annotations")?;
+        replace_part(
+            annotations,
+            index_field(value, "annotation_index")?,
+            required(value, "annotation")?.clone(),
+        )?;
+
+        self.sync(
+            index,
+            output,
+            events,
+            Some(ItemUpdate::ContentUpdated { content_index: ci }),
+        )?;
+
+        Ok(())
+    }
+
+    fn function_arguments(
+        &mut self,
+        kind: &str,
+        value: &Value,
+        output: &mut ModelTurnOutput,
+        events: &mut VecDeque<TurnEvent>,
+    ) -> Result<(), Error> {
+        let index = index(value, "output_index")?;
+        let slot = self.slot(index)?;
+        expect_type(&slot.raw, "function_call")?;
+        check_item_id(&mut slot.raw, value)?;
+
+        for field in ["name", "call_id"] {
+            if let Some(identity) = value.get(field).and_then(Value::as_str) {
+                if slot
+                    .raw
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .is_some_and(|old| !old.is_empty() && old != identity)
+                {
+                    return Err(protocol("function identity changed"));
+                }
+                slot.raw[field] = json!(identity);
+            }
+        }
+
+        let update = if kind.ends_with(".done") {
+            slot.raw["arguments"] = json!(string(value, "arguments")?);
+            ItemUpdate::ProviderUpdated
+        } else {
+            let delta = string(value, "delta")?;
+            append(&mut slot.raw, "arguments", delta)?;
+            ItemUpdate::ToolArgumentsDelta {
+                delta: delta.into(),
+            }
+        };
+
+        self.sync(index, output, events, Some(update))?;
+
+        Ok(())
+    }
+
+    fn reasoning_summary(
+        &mut self,
+        kind: &str,
+        value: &Value,
+        output: &mut ModelTurnOutput,
+        events: &mut VecDeque<TurnEvent>,
+    ) -> Result<(), Error> {
+        let index = index(value, "output_index")?;
+        let si = index_field(value, "summary_index")?;
+        let slot = self.slot(index)?;
+        expect_type(&slot.raw, "reasoning")?;
+        check_item_id(&mut slot.raw, value)?;
+
+        let summary = array_mut(&mut slot.raw, "summary")?;
+        let added = si == summary.len();
+        let update = if kind.contains("_part.") {
+            replace_part(summary, si, required(value, "part")?.clone())?;
+            if added {
+                ItemUpdate::ReasoningSummaryAdded { summary_index: si }
+            } else {
+                ItemUpdate::MetadataUpdated
+            }
+        } else {
+            if added {
+                summary.push(json!({"type":"summary_text","text":""}));
+            }
+            let part = summary
+                .get_mut(si)
+                .ok_or_else(|| protocol("non-contiguous reasoning summary index"))?;
+            if kind.ends_with(".done") {
+                part["text"] = json!(string(value, "text")?);
+                ItemUpdate::MetadataUpdated
+            } else {
+                let delta = string(value, "delta")?;
+                append(part, "text", delta)?;
+                ItemUpdate::ReasoningSummaryDelta {
+                    summary_index: si,
+                    delta: delta.into(),
+                }
+            }
+        };
+
+        if added && kind.contains("_text.") && index < output.items.len() {
+            self.sync(
+                index,
+                output,
+                events,
+                Some(ItemUpdate::ReasoningSummaryAdded { summary_index: si }),
+            )?;
+        }
+
+        self.sync(index, output, events, Some(update))?;
+
         Ok(())
     }
 }
@@ -748,12 +1017,14 @@ impl Decoder for ResponsesDecoder {
                 "Responses stream ended without a terminal response",
             ));
         }
+
         let value: Value = serde_json::from_str(&event.data)?;
         let kind = value
             .get("type")
             .and_then(Value::as_str)
             .or(event.event.as_deref())
             .ok_or_else(|| protocol("Responses event has no type"))?;
+
         match kind {
             "error" | "response.error" => {
                 return Err(provider_error(value.get("error").unwrap_or(&value)));
@@ -779,191 +1050,66 @@ impl Decoder for ResponsesDecoder {
                 )?;
             }
             "response.content_part.added" | "response.content_part.done" => {
-                let index = index(&value, "output_index")?;
-                let ci = index_field(&value, "content_index")?;
-                let slot = self.slot(index)?;
-                check_item_id(&mut slot.raw, &value)?;
-                expect_type(&slot.raw, "message")?;
-                let part = required(&value, "part")?.clone();
-                let content = array_mut(&mut slot.raw, "content")?;
-                let added = ci == content.len();
-                replace_part(content, ci, part)?;
-                let update = if kind.ends_with(".done") {
-                    if slot.content_done.insert(ci) {
-                        ItemUpdate::ContentCompleted { content_index: ci }
-                    } else {
-                        ItemUpdate::ContentUpdated { content_index: ci }
-                    }
-                } else if added {
-                    ItemUpdate::ContentAdded { content_index: ci }
-                } else {
-                    ItemUpdate::ContentUpdated { content_index: ci }
-                };
-                self.sync(index, output, events, Some(update))?;
+                self.content_part(kind, &value, output, events)?;
             }
             "response.output_text.delta"
             | "response.output_text.done"
             | "response.refusal.delta"
             | "response.refusal.done" => {
-                let index = index(&value, "output_index")?;
-                let ci = index_field(&value, "content_index")?;
-                let slot = self.slot(index)?;
-                check_item_id(&mut slot.raw, &value)?;
-                expect_type(&slot.raw, "message")?;
-                let refusal = kind.starts_with("response.refusal.");
-                let done = kind.ends_with(".done");
-                if !done && slot.content_done.contains(&ci) {
-                    return Err(protocol("delta received after content completion"));
-                }
-                let content = array_mut(&mut slot.raw, "content")?;
-                let added = ci == content.len();
-                if added {
-                    content.push(if refusal {
-                        json!({"type":"refusal","refusal":""})
-                    } else {
-                        json!({"type":"output_text","text":"","annotations":[]})
-                    });
-                }
-                let part = content
-                    .get_mut(ci)
-                    .ok_or_else(|| protocol("non-contiguous content index"))?;
-                expect_type(part, if refusal { "refusal" } else { "output_text" })?;
-                let field = if refusal { "refusal" } else { "text" };
-                let fragment = string(&value, if done { field } else { "delta" })?;
-                if done {
-                    part[field] = json!(fragment);
-                } else {
-                    append(part, field, fragment)?;
-                }
-                let update = if done {
-                    slot.content_done.insert(ci);
-                    ItemUpdate::ContentCompleted { content_index: ci }
-                } else {
-                    ItemUpdate::ContentDelta {
-                        content_index: ci,
-                        delta: if refusal {
-                            ContentDelta::Refusal(fragment.into())
-                        } else {
-                            ContentDelta::Text(fragment.into())
-                        },
-                    }
-                };
-                if added && index < output.items.len() {
-                    // Both updates refer to a block already reflected in current().
-                    self.sync(
-                        index,
-                        output,
-                        events,
-                        Some(ItemUpdate::ContentAdded { content_index: ci }),
-                    )?;
-                }
-                self.sync(index, output, events, Some(update))?;
+                self.text_content(kind, &value, output, events)?;
             }
             "response.output_text.annotation.added" => {
-                let index = index(&value, "output_index")?;
-                let ci = index_field(&value, "content_index")?;
-                let slot = self.slot(index)?;
-                check_item_id(&mut slot.raw, &value)?;
-                let content = array_mut(&mut slot.raw, "content")?;
-                let part = content
-                    .get_mut(ci)
-                    .ok_or_else(|| protocol("unknown annotation content index"))?;
-                expect_type(part, "output_text")?;
-                let annotations = array_mut(part, "annotations")?;
-                replace_part(
-                    annotations,
-                    index_field(&value, "annotation_index")?,
-                    required(&value, "annotation")?.clone(),
-                )?;
-                self.sync(
-                    index,
-                    output,
-                    events,
-                    Some(ItemUpdate::ContentUpdated { content_index: ci }),
-                )?;
+                self.annotation(&value, output, events)?;
             }
             "response.function_call_arguments.delta" | "response.function_call_arguments.done" => {
-                let index = index(&value, "output_index")?;
-                let slot = self.slot(index)?;
-                expect_type(&slot.raw, "function_call")?;
-                check_item_id(&mut slot.raw, &value)?;
-                for field in ["name", "call_id"] {
-                    if let Some(identity) = value.get(field).and_then(Value::as_str) {
-                        if slot
-                            .raw
-                            .get(field)
-                            .and_then(Value::as_str)
-                            .is_some_and(|old| !old.is_empty() && old != identity)
-                        {
-                            return Err(protocol("function identity changed"));
-                        }
-                        slot.raw[field] = json!(identity);
-                    }
-                }
-                let update = if kind.ends_with(".done") {
-                    slot.raw["arguments"] = json!(string(&value, "arguments")?);
-                    ItemUpdate::ProviderUpdated
-                } else {
-                    let delta = string(&value, "delta")?;
-                    append(&mut slot.raw, "arguments", delta)?;
-                    ItemUpdate::ToolArgumentsDelta {
-                        delta: delta.into(),
-                    }
-                };
-                self.sync(index, output, events, Some(update))?;
+                self.function_arguments(kind, &value, output, events)?;
             }
             "response.reasoning_summary_part.added"
             | "response.reasoning_summary_part.done"
             | "response.reasoning_summary_text.delta"
             | "response.reasoning_summary_text.done" => {
-                let index = index(&value, "output_index")?;
-                let si = index_field(&value, "summary_index")?;
-                let slot = self.slot(index)?;
-                expect_type(&slot.raw, "reasoning")?;
-                check_item_id(&mut slot.raw, &value)?;
-                let summary = array_mut(&mut slot.raw, "summary")?;
-                let added = si == summary.len();
-                let update = if kind.contains("_part.") {
-                    replace_part(summary, si, required(&value, "part")?.clone())?;
-                    if added {
-                        ItemUpdate::ReasoningSummaryAdded { summary_index: si }
-                    } else {
-                        ItemUpdate::MetadataUpdated
-                    }
-                } else {
-                    if added {
-                        summary.push(json!({"type":"summary_text","text":""}));
-                    }
-                    let part = summary
-                        .get_mut(si)
-                        .ok_or_else(|| protocol("non-contiguous reasoning summary index"))?;
-                    if kind.ends_with(".done") {
-                        part["text"] = json!(string(&value, "text")?);
-                        ItemUpdate::MetadataUpdated
-                    } else {
-                        let delta = string(&value, "delta")?;
-                        append(part, "text", delta)?;
-                        ItemUpdate::ReasoningSummaryDelta {
-                            summary_index: si,
-                            delta: delta.into(),
-                        }
-                    }
-                };
-                if added && kind.contains("_text.") && index < output.items.len() {
-                    self.sync(
-                        index,
-                        output,
-                        events,
-                        Some(ItemUpdate::ReasoningSummaryAdded { summary_index: si }),
-                    )?;
-                }
-                self.sync(index, output, events, Some(update))?;
+                self.reasoning_summary(kind, &value, output, events)?;
             }
             // Hosted tools and future event types are represented by their
             // native output-item snapshots. Lifecycle/ping events add no text.
             _ => {}
         }
         Ok(false)
+    }
+}
+
+fn terminal_outcome(status: &str, response: &Value, output: &ModelTurnOutput) -> Outcome {
+    match status {
+        "completed" => Outcome::Completed {
+            reason: if output
+                .items
+                .iter()
+                .any(|item| matches!(item.kind, HistoryItemKind::ToolCall(_)))
+            {
+                StopReason::ToolCalls
+            } else {
+                StopReason::EndTurn
+            },
+        },
+        "incomplete" => Outcome::Incomplete {
+            reason: match response
+                .pointer("/incomplete_details/reason")
+                .and_then(Value::as_str)
+            {
+                Some("max_output_tokens") => StopReason::TokenLimit,
+                Some("content_filter") => StopReason::ContentFilter,
+                Some(reason) => StopReason::Other(reason.into()),
+                None => StopReason::Other("incomplete".into()),
+            },
+        },
+        "cancelled" => Outcome::Cancelled,
+        "failed" => Outcome::Failed(provider_error(
+            response
+                .get("error")
+                .filter(|v| !v.is_null())
+                .unwrap_or(response),
+        )),
+        _ => unreachable!(),
     }
 }
 
@@ -994,6 +1140,7 @@ fn expect_type(value: &Value, expected: &str) -> Result<(), Error> {
     if value.get("type").and_then(Value::as_str) != Some(expected) {
         return Err(protocol(format!("expected {expected} item/content")));
     }
+
     Ok(())
 }
 
@@ -1001,6 +1148,7 @@ fn array_mut<'a>(value: &'a mut Value, field: &str) -> Result<&'a mut Vec<Value>
     if value.get(field).is_none() {
         value[field] = json!([]);
     }
+
     value
         .get_mut(field)
         .and_then(Value::as_array_mut)
@@ -1016,6 +1164,7 @@ fn append(value: &mut Value, field: &str, delta: &str) -> Result<(), Error> {
     if value.get(field).is_some_and(|v| !v.is_string()) {
         return Err(protocol(format!("{field} is not a string")));
     }
+
     text.push_str(delta);
     value[field] = json!(text);
     Ok(())
@@ -1035,6 +1184,7 @@ fn replace_part(parts: &mut Vec<Value>, index: usize, part: Value) -> Result<(),
     } else {
         return Err(protocol("non-contiguous content/summary index"));
     }
+
     Ok(())
 }
 
@@ -1049,6 +1199,7 @@ fn check_item_id(raw: &mut Value, event: &Value) -> Result<(), Error> {
         }
         raw["id"] = json!(id);
     }
+
     Ok(())
 }
 

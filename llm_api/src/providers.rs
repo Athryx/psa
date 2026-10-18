@@ -34,6 +34,7 @@ impl Model {
         let model = Self {
             api_name: api_name.into(),
         };
+
         model.validate()?;
         Ok(model)
     }
@@ -41,12 +42,14 @@ impl Model {
     /// Validate a nonempty API model name with no surrounding whitespace.
     fn validate(&self) -> Result<(), crate::Error> {
         let name = self.api_name.as_str();
+
         if name.trim().is_empty() || name.trim() != name {
             return Err(crate::Error::InvalidConfig {
                 field: "model.api_name".into(),
                 message: "model name must be nonempty and have no surrounding whitespace".into(),
             });
         }
+
         Ok(())
     }
 

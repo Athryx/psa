@@ -18,10 +18,12 @@ struct RecordedRequest {
 async fn read_request(socket: &mut tokio::net::TcpStream) -> RecordedRequest {
     let mut bytes = Vec::new();
     let mut chunk = [0; 4096];
+
     let (header_end, content_length) = loop {
         let size = socket.read(&mut chunk).await.unwrap();
         assert_ne!(size, 0, "request ended before headers");
         bytes.extend_from_slice(&chunk[..size]);
+
         if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
             let text = String::from_utf8_lossy(&bytes[..end]);
             let length = text
@@ -35,11 +37,13 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> RecordedRequest {
             break (end + 4, length);
         }
     };
+
     while bytes.len() < header_end + content_length {
         let size = socket.read(&mut chunk).await.unwrap();
         assert_ne!(size, 0, "request ended before body");
         bytes.extend_from_slice(&chunk[..size]);
     }
+
     RecordedRequest {
         headers: String::from_utf8(bytes[..header_end].to_vec()).unwrap(),
         body: serde_json::from_slice(&bytes[header_end..header_end + content_length]).unwrap(),
@@ -59,12 +63,14 @@ async fn server(
         body.len()
     );
     let (sender, receiver) = oneshot::channel();
+
     tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
         let _ = sender.send(read_request(&mut socket).await);
         if socket.write_all(headers.as_bytes()).await.is_err() {
             return;
         }
+
         // Split UTF-8, SSE fields, and JSON across writes deliberately.
         for fragment in body.as_bytes().chunks(7) {
             if socket.write_all(fragment).await.is_err() {
@@ -73,6 +79,7 @@ async fn server(
             tokio::task::yield_now().await;
         }
     });
+
     (format!("http://{address}/custom-endpoint"), receiver)
 }
 
@@ -122,13 +129,16 @@ fn chat_stream(done: bool) -> String {
         json!({"id":"chat-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
         json!({"id":"chat-1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}),
     ];
+
     let mut stream = chunks
         .iter()
         .map(|chunk| format!("data: {chunk}\n\n"))
         .collect::<String>();
+
     if done {
         stream.push_str("data: [DONE]\n\n");
     }
+
     stream
 }
 
@@ -145,6 +155,7 @@ fn responses_stream() -> String {
         json!({"type":"response.output_item.done","output_index":0,"item":item.clone()}),
         json!({"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[item],"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}),
     ];
+
     events
         .iter()
         .map(|event| {
@@ -156,6 +167,43 @@ fn responses_stream() -> String {
         .collect()
 }
 
+// Public variants also permit custom endpoints for proxies/testing.
+fn provider_at_url(provider: ProviderType, url: String) -> Provider {
+    match provider {
+        ProviderType::OpenAiCodex => {
+            Provider::Responses(OpenAiResponses::new(url, "key", provider).unwrap())
+        }
+        ProviderType::Openrouter => Provider::Completions(
+            OpenAiCompletions::new(
+                url,
+                "key",
+                provider,
+                OpenAiCompletionsConfig {
+                    openrouter_reasoning_fields: true,
+                },
+            )
+            .unwrap(),
+        ),
+    }
+}
+
+async fn check_completed_stream(mut stream: ProviderStream) {
+    let mut finished = 0;
+    while let Some(event) = stream.next_event().await {
+        if matches!(event.unwrap(), TurnEvent::Finished) {
+            finished += 1;
+        }
+    }
+
+    assert_eq!(finished, 1);
+    assert_eq!(text(stream.current()), "héllo");
+    stream.close();
+
+    let output = stream.into_output();
+    assert!(matches!(output.outcome, Outcome::Completed { .. }));
+    assert_eq!(output.usage.total_tokens, Some(12));
+}
+
 #[tokio::test]
 async fn combined_provider_streams_delegate_both_protocols_and_cleanup() {
     for provider in [ProviderType::OpenAiCodex, ProviderType::Openrouter] {
@@ -165,23 +213,8 @@ async fn combined_provider_streams_delegate_both_protocols_and_cleanup() {
                 ProviderType::Openrouter => chat_stream(true),
             };
             let (url, request) = server("200 OK", "text/event-stream", "", body).await;
-            // Public variants also permit custom endpoints for proxies/testing.
-            let client = match provider {
-                ProviderType::OpenAiCodex => {
-                    Provider::Responses(OpenAiResponses::new(url, "key", provider).unwrap())
-                }
-                ProviderType::Openrouter => Provider::Completions(
-                    OpenAiCompletions::new(
-                        url,
-                        "key",
-                        provider,
-                        OpenAiCompletionsConfig {
-                            openrouter_reasoning_fields: true,
-                        },
-                    )
-                    .unwrap(),
-                ),
-            };
+            let client = provider_at_url(provider, url);
+
             let mut stream = client
                 .generate(&history(provider), &input(), &RequestConfig::default())
                 .await
@@ -191,21 +224,9 @@ async fn combined_provider_streams_delegate_both_protocols_and_cleanup() {
                 (ProviderStream::Responses(_), ProviderType::OpenAiCodex)
                     | (ProviderStream::Completions(_), ProviderType::Openrouter)
             ));
+
             match mode {
-                0 => {
-                    let mut finished = 0;
-                    while let Some(event) = stream.next_event().await {
-                        if matches!(event.unwrap(), TurnEvent::Finished) {
-                            finished += 1;
-                        }
-                    }
-                    assert_eq!(finished, 1);
-                    assert_eq!(text(stream.current()), "héllo");
-                    stream.close();
-                    let output = stream.into_output();
-                    assert!(matches!(output.outcome, Outcome::Completed { .. }));
-                    assert_eq!(output.usage.total_tokens, Some(12));
-                }
+                0 => check_completed_stream(stream).await,
                 1 => {
                     stream.close();
                     assert!(matches!(stream.current().outcome, Outcome::Cancelled));
@@ -213,6 +234,7 @@ async fn combined_provider_streams_delegate_both_protocols_and_cleanup() {
                 }
                 _ => assert!(matches!(stream.into_output().outcome, Outcome::Cancelled)),
             }
+
             let body = request.await.unwrap().body;
             match provider {
                 ProviderType::OpenAiCodex => assert_eq!(body["store"], false),
@@ -240,6 +262,7 @@ async fn completions_http_round_trip() {
         },
     )
     .unwrap();
+
     let mut stream = client
         .generate(
             &history(ProviderType::Openrouter),
@@ -248,20 +271,25 @@ async fn completions_http_round_trip() {
         )
         .await
         .unwrap();
+
     assert!(matches!(stream.current().outcome, Outcome::InProgress));
+
     let mut finished = 0;
     while let Some(event) = stream.next_event().await {
         if matches!(event.unwrap(), TurnEvent::Finished) {
             finished += 1;
         }
     }
+
     assert_eq!(finished, 1);
     assert!(stream.next_event().await.is_none());
+
     let output = stream.into_output();
     assert_eq!(text(&output), "héllo");
     assert_eq!(output.response_id.as_deref(), Some("chat-1"));
     assert_eq!(output.usage.total_tokens, Some(12));
     assert!(matches!(output.outcome, Outcome::Completed { .. }));
+
     let request = request.await.unwrap();
     assert!(
         request
@@ -282,6 +310,7 @@ async fn completions_http_round_trip() {
 async fn responses_http_round_trip() {
     let (url, request) = server("200 OK", "text/event-stream", "", responses_stream()).await;
     let client = OpenAiResponses::new(url, "test-key", ProviderType::OpenAiCodex).unwrap();
+
     let mut stream = client
         .generate(
             &history(ProviderType::OpenAiCodex),
@@ -290,18 +319,22 @@ async fn responses_http_round_trip() {
         )
         .await
         .unwrap();
+
     let mut finished = 0;
     while let Some(event) = stream.next_event().await {
         if matches!(event.unwrap(), TurnEvent::Finished) {
             finished += 1;
         }
     }
+
     assert_eq!(finished, 1);
+
     let output = stream.into_output();
     assert_eq!(text(&output), "héllo");
     assert_eq!(output.response_id.as_deref(), Some("resp-1"));
     assert_eq!(output.usage.total_tokens, Some(12));
     assert!(matches!(output.outcome, Outcome::Completed { .. }));
+
     let request = request.await.unwrap();
     assert_eq!(request.body["store"], false);
     assert_eq!(request.body["stream"], true);
@@ -318,7 +351,9 @@ async fn standard_completions_uses_supplied_identity_and_standard_reasoning_fiel
         OpenAiCompletionsConfig::default(),
     )
     .unwrap();
+
     assert_eq!(client.provider_type(), ProviderType::OpenAiCodex);
+
     let mut stream = client
         .generate(
             &history(ProviderType::OpenAiCodex),
@@ -327,11 +362,14 @@ async fn standard_completions_uses_supplied_identity_and_standard_reasoning_fiel
         )
         .await
         .unwrap();
+
     while let Some(event) = stream.next_event().await {
         event.unwrap();
     }
+
     assert_eq!(stream.current().config.provider, ProviderType::OpenAiCodex);
     assert_eq!(text(stream.current()), "héllo");
+
     let body = request.await.unwrap().body;
     assert_eq!(body["reasoning_effort"], "medium");
     assert!(body.get("reasoning").is_none());
@@ -350,6 +388,7 @@ async fn responses_retags_and_replays_native_state_for_supplied_identity() {
             {"id":"rs-generic","type":"reasoning","summary":[],"encrypted_content":"opaque-state"}, message,
         ],
     }});
+
     let (url, _) = server(
         "200 OK",
         "text/event-stream",
@@ -359,6 +398,7 @@ async fn responses_retags_and_replays_native_state_for_supplied_identity() {
     .await;
     let client = OpenAiResponses::new(url, "test-key", ProviderType::Openrouter).unwrap();
     assert_eq!(client.provider_type(), ProviderType::Openrouter);
+
     let mut stream = client
         .generate(
             &history(ProviderType::Openrouter),
@@ -367,9 +407,11 @@ async fn responses_retags_and_replays_native_state_for_supplied_identity() {
         )
         .await
         .unwrap();
+
     while let Some(event) = stream.next_event().await {
         event.unwrap();
     }
+
     let output = stream.into_output();
     let HistoryItemKind::Reasoning(reasoning) = &output.items[0].kind else {
         panic!("missing reasoning")
@@ -378,6 +420,7 @@ async fn responses_retags_and_replays_native_state_for_supplied_identity() {
         reasoning.opaque_state.as_ref().unwrap().provider,
         ProviderType::Openrouter
     );
+
     let HistoryItemKind::Message(message) = &output.items[1].kind else {
         panic!("missing message")
     };
@@ -393,11 +436,13 @@ async fn responses_retags_and_replays_native_state_for_supplied_identity() {
     });
     let (url, request) = server("200 OK", "text/event-stream", "", responses_stream()).await;
     let client = OpenAiResponses::new(url, "test-key", ProviderType::Openrouter).unwrap();
+
     let stream = client
         .generate(&history, &input(), &RequestConfig::default())
         .await
         .unwrap();
     drop(stream);
+
     let body = request.await.unwrap().body;
     assert_eq!(body["input"][1]["encrypted_content"], "opaque-state");
     assert_eq!(
@@ -419,6 +464,7 @@ async fn unexpected_eof_retains_partial_output_and_errors_once() {
         },
     )
     .unwrap();
+
     let mut stream = client
         .generate(
             &history(ProviderType::Openrouter),
@@ -427,12 +473,14 @@ async fn unexpected_eof_retains_partial_output_and_errors_once() {
         )
         .await
         .unwrap();
+
     let mut errors = 0;
     while let Some(event) = stream.next_event().await {
         if event.is_err() {
             errors += 1;
         }
     }
+
     assert_eq!(errors, 1);
     assert!(stream.next_event().await.is_none());
     assert_eq!(text(stream.current()), "héllo");
@@ -451,6 +499,7 @@ async fn close_and_into_output_preserve_terminal_or_partial_state() {
         },
     )
     .unwrap();
+
     let mut stream = client
         .generate(
             &history(ProviderType::Openrouter),
@@ -459,15 +508,18 @@ async fn close_and_into_output_preserve_terminal_or_partial_state() {
         )
         .await
         .unwrap();
+
     while text(stream.current()).is_empty() {
         stream.next_event().await.unwrap().unwrap();
     }
+
     let output = stream.into_output();
     assert_eq!(text(&output), "héllo");
     assert!(matches!(output.outcome, Outcome::Cancelled));
 
     let (url, _) = server("200 OK", "text/event-stream", "", responses_stream()).await;
     let client = OpenAiResponses::new(url, "test-key", ProviderType::OpenAiCodex).unwrap();
+
     let mut stream = client
         .generate(
             &history(ProviderType::OpenAiCodex),
@@ -476,6 +528,7 @@ async fn close_and_into_output_preserve_terminal_or_partial_state() {
         )
         .await
         .unwrap();
+
     stream.close();
     stream.close();
     assert!(stream.next_event().await.is_none());
@@ -503,6 +556,7 @@ async fn http_errors_retain_status_and_retry_delay() {
         Err(error) => error,
         Ok(_) => panic!("HTTP failure accepted"),
     };
+
     assert!(matches!(
         error,
         Error::Http {
@@ -522,12 +576,14 @@ async fn truncated_error_body_keeps_http_status() {
         let _ = read_request(&mut socket).await;
         socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 100\r\nRetry-After: 3\r\nConnection: close\r\n\r\n{}").await.unwrap();
     });
+
     let client = OpenAiResponses::new(
         format!("http://{address}/api"),
         "test-key",
         ProviderType::OpenAiCodex,
     )
     .unwrap();
+
     assert!(matches!(
         client
             .generate(
@@ -564,12 +620,14 @@ async fn dropping_a_stream_closes_the_http_body() {
             Ok(_) => panic!("unexpected client bytes after generation request"),
         }
     });
+
     let client = OpenAiResponses::new(
         format!("http://{address}/api"),
         "test-key",
         ProviderType::OpenAiCodex,
     )
     .unwrap();
+
     let stream = client
         .generate(
             &history(ProviderType::OpenAiCodex),
@@ -579,6 +637,7 @@ async fn dropping_a_stream_closes_the_http_body() {
         .await
         .unwrap();
     drop(stream);
+
     tokio::time::timeout(Duration::from_secs(5), task)
         .await
         .unwrap()
@@ -593,6 +652,7 @@ async fn validation_fails_before_http() {
         ProviderType::OpenAiCodex,
     )
     .unwrap();
+
     assert!(matches!(
         client
             .generate(
@@ -603,6 +663,7 @@ async fn validation_fails_before_http() {
             .await,
         Err(Error::ProviderMismatch { .. })
     ));
+
     let options = RequestConfig {
         max_output_tokens: Some(0),
         ..RequestConfig::default()
@@ -627,6 +688,7 @@ async fn rejects_non_sse_success_response() {
         },
     )
     .unwrap();
+
     assert!(matches!(
         client
             .generate(
@@ -652,6 +714,7 @@ async fn cancelling_next_event_does_not_lose_buffered_output() {
         wait.await.unwrap();
         socket.write_all(b"\"choices\":[{\"index\":0,\"delta\":{\"content\":\"resumed\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n").await.unwrap();
     });
+
     let client = OpenAiCompletions::new(
         format!("http://{address}/api"),
         "test-key",
@@ -661,6 +724,7 @@ async fn cancelling_next_event_does_not_lose_buffered_output() {
         },
     )
     .unwrap();
+
     let mut stream = client
         .generate(
             &history(ProviderType::Openrouter),
@@ -669,11 +733,13 @@ async fn cancelling_next_event_does_not_lose_buffered_output() {
         )
         .await
         .unwrap();
+
     assert!(
         tokio::time::timeout(Duration::from_millis(30), stream.next_event())
             .await
             .is_err()
     );
+
     release.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(event) = stream.next_event().await {
@@ -683,6 +749,7 @@ async fn cancelling_next_event_does_not_lose_buffered_output() {
     .await
     .unwrap();
     task.await.unwrap();
+
     assert_eq!(text(stream.current()), "resumed");
     assert!(matches!(
         stream.current().outcome,

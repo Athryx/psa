@@ -7,9 +7,10 @@ Should also be easy to programatically interact with from a client library.
 
 # Coding Style
 
-- Add blank lines inside functions to separate meaningful stages. Keep related statements together; groups of roughly three to eight lines are a useful guide, not a formatting rule.
-- Aim for functions of about 20 lines or fewer when that improves readability. A longer function is fine when it remains clear, such as a sequence of simple related actions. Do not split a cohesive operation solely to meet a line count.
-- Keep control-flow nesting to about three levels within a function. Use early returns or extract a well-named function when deeper nesting obscures the main path.
-  - Not a hard rule, but recommended.
-  - Nesting is counnted by semantic control flow strucutres inside a function, not strictly whitespace (for instance, expressions split across lines are not considered nested because inndented, and in fct inndenting them to match rust style is good practice)
-    - Body of functions are not considered nested
+- Keep a clear main path through functions.
+- Separate meaningful stages inside functions with blank lines. Keep closely related statements together.
+- Extract a helper when its name explains a distinct operation, reduces difficult nesting, or removes meaningful duplication.
+  - Avoid extracting helpers that require many arguments merely to pass local context around. Reconsider the extraction boundary; keep the operation inline when that is clearer. Don’t introduce a state struct solely to reduce argument count.
+- Prefer early returns for invalid inputs and exceptional cases. Aim for no more than about three nested control-flow levels.
+- Keep straightforward sequences, builders, dispatch matches, and linear tests together when splitting them would obscure their flow.
+- Run `cargo fmt --all` and relevant tests after changes.

@@ -247,4 +247,60 @@ pub struct Usage {
     pub provider_details: ProviderMetadata,
 }
 
+impl Usage {
+    /// Replace reported counts (including zero), retaining fields absent from the snapshot.
+    pub(super) fn merge_reported(&mut self, latest: Self) {
+        self.input_tokens = latest.input_tokens.or(self.input_tokens);
+        self.output_tokens = latest.output_tokens.or(self.output_tokens);
+        self.total_tokens = latest.total_tokens.or(self.total_tokens);
+        self.cached_input_tokens = latest.cached_input_tokens.or(self.cached_input_tokens);
+        self.reasoning_output_tokens = latest
+            .reasoning_output_tokens
+            .or(self.reasoning_output_tokens);
+
+        self.provider_details.extend(latest.provider_details);
+    }
+}
+
 pub type ProviderMetadata = BTreeMap<String, Value>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn usage_snapshots_replace_reported_fields_and_retain_absent_fields() {
+        let mut usage = Usage {
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+            total_tokens: Some(12),
+            cached_input_tokens: Some(4),
+            reasoning_output_tokens: Some(1),
+            provider_details: BTreeMap::from([
+                ("retained".into(), json!(true)),
+                ("updated".into(), json!("old")),
+            ]),
+        };
+
+        usage.merge_reported(Usage {
+            output_tokens: Some(0),
+            total_tokens: Some(10),
+            reasoning_output_tokens: Some(0),
+            provider_details: BTreeMap::from([
+                ("updated".into(), json!("new")),
+                ("added".into(), json!(true)),
+            ]),
+            ..Usage::default()
+        });
+
+        assert_eq!(usage.input_tokens, Some(10));
+        assert_eq!(usage.output_tokens, Some(0));
+        assert_eq!(usage.total_tokens, Some(10));
+        assert_eq!(usage.cached_input_tokens, Some(4));
+        assert_eq!(usage.reasoning_output_tokens, Some(0));
+        assert_eq!(usage.provider_details["retained"], json!(true));
+        assert_eq!(usage.provider_details["updated"], json!("new"));
+        assert_eq!(usage.provider_details["added"], json!(true));
+    }
+}

@@ -83,6 +83,7 @@ impl ApiProvider for OpenAiCompletions {
     ) -> Result<Self::Stream, Error> {
         let body = request_body(history, input, config, self.provider, self.config)?;
         let response = self.client.post(&body).await?;
+
         Ok(OpenAiCompletionsStream {
             inner: StreamingResponse::new(
                 response,
@@ -134,6 +135,7 @@ fn request_body(
         ));
     }
     let mut messages = Vec::new();
+
     for turn in &history.turns {
         append_messages(&turn.input.items, &mut messages, provider, adapter_config)?;
         let output = turn.output.as_ref().expect("validated historical output");
@@ -169,22 +171,28 @@ fn request_body(
         };
     }
     if !history.tools.is_empty() {
-        let mut tools = Vec::with_capacity(history.tools.len());
-        for tool in &history.tools {
-            super::schema::validate_tool(tool)?;
-            let mut function = json!({
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters,
-            });
-            if let Some(strict) = tool.strict {
-                function["strict"] = json!(strict);
-            }
-            tools.push(json!({"type": "function", "function": function}));
-        }
-        body["tools"] = json!(tools);
+        body["tools"] = serialize_tools(&history.tools)?;
     }
+
     Ok(body)
+}
+
+fn serialize_tools(tools: &[super::ToolDefinition]) -> Result<Value, Error> {
+    let mut definitions = Vec::with_capacity(tools.len());
+    for tool in tools {
+        super::schema::validate_tool(tool)?;
+        let mut function = json!({
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.parameters,
+        });
+        if let Some(strict) = tool.strict {
+            function["strict"] = json!(strict);
+        }
+        definitions.push(json!({"type": "function", "function": function}));
+    }
+
+    Ok(json!(definitions))
 }
 
 #[derive(Default)]
@@ -198,6 +206,60 @@ struct AssistantMessage {
 }
 
 impl AssistantMessage {
+    fn append_reasoning(
+        &mut self,
+        reasoning: &Reasoning,
+        provider: ProviderType,
+        config: OpenAiCompletionsConfig,
+    ) -> Result<(), Error> {
+        if !config.openrouter_reasoning_fields {
+            return Err(unsupported(
+                "native reasoning replay requires openrouter_reasoning_fields",
+            ));
+        }
+
+        let state = reasoning
+            .opaque_state
+            .as_ref()
+            .ok_or_else(|| unsupported("reasoning replay without native OpenRouter state"))?;
+        if state.provider != provider {
+            return Err(Error::ProviderMismatch {
+                expected: provider,
+                actual: state.provider,
+            });
+        }
+
+        let state = state
+            .data
+            .as_object()
+            .filter(|object| {
+                !object.is_empty()
+                    && object
+                        .keys()
+                        .all(|key| matches!(key.as_str(), "reasoning" | "reasoning_details"))
+            })
+            .ok_or_else(|| unsupported("unrecognized OpenRouter reasoning replay state"))?;
+
+        if let Some(reasoning) = state.get("reasoning") {
+            let reasoning = reasoning
+                .as_str()
+                .ok_or_else(|| unsupported("non-string OpenRouter reasoning replay state"))?;
+            self.reasoning
+                .get_or_insert_with(String::new)
+                .push_str(reasoning);
+        }
+        if let Some(details) = state.get("reasoning_details") {
+            let details = details
+                .as_array()
+                .filter(|details| !details.is_empty() && details.iter().all(Value::is_object))
+                .ok_or_else(|| {
+                    unsupported("unrecognized OpenRouter reasoning_details replay state")
+                })?;
+            self.reasoning_details.extend(details.iter().cloned());
+        }
+        Ok(())
+    }
+
     fn flush(&mut self, messages: &mut Vec<Value>) {
         if !self.has_message
             && self.calls.is_empty()
@@ -206,6 +268,7 @@ impl AssistantMessage {
         {
             return;
         }
+
         let mut message = json!({
             "role": "assistant",
             "content": self.content.take().unwrap_or(Value::Null),
@@ -222,6 +285,7 @@ impl AssistantMessage {
         if !self.reasoning_details.is_empty() {
             message["reasoning_details"] = json!(std::mem::take(&mut self.reasoning_details));
         }
+
         messages.push(message);
         self.has_message = false;
     }
@@ -236,6 +300,7 @@ fn append_messages(
     config: OpenAiCompletionsConfig,
 ) -> Result<(), Error> {
     let mut assistant = AssistantMessage::default();
+
     for item in items {
         if !item.metadata.provider_metadata.is_empty() {
             return Err(unsupported("Chat Completions item replay metadata"));
@@ -261,50 +326,7 @@ fn append_messages(
                 }));
             }
             HistoryItemKind::Reasoning(reasoning) => {
-                if !config.openrouter_reasoning_fields {
-                    return Err(unsupported(
-                        "native reasoning replay requires openrouter_reasoning_fields",
-                    ));
-                }
-                let state = reasoning.opaque_state.as_ref().ok_or_else(|| {
-                    unsupported("reasoning replay without native OpenRouter state")
-                })?;
-                if state.provider != provider {
-                    return Err(Error::ProviderMismatch {
-                        expected: provider,
-                        actual: state.provider,
-                    });
-                }
-                let state = state
-                    .data
-                    .as_object()
-                    .filter(|object| {
-                        !object.is_empty()
-                            && object.keys().all(|key| {
-                                matches!(key.as_str(), "reasoning" | "reasoning_details")
-                            })
-                    })
-                    .ok_or_else(|| unsupported("unrecognized OpenRouter reasoning replay state"))?;
-                if let Some(reasoning) = state.get("reasoning") {
-                    let reasoning = reasoning.as_str().ok_or_else(|| {
-                        unsupported("non-string OpenRouter reasoning replay state")
-                    })?;
-                    assistant
-                        .reasoning
-                        .get_or_insert_with(String::new)
-                        .push_str(reasoning);
-                }
-                if let Some(details) = state.get("reasoning_details") {
-                    let details = details
-                        .as_array()
-                        .filter(|details| {
-                            !details.is_empty() && details.iter().all(Value::is_object)
-                        })
-                        .ok_or_else(|| {
-                            unsupported("unrecognized OpenRouter reasoning_details replay state")
-                        })?;
-                    assistant.reasoning_details.extend(details.iter().cloned());
-                }
+                assistant.append_reasoning(reasoning, provider, config)?;
             }
             HistoryItemKind::Message(message) => {
                 assistant.flush(messages);
@@ -327,6 +349,7 @@ fn append_messages(
             }
         }
     }
+
     assistant.flush(messages);
     Ok(())
 }
@@ -359,6 +382,7 @@ fn message_content(blocks: &[ContentBlock], role: Role) -> Result<(Value, Option
     let mut parts = Vec::new();
     let mut refusal: Option<String> = None;
     let mut has_images = false;
+
     for block in blocks {
         match block {
             ContentBlock::Text(block) => {
@@ -375,27 +399,7 @@ fn message_content(blocks: &[ContentBlock], role: Role) -> Result<(Value, Option
                     .push_str(&block.text);
             }
             ContentBlock::Image(image) if role == Role::User => {
-                let url = match &image.source {
-                    MediaSource::Url(url) if !url.is_empty() => url.clone(),
-                    MediaSource::Inline { mime_type, data }
-                        if mime_type.starts_with("image/") && !data.is_empty() =>
-                    {
-                        format!(
-                            "data:{mime_type};base64,{}",
-                            base64::engine::general_purpose::STANDARD.encode(data)
-                        )
-                    }
-                    MediaSource::ProviderFile { .. } => {
-                        return Err(unsupported("provider file IDs as Chat Completions images"));
-                    }
-                    _ => {
-                        return Err(Error::InvalidRequest {
-                            message:
-                                "images require a nonempty URL or inline image MIME type and bytes"
-                                    .into(),
-                        });
-                    }
-                };
+                let url = image_source_url(&image.source)?;
                 let mut image_url = json!({"url": url});
                 if let Some(detail) = image.detail {
                     image_url["detail"] = json!(match detail {
@@ -426,6 +430,7 @@ fn message_content(blocks: &[ContentBlock], role: Role) -> Result<(Value, Option
             }
         }
     }
+
     let content = if has_images {
         Value::Array(parts)
     } else if parts.is_empty() && role == Role::Assistant {
@@ -438,7 +443,30 @@ fn message_content(blocks: &[ContentBlock], role: Role) -> Result<(Value, Option
                 .collect(),
         )
     };
+
     Ok((content, refusal))
+}
+
+fn image_source_url(source: &MediaSource) -> Result<String, Error> {
+    Ok(match source {
+        MediaSource::Url(url) if !url.is_empty() => url.clone(),
+        MediaSource::Inline { mime_type, data }
+            if mime_type.starts_with("image/") && !data.is_empty() =>
+        {
+            format!(
+                "data:{mime_type};base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(data)
+            )
+        }
+        MediaSource::ProviderFile { .. } => {
+            return Err(unsupported("provider file IDs as Chat Completions images"));
+        }
+        _ => {
+            return Err(Error::InvalidRequest {
+                message: "images require a nonempty URL or inline image MIME type and bytes".into(),
+            });
+        }
+    })
 }
 
 #[derive(Default)]
@@ -446,6 +474,27 @@ struct PendingCall {
     id: String,
     name: String,
     arguments: String,
+}
+
+impl PendingCall {
+    fn append_function(&mut self, function: &Value) -> Result<(), Error> {
+        let function = function
+            .as_object()
+            .ok_or_else(|| protocol("tool call function must be an object"))?;
+        for (key, value) in function {
+            if !value.is_null() && !matches!(key.as_str(), "name" | "arguments") {
+                return Err(unsupported(format!("function call delta field {key}")));
+            }
+        }
+
+        append_fragment(function.get("name"), &mut self.name, "tool name")?;
+        append_fragment(
+            function.get("arguments"),
+            &mut self.arguments,
+            "tool arguments",
+        )?;
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -480,6 +529,7 @@ impl Decoder for CompletionsDecoder {
         if data.is_empty() {
             return Ok(false);
         }
+
         let value: Value = serde_json::from_str(data)?;
         let object = value
             .as_object()
@@ -490,61 +540,17 @@ impl Decoder for CompletionsDecoder {
         if event.event.as_deref() == Some("error") {
             return Err(provider_error(&value));
         }
+
         self.validate_reasoning_fields(object)?;
-        let mut metadata_changed = false;
-        if let Some(id) = object.get("id").filter(|id| !id.is_null()) {
-            let id = id
-                .as_str()
-                .filter(|id| !id.is_empty())
-                .ok_or_else(|| protocol("response id must be a nonempty string"))?;
-            if output
-                .response_id
-                .as_deref()
-                .is_some_and(|previous| previous != id)
-            {
-                return Err(protocol("response id changed during streaming"));
-            }
-            if output.response_id.is_none() {
-                output.response_id = Some(id.to_owned());
-                metadata_changed = true;
-            }
-        }
-        for (key, value) in object {
-            if !matches!(key.as_str(), "id" | "choices" | "usage" | "error")
-                && output.provider_metadata.get(key) != Some(value)
-            {
-                output.provider_metadata.insert(key.clone(), value.clone());
-                metadata_changed = true;
-            }
-        }
-        if metadata_changed {
-            events.push_back(TurnEvent::MetadataUpdated);
-        }
+        update_response_metadata(object, output, events)?;
         if let Some(value) = object.get("usage").filter(|value| !value.is_null()) {
             if !value.is_object() {
                 return Err(protocol("usage must be an object"));
             }
-            let incoming = usage(value, true);
-            macro_rules! replace_reported {
-                ($($field:ident),*) => {$(
-                    if incoming.$field.is_some() {
-                        output.usage.$field = incoming.$field;
-                    }
-                )*};
-            }
-            replace_reported!(
-                input_tokens,
-                output_tokens,
-                total_tokens,
-                cached_input_tokens,
-                reasoning_output_tokens
-            );
-            output
-                .usage
-                .provider_details
-                .extend(incoming.provider_details);
+            output.usage.merge_reported(usage(value, true));
             events.push_back(TurnEvent::UsageUpdated);
         }
+
         let choices = object
             .get("choices")
             .and_then(Value::as_array)
@@ -560,43 +566,48 @@ impl Decoder for CompletionsDecoder {
         let choice = choices[0]
             .as_object()
             .ok_or_else(|| protocol("choice must be an object"))?;
-        self.validate_reasoning_fields(choice)?;
-        let delta = match choice.get("delta") {
-            Some(Value::Object(delta)) => delta,
-            None | Some(Value::Null)
-                if choice
-                    .get("finish_reason")
-                    .is_some_and(|value| !value.is_null()) =>
-            {
-                // Some compatible servers omit an empty final delta.
-                static EMPTY: std::sync::LazyLock<Map<String, Value>> =
-                    std::sync::LazyLock::new(Map::new);
-                &EMPTY
-            }
-            _ => return Err(protocol("streaming choice requires an object delta")),
-        };
-        if self.finish_reason.is_some() {
-            return Err(protocol("choice received after finish_reason"));
-        }
-        self.decode_delta(delta, output, events)?;
-        for (key, value) in choice {
-            if !matches!(key.as_str(), "index" | "delta" | "finish_reason") {
-                output
-                    .provider_metadata
-                    .insert(format!("choice_{key}"), value.clone());
-                events.push_back(TurnEvent::MetadataUpdated);
-            }
-        }
-        if let Some(reason) = choice.get("finish_reason").filter(|value| !value.is_null()) {
-            let reason = reason
-                .as_str()
-                .filter(|reason| !reason.is_empty())
-                .ok_or_else(|| protocol("finish_reason must be a nonempty string"))?;
-            self.finish(reason, output, events)?;
-            self.finish_reason = Some(reason.to_owned());
-        }
+        self.decode_choice(choice, output, events)?;
         Ok(false)
     }
+}
+
+fn update_response_metadata(
+    object: &Map<String, Value>,
+    output: &mut ModelTurnOutput,
+    events: &mut VecDeque<TurnEvent>,
+) -> Result<(), Error> {
+    let mut metadata_changed = false;
+    if let Some(id) = object.get("id").filter(|id| !id.is_null()) {
+        let id = id
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| protocol("response id must be a nonempty string"))?;
+        if output
+            .response_id
+            .as_deref()
+            .is_some_and(|previous| previous != id)
+        {
+            return Err(protocol("response id changed during streaming"));
+        }
+        if output.response_id.is_none() {
+            output.response_id = Some(id.to_owned());
+            metadata_changed = true;
+        }
+    }
+
+    for (key, value) in object {
+        if !matches!(key.as_str(), "id" | "choices" | "usage" | "error")
+            && output.provider_metadata.get(key) != Some(value)
+        {
+            output.provider_metadata.insert(key.clone(), value.clone());
+            metadata_changed = true;
+        }
+    }
+
+    if metadata_changed {
+        events.push_back(TurnEvent::MetadataUpdated);
+    }
+    Ok(())
 }
 
 fn outcome(reason: &str) -> Outcome {
@@ -608,6 +619,7 @@ fn outcome(reason: &str) -> Outcome {
             metadata: Default::default(),
         });
     }
+
     let reason = match reason {
         "stop" => StopReason::EndTurn,
         "tool_calls" | "function_call" => StopReason::ToolCalls,
@@ -627,6 +639,52 @@ impl CompletionsDecoder {
             openrouter_reasoning_fields,
             ..Self::default()
         }
+    }
+
+    fn decode_choice(
+        &mut self,
+        choice: &Map<String, Value>,
+        output: &mut ModelTurnOutput,
+        events: &mut VecDeque<TurnEvent>,
+    ) -> Result<(), Error> {
+        self.validate_reasoning_fields(choice)?;
+        let delta = match choice.get("delta") {
+            Some(Value::Object(delta)) => delta,
+            None | Some(Value::Null)
+                if choice
+                    .get("finish_reason")
+                    .is_some_and(|value| !value.is_null()) =>
+            {
+                // Some compatible servers omit an empty final delta.
+                static EMPTY: std::sync::LazyLock<Map<String, Value>> =
+                    std::sync::LazyLock::new(Map::new);
+                &EMPTY
+            }
+            _ => return Err(protocol("streaming choice requires an object delta")),
+        };
+        if self.finish_reason.is_some() {
+            return Err(protocol("choice received after finish_reason"));
+        }
+
+        self.decode_delta(delta, output, events)?;
+        for (key, value) in choice {
+            if !matches!(key.as_str(), "index" | "delta" | "finish_reason") {
+                output
+                    .provider_metadata
+                    .insert(format!("choice_{key}"), value.clone());
+                events.push_back(TurnEvent::MetadataUpdated);
+            }
+        }
+
+        if let Some(reason) = choice.get("finish_reason").filter(|value| !value.is_null()) {
+            let reason = reason
+                .as_str()
+                .filter(|reason| !reason.is_empty())
+                .ok_or_else(|| protocol("finish_reason must be a nonempty string"))?;
+            self.finish(reason, output, events)?;
+            self.finish_reason = Some(reason.to_owned());
+        }
+        Ok(())
     }
 
     fn validate_reasoning_fields(&self, fields: &Map<String, Value>) -> Result<(), Error> {
@@ -671,6 +729,7 @@ impl CompletionsDecoder {
         {
             return Err(protocol("streamed message role is not assistant"));
         }
+
         for (key, refusal) in [("content", false), ("refusal", true)] {
             if let Some(value) = delta.get(key).filter(|value| !value.is_null()) {
                 let text = value
@@ -680,34 +739,67 @@ impl CompletionsDecoder {
             }
         }
         if let Some(annotations) = delta.get("annotations").filter(|value| !value.is_null()) {
-            let annotations = annotations
-                .as_array()
-                .ok_or_else(|| protocol("annotations must be an array"))?;
-            if !annotations.is_empty() {
-                self.append_text("", false, output, events);
-                let message_index = self.message.unwrap();
-                let content_index = self.text.unwrap();
-                if let HistoryItemKind::Message(message) = &mut output.items[message_index].kind
-                    && let ContentBlock::Text(text) = &mut message.content[content_index]
-                {
-                    text.annotations.extend(annotations.iter().map(|raw| {
-                        Annotation {
-                            provider: output.config.provider,
-                            annotation_type: raw
-                                .get("type")
-                                .and_then(Value::as_str)
-                                .unwrap_or("unknown")
-                                .to_owned(),
-                            raw: raw.clone(),
-                        }
-                    }));
-                }
-                events.push_back(TurnEvent::ItemUpdated {
-                    index: message_index,
-                    update: ItemUpdate::ContentUpdated { content_index },
-                });
-            }
+            self.append_annotations(annotations, output, events)?;
         }
+
+        self.decode_reasoning_text(delta, output, events)?;
+
+        if let Some(details) = delta
+            .get("reasoning_details")
+            .filter(|value| !value.is_null())
+        {
+            self.append_reasoning_details(details, output, events)?;
+        }
+        if let Some(calls) = delta.get("tool_calls").filter(|value| !value.is_null()) {
+            self.decode_tool_calls(calls)?;
+        }
+        Ok(())
+    }
+
+    fn append_annotations(
+        &mut self,
+        annotations: &Value,
+        output: &mut ModelTurnOutput,
+        events: &mut VecDeque<TurnEvent>,
+    ) -> Result<(), Error> {
+        let annotations = annotations
+            .as_array()
+            .ok_or_else(|| protocol("annotations must be an array"))?;
+        if annotations.is_empty() {
+            return Ok(());
+        }
+
+        self.append_text("", false, output, events);
+        let message_index = self.message.unwrap();
+        let content_index = self.text.unwrap();
+        if let HistoryItemKind::Message(message) = &mut output.items[message_index].kind
+            && let ContentBlock::Text(text) = &mut message.content[content_index]
+        {
+            text.annotations.extend(annotations.iter().map(|raw| {
+                Annotation {
+                    provider: output.config.provider,
+                    annotation_type: raw
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                        .to_owned(),
+                    raw: raw.clone(),
+                }
+            }));
+        }
+        events.push_back(TurnEvent::ItemUpdated {
+            index: message_index,
+            update: ItemUpdate::ContentUpdated { content_index },
+        });
+        Ok(())
+    }
+
+    fn decode_reasoning_text(
+        &mut self,
+        delta: &Map<String, Value>,
+        output: &mut ModelTurnOutput,
+        events: &mut VecDeque<TurnEvent>,
+    ) -> Result<(), Error> {
         let reasoning_text = delta.get("reasoning").filter(|value| !value.is_null());
         let reasoning_alias = delta
             .get("reasoning_content")
@@ -720,6 +812,7 @@ impl CompletionsDecoder {
                 "conflicting reasoning and reasoning_content fields",
             ));
         }
+
         if let Some(value) = reasoning_text.or(reasoning_alias) {
             let text = value
                 .as_str()
@@ -727,6 +820,7 @@ impl CompletionsDecoder {
             self.reasoning_text
                 .get_or_insert_with(String::new)
                 .push_str(text);
+
             let index = self.ensure_reasoning(output, events);
             if let HistoryItemKind::Reasoning(reasoning) = &mut output.items[index].kind {
                 if reasoning.summary.is_empty() {
@@ -747,57 +841,42 @@ impl CompletionsDecoder {
                     });
                 }
             }
+
             self.update_reasoning_state(output, events);
         }
-        if let Some(details) = delta
-            .get("reasoning_details")
-            .filter(|value| !value.is_null())
-        {
-            self.append_reasoning_details(details, output, events)?;
-        }
-        if let Some(calls) = delta.get("tool_calls").filter(|value| !value.is_null()) {
-            let calls = calls
-                .as_array()
-                .ok_or_else(|| protocol("tool_calls delta must be an array"))?;
-            for call in calls {
-                let call = call
-                    .as_object()
-                    .ok_or_else(|| protocol("tool call delta must be an object"))?;
-                let index = call
-                    .get("index")
-                    .and_then(Value::as_u64)
-                    .ok_or_else(|| protocol("tool call delta requires a nonnegative index"))?;
-                if call
-                    .get("type")
-                    .is_some_and(|kind| !kind.is_null() && kind.as_str() != Some("function"))
+        Ok(())
+    }
+
+    fn decode_tool_calls(&mut self, calls: &Value) -> Result<(), Error> {
+        let calls = calls
+            .as_array()
+            .ok_or_else(|| protocol("tool_calls delta must be an array"))?;
+        for call in calls {
+            let call = call
+                .as_object()
+                .ok_or_else(|| protocol("tool call delta must be an object"))?;
+            let index = call
+                .get("index")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| protocol("tool call delta requires a nonnegative index"))?;
+            if call
+                .get("type")
+                .is_some_and(|kind| !kind.is_null() && kind.as_str() != Some("function"))
+            {
+                return Err(unsupported("non-function Chat Completions tools"));
+            }
+
+            for (key, value) in call {
+                if !value.is_null() && !matches!(key.as_str(), "index" | "type" | "id" | "function")
                 {
-                    return Err(unsupported("non-function Chat Completions tools"));
+                    return Err(unsupported(format!("tool call delta field {key}")));
                 }
-                for (key, value) in call {
-                    if !value.is_null()
-                        && !matches!(key.as_str(), "index" | "type" | "id" | "function")
-                    {
-                        return Err(unsupported(format!("tool call delta field {key}")));
-                    }
-                }
-                let pending = self.calls.entry(index).or_default();
-                append_fragment(call.get("id"), &mut pending.id, "tool call id")?;
-                if let Some(function) = call.get("function").filter(|value| !value.is_null()) {
-                    let function = function
-                        .as_object()
-                        .ok_or_else(|| protocol("tool call function must be an object"))?;
-                    for (key, value) in function {
-                        if !value.is_null() && !matches!(key.as_str(), "name" | "arguments") {
-                            return Err(unsupported(format!("function call delta field {key}")));
-                        }
-                    }
-                    append_fragment(function.get("name"), &mut pending.name, "tool name")?;
-                    append_fragment(
-                        function.get("arguments"),
-                        &mut pending.arguments,
-                        "tool arguments",
-                    )?;
-                }
+            }
+
+            let pending = self.calls.entry(index).or_default();
+            append_fragment(call.get("id"), &mut pending.id, "tool call id")?;
+            if let Some(function) = call.get("function").filter(|value| !value.is_null()) {
+                pending.append_function(function)?;
             }
         }
         Ok(())
@@ -822,6 +901,7 @@ impl CompletionsDecoder {
             events.push_back(TurnEvent::ItemAdded { index });
             index
         });
+
         let HistoryItemKind::Message(message) = &mut output.items[index].kind else {
             unreachable!()
         };
@@ -848,6 +928,7 @@ impl CompletionsDecoder {
             });
             content_index
         });
+
         if !fragment.is_empty() {
             let delta = match &mut message.content[content_index] {
                 ContentBlock::Text(text) => {
@@ -898,34 +979,12 @@ impl CompletionsDecoder {
         if details.is_empty() {
             return Ok(());
         }
+
         for (position, detail) in details.iter().enumerate() {
             let detail = detail
                 .as_object()
                 .ok_or_else(|| protocol("reasoning detail must be an object"))?;
-            let index = if let Some(index) = detail.get("index").filter(|value| !value.is_null()) {
-                index
-                    .as_u64()
-                    .ok_or_else(|| protocol("reasoning detail index must be nonnegative"))?
-            } else if let Some(id) = detail.get("id").filter(|value| !value.is_null()) {
-                // An unindexed detail with a new ID is a new block, even when
-                // it is the sole entry in a later delta array. Array position
-                // is not a stable identity across chunks.
-                if let Some(index) = self.reasoning_details.iter().find_map(|(index, previous)| {
-                    (previous.get("id") == Some(id)).then_some(*index)
-                }) {
-                    index
-                } else {
-                    let mut index = 0_u64;
-                    while self.reasoning_details.contains_key(&index) {
-                        index = index
-                            .checked_add(1)
-                            .ok_or_else(|| protocol("too many reasoning details"))?;
-                    }
-                    index
-                }
-            } else {
-                position as u64
-            };
+            let index = self.reasoning_detail_index(detail, position)?;
             let entry = self
                 .reasoning_details
                 .entry(index)
@@ -933,52 +992,44 @@ impl CompletionsDecoder {
             let entry = entry
                 .as_object_mut()
                 .expect("reasoning details are objects");
-            for (key, value) in detail {
-                // Optional native fields often arrive as explicit nulls. They
-                // carry no fragment or identity, and must not erase established
-                // state or prevent an identity from being supplied later.
-                if value.is_null()
-                    && matches!(
-                        key.as_str(),
-                        "index"
-                            | "id"
-                            | "type"
-                            | "format"
-                            | "text"
-                            | "summary"
-                            | "data"
-                            | "signature"
-                    )
-                {
-                    continue;
-                }
-                if matches!(key.as_str(), "text" | "summary" | "data" | "signature") {
-                    let fragment = value
-                        .as_str()
-                        .ok_or_else(|| protocol("reasoning detail fragments must be strings"))?;
-                    let accumulated = entry.entry(key.clone()).or_insert_with(|| json!(""));
-                    let accumulated = accumulated
-                        .as_str()
-                        .expect("reasoning fragments are strings");
-                    let combined = format!("{accumulated}{fragment}");
-                    entry.insert(key.clone(), json!(combined));
-                } else {
-                    if matches!(key.as_str(), "id" | "type" | "format")
-                        && entry
-                            .get(key)
-                            .is_some_and(|previous| !previous.is_null() && previous != value)
-                    {
-                        return Err(protocol(
-                            "reasoning detail identity changed during streaming",
-                        ));
-                    }
-                    entry.insert(key.clone(), value.clone());
-                }
-            }
+            merge_reasoning_detail(entry, detail)?;
         }
+
         self.ensure_reasoning(output, events);
         self.update_reasoning_state(output, events);
         Ok(())
+    }
+
+    fn reasoning_detail_index(
+        &self,
+        detail: &Map<String, Value>,
+        position: usize,
+    ) -> Result<u64, Error> {
+        if let Some(index) = detail.get("index").filter(|value| !value.is_null()) {
+            return index
+                .as_u64()
+                .ok_or_else(|| protocol("reasoning detail index must be nonnegative"));
+        }
+        let Some(id) = detail.get("id").filter(|value| !value.is_null()) else {
+            return Ok(position as u64);
+        };
+
+        // Array position is not a stable identity across chunks.
+        if let Some(index) = self
+            .reasoning_details
+            .iter()
+            .find_map(|(index, previous)| (previous.get("id") == Some(id)).then_some(*index))
+        {
+            return Ok(index);
+        }
+
+        let mut index = 0_u64;
+        while self.reasoning_details.contains_key(&index) {
+            index = index
+                .checked_add(1)
+                .ok_or_else(|| protocol("too many reasoning details"))?;
+        }
+        Ok(index)
     }
 
     fn update_reasoning_state(
@@ -997,6 +1048,7 @@ impl CompletionsDecoder {
                 json!(self.reasoning_details.values().collect::<Vec<_>>()),
             );
         }
+
         if let HistoryItemKind::Reasoning(reasoning) = &mut output.items[index].kind {
             reasoning.opaque_state = Some(ProviderOpaqueData {
                 provider: output.config.provider,
@@ -1031,11 +1083,13 @@ impl CompletionsDecoder {
         if reason == "tool_calls" && self.calls.is_empty() {
             return Err(protocol("tool_calls finish_reason without tool calls"));
         }
+
         let status = if matches!(reason, "length" | "content_filter" | "error") {
             "incomplete"
         } else {
             "completed"
         };
+
         // Complete only previously existing items here; newly appended calls are
         // completed below and never mutated after their completion notification.
         for index in 0..output.items.len() {
@@ -1050,6 +1104,7 @@ impl CompletionsDecoder {
             output.items[index].metadata.item_status = Some(status.into());
             events.push_back(TurnEvent::ItemCompleted { index });
         }
+
         for call in std::mem::take(&mut self.calls).into_values() {
             let index = output.items.len();
             output.items.push(HistoryItem {
@@ -1070,6 +1125,48 @@ impl CompletionsDecoder {
         }
         Ok(())
     }
+}
+
+fn merge_reasoning_detail(
+    entry: &mut Map<String, Value>,
+    detail: &Map<String, Value>,
+) -> Result<(), Error> {
+    for (key, value) in detail {
+        // Optional native fields often arrive as explicit nulls. They
+        // carry no fragment or identity, and must not erase established
+        // state or prevent an identity from being supplied later.
+        if value.is_null()
+            && matches!(
+                key.as_str(),
+                "index" | "id" | "type" | "format" | "text" | "summary" | "data" | "signature"
+            )
+        {
+            continue;
+        }
+        if matches!(key.as_str(), "text" | "summary" | "data" | "signature") {
+            let fragment = value
+                .as_str()
+                .ok_or_else(|| protocol("reasoning detail fragments must be strings"))?;
+            let accumulated = entry.entry(key.clone()).or_insert_with(|| json!(""));
+            let accumulated = accumulated
+                .as_str()
+                .expect("reasoning fragments are strings");
+            let combined = format!("{accumulated}{fragment}");
+            entry.insert(key.clone(), json!(combined));
+        } else {
+            if matches!(key.as_str(), "id" | "type" | "format")
+                && entry
+                    .get(key)
+                    .is_some_and(|previous| !previous.is_null() && previous != value)
+            {
+                return Err(protocol(
+                    "reasoning detail identity changed during streaming",
+                ));
+            }
+            entry.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(())
 }
 
 fn streaming_metadata() -> HistoryItemMetadata {

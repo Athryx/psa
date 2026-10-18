@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::ToolDefinition;
 use crate::Error;
@@ -21,11 +21,14 @@ pub(super) fn validate_tool(tool: &ToolDefinition) -> Result<(), Error> {
         {
             return Err("function names must be 1-64 ASCII letters, digits, '_' or '-'".into());
         }
+
         if !tool.parameters.is_object() {
             return Err("parameters must be a JSON Schema object".into());
         }
+
         validate_schema(&tool.parameters)
     };
+
     validate().map_err(|message| Error::InvalidToolDefinition {
         name: tool.name.clone(),
         message,
@@ -39,9 +42,17 @@ fn validate_schema(schema: &Value) -> Result<(), String> {
     if schema.is_boolean() {
         return Ok(());
     }
+
     let object = schema
         .as_object()
         .ok_or("a subschema must be an object or boolean")?;
+
+    validate_type(object)?;
+    validate_subschemas(object)?;
+    validate_keyword_values(object)
+}
+
+fn validate_type(object: &Map<String, Value>) -> Result<(), String> {
     if let Some(kind) = object.get("type") {
         let valid = |value: &Value| {
             matches!(
@@ -64,6 +75,11 @@ fn validate_schema(schema: &Value) -> Result<(), String> {
             }
         }
     }
+
+    Ok(())
+}
+
+fn validate_subschemas(object: &Map<String, Value>) -> Result<(), String> {
     for keyword in [
         "properties",
         "patternProperties",
@@ -80,6 +96,7 @@ fn validate_schema(schema: &Value) -> Result<(), String> {
             }
         }
     }
+
     for keyword in [
         "additionalProperties",
         "unevaluatedProperties",
@@ -96,19 +113,23 @@ fn validate_schema(schema: &Value) -> Result<(), String> {
             validate_schema(value)?;
         }
     }
+
     for keyword in ["allOf", "anyOf", "oneOf", "prefixItems"] {
         if let Some(value) = object.get(keyword) {
             let values = value
                 .as_array()
                 .ok_or_else(|| format!("schema {keyword} must be an array"))?;
+
             if values.is_empty() && keyword != "prefixItems" {
                 return Err(format!("schema {keyword} must be nonempty"));
             }
+
             for value in values {
                 validate_schema(value)?;
             }
         }
     }
+
     if let Some(items) = object.get("items") {
         // Tuple-form items belongs to older dialects and is still supported by
         // compatible servers. Leave dialect selection to the server.
@@ -120,11 +141,17 @@ fn validate_schema(schema: &Value) -> Result<(), String> {
             validate_schema(items)?;
         }
     }
+
+    Ok(())
+}
+
+fn validate_keyword_values(object: &Map<String, Value>) -> Result<(), String> {
     if let Some(required) = object.get("required") {
         let required = required
             .as_array()
             .ok_or("schema required must be an array")?;
         let mut seen = HashSet::new();
+
         if !required
             .iter()
             .all(|name| name.as_str().is_some_and(|name| seen.insert(name)))
@@ -132,6 +159,7 @@ fn validate_schema(schema: &Value) -> Result<(), String> {
             return Err("schema required must contain unique strings".into());
         }
     }
+
     for keyword in [
         "$ref",
         "$schema",
@@ -145,6 +173,7 @@ fn validate_schema(schema: &Value) -> Result<(), String> {
             return Err(format!("schema {keyword} must be a string"));
         }
     }
+
     for keyword in [
         "minLength",
         "maxLength",
@@ -162,9 +191,11 @@ fn validate_schema(schema: &Value) -> Result<(), String> {
             return Err(format!("schema {keyword} must be a nonnegative integer"));
         }
     }
+
     if object.get("enum").is_some_and(|value| !value.is_array()) {
         return Err("schema enum must be an array".into());
     }
+
     Ok(())
 }
 
@@ -190,6 +221,7 @@ mod tests {
                 Err(Error::InvalidToolDefinition { .. })
             ));
         }
+
         for name in ["a", "tool_name-123", &"a".repeat(64)] {
             validate_tool(&tool(name, json!({"type":"object"}))).unwrap();
         }

@@ -21,37 +21,8 @@ pub(super) struct ApiClient {
 impl ApiClient {
     /// The URL is the complete endpoint, not a base URL; no path is appended.
     pub(super) fn new(url: impl Into<String>, key: impl Into<String>) -> Result<Self, Error> {
-        let url = reqwest::Url::parse(&url.into()).map_err(|_| Error::InvalidConfig {
-            field: "api_url".into(),
-            message: "expected an absolute HTTP(S) endpoint URL".into(),
-        })?;
-        if !matches!(url.scheme(), "http" | "https")
-            || url.host_str().is_none()
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.fragment().is_some()
-        {
-            return Err(Error::InvalidConfig {
-                field: "api_url".into(),
-                message: "expected an HTTP(S) URL without userinfo or fragment".into(),
-            });
-        }
-        let key = key.into();
-        if key.is_empty() || key.trim() != key {
-            return Err(Error::InvalidConfig {
-                field: "api_key".into(),
-                message: "key must be nonempty without surrounding whitespace".into(),
-            });
-        }
-        let mut authorization =
-            HeaderValue::from_str(&format!("Bearer {key}")).map_err(|_| Error::InvalidConfig {
-                field: "api_key".into(),
-                message: "key contains invalid header characters".into(),
-            })?;
-        authorization.set_sensitive(true);
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, authorization);
-        headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+        let url = endpoint_url(&url.into())?;
+        let headers = authenticated_headers(&key.into())?;
         let client = reqwest::Client::builder()
             .default_headers(headers)
             // Do not forward secrets or silently change request semantics on redirects.
@@ -59,54 +30,16 @@ impl ApiClient {
             // A retry could create a second billable model request.
             .retry(reqwest::retry::never())
             .build()?;
+
         Ok(Self { client, url })
     }
 
     pub(super) async fn post(&self, body: &Value) -> Result<reqwest::Response, Error> {
-        let mut response = self.client.post(self.url.clone()).json(body).send().await?;
+        let response = self.client.post(self.url.clone()).json(body).send().await?;
         if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let retry_after_seconds = response
-                .headers()
-                .get(RETRY_AFTER)
-                .and_then(|header| header.to_str().ok())
-                .and_then(|value| retry_after(value, std::time::SystemTime::now()));
-            let mut bytes = Vec::new();
-            let mut read_error = None;
-            loop {
-                match response.chunk().await {
-                    Ok(Some(chunk)) => {
-                        let remaining = MAX_ERROR_BYTES - bytes.len();
-                        bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-                        if bytes.len() == MAX_ERROR_BYTES {
-                            break;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(error) => {
-                        read_error = Some(error.without_url().to_string());
-                        break;
-                    }
-                }
-            }
-            let mut message = serde_json::from_slice::<Value>(&bytes)
-                .ok()
-                .and_then(|body| {
-                    body.pointer("/error/message")
-                        .or_else(|| body.get("message"))
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
-            if let Some(error) = read_error {
-                message.push_str(&format!(" [could not read complete error body: {error}]"));
-            }
-            return Err(Error::Http {
-                status,
-                message,
-                retry_after_seconds,
-            });
+            return Err(http_error(response).await);
         }
+
         let is_sse = response
             .headers()
             .get(CONTENT_TYPE)
@@ -116,7 +49,96 @@ impl ApiClient {
         if !is_sse {
             return Err(protocol("expected a text/event-stream HTTP response"));
         }
+
         Ok(response)
+    }
+}
+
+fn endpoint_url(value: &str) -> Result<reqwest::Url, Error> {
+    let url = reqwest::Url::parse(value).map_err(|_| Error::InvalidConfig {
+        field: "api_url".into(),
+        message: "expected an absolute HTTP(S) endpoint URL".into(),
+    })?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(Error::InvalidConfig {
+            field: "api_url".into(),
+            message: "expected an HTTP(S) URL without userinfo or fragment".into(),
+        });
+    }
+
+    Ok(url)
+}
+
+fn authenticated_headers(key: &str) -> Result<HeaderMap, Error> {
+    if key.is_empty() || key.trim() != key {
+        return Err(Error::InvalidConfig {
+            field: "api_key".into(),
+            message: "key must be nonempty without surrounding whitespace".into(),
+        });
+    }
+
+    let mut authorization =
+        HeaderValue::from_str(&format!("Bearer {key}")).map_err(|_| Error::InvalidConfig {
+            field: "api_key".into(),
+            message: "key contains invalid header characters".into(),
+        })?;
+    authorization.set_sensitive(true);
+
+    let mut headers = HeaderMap::new();
+    headers.insert(AUTHORIZATION, authorization);
+    headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+
+    Ok(headers)
+}
+
+async fn http_error(mut response: reqwest::Response) -> Error {
+    let status = response.status().as_u16();
+    let retry_after_seconds = response
+        .headers()
+        .get(RETRY_AFTER)
+        .and_then(|header| header.to_str().ok())
+        .and_then(|value| retry_after(value, std::time::SystemTime::now()));
+    let (bytes, read_error) = read_error_body(&mut response).await;
+
+    let mut message = serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|body| {
+            body.pointer("/error/message")
+                .or_else(|| body.get("message"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
+    if let Some(error) = read_error {
+        message.push_str(&format!(" [could not read complete error body: {error}]"));
+    }
+
+    Error::Http {
+        status,
+        message,
+        retry_after_seconds,
+    }
+}
+
+async fn read_error_body(response: &mut reqwest::Response) -> (Vec<u8>, Option<String>) {
+    let mut bytes = Vec::new();
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => return (bytes, None),
+            Err(error) => return (bytes, Some(error.without_url().to_string())),
+        };
+
+        let remaining = MAX_ERROR_BYTES - bytes.len();
+        bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        if bytes.len() == MAX_ERROR_BYTES {
+            return (bytes, None);
+        }
     }
 }
 
@@ -170,51 +192,49 @@ impl<P: Decoder> StreamingResponse<P> {
             if self.terminal {
                 return None;
             }
-            match self.sse.next_event() {
-                Err(error) => return self.fail(error),
-                Ok(Some(event)) => {
-                    match self
-                        .parser
-                        .decode(event, &mut self.output, &mut self.events)
-                    {
-                        Ok(true) => {
-                            if matches!(self.output.outcome, Outcome::InProgress) {
-                                return self
-                                    .fail(protocol("terminal event has no terminal outcome"));
-                            }
-                            self.terminal = true;
-                            self.response = None;
-                            self.events.push_back(TurnEvent::Finished);
-                        }
-                        Ok(false) => {}
-                        Err(error) => return self.fail(error),
-                    }
-                }
-                Ok(None) => {
-                    // The response body, decoder buffers, and queued events live
-                    // on self. Cancelling this await does not discard local state.
-                    let chunk = match self.response.as_mut() {
-                        Some(response) => response.chunk().await,
-                        None => {
-                            return self
-                                .fail(protocol("missing HTTP response before stream termination"));
-                        }
-                    };
-                    match chunk {
-                        Ok(Some(bytes)) => {
-                            if let Err(error) = self.sse.feed(&bytes) {
-                                return self.fail(error);
-                            }
-                        }
-                        Ok(None) => {
-                            return self
-                                .fail(protocol("unexpected EOF before provider terminal event"));
-                        }
-                        Err(error) => return self.fail(error.into()),
-                    }
-                }
+
+            let result = match self.sse.next_event() {
+                Err(error) => Err(error),
+                Ok(Some(event)) => self.decode_event(event),
+                Ok(None) => self.read_chunk().await,
+            };
+            if let Err(error) = result {
+                return self.fail(error);
             }
         }
+    }
+
+    fn decode_event(&mut self, event: SseEvent) -> Result<(), Error> {
+        if !self
+            .parser
+            .decode(event, &mut self.output, &mut self.events)?
+        {
+            return Ok(());
+        }
+        if matches!(self.output.outcome, Outcome::InProgress) {
+            return Err(protocol("terminal event has no terminal outcome"));
+        }
+
+        self.terminal = true;
+        self.response = None;
+        self.events.push_back(TurnEvent::Finished);
+
+        Ok(())
+    }
+
+    async fn read_chunk(&mut self) -> Result<(), Error> {
+        // The response body, decoder buffers, and queued events live
+        // on self. Cancelling this await does not discard local state.
+        let response = self
+            .response
+            .as_mut()
+            .ok_or_else(|| protocol("missing HTTP response before stream termination"))?;
+        let bytes = response
+            .chunk()
+            .await?
+            .ok_or_else(|| protocol("unexpected EOF before provider terminal event"))?;
+
+        self.sse.feed(&bytes)
     }
 
     fn fail(&mut self, error: Error) -> Option<Result<TurnEvent, Error>> {
@@ -231,6 +251,7 @@ impl<P: Decoder> StreamingResponse<P> {
         self.events.clear();
         self.sse = SseDecoder::default();
         self.terminal = true;
+
         if matches!(self.output.outcome, Outcome::InProgress) {
             self.output.outcome = Outcome::Cancelled;
         }
@@ -262,6 +283,7 @@ impl SseDecoder {
         if self.bytes.len().saturating_add(bytes.len()) > MAX_EVENT_BYTES {
             return Err(protocol("SSE buffer exceeds 16 MiB limit"));
         }
+
         self.bytes.extend(bytes);
         Ok(())
     }
@@ -274,6 +296,7 @@ impl SseDecoder {
                     continue;
                 }
             }
+
             match byte {
                 b'\r' | b'\n' => {
                     self.skip_lf = byte == b'\r';
@@ -302,24 +325,21 @@ impl SseDecoder {
         } else {
             line
         };
+
         if line.is_empty() {
-            let event = self.event.take();
-            self.event_bytes = 0;
-            if self.data.is_empty() {
-                return Ok(None);
-            }
-            let data = std::mem::take(&mut self.data).join("\n");
-            return Ok(Some(SseEvent { event, data }));
+            return Ok(self.finish_event());
         }
         if line.starts_with(':') {
             return Ok(None);
         }
+
         let (field, value) = line.split_once(':').unwrap_or((line, ""));
         let value = value.strip_prefix(' ').unwrap_or(value);
         self.event_bytes = self.event_bytes.saturating_add(line.len());
         if self.event_bytes > MAX_EVENT_BYTES {
             return Err(protocol("SSE event exceeds 16 MiB limit"));
         }
+
         match field {
             "data" => self.data.push(value.to_owned()),
             "event" => self.event = Some(value.to_owned()),
@@ -328,12 +348,24 @@ impl SseDecoder {
         }
         Ok(None)
     }
+
+    fn finish_event(&mut self) -> Option<SseEvent> {
+        let event = self.event.take();
+        self.event_bytes = 0;
+        if self.data.is_empty() {
+            return None;
+        }
+
+        let data = std::mem::take(&mut self.data).join("\n");
+        Some(SseEvent { event, data })
+    }
 }
 
 fn retry_after(value: &str, now: std::time::SystemTime) -> Option<u64> {
     if let Ok(seconds) = value.parse() {
         return Some(seconds);
     }
+
     let date = httpdate::parse_http_date(value).ok()?;
     let delay = date.duration_since(now).unwrap_or_default();
     Some(
@@ -354,6 +386,7 @@ pub(super) fn provider_error(value: &Value) -> Error {
         .get("error")
         .filter(|error| error.is_object())
         .unwrap_or(value);
+
     Error::Provider {
         code: error.get("code").and_then(Value::as_str).map(str::to_owned),
         message: error
@@ -384,6 +417,7 @@ pub(super) fn usage(value: &Value, chat: bool) -> Usage {
     } else {
         "output_tokens"
     };
+
     Usage {
         input_tokens: value.get(input).and_then(Value::as_u64),
         output_tokens: value.get(output).and_then(Value::as_u64),
