@@ -22,11 +22,10 @@ pub struct ToolDefinition {
 
 /// A prior request/response pair retained for replay.
 /// `generate` requires an output with a terminal outcome for each stored turn.
-/// `None` may be used while assembling history but is not valid for replay.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ModelTurn {
     pub input: ModelTurnInput,
-    pub output: Option<ModelTurnOutput>,
+    pub output: ModelTurnOutput,
 }
 
 /// Only the new items for a single request, not a repeated copy of history.

@@ -432,7 +432,7 @@ async fn responses_retags_and_replays_native_state_for_supplied_identity() {
     let mut history = history(ProviderType::Openrouter);
     history.turns.push(ModelTurn {
         input: input(),
-        output: Some(output),
+        output,
     });
     let (url, request) = server("200 OK", "text/event-stream", "", responses_stream()).await;
     let client = OpenAiResponses::new(url, "test-key", ProviderType::Openrouter).unwrap();

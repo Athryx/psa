@@ -48,17 +48,13 @@ impl AgentHistory {
         if changed {
             for turn in &mut converted.turns {
                 strip_items_replay_state(&mut turn.input.items, config.provider)?;
-                if let Some(output) = &mut turn.output {
-                    strip_items_replay_state(&mut output.items, config.provider)?;
-                }
+                strip_items_replay_state(&mut turn.output.items, config.provider)?;
             }
         }
 
         for turn in &converted.turns {
             validate_item_providers(&turn.input.items, config.provider)?;
-            if let Some(output) = &turn.output {
-                validate_item_providers(&output.items, config.provider)?;
-            }
+            validate_item_providers(&turn.output.items, config.provider)?;
         }
         converted.config = config;
         *self = converted;
@@ -131,10 +127,7 @@ fn validate_turns(
 ) -> Result<(), Error> {
     let mut calls = ToolCalls::default();
     for (index, turn) in turns.iter().enumerate() {
-        let output = turn
-            .output
-            .as_ref()
-            .ok_or_else(|| invalid_history(format!("turn {index} has no output")))?;
+        let output = &turn.output;
         if matches!(output.outcome, Outcome::InProgress) {
             return Err(invalid_history(format!(
                 "turn {index} is still in progress"
@@ -415,6 +408,26 @@ mod tests {
     }
 
     #[test]
+    fn requires_terminal_historical_outputs() {
+        let config = config(ProviderType::OpenAiCodex);
+        let mut history = AgentHistory::new(config.clone());
+        history.turns.push(ModelTurn {
+            input: ModelTurnInput::default(),
+            output: ModelTurnOutput::default_for_model(config.clone()),
+        });
+        let input = ModelTurnInput::default();
+        let request = RequestConfig::default();
+
+        assert!(matches!(
+            validate_request(&history, config.provider, &input, &request),
+            Err(Error::InvalidHistory { message }) if message == "turn 0 is still in progress"
+        ));
+
+        history.turns[0].output.outcome = Outcome::Cancelled;
+        validate_request(&history, config.provider, &input, &request).unwrap();
+    }
+
+    #[test]
     fn rejects_mismatched_provider_and_invalid_model() {
         let config = config(ProviderType::OpenAiCodex);
         let mut history = AgentHistory::new(config);
@@ -491,14 +504,14 @@ mod tests {
         let mut history = AgentHistory::new(config.clone());
         history.turns.push(ModelTurn {
             input: ModelTurnInput::default(),
-            output: Some(output(
+            output: output(
                 config.clone(),
                 vec![item(HistoryItemKind::ToolCall(ToolCall {
                     call_id: "call_1".into(),
                     name: "historical_tool".into(),
                     arguments: "{}".into(),
                 }))],
-            )),
+            ),
         });
         let request = RequestConfig::default();
         assert!(matches!(
@@ -549,12 +562,12 @@ mod tests {
         response.items[1].metadata.item_id = Some("msg_1".into());
         history.turns.push(ModelTurn {
             input: ModelTurnInput::default(),
-            output: Some(response),
+            output: response,
         });
         let new = config(ProviderType::Openrouter);
         history.update_model_config(new.clone()).unwrap();
         assert_eq!(history.config, new);
-        let response = history.turns[0].output.as_ref().unwrap();
+        let response = &history.turns[0].output;
         assert_eq!(response.config, old);
         assert_eq!(response.response_id.as_deref(), Some("resp_1"));
         assert_eq!(response.items.len(), 1);
@@ -586,7 +599,7 @@ mod tests {
                     })],
                 }))],
             },
-            output: Some(output(old.clone(), Vec::new())),
+            output: output(old.clone(), Vec::new()),
         });
         assert!(matches!(
             history.update_model_config(config(ProviderType::Openrouter)),
@@ -602,14 +615,14 @@ mod tests {
         let mut history = AgentHistory::new(old.clone());
         history.turns.push(ModelTurn {
             input: ModelTurnInput::default(),
-            output: Some(output(
+            output: output(
                 old.clone(),
                 vec![item(HistoryItemKind::Reasoning(Reasoning::default()))],
-            )),
+            ),
         });
         let mut new = old;
         new.effort = Effort::Low;
         history.update_model_config(new).unwrap();
-        assert_eq!(history.turns[0].output.as_ref().unwrap().items.len(), 1);
+        assert_eq!(history.turns[0].output.items.len(), 1);
     }
 }

@@ -1,0 +1,6 @@
+[package]
+name = "psa_api"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]

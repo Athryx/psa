@@ -5,6 +5,15 @@ allowing managing agents across many different environments and seeing them in o
 
 Should also be easy to programatically interact with from a client library.
 
+The codebase uses async code, not blocking sync.
+
+# Crates
+
+The following crates are present in the workspace:
+- `llm_api`: a generic wrapper over different llm api types, like OpenAI responses and completions, low level close to the api.
+- `psa_server`: main server managing sessions and calling into `llm_api` to make inference requests.
+- `psa_api`: defines common types and endpoints clients and probes use to communicate to psa server, and provides a thin client library for making the requests.
+
 # Coding Style
 
 - Keep a clear main path through functions.

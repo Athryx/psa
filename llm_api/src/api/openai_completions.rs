@@ -138,8 +138,7 @@ fn build_request_body(
 
     for turn in &history.turns {
         append_messages(&turn.input.items, &mut messages, provider, adapter_config)?;
-        let output = turn.output.as_ref().expect("validated historical output");
-        append_messages(&output.items, &mut messages, provider, adapter_config)?;
+        append_messages(&turn.output.items, &mut messages, provider, adapter_config)?;
     }
     append_messages(&input.items, &mut messages, provider, adapter_config)?;
 
@@ -1422,7 +1421,7 @@ mod tests {
             let mut history = AgentHistory::new(model_for(provider));
             history.turns.push(ModelTurn {
                 input: ModelTurnInput::default(),
-                output: Some(saved),
+                output: saved,
             });
             let body = super::build_request_body(
                 &history,
@@ -1452,7 +1451,7 @@ mod tests {
                 ProviderType::Openrouter => ProviderType::OpenAiCodex,
             };
             if let HistoryItemKind::Reasoning(reasoning) =
-                &mut history.turns[0].output.as_mut().unwrap().items[0].kind
+                &mut history.turns[0].output.items[0].kind
             {
                 reasoning.opaque_state.as_mut().unwrap().provider = other;
             }
@@ -1541,18 +1540,18 @@ mod tests {
                 input: ModelTurnInput {
                     items: vec![message(Role::User, "old")],
                 },
-                output: Some(output(vec![message(Role::Assistant, "unrelated")])),
+                output: output(vec![message(Role::Assistant, "unrelated")]),
             },
             ModelTurn {
                 input: ModelTurnInput {
                     items: vec![message(Role::User, "next")],
                 },
-                output: Some(output(vec![
+                output: output(vec![
                     native_reasoning(),
                     message(Role::Assistant, "checking"),
                     call("a", "one"),
                     call("b", "two"),
-                ])),
+                ]),
             },
         ];
         history.tools.push(ToolDefinition {
@@ -1938,7 +1937,7 @@ mod tests {
         let mut history = AgentHistory::new(model());
         history.turns.push(ModelTurn {
             input: ModelTurnInput::default(),
-            output: Some(output),
+            output,
         });
         let input = ModelTurnInput {
             items: vec![result("a")],
@@ -1979,7 +1978,7 @@ mod tests {
             input: ModelTurnInput {
                 items: vec![message(Role::User, "question")],
             },
-            output: Some(output),
+            output,
         });
         let body = request_body(
             &history,

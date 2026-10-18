@@ -161,10 +161,7 @@ fn build_request_items(
             items.push(serialize_item(provider, item)?);
         }
 
-        let output = turn.output.as_ref().ok_or_else(|| Error::InvalidHistory {
-            message: "cannot replay a turn without output".into(),
-        })?;
-        for item in &output.items {
+        for item in &turn.output.items {
             items.push(serialize_item(provider, item)?);
         }
     }
@@ -1533,7 +1530,7 @@ mod tests {
             input: ModelTurnInput {
                 items: vec![message(Role::User, "old input")],
             },
-            output: Some(output),
+            output,
         });
         history.tools.push(ToolDefinition {
             name: "read".into(),
@@ -2073,7 +2070,7 @@ mod tests {
         output.items.push(native);
         history.turns.push(ModelTurn {
             input: ModelTurnInput::default(),
-            output: Some(output),
+            output,
         });
         let mut switched = model();
         switched.model.api_name = "other-model".into();
@@ -2237,7 +2234,7 @@ mod tests {
         let mut history = AgentHistory::new(h.output.config.clone());
         history.turns.push(ModelTurn {
             input: ModelTurnInput::default(),
-            output: Some(h.output),
+            output: h.output,
         });
         let input = ModelTurnInput {
             items: vec![item(HistoryItemKind::Message(Message {

@@ -49,6 +49,35 @@ Maybe a few seperate agent loop structs with a common trait, for instance depend
 shared code
 probably simples approach
 
+## Initial Agent Loop Overview
+
+Agent contains model config, list of tools, and list of events (maybe all 3 in events)
+- Serialize even list to llm_api AgentHistory, update incrementally as events come in
+- append only are events
+
+TODO: event schema
+- should be atomic events, like one event doesn't get some info before annd some info after request
+- status change in events, current state reconstruct from events
+
+State:
+- AgentHistory
+- ModelConfig
+- state
+- pending events?
+- cached events
+
+Hooks:
+- run tools and item handlers (non returning things registered for agent start, agent end, pre inference, post inference, inference error, post tools, idle event)
+  - hooks decide to persist events
+  - hooks update agent state
+  - pre inference and agent end handle taking steer and queued message events persiting events, updating state
+
+If idle or interrupted state, do nothing.
+If running, do:
+- take last turn with unanswered inference request
+- serialize, run inference stream back
+  - streamed stuff only streamed to ui, not ran until request finshes
+
 # Probe
 
 Standard interface server calls on probe, like read file, write file, std::command like interface for processes, kill all process for agent
