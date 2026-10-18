@@ -42,7 +42,6 @@ impl AgentHistory {
     /// Callers must re-upload/replace such media before retrying. A tool result
     /// whose entire content would be lost also fails instead of fabricating data.
     pub fn update_model_config(&mut self, config: ModelConfig) -> Result<(), Error> {
-        config.validate()?;
         let changed = self.config.provider != config.provider || self.config.model != config.model;
         let mut converted = self.clone();
         if changed {
@@ -74,7 +73,6 @@ pub fn validate_request(
     input: &ModelTurnInput,
     config: &RequestConfig,
 ) -> Result<(), Error> {
-    history.config.validate()?;
     require_provider(provider, history.config.provider)?;
     if config.max_output_tokens == Some(0) {
         return Err(Error::InvalidConfig {
@@ -313,13 +311,11 @@ mod tests {
 
     fn config(provider: ProviderType) -> ModelConfig {
         ModelConfig {
-            model: Model {
-                model_slug: match provider {
-                    ProviderType::OpenAiCodex => "openai-codex/gpt-5",
-                    ProviderType::Openrouter => "openrouter/anthropic/claude-sonnet-4",
-                }
-                .into(),
-            },
+            model: Model::new(match provider {
+                ProviderType::OpenAiCodex => "gpt-5",
+                ProviderType::Openrouter => "anthropic/claude-sonnet-4",
+            })
+            .unwrap(),
             provider,
             effort: Effort::High,
         }
@@ -376,7 +372,7 @@ mod tests {
             ),
             Err(Error::ProviderMismatch { .. })
         ));
-        history.config.model.model_slug = " ".into();
+        history.config.model.api_name = " ".into();
         assert!(matches!(
             validate_request(
                 &history,

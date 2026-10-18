@@ -129,7 +129,7 @@ fn request_body(
         items.push(serialize_item(provider, item)?);
     }
     let mut body = json!({
-        "model": history.config.model.api_name(),
+        "model": history.config.model.api_name,
         "input": items,
         "stream": true,
         "store": false,
@@ -1283,9 +1283,7 @@ mod tests {
     fn model() -> ModelConfig {
         ModelConfig {
             provider: PROVIDER,
-            model: Model {
-                model_slug: "openai-codex/gpt-test".into(),
-            },
+            model: Model::new("gpt-test").unwrap(),
             effort: Effort::High,
         }
     }
@@ -1919,7 +1917,7 @@ mod tests {
             output: Some(output),
         });
         let mut switched = model();
-        switched.model.model_slug = "openai-codex/other-model".into();
+        switched.model.api_name = "other-model".into();
         history.update_model_config(switched).unwrap();
         let body = request_body(
             &history,
@@ -2045,7 +2043,7 @@ mod tests {
         let provider = ProviderType::Openrouter;
         let mut h = Harness::new();
         h.output.config.provider = provider;
-        h.output.config.model.model_slug = "openrouter/vendor/responses-model".into();
+        h.output.config.model.api_name = "vendor/responses-model".into();
         let raw = json!([
             {"id":"reason","type":"reasoning","summary":[{"type":"summary_text","text":"summary"}],"encrypted_content":"encrypted"},
             {"id":"msg","type":"message","role":"assistant","status":"completed","content":[

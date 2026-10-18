@@ -142,7 +142,7 @@ fn request_body(
     append_messages(&input.items, &mut messages, provider, adapter_config)?;
 
     let mut body = json!({
-        "model": history.config.model.api_name(),
+        "model": history.config.model.api_name,
         "messages": messages,
         "stream": true,
         "stream_options": {"include_usage": true},
@@ -1121,9 +1121,7 @@ mod tests {
 
     fn model_for(provider: ProviderType) -> ModelConfig {
         ModelConfig {
-            model: Model {
-                model_slug: "test-model".into(),
-            },
+            model: Model::new("test-model").unwrap(),
             provider,
             effort: Effort::High,
         }
@@ -1131,9 +1129,7 @@ mod tests {
 
     fn model() -> ModelConfig {
         ModelConfig {
-            model: Model {
-                model_slug: "openrouter/vendor/model".into(),
-            },
+            model: Model::new("vendor/model").unwrap(),
             provider: ProviderType::Openrouter,
             effort: Effort::High,
         }

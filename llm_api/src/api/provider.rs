@@ -144,9 +144,7 @@ mod tests {
             };
             let history = AgentHistory::new(ModelConfig {
                 provider: other,
-                model: Model {
-                    model_slug: "test-model".into(),
-                },
+                model: Model::new("test-model").unwrap(),
                 effort: Effort::Medium,
             });
             assert!(

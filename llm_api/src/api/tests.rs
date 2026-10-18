@@ -79,9 +79,7 @@ async fn server(
 fn history(provider: ProviderType) -> AgentHistory {
     AgentHistory::new(ModelConfig {
         provider,
-        model: Model {
-            model_slug: "test-model".into(),
-        },
+        model: Model::new("test-model").unwrap(),
         effort: Effort::Medium,
     })
 }

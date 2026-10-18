@@ -18,21 +18,50 @@ impl ProviderType {
     }
 }
 
-/// Model with model slug, includes provider prefix with slashes
+/// Model identified by its provider-specific API name, without any harness
+/// provider prefix. On OpenRouter this is the `maker/model` slug the API
+/// expects (e.g. `z-ai/glm-5.3`); Codex uses a plain model name (e.g.
+/// `gpt-5`). The provider is tracked separately on `ModelConfig`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Model {
-    pub model_slug: String,
+    pub api_name: String,
 }
 
 impl Model {
-    /// Strip the harness provider prefix, preserving the remaining model path.
-    /// For example, `openrouter/anthropic/claude-sonnet-4` becomes
-    /// `anthropic/claude-sonnet-4`. Unprefixed names are returned unchanged.
-    pub fn api_name(&self) -> String {
-        self.model_slug
+    /// Construct a model from its API name, validating that the name is
+    /// nonempty and has no surrounding whitespace.
+    pub fn new(api_name: impl Into<String>) -> Result<Self, crate::Error> {
+        let model = Self {
+            api_name: api_name.into(),
+        };
+        model.validate()?;
+        Ok(model)
+    }
+
+    /// Validate a nonempty API model name with no surrounding whitespace.
+    fn validate(&self) -> Result<(), crate::Error> {
+        let name = self.api_name.as_str();
+        if name.trim().is_empty() || name.trim() != name {
+            return Err(crate::Error::InvalidConfig {
+                field: "model.api_name".into(),
+                message: "model name must be nonempty and have no surrounding whitespace".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Provider/publisher prefix, if present. For `z-ai/glm-5.3` this is
+    /// `z-ai`; for an unprefixed `gpt-5` this is `None`.
+    pub fn prefix(&self) -> Option<&str> {
+        self.api_name.split_once('/').map(|(prefix, _)| prefix)
+    }
+
+    /// Bare model name, without the provider/publisher prefix. For
+    /// `z-ai/glm-5.3` this is `glm-5.3`; for `gpt-5` it is `gpt-5`.
+    pub fn model_name(&self) -> &str {
+        self.api_name
             .split_once('/')
-            .map_or(self.model_slug.as_str(), |(_, name)| name)
-            .to_owned()
+            .map_or(self.api_name.as_str(), |(_, name)| name)
     }
 }
 
@@ -68,45 +97,6 @@ pub struct ModelConfig {
     // TODO: openrouter pinning stuff (decide how to represent well)
 }
 
-impl ModelConfig {
-    /// Validate the harness provider prefix and nonempty API model name.
-    pub fn validate(&self) -> Result<(), crate::Error> {
-        let slug = self.model.model_slug.as_str();
-        if slug.trim().is_empty() || slug.trim() != slug {
-            return Err(crate::Error::InvalidConfig {
-                field: "model.model_slug".into(),
-                message: "model name must be nonempty and have no surrounding whitespace".into(),
-            });
-        }
-        if let Some((prefix, name)) = slug.split_once('/') {
-            let actual =
-                match prefix {
-                    "openai-codex" => ProviderType::OpenAiCodex,
-                    "openrouter" => ProviderType::Openrouter,
-                    _ => return Err(crate::Error::InvalidConfig {
-                        field: "model.model_slug".into(),
-                        message:
-                            "slash-containing names must start with openai-codex/ or openrouter/"
-                                .into(),
-                    }),
-                };
-            if actual != self.provider {
-                return Err(crate::Error::ProviderMismatch {
-                    expected: self.provider,
-                    actual,
-                });
-            }
-            if name.trim().is_empty() {
-                return Err(crate::Error::InvalidConfig {
-                    field: "model.model_slug".into(),
-                    message: "API model name must be nonempty".into(),
-                });
-            }
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{Effort, Model, ProviderType};
@@ -124,19 +114,19 @@ mod tests {
     }
 
     #[test]
-    fn api_name_strips_only_the_provider_prefix() {
-        for (slug, expected) in [
-            ("openai-codex/gpt-5", "gpt-5"),
+    fn prefix_and_model_name_split_only_the_vendor_prefix() {
+        for (api_name, expected_prefix, expected_name) in [
+            ("gpt-5", None, "gpt-5"),
+            ("z-ai/glm-5.3", Some("z-ai"), "glm-5.3"),
             (
-                "openrouter/anthropic/claude-sonnet-4",
                 "anthropic/claude-sonnet-4",
+                Some("anthropic"),
+                "claude-sonnet-4",
             ),
-            ("gpt-5", "gpt-5"),
         ] {
-            let model = Model {
-                model_slug: slug.into(),
-            };
-            assert_eq!(model.api_name(), expected);
+            let model = Model::new(api_name).unwrap();
+            assert_eq!(model.prefix(), expected_prefix);
+            assert_eq!(model.model_name(), expected_name);
         }
     }
 
@@ -144,7 +134,7 @@ mod tests {
     fn xhigh_keeps_its_api_spelling_and_reads_the_old_variant() {
         assert_eq!(Effort::Xhigh.as_str(), "xhigh");
         assert_eq!(
-            serde_json::from_str::<Effort>("\"Xhixh\"").unwrap(),
+            serde_json::from_str::<Effort>("\"Xhigh\"").unwrap(),
             Effort::Xhigh
         );
         assert_eq!(serde_json::to_string(&Effort::Xhigh).unwrap(), "\"Xhigh\"");
