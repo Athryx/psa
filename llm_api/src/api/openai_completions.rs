@@ -19,7 +19,7 @@ use crate::Error;
 use crate::providers::ProviderType;
 
 use super::transport::{
-    ApiClient, Decoder, SseEvent, StreamingResponse, protocol, provider_error, usage,
+    ApiClient, Decoder, SseEvent, StreamingResponse, parse_usage, protocol, provider_error,
 };
 use super::{
     AgentHistory, Annotation, ApiProvider, ContentBlock, ContentDelta, HistoryItem,
@@ -75,13 +75,13 @@ impl ApiProvider for OpenAiCompletions {
         self.provider
     }
 
-    async fn generate_inner(
+    async fn generate_unvalidated(
         &self,
         history: &AgentHistory,
         input: &ModelTurnInput,
         config: &RequestConfig,
     ) -> Result<Self::Stream, Error> {
-        let body = request_body(history, input, config, self.provider, self.config)?;
+        let body = build_request_body(history, input, config, self.provider, self.config)?;
         let response = self.client.post(&body).await?;
 
         Ok(OpenAiCompletionsStream {
@@ -118,14 +118,14 @@ fn unsupported(feature: impl Into<String>) -> Error {
     }
 }
 
-fn request_body(
+fn build_request_body(
     history: &AgentHistory,
     input: &ModelTurnInput,
     config: &RequestConfig,
     provider: ProviderType,
     adapter_config: OpenAiCompletionsConfig,
 ) -> Result<Value, Error> {
-    // Also protect direct generate_inner callers; all checks precede HTTP.
+    // Also protect direct generate_unvalidated callers; all checks precede HTTP.
     validate_request(history, provider, input, config)?;
     if !adapter_config.openrouter_reasoning_fields
         && history.config.effort == crate::providers::Effort::Max
@@ -310,7 +310,8 @@ fn append_messages(
                 if assistant.has_message {
                     assistant.flush(messages);
                 }
-                let (content, refusal) = message_content(&message.content, Role::Assistant)?;
+                let (content, refusal) =
+                    serialize_message_content(&message.content, Role::Assistant)?;
                 assistant.content = Some(content);
                 assistant.refusal = refusal;
                 assistant.has_message = true;
@@ -330,14 +331,14 @@ fn append_messages(
             }
             HistoryItemKind::Message(message) => {
                 assistant.flush(messages);
-                let (content, _) = message_content(&message.content, message.role)?;
-                messages.push(json!({"role": role_name(message.role), "content": content}));
+                let (content, _) = serialize_message_content(&message.content, message.role)?;
+                messages.push(json!({"role": serialize_role(message.role), "content": content}));
             }
             HistoryItemKind::ToolResult(result) => {
                 assistant.flush(messages);
                 // Chat Completions has no is_error flag. The caller's supplied
                 // error text is sent unchanged, just like any other result.
-                let content = text_content(&result.content)?;
+                let content = serialize_tool_result_content(&result.content)?;
                 messages.push(
                     json!({"role": "tool", "tool_call_id": result.call_id, "content": content}),
                 );
@@ -354,7 +355,7 @@ fn append_messages(
     Ok(())
 }
 
-fn role_name(role: Role) -> &'static str {
+fn serialize_role(role: Role) -> &'static str {
     match role {
         Role::System => "system",
         Role::Developer => "developer",
@@ -363,7 +364,7 @@ fn role_name(role: Role) -> &'static str {
     }
 }
 
-fn text_content(blocks: &[ContentBlock]) -> Result<String, Error> {
+fn serialize_tool_result_content(blocks: &[ContentBlock]) -> Result<String, Error> {
     let mut text = String::new();
     for block in blocks {
         match block {
@@ -378,7 +379,10 @@ fn text_content(blocks: &[ContentBlock]) -> Result<String, Error> {
     Ok(text)
 }
 
-fn message_content(blocks: &[ContentBlock], role: Role) -> Result<(Value, Option<String>), Error> {
+fn serialize_message_content(
+    blocks: &[ContentBlock],
+    role: Role,
+) -> Result<(Value, Option<String>), Error> {
     let mut parts = Vec::new();
     let mut refusal: Option<String> = None;
     let mut has_images = false;
@@ -399,7 +403,7 @@ fn message_content(blocks: &[ContentBlock], role: Role) -> Result<(Value, Option
                     .push_str(&block.text);
             }
             ContentBlock::Image(image) if role == Role::User => {
-                let url = image_source_url(&image.source)?;
+                let url = encode_image_source_url(&image.source)?;
                 let mut image_url = json!({"url": url});
                 if let Some(detail) = image.detail {
                     image_url["detail"] = json!(match detail {
@@ -447,7 +451,7 @@ fn message_content(blocks: &[ContentBlock], role: Role) -> Result<(Value, Option
     Ok((content, refusal))
 }
 
-fn image_source_url(source: &MediaSource) -> Result<String, Error> {
+fn encode_image_source_url(source: &MediaSource) -> Result<String, Error> {
     Ok(match source {
         MediaSource::Url(url) if !url.is_empty() => url.clone(),
         MediaSource::Inline { mime_type, data }
@@ -477,7 +481,7 @@ struct PendingCall {
 }
 
 impl PendingCall {
-    fn append_function(&mut self, function: &Value) -> Result<(), Error> {
+    fn append_function_delta(&mut self, function: &Value) -> Result<(), Error> {
         let function = function
             .as_object()
             .ok_or_else(|| protocol("tool call function must be an object"))?;
@@ -487,8 +491,8 @@ impl PendingCall {
             }
         }
 
-        append_fragment(function.get("name"), &mut self.name, "tool name")?;
-        append_fragment(
+        append_string_fragment(function.get("name"), &mut self.name, "tool name")?;
+        append_string_fragment(
             function.get("arguments"),
             &mut self.arguments,
             "tool arguments",
@@ -523,7 +527,7 @@ impl Decoder for CompletionsDecoder {
                 .finish_reason
                 .as_deref()
                 .ok_or_else(|| protocol("[DONE] before a finish_reason"))?;
-            output.outcome = outcome(reason);
+            output.outcome = parse_finish_outcome(reason);
             return Ok(true);
         }
         if data.is_empty() {
@@ -547,7 +551,7 @@ impl Decoder for CompletionsDecoder {
             if !value.is_object() {
                 return Err(protocol("usage must be an object"));
             }
-            output.usage.merge_reported(usage(value, true));
+            output.usage.merge_reported(parse_usage(value, true));
             events.push_back(TurnEvent::UsageUpdated);
         }
 
@@ -610,7 +614,7 @@ fn update_response_metadata(
     Ok(())
 }
 
-fn outcome(reason: &str) -> Outcome {
+fn parse_finish_outcome(reason: &str) -> Outcome {
     if reason == "error" {
         return Outcome::Failed(Error::Provider {
             code: Some("error".into()),
@@ -681,7 +685,7 @@ impl CompletionsDecoder {
                 .as_str()
                 .filter(|reason| !reason.is_empty())
                 .ok_or_else(|| protocol("finish_reason must be a nonempty string"))?;
-            self.finish(reason, output, events)?;
+            self.finalize_output_items(reason, output, events)?;
             self.finish_reason = Some(reason.to_owned());
         }
         Ok(())
@@ -748,7 +752,7 @@ impl CompletionsDecoder {
             .get("reasoning_details")
             .filter(|value| !value.is_null())
         {
-            self.append_reasoning_details(details, output, events)?;
+            self.merge_reasoning_details(details, output, events)?;
         }
         if let Some(calls) = delta.get("tool_calls").filter(|value| !value.is_null()) {
             self.decode_tool_calls(calls)?;
@@ -874,9 +878,9 @@ impl CompletionsDecoder {
             }
 
             let pending = self.calls.entry(index).or_default();
-            append_fragment(call.get("id"), &mut pending.id, "tool call id")?;
+            append_string_fragment(call.get("id"), &mut pending.id, "tool call id")?;
             if let Some(function) = call.get("function").filter(|value| !value.is_null()) {
-                pending.append_function(function)?;
+                pending.append_function_delta(function)?;
             }
         }
         Ok(())
@@ -896,7 +900,7 @@ impl CompletionsDecoder {
                     role: Role::Assistant,
                     content: Vec::new(),
                 }),
-                metadata: streaming_metadata(),
+                metadata: build_streaming_metadata(),
             });
             events.push_back(TurnEvent::ItemAdded { index });
             index
@@ -960,14 +964,14 @@ impl CompletionsDecoder {
             let index = output.items.len();
             output.items.push(HistoryItem {
                 kind: HistoryItemKind::Reasoning(Reasoning::default()),
-                metadata: streaming_metadata(),
+                metadata: build_streaming_metadata(),
             });
             events.push_back(TurnEvent::ItemAdded { index });
             index
         })
     }
 
-    fn append_reasoning_details(
+    fn merge_reasoning_details(
         &mut self,
         details: &Value,
         output: &mut ModelTurnOutput,
@@ -984,7 +988,7 @@ impl CompletionsDecoder {
             let detail = detail
                 .as_object()
                 .ok_or_else(|| protocol("reasoning detail must be an object"))?;
-            let index = self.reasoning_detail_index(detail, position)?;
+            let index = self.resolve_reasoning_detail_index(detail, position)?;
             let entry = self
                 .reasoning_details
                 .entry(index)
@@ -1000,7 +1004,7 @@ impl CompletionsDecoder {
         Ok(())
     }
 
-    fn reasoning_detail_index(
+    fn resolve_reasoning_detail_index(
         &self,
         detail: &Map<String, Value>,
         position: usize,
@@ -1061,7 +1065,7 @@ impl CompletionsDecoder {
         });
     }
 
-    fn finish(
+    fn finalize_output_items(
         &mut self,
         reason: &str,
         output: &mut ModelTurnOutput,
@@ -1169,14 +1173,18 @@ fn merge_reasoning_detail(
     Ok(())
 }
 
-fn streaming_metadata() -> HistoryItemMetadata {
+fn build_streaming_metadata() -> HistoryItemMetadata {
     HistoryItemMetadata {
         item_status: Some("in_progress".into()),
         ..HistoryItemMetadata::default()
     }
 }
 
-fn append_fragment(value: Option<&Value>, target: &mut String, field: &str) -> Result<(), Error> {
+fn append_string_fragment(
+    value: Option<&Value>,
+    target: &mut String,
+    field: &str,
+) -> Result<(), Error> {
     if let Some(value) = value.filter(|value| !value.is_null()) {
         target.push_str(
             value
@@ -1203,7 +1211,7 @@ mod tests {
         input: &ModelTurnInput,
         config: &RequestConfig,
     ) -> Result<Value, Error> {
-        super::request_body(
+        super::build_request_body(
             history,
             input,
             config,
@@ -1352,7 +1360,7 @@ mod tests {
                     adapter_config
                 );
                 let history = AgentHistory::new(model_for(provider));
-                let body = super::request_body(
+                let body = super::build_request_body(
                     &history,
                     &ModelTurnInput {
                         items: vec![message(Role::User, "hi")],
@@ -1377,11 +1385,11 @@ mod tests {
                     ProviderType::Openrouter => ProviderType::OpenAiCodex,
                 };
                 assert!(
-                    matches!(super::request_body(&history, &ModelTurnInput::default(), &RequestConfig::default(), other, adapter_config), Err(Error::ProviderMismatch { expected, actual }) if expected == other && actual == provider)
+                    matches!(super::build_request_body(&history, &ModelTurnInput::default(), &RequestConfig::default(), other, adapter_config), Err(Error::ProviderMismatch { expected, actual }) if expected == other && actual == provider)
                 );
                 let mut max_history = history;
                 max_history.config.effort = Effort::Max;
-                let max = super::request_body(
+                let max = super::build_request_body(
                     &max_history,
                     &ModelTurnInput::default(),
                     &RequestConfig::default(),
@@ -1416,7 +1424,7 @@ mod tests {
                 input: ModelTurnInput::default(),
                 output: Some(saved),
             });
-            let body = super::request_body(
+            let body = super::build_request_body(
                 &history,
                 &ModelTurnInput::default(),
                 &RequestConfig::default(),
@@ -1430,7 +1438,7 @@ mod tests {
                 "secret"
             );
             assert!(matches!(
-                super::request_body(
+                super::build_request_body(
                     &history,
                     &ModelTurnInput::default(),
                     &RequestConfig::default(),
@@ -1450,7 +1458,7 @@ mod tests {
             }
             for config in [OpenAiCompletionsConfig::default(), ROUTER_CONFIG] {
                 assert!(
-                    matches!(super::request_body(&history, &ModelTurnInput::default(), &RequestConfig::default(), provider, config), Err(Error::ProviderMismatch { expected, actual }) if expected == provider && actual == other)
+                    matches!(super::build_request_body(&history, &ModelTurnInput::default(), &RequestConfig::default(), provider, config), Err(Error::ProviderMismatch { expected, actual }) if expected == provider && actual == other)
                 );
             }
         }

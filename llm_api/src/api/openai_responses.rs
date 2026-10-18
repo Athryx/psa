@@ -12,7 +12,7 @@ use crate::Error;
 use crate::providers::ProviderType;
 
 use super::transport::{
-    ApiClient, Decoder, SseEvent, StreamingResponse, protocol, provider_error, usage,
+    ApiClient, Decoder, SseEvent, StreamingResponse, parse_usage, protocol, provider_error,
 };
 use super::*;
 
@@ -46,15 +46,15 @@ impl ApiProvider for OpenAiResponses {
         self.provider
     }
 
-    async fn generate_inner(
+    async fn generate_unvalidated(
         &self,
         history: &AgentHistory,
         input: &ModelTurnInput,
         config: &RequestConfig,
     ) -> Result<Self::Stream, Error> {
-        same_provider(self.provider, history.config.provider)?;
+        require_provider(self.provider, history.config.provider)?;
 
-        let body = request_body(history, input, config)?;
+        let body = build_request_body(history, input, config)?;
         let response = self.client.post(&body).await?;
 
         Ok(OpenAiResponsesStream {
@@ -96,7 +96,7 @@ fn unsupported(feature: impl Into<String>) -> Error {
     }
 }
 
-fn same_provider(expected: ProviderType, actual: ProviderType) -> Result<(), Error> {
+fn require_provider(expected: ProviderType, actual: ProviderType) -> Result<(), Error> {
     if actual != expected {
         return Err(Error::ProviderMismatch { expected, actual });
     }
@@ -104,7 +104,7 @@ fn same_provider(expected: ProviderType, actual: ProviderType) -> Result<(), Err
     Ok(())
 }
 
-fn request_body(
+fn build_request_body(
     history: &AgentHistory,
     input: &ModelTurnInput,
     config: &RequestConfig,
@@ -116,7 +116,7 @@ fn request_body(
         super::schema::validate_tool(tool)?;
     }
 
-    let items = request_items(history, input)?;
+    let items = build_request_items(history, input)?;
 
     let mut body = json!({
         "model": history.config.model.api_name,
@@ -149,7 +149,10 @@ fn request_body(
     Ok(body)
 }
 
-fn request_items(history: &AgentHistory, input: &ModelTurnInput) -> Result<Vec<Value>, Error> {
+fn build_request_items(
+    history: &AgentHistory,
+    input: &ModelTurnInput,
+) -> Result<Vec<Value>, Error> {
     let provider = history.config.provider;
     let mut items = Vec::new();
 
@@ -188,7 +191,7 @@ fn serialize_tool(tool: &ToolDefinition) -> Value {
     value
 }
 
-fn raw_item(item: &HistoryItem) -> Result<Value, Error> {
+fn parse_replay_item_metadata(item: &HistoryItem) -> Result<Value, Error> {
     match item.metadata.provider_metadata.get(RAW_ITEM) {
         Some(value) if value.is_object() => Ok(value.clone()),
         Some(_) => Err(unsupported("malformed Responses item replay metadata")),
@@ -196,7 +199,7 @@ fn raw_item(item: &HistoryItem) -> Result<Value, Error> {
     }
 }
 
-fn native(value: &Value, expected_type: &str) -> Result<Value, Error> {
+fn parse_native_value(value: &Value, expected_type: &str) -> Result<Value, Error> {
     if !value.is_object() || value.get("type").and_then(Value::as_str) != Some(expected_type) {
         return Err(unsupported(
             "native Responses data must be an object with its declared type",
@@ -206,7 +209,7 @@ fn native(value: &Value, expected_type: &str) -> Result<Value, Error> {
 }
 
 fn serialize_item(provider: ProviderType, item: &HistoryItem) -> Result<Value, Error> {
-    let mut value = raw_item(item)?;
+    let mut value = parse_replay_item_metadata(item)?;
 
     match &item.kind {
         HistoryItemKind::Message(message) => {
@@ -248,8 +251,8 @@ fn serialize_item(provider: ProviderType, item: &HistoryItem) -> Result<Value, E
             serialize_reasoning(provider, &item.metadata, reasoning, &mut value)?;
         }
         HistoryItemKind::ProviderItem(item) => {
-            same_provider(provider, item.provider)?;
-            value = native(&item.raw, &item.item_type)?;
+            require_provider(provider, item.provider)?;
+            value = parse_native_value(&item.raw, &item.item_type)?;
         }
     }
 
@@ -273,7 +276,7 @@ fn serialize_content(
     match block {
         ContentBlock::Text(text) => {
             for annotation in &text.annotations {
-                same_provider(provider, annotation.provider)?;
+                require_provider(provider, annotation.provider)?;
             }
 
             let kind = if assistant {
@@ -310,8 +313,8 @@ fn serialize_content(
         ContentBlock::Image(image) if !assistant => serialize_image(provider, image),
         ContentBlock::File(file) if !assistant => serialize_file(provider, file),
         ContentBlock::ProviderContent(content) => {
-            same_provider(provider, content.provider)?;
-            native(&content.raw, &content.content_type)
+            require_provider(provider, content.provider)?;
+            parse_native_value(&content.raw, &content.content_type)
         }
         ContentBlock::Audio(_) => Err(unsupported("audio input/replay in the Responses adapter")),
         ContentBlock::Refusal(_) => Err(unsupported("refusal content outside assistant messages")),
@@ -432,7 +435,7 @@ fn serialize_reasoning(
     value["summary"] = Value::Array(summary);
 
     value.as_object_mut().unwrap().remove("encrypted_content");
-    same_provider(provider, state.provider)?;
+    require_provider(provider, state.provider)?;
     let encrypted = if state.data.is_string() {
         &state.data
     } else {
@@ -457,13 +460,13 @@ fn serialize_image(provider: ProviderType, image: &ImageBlock) -> Result<Value, 
                     "Responses image data requires an image MIME type",
                 ));
             }
-            value["image_url"] = json!(data_url(mime_type, data));
+            value["image_url"] = json!(encode_data_url(mime_type, data));
         }
         MediaSource::ProviderFile {
             provider: actual,
             file_id,
         } => {
-            same_provider(provider, *actual)?;
+            require_provider(provider, *actual)?;
             value["file_id"] = json!(file_id);
         }
     }
@@ -491,13 +494,13 @@ fn serialize_file(provider: ProviderType, file: &FileBlock) -> Result<Value, Err
             {
                 return Err(unsupported("conflicting inline file MIME types"));
             }
-            value["file_data"] = json!(data_url(mime_type, data));
+            value["file_data"] = json!(encode_data_url(mime_type, data));
         }
         MediaSource::ProviderFile {
             provider: actual,
             file_id,
         } => {
-            same_provider(provider, *actual)?;
+            require_provider(provider, *actual)?;
             value["file_id"] = json!(file_id);
         }
     }
@@ -509,7 +512,7 @@ fn serialize_file(provider: ProviderType, file: &FileBlock) -> Result<Value, Err
     Ok(value)
 }
 
-fn data_url(mime_type: &str, data: &[u8]) -> String {
+fn encode_data_url(mime_type: &str, data: &[u8]) -> String {
     format!(
         "data:{mime_type};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(data)
@@ -542,7 +545,7 @@ impl Slot {
 }
 
 impl ResponsesDecoder {
-    fn slot(&mut self, index: usize) -> Result<&mut Slot, Error> {
+    fn require_pending_slot(&mut self, index: usize) -> Result<&mut Slot, Error> {
         let slot = self
             .slots
             .get_mut(&index)
@@ -554,7 +557,7 @@ impl ResponsesDecoder {
         Ok(slot)
     }
 
-    fn sync(
+    fn update_output_items(
         &mut self,
         index: usize,
         output: &mut ModelTurnOutput,
@@ -565,7 +568,7 @@ impl ResponsesDecoder {
             let slot = &self.slots[&index];
             let item = parse_item(output.config.provider, &slot.raw, slot.completed)?
                 .ok_or_else(|| protocol("published function identity disappeared"))?;
-            compatible(&output.items[index], &item)?;
+            validate_item_compatibility(&output.items[index], &item)?;
             output.items[index] = item;
             if let Some(update) = update {
                 events.push_back(TurnEvent::ItemUpdated { index, update });
@@ -596,7 +599,7 @@ impl ResponsesDecoder {
         Ok(())
     }
 
-    fn snapshot(
+    fn apply_item_snapshot(
         &mut self,
         index: usize,
         raw: Value,
@@ -610,7 +613,7 @@ impl ResponsesDecoder {
 
         if let Some(slot) = self.slots.get_mut(&index) {
             if slot.completed {
-                if done && completed_equivalent(output.config.provider, &slot.raw, &raw)? {
+                if done && matches_completed_item(output.config.provider, &slot.raw, &raw)? {
                     return Ok(());
                 }
                 return Err(protocol("snapshot changed a completed output item"));
@@ -639,7 +642,7 @@ impl ResponsesDecoder {
             self.slots.insert(index, slot);
         }
 
-        self.sync(
+        self.update_output_items(
             index,
             output,
             events,
@@ -651,7 +654,7 @@ impl ResponsesDecoder {
         )
     }
 
-    fn metadata(
+    fn apply_response_metadata(
         response: &Value,
         output: &mut ModelTurnOutput,
         events: &mut VecDeque<TurnEvent>,
@@ -682,13 +685,13 @@ impl ResponsesDecoder {
         }
 
         if let Some(value) = response.get("usage").filter(|v| !v.is_null()) {
-            output.usage.merge_reported(usage(value, false));
+            output.usage.merge_reported(parse_usage(value, false));
             events.push_back(TurnEvent::UsageUpdated);
         }
         Ok(())
     }
 
-    fn complete_remaining(
+    fn complete_remaining_items(
         &mut self,
         status: &str,
         output: &mut ModelTurnOutput,
@@ -712,20 +715,20 @@ impl ResponsesDecoder {
             }
 
             slot.completed = true;
-            self.sync(index, output, events, None)?;
+            self.update_output_items(index, output, events, None)?;
         }
 
         Ok(())
     }
 
-    fn terminal(
+    fn apply_terminal_response(
         &mut self,
         kind: &str,
         response: &Value,
         output: &mut ModelTurnOutput,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
-        Self::metadata(response, output, events)?;
+        Self::apply_response_metadata(response, output, events)?;
         let status = response
             .get("status")
             .and_then(Value::as_str)
@@ -746,10 +749,10 @@ impl ResponsesDecoder {
                 return Err(protocol("terminal response removed an output item"));
             }
             for (index, item) in items.iter().enumerate() {
-                self.snapshot(index, item.clone(), true, output, events)?;
+                self.apply_item_snapshot(index, item.clone(), true, output, events)?;
             }
         } else {
-            self.complete_remaining(status, output, events)?;
+            self.complete_remaining_items(status, output, events)?;
         }
 
         if output.items.len() != self.slots.len() {
@@ -758,28 +761,28 @@ impl ResponsesDecoder {
             ));
         }
 
-        output.outcome = terminal_outcome(status, response, output);
+        output.outcome = parse_terminal_outcome(status, response, output);
 
         Ok(())
     }
 
-    fn content_part(
+    fn handle_content_part(
         &mut self,
         kind: &str,
         value: &Value,
         output: &mut ModelTurnOutput,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
-        let index = index(value, "output_index")?;
-        let ci = index_field(value, "content_index")?;
-        let slot = self.slot(index)?;
-        check_item_id(&mut slot.raw, value)?;
-        expect_type(&slot.raw, "message")?;
+        let index = parse_index(value, "output_index")?;
+        let ci = parse_index_field(value, "content_index")?;
+        let slot = self.require_pending_slot(index)?;
+        apply_item_id(&mut slot.raw, value)?;
+        require_type(&slot.raw, "message")?;
 
-        let part = required(value, "part")?.clone();
-        let content = array_mut(&mut slot.raw, "content")?;
+        let part = require_field(value, "part")?.clone();
+        let content = ensure_array_field(&mut slot.raw, "content")?;
         let added = ci == content.len();
-        replace_part(content, ci, part)?;
+        update_part(content, ci, part)?;
 
         let update = if kind.ends_with(".done") {
             if slot.content_done.insert(ci) {
@@ -793,23 +796,23 @@ impl ResponsesDecoder {
             ItemUpdate::ContentUpdated { content_index: ci }
         };
 
-        self.sync(index, output, events, Some(update))?;
+        self.update_output_items(index, output, events, Some(update))?;
 
         Ok(())
     }
 
-    fn text_content(
+    fn handle_text_content(
         &mut self,
         kind: &str,
         value: &Value,
         output: &mut ModelTurnOutput,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
-        let index = index(value, "output_index")?;
-        let ci = index_field(value, "content_index")?;
-        let slot = self.slot(index)?;
-        check_item_id(&mut slot.raw, value)?;
-        expect_type(&slot.raw, "message")?;
+        let index = parse_index(value, "output_index")?;
+        let ci = parse_index_field(value, "content_index")?;
+        let slot = self.require_pending_slot(index)?;
+        apply_item_id(&mut slot.raw, value)?;
+        require_type(&slot.raw, "message")?;
 
         let refusal = kind.starts_with("response.refusal.");
         let done = kind.ends_with(".done");
@@ -817,7 +820,7 @@ impl ResponsesDecoder {
             return Err(protocol("delta received after content completion"));
         }
 
-        let content = array_mut(&mut slot.raw, "content")?;
+        let content = ensure_array_field(&mut slot.raw, "content")?;
         let added = ci == content.len();
         if added {
             content.push(if refusal {
@@ -829,14 +832,14 @@ impl ResponsesDecoder {
         let part = content
             .get_mut(ci)
             .ok_or_else(|| protocol("non-contiguous content index"))?;
-        expect_type(part, if refusal { "refusal" } else { "output_text" })?;
+        require_type(part, if refusal { "refusal" } else { "output_text" })?;
 
         let field = if refusal { "refusal" } else { "text" };
-        let fragment = string(value, if done { field } else { "delta" })?;
+        let fragment = parse_string_field(value, if done { field } else { "delta" })?;
         if done {
             part[field] = json!(fragment);
         } else {
-            append(part, field, fragment)?;
+            append_string_field(part, field, fragment)?;
         }
 
         let update = if done {
@@ -855,7 +858,7 @@ impl ResponsesDecoder {
 
         if added && index < output.items.len() {
             // Both updates refer to a block already reflected in current().
-            self.sync(
+            self.update_output_items(
                 index,
                 output,
                 events,
@@ -863,35 +866,35 @@ impl ResponsesDecoder {
             )?;
         }
 
-        self.sync(index, output, events, Some(update))?;
+        self.update_output_items(index, output, events, Some(update))?;
 
         Ok(())
     }
 
-    fn annotation(
+    fn handle_annotation(
         &mut self,
         value: &Value,
         output: &mut ModelTurnOutput,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
-        let index = index(value, "output_index")?;
-        let ci = index_field(value, "content_index")?;
-        let slot = self.slot(index)?;
-        check_item_id(&mut slot.raw, value)?;
+        let index = parse_index(value, "output_index")?;
+        let ci = parse_index_field(value, "content_index")?;
+        let slot = self.require_pending_slot(index)?;
+        apply_item_id(&mut slot.raw, value)?;
 
-        let content = array_mut(&mut slot.raw, "content")?;
+        let content = ensure_array_field(&mut slot.raw, "content")?;
         let part = content
             .get_mut(ci)
             .ok_or_else(|| protocol("unknown annotation content index"))?;
-        expect_type(part, "output_text")?;
-        let annotations = array_mut(part, "annotations")?;
-        replace_part(
+        require_type(part, "output_text")?;
+        let annotations = ensure_array_field(part, "annotations")?;
+        update_part(
             annotations,
-            index_field(value, "annotation_index")?,
-            required(value, "annotation")?.clone(),
+            parse_index_field(value, "annotation_index")?,
+            require_field(value, "annotation")?.clone(),
         )?;
 
-        self.sync(
+        self.update_output_items(
             index,
             output,
             events,
@@ -901,17 +904,17 @@ impl ResponsesDecoder {
         Ok(())
     }
 
-    fn function_arguments(
+    fn handle_function_arguments(
         &mut self,
         kind: &str,
         value: &Value,
         output: &mut ModelTurnOutput,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
-        let index = index(value, "output_index")?;
-        let slot = self.slot(index)?;
-        expect_type(&slot.raw, "function_call")?;
-        check_item_id(&mut slot.raw, value)?;
+        let index = parse_index(value, "output_index")?;
+        let slot = self.require_pending_slot(index)?;
+        require_type(&slot.raw, "function_call")?;
+        apply_item_id(&mut slot.raw, value)?;
 
         for field in ["name", "call_id"] {
             if let Some(identity) = value.get(field).and_then(Value::as_str) {
@@ -928,38 +931,38 @@ impl ResponsesDecoder {
         }
 
         let update = if kind.ends_with(".done") {
-            slot.raw["arguments"] = json!(string(value, "arguments")?);
+            slot.raw["arguments"] = json!(parse_string_field(value, "arguments")?);
             ItemUpdate::ProviderUpdated
         } else {
-            let delta = string(value, "delta")?;
-            append(&mut slot.raw, "arguments", delta)?;
+            let delta = parse_string_field(value, "delta")?;
+            append_string_field(&mut slot.raw, "arguments", delta)?;
             ItemUpdate::ToolArgumentsDelta {
                 delta: delta.into(),
             }
         };
 
-        self.sync(index, output, events, Some(update))?;
+        self.update_output_items(index, output, events, Some(update))?;
 
         Ok(())
     }
 
-    fn reasoning_summary(
+    fn handle_reasoning_summary(
         &mut self,
         kind: &str,
         value: &Value,
         output: &mut ModelTurnOutput,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
-        let index = index(value, "output_index")?;
-        let si = index_field(value, "summary_index")?;
-        let slot = self.slot(index)?;
-        expect_type(&slot.raw, "reasoning")?;
-        check_item_id(&mut slot.raw, value)?;
+        let index = parse_index(value, "output_index")?;
+        let si = parse_index_field(value, "summary_index")?;
+        let slot = self.require_pending_slot(index)?;
+        require_type(&slot.raw, "reasoning")?;
+        apply_item_id(&mut slot.raw, value)?;
 
-        let summary = array_mut(&mut slot.raw, "summary")?;
+        let summary = ensure_array_field(&mut slot.raw, "summary")?;
         let added = si == summary.len();
         let update = if kind.contains("_part.") {
-            replace_part(summary, si, required(value, "part")?.clone())?;
+            update_part(summary, si, require_field(value, "part")?.clone())?;
             if added {
                 ItemUpdate::ReasoningSummaryAdded { summary_index: si }
             } else {
@@ -973,11 +976,11 @@ impl ResponsesDecoder {
                 .get_mut(si)
                 .ok_or_else(|| protocol("non-contiguous reasoning summary index"))?;
             if kind.ends_with(".done") {
-                part["text"] = json!(string(value, "text")?);
+                part["text"] = json!(parse_string_field(value, "text")?);
                 ItemUpdate::MetadataUpdated
             } else {
-                let delta = string(value, "delta")?;
-                append(part, "text", delta)?;
+                let delta = parse_string_field(value, "delta")?;
+                append_string_field(part, "text", delta)?;
                 ItemUpdate::ReasoningSummaryDelta {
                     summary_index: si,
                     delta: delta.into(),
@@ -986,7 +989,7 @@ impl ResponsesDecoder {
         };
 
         if added && kind.contains("_text.") && index < output.items.len() {
-            self.sync(
+            self.update_output_items(
                 index,
                 output,
                 events,
@@ -994,7 +997,7 @@ impl ResponsesDecoder {
             )?;
         }
 
-        self.sync(index, output, events, Some(update))?;
+        self.update_output_items(index, output, events, Some(update))?;
 
         Ok(())
     }
@@ -1030,45 +1033,50 @@ impl Decoder for ResponsesDecoder {
                 return Err(provider_error(value.get("error").unwrap_or(&value)));
             }
             "response.created" | "response.in_progress" | "response.queued" => {
-                Self::metadata(required(&value, "response")?, output, events)?;
+                Self::apply_response_metadata(require_field(&value, "response")?, output, events)?;
             }
             "response.completed"
             | "response.incomplete"
             | "response.failed"
             | "response.cancelled"
             | "response.done" => {
-                self.terminal(kind, required(&value, "response")?, output, events)?;
+                self.apply_terminal_response(
+                    kind,
+                    require_field(&value, "response")?,
+                    output,
+                    events,
+                )?;
                 return Ok(true);
             }
             "response.output_item.added" | "response.output_item.done" => {
-                self.snapshot(
-                    index(&value, "output_index")?,
-                    required(&value, "item")?.clone(),
+                self.apply_item_snapshot(
+                    parse_index(&value, "output_index")?,
+                    require_field(&value, "item")?.clone(),
                     kind.ends_with(".done"),
                     output,
                     events,
                 )?;
             }
             "response.content_part.added" | "response.content_part.done" => {
-                self.content_part(kind, &value, output, events)?;
+                self.handle_content_part(kind, &value, output, events)?;
             }
             "response.output_text.delta"
             | "response.output_text.done"
             | "response.refusal.delta"
             | "response.refusal.done" => {
-                self.text_content(kind, &value, output, events)?;
+                self.handle_text_content(kind, &value, output, events)?;
             }
             "response.output_text.annotation.added" => {
-                self.annotation(&value, output, events)?;
+                self.handle_annotation(&value, output, events)?;
             }
             "response.function_call_arguments.delta" | "response.function_call_arguments.done" => {
-                self.function_arguments(kind, &value, output, events)?;
+                self.handle_function_arguments(kind, &value, output, events)?;
             }
             "response.reasoning_summary_part.added"
             | "response.reasoning_summary_part.done"
             | "response.reasoning_summary_text.delta"
             | "response.reasoning_summary_text.done" => {
-                self.reasoning_summary(kind, &value, output, events)?;
+                self.handle_reasoning_summary(kind, &value, output, events)?;
             }
             // Hosted tools and future event types are represented by their
             // native output-item snapshots. Lifecycle/ping events add no text.
@@ -1078,7 +1086,7 @@ impl Decoder for ResponsesDecoder {
     }
 }
 
-fn terminal_outcome(status: &str, response: &Value, output: &ModelTurnOutput) -> Outcome {
+fn parse_terminal_outcome(status: &str, response: &Value, output: &ModelTurnOutput) -> Outcome {
     match status {
         "completed" => Outcome::Completed {
             reason: if output
@@ -1113,30 +1121,30 @@ fn terminal_outcome(status: &str, response: &Value, output: &ModelTurnOutput) ->
     }
 }
 
-fn required<'a>(value: &'a Value, field: &str) -> Result<&'a Value, Error> {
+fn require_field<'a>(value: &'a Value, field: &str) -> Result<&'a Value, Error> {
     value
         .get(field)
         .ok_or_else(|| protocol(format!("Responses event is missing {field}")))
 }
 
-fn string<'a>(value: &'a Value, field: &str) -> Result<&'a str, Error> {
-    required(value, field)?
+fn parse_string_field<'a>(value: &'a Value, field: &str) -> Result<&'a str, Error> {
+    require_field(value, field)?
         .as_str()
         .ok_or_else(|| protocol(format!("{field} is not a string")))
 }
 
-fn index(value: &Value, field: &str) -> Result<usize, Error> {
-    index_field(value, field)
+fn parse_index(value: &Value, field: &str) -> Result<usize, Error> {
+    parse_index_field(value, field)
 }
 
-fn index_field(value: &Value, field: &str) -> Result<usize, Error> {
-    required(value, field)?
+fn parse_index_field(value: &Value, field: &str) -> Result<usize, Error> {
+    require_field(value, field)?
         .as_u64()
         .and_then(|v| usize::try_from(v).ok())
         .ok_or_else(|| protocol(format!("invalid {field}")))
 }
 
-fn expect_type(value: &Value, expected: &str) -> Result<(), Error> {
+fn require_type(value: &Value, expected: &str) -> Result<(), Error> {
     if value.get("type").and_then(Value::as_str) != Some(expected) {
         return Err(protocol(format!("expected {expected} item/content")));
     }
@@ -1144,7 +1152,7 @@ fn expect_type(value: &Value, expected: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn array_mut<'a>(value: &'a mut Value, field: &str) -> Result<&'a mut Vec<Value>, Error> {
+fn ensure_array_field<'a>(value: &'a mut Value, field: &str) -> Result<&'a mut Vec<Value>, Error> {
     if value.get(field).is_none() {
         value[field] = json!([]);
     }
@@ -1155,7 +1163,7 @@ fn array_mut<'a>(value: &'a mut Value, field: &str) -> Result<&'a mut Vec<Value>
         .ok_or_else(|| protocol(format!("{field} is not an array")))
 }
 
-fn append(value: &mut Value, field: &str, delta: &str) -> Result<(), Error> {
+fn append_string_field(value: &mut Value, field: &str, delta: &str) -> Result<(), Error> {
     let mut text = value
         .get(field)
         .and_then(Value::as_str)
@@ -1170,7 +1178,7 @@ fn append(value: &mut Value, field: &str, delta: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn replace_part(parts: &mut Vec<Value>, index: usize, part: Value) -> Result<(), Error> {
+fn update_part(parts: &mut Vec<Value>, index: usize, part: Value) -> Result<(), Error> {
     if !part.is_object() {
         return Err(protocol("content/summary part is not an object"));
     }
@@ -1188,7 +1196,7 @@ fn replace_part(parts: &mut Vec<Value>, index: usize, part: Value) -> Result<(),
     Ok(())
 }
 
-fn check_item_id(raw: &mut Value, event: &Value) -> Result<(), Error> {
+fn apply_item_id(raw: &mut Value, event: &Value) -> Result<(), Error> {
     if let Some(id) = event.get("item_id").and_then(Value::as_str) {
         if raw
             .get("id")
@@ -1208,7 +1216,7 @@ fn parse_item(
     raw: &Value,
     complete: bool,
 ) -> Result<Option<HistoryItem>, Error> {
-    let kind = match string(raw, "type")? {
+    let kind = match parse_string_field(raw, "type")? {
         "message" => {
             let role = match raw
                 .get("role")
@@ -1248,14 +1256,14 @@ fn parse_item(
                 call_id: call_id.into(),
                 arguments: raw
                     .get("arguments")
-                    .map(|_| string(raw, "arguments"))
+                    .map(|_| parse_string_field(raw, "arguments"))
                     .transpose()?
                     .unwrap_or("")
                     .into(),
             })
         }
         "function_call_output" => {
-            let output = required(raw, "output")?;
+            let output = require_field(raw, "output")?;
             let content = if let Some(text) = output.as_str() {
                 vec![ContentBlock::Text(TextBlock {
                     text: text.into(),
@@ -1270,7 +1278,7 @@ fn parse_item(
                     .collect::<Result<Vec<_>, _>>()?
             };
             HistoryItemKind::ToolResult(ToolResult {
-                call_id: string(raw, "call_id")?.into(),
+                call_id: parse_string_field(raw, "call_id")?.into(),
                 content,
                 is_error: false,
             })
@@ -1285,7 +1293,7 @@ fn parse_item(
                 .transpose()?
                 .into_iter()
                 .flatten()
-                .map(|part| string(part, "text").map(str::to_owned))
+                .map(|part| parse_string_field(part, "text").map(str::to_owned))
                 .collect::<Result<Vec<_>, _>>()?;
             HistoryItemKind::Reasoning(Reasoning {
                 summary,
@@ -1315,9 +1323,9 @@ fn parse_item(
 }
 
 fn parse_content(provider: ProviderType, raw: &Value) -> Result<ContentBlock, Error> {
-    Ok(match string(raw, "type")? {
+    Ok(match parse_string_field(raw, "type")? {
         "output_text" | "input_text" => ContentBlock::Text(TextBlock {
-            text: string(raw, "text")?.into(),
+            text: parse_string_field(raw, "text")?.into(),
             annotations: raw
                 .get("annotations")
                 .map(|v| {
@@ -1339,7 +1347,7 @@ fn parse_content(provider: ProviderType, raw: &Value) -> Result<ContentBlock, Er
                 .collect(),
         }),
         "refusal" => ContentBlock::Refusal(RefusalBlock {
-            text: string(raw, "refusal")?.into(),
+            text: parse_string_field(raw, "refusal")?.into(),
         }),
         content_type => ContentBlock::ProviderContent(ProviderContent {
             provider,
@@ -1352,7 +1360,7 @@ fn parse_content(provider: ProviderType, raw: &Value) -> Result<ContentBlock, Er
 // A terminal envelope may add provider-only fields to an already final typed
 // item. Retain that envelope in response metadata, but never mutate an item
 // after ItemCompleted. Changes to portable content/identity remain errors.
-fn completed_equivalent(
+fn matches_completed_item(
     provider: ProviderType,
     previous: &Value,
     next: &Value,
@@ -1366,7 +1374,7 @@ fn completed_equivalent(
     Ok(serde_json::to_value(previous)? == serde_json::to_value(next)?)
 }
 
-fn compatible(previous: &HistoryItem, next: &HistoryItem) -> Result<(), Error> {
+fn validate_item_compatibility(previous: &HistoryItem, next: &HistoryItem) -> Result<(), Error> {
     if previous
         .metadata
         .item_id
@@ -1543,7 +1551,7 @@ mod tests {
                 name: "read".into(),
             }),
         };
-        let body = request_body(&history, &input, &config).unwrap();
+        let body = build_request_body(&history, &input, &config).unwrap();
         assert_eq!(body["input"].as_array().unwrap().len(), 3);
         assert_eq!(body["input"][0]["content"][0]["text"], "old input");
         assert_eq!(body["input"][1]["content"][0]["type"], "input_text");
@@ -1579,11 +1587,11 @@ mod tests {
                 ..Default::default()
             };
             assert_eq!(
-                request_body(&history, &input, &config).unwrap()["tool_choice"],
+                build_request_body(&history, &input, &config).unwrap()["tool_choice"],
                 expected
             );
         }
-        let body = request_body(&history, &input, &RequestConfig::default()).unwrap();
+        let body = build_request_body(&history, &input, &RequestConfig::default()).unwrap();
         assert!(body.get("tools").is_none());
         assert!(body.get("max_output_tokens").is_none());
         assert!(body.get("parallel_tool_calls").is_none());
@@ -1677,7 +1685,7 @@ mod tests {
             }))],
         };
         assert!(matches!(
-            request_body(
+            build_request_body(
                 &AgentHistory::new(model()),
                 &input,
                 &RequestConfig::default()
@@ -2070,7 +2078,7 @@ mod tests {
         let mut switched = model();
         switched.model.api_name = "other-model".into();
         history.update_model_config(switched).unwrap();
-        let body = request_body(
+        let body = build_request_body(
             &history,
             &ModelTurnInput::default(),
             &RequestConfig::default(),
@@ -2128,7 +2136,7 @@ mod tests {
         let mut history = AgentHistory::new(model());
         history.config.effort = Effort::Max;
         assert!(matches!(
-            request_body(
+            build_request_body(
                 &history,
                 &ModelTurnInput::default(),
                 &RequestConfig::default()
@@ -2137,7 +2145,7 @@ mod tests {
         ));
         history.config.effort = Effort::Xhigh;
         assert_eq!(
-            request_body(
+            build_request_body(
                 &history,
                 &ModelTurnInput::default(),
                 &RequestConfig::default()
@@ -2152,7 +2160,7 @@ mod tests {
             strict: None,
         });
         assert!(matches!(
-            request_body(
+            build_request_body(
                 &history,
                 &ModelTurnInput::default(),
                 &RequestConfig::default()
@@ -2253,7 +2261,7 @@ mod tests {
                 ],
             }))],
         };
-        let body = request_body(&history, &input, &RequestConfig::default()).unwrap();
+        let body = build_request_body(&history, &input, &RequestConfig::default()).unwrap();
         assert_eq!(body["model"], "vendor/responses-model");
         assert_eq!(body["input"][0], raw[0]);
         assert_eq!(body["input"][1], raw[1]);
@@ -2326,10 +2334,10 @@ mod tests {
                 actual: ProviderType::OpenAiCodex
             })
         ));
-        // Even direct generate_inner calls cannot send a different provider's
+        // Even direct generate_unvalidated calls cannot send a different provider's
         // history to this client. No HTTP listener is needed for these checks.
         assert!(matches!(
-            client.generate_inner(&history, &input, &config).await,
+            client.generate_unvalidated(&history, &input, &config).await,
             Err(Error::ProviderMismatch {
                 expected: ProviderType::Openrouter,
                 actual: ProviderType::OpenAiCodex

@@ -47,17 +47,17 @@ impl AgentHistory {
 
         if changed {
             for turn in &mut converted.turns {
-                convert_items(&mut turn.input.items, config.provider)?;
+                strip_items_replay_state(&mut turn.input.items, config.provider)?;
                 if let Some(output) = &mut turn.output {
-                    convert_items(&mut output.items, config.provider)?;
+                    strip_items_replay_state(&mut output.items, config.provider)?;
                 }
             }
         }
 
         for turn in &converted.turns {
-            validate_provider_items(&turn.input.items, config.provider)?;
+            validate_item_providers(&turn.input.items, config.provider)?;
             if let Some(output) = &turn.output {
-                validate_provider_items(&output.items, config.provider)?;
+                validate_item_providers(&output.items, config.provider)?;
             }
         }
         converted.config = config;
@@ -141,15 +141,15 @@ fn validate_turns(
             )));
         }
 
-        validate_provider_items(&turn.input.items, provider)?;
-        calls.scan(&turn.input.items)?;
+        validate_item_providers(&turn.input.items, provider)?;
+        calls.apply_items(&turn.input.items)?;
         calls.require_resolved()?;
-        validate_provider_items(&output.items, provider)?;
-        calls.scan(&output.items)?;
+        validate_item_providers(&output.items, provider)?;
+        calls.apply_items(&output.items)?;
     }
 
-    validate_provider_items(&input.items, provider)?;
-    calls.scan(&input.items)?;
+    validate_item_providers(&input.items, provider)?;
+    calls.apply_items(&input.items)?;
     calls.require_resolved()
 }
 
@@ -173,7 +173,7 @@ struct ToolCalls {
 }
 
 impl ToolCalls {
-    fn scan(&mut self, items: &[HistoryItem]) -> Result<(), Error> {
+    fn apply_items(&mut self, items: &[HistoryItem]) -> Result<(), Error> {
         for item in items {
             match &item.kind {
                 HistoryItemKind::ToolCall(call) => self.record_call(call, &item.metadata)?,
@@ -225,7 +225,7 @@ impl ToolCalls {
     }
 }
 
-fn validate_source(source: &MediaSource, provider: ProviderType) -> Result<(), Error> {
+fn validate_media_provider(source: &MediaSource, provider: ProviderType) -> Result<(), Error> {
     if let MediaSource::ProviderFile {
         provider: actual, ..
     } = source
@@ -235,14 +235,17 @@ fn validate_source(source: &MediaSource, provider: ProviderType) -> Result<(), E
     Ok(())
 }
 
-fn validate_content(content: &[ContentBlock], provider: ProviderType) -> Result<(), Error> {
+fn validate_content_providers(
+    content: &[ContentBlock],
+    provider: ProviderType,
+) -> Result<(), Error> {
     for block in content {
         match block {
-            ContentBlock::Image(image) => validate_source(&image.source, provider)?,
-            ContentBlock::File(file) => validate_source(&file.source, provider)?,
+            ContentBlock::Image(image) => validate_media_provider(&image.source, provider)?,
+            ContentBlock::File(file) => validate_media_provider(&file.source, provider)?,
             ContentBlock::Audio(audio) => {
                 if let Some(source) = &audio.source {
-                    validate_source(source, provider)?;
+                    validate_media_provider(source, provider)?;
                 }
                 if let Some(state) = &audio.provider_audio {
                     require_provider(provider, state.provider)?;
@@ -260,11 +263,15 @@ fn validate_content(content: &[ContentBlock], provider: ProviderType) -> Result<
     Ok(())
 }
 
-fn validate_provider_items(items: &[HistoryItem], provider: ProviderType) -> Result<(), Error> {
+fn validate_item_providers(items: &[HistoryItem], provider: ProviderType) -> Result<(), Error> {
     for item in items {
         match &item.kind {
-            HistoryItemKind::Message(message) => validate_content(&message.content, provider)?,
-            HistoryItemKind::ToolResult(result) => validate_content(&result.content, provider)?,
+            HistoryItemKind::Message(message) => {
+                validate_content_providers(&message.content, provider)?
+            }
+            HistoryItemKind::ToolResult(result) => {
+                validate_content_providers(&result.content, provider)?
+            }
             HistoryItemKind::ProviderItem(native) => require_provider(provider, native.provider)?,
             HistoryItemKind::Reasoning(reasoning) => {
                 if let Some(state) = &reasoning.opaque_state {
@@ -277,7 +284,10 @@ fn validate_provider_items(items: &[HistoryItem], provider: ProviderType) -> Res
     Ok(())
 }
 
-fn convert_content(content: &mut Vec<ContentBlock>, provider: ProviderType) -> Result<(), Error> {
+fn strip_content_replay_state(
+    content: &mut Vec<ContentBlock>,
+    provider: ProviderType,
+) -> Result<(), Error> {
     content.retain(|block| !matches!(block, ContentBlock::ProviderContent(_)));
 
     for block in content {
@@ -291,12 +301,15 @@ fn convert_content(content: &mut Vec<ContentBlock>, provider: ProviderType) -> R
             }
             _ => {}
         }
-        validate_content(std::slice::from_ref(block), provider)?;
+        validate_content_providers(std::slice::from_ref(block), provider)?;
     }
     Ok(())
 }
 
-fn convert_items(items: &mut Vec<HistoryItem>, provider: ProviderType) -> Result<(), Error> {
+fn strip_items_replay_state(
+    items: &mut Vec<HistoryItem>,
+    provider: ProviderType,
+) -> Result<(), Error> {
     items.retain(|item| {
         !matches!(
             item.kind,
@@ -305,19 +318,21 @@ fn convert_items(items: &mut Vec<HistoryItem>, provider: ProviderType) -> Result
     });
 
     for item in items.iter_mut() {
-        convert_item(item, provider)?;
+        strip_item_replay_state(item, provider)?;
     }
 
     items.retain(|item| !matches!(&item.kind, HistoryItemKind::Message(message) if message.content.is_empty()));
     Ok(())
 }
 
-fn convert_item(item: &mut HistoryItem, provider: ProviderType) -> Result<(), Error> {
+fn strip_item_replay_state(item: &mut HistoryItem, provider: ProviderType) -> Result<(), Error> {
     match &mut item.kind {
-        HistoryItemKind::Message(message) => convert_content(&mut message.content, provider)?,
+        HistoryItemKind::Message(message) => {
+            strip_content_replay_state(&mut message.content, provider)?
+        }
         HistoryItemKind::ToolResult(result) => {
             let was_empty = result.content.is_empty();
-            convert_content(&mut result.content, provider)?;
+            strip_content_replay_state(&mut result.content, provider)?;
             if !was_empty && result.content.is_empty() {
                 return Err(Error::Unsupported {
                     feature: "model switching would erase an entire tool result".into(),

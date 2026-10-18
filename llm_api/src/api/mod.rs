@@ -106,14 +106,15 @@ pub trait ApiProvider: Send + Sync {
     ) -> impl std::future::Future<Output = Result<Self::Stream, Error>> + Send {
         async move {
             validate_request(history, self.provider_type(), input, config)?;
-            self.generate_inner(history, input, config).await
+            self.generate_unvalidated(history, input, config).await
         }
     }
 
     /// Implement adapter-specific validation, serialization, and HTTP setup.
     /// Called by `generate` only after common validation. Implementors should
-    /// override this method, not `generate`; direct calls bypass common checks.
-    fn generate_inner(
+    /// override this method, not `generate`; direct calls bypass common checks
+    /// but still run adapter-specific validation.
+    fn generate_unvalidated(
         &self,
         history: &AgentHistory,
         input: &ModelTurnInput,

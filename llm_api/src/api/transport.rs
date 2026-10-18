@@ -21,8 +21,8 @@ pub(super) struct ApiClient {
 impl ApiClient {
     /// The URL is the complete endpoint, not a base URL; no path is appended.
     pub(super) fn new(url: impl Into<String>, key: impl Into<String>) -> Result<Self, Error> {
-        let url = endpoint_url(&url.into())?;
-        let headers = authenticated_headers(&key.into())?;
+        let url = parse_endpoint_url(&url.into())?;
+        let headers = build_authenticated_headers(&key.into())?;
         let client = reqwest::Client::builder()
             .default_headers(headers)
             // Do not forward secrets or silently change request semantics on redirects.
@@ -54,7 +54,7 @@ impl ApiClient {
     }
 }
 
-fn endpoint_url(value: &str) -> Result<reqwest::Url, Error> {
+fn parse_endpoint_url(value: &str) -> Result<reqwest::Url, Error> {
     let url = reqwest::Url::parse(value).map_err(|_| Error::InvalidConfig {
         field: "api_url".into(),
         message: "expected an absolute HTTP(S) endpoint URL".into(),
@@ -74,7 +74,7 @@ fn endpoint_url(value: &str) -> Result<reqwest::Url, Error> {
     Ok(url)
 }
 
-fn authenticated_headers(key: &str) -> Result<HeaderMap, Error> {
+fn build_authenticated_headers(key: &str) -> Result<HeaderMap, Error> {
     if key.is_empty() || key.trim() != key {
         return Err(Error::InvalidConfig {
             field: "api_key".into(),
@@ -102,7 +102,7 @@ async fn http_error(mut response: reqwest::Response) -> Error {
         .headers()
         .get(RETRY_AFTER)
         .and_then(|header| header.to_str().ok())
-        .and_then(|value| retry_after(value, std::time::SystemTime::now()));
+        .and_then(|value| parse_retry_after(value, std::time::SystemTime::now()));
     let (bytes, read_error) = read_error_body(&mut response).await;
 
     let mut message = serde_json::from_slice::<Value>(&bytes)
@@ -361,7 +361,7 @@ impl SseDecoder {
     }
 }
 
-fn retry_after(value: &str, now: std::time::SystemTime) -> Option<u64> {
+fn parse_retry_after(value: &str, now: std::time::SystemTime) -> Option<u64> {
     if let Ok(seconds) = value.parse() {
         return Some(seconds);
     }
@@ -406,7 +406,7 @@ pub(super) fn provider_error(value: &Value) -> Error {
     }
 }
 
-pub(super) fn usage(value: &Value, chat: bool) -> Usage {
+pub(super) fn parse_usage(value: &Value, chat: bool) -> Usage {
     let input = if chat {
         "prompt_tokens"
     } else {
@@ -496,14 +496,14 @@ mod tests {
     #[test]
     fn retry_after_supports_seconds_and_http_dates() {
         let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
-        assert_eq!(retry_after("7", now), Some(7));
+        assert_eq!(parse_retry_after("7", now), Some(7));
         let date = httpdate::fmt_http_date(now + std::time::Duration::from_secs(10));
-        assert_eq!(retry_after(&date, now), Some(10));
+        assert_eq!(parse_retry_after(&date, now), Some(10));
         assert_eq!(
-            retry_after(&date, now + std::time::Duration::from_secs(20)),
+            parse_retry_after(&date, now + std::time::Duration::from_secs(20)),
             Some(0)
         );
-        assert_eq!(retry_after("invalid", now), None);
+        assert_eq!(parse_retry_after("invalid", now), None);
     }
 
     #[tokio::test]
@@ -579,13 +579,13 @@ mod tests {
 
     #[test]
     fn usage_counts_are_subsets_and_absent_counts_stay_absent() {
-        let usage = usage(
+        let usage = parse_usage(
             &serde_json::json!({"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":3},"completion_tokens_details":{"reasoning_tokens":2}}),
             true,
         );
         assert_eq!(usage.total_tokens, Some(15));
         assert_eq!(usage.cached_input_tokens, Some(3));
         assert_eq!(usage.reasoning_output_tokens, Some(2));
-        assert_eq!(super::usage(&Value::Null, false).input_tokens, None);
+        assert_eq!(super::parse_usage(&Value::Null, false).input_tokens, None);
     }
 }

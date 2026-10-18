@@ -55,7 +55,7 @@ impl ApiProvider for Provider {
         }
     }
 
-    async fn generate_inner(
+    async fn generate_unvalidated(
         &self,
         history: &AgentHistory,
         input: &ModelTurnInput,
@@ -63,11 +63,11 @@ impl ApiProvider for Provider {
     ) -> Result<Self::Stream, Error> {
         match self {
             Self::Responses(provider) => provider
-                .generate_inner(history, input, config)
+                .generate_unvalidated(history, input, config)
                 .await
                 .map(ProviderStream::Responses),
             Self::Completions(provider) => provider
-                .generate_inner(history, input, config)
+                .generate_unvalidated(history, input, config)
                 .await
                 .map(ProviderStream::Completions),
         }
