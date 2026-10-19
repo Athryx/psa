@@ -11,10 +11,17 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use std::{path::Path, time::Duration};
 
 pub use error::DbError;
+pub use events::AddEventResult;
 
 #[derive(Debug, Clone)]
 pub struct Database {
     pool: sqlx::SqlitePool,
+}
+
+/// A transaction-scoped view of the database. Dropping it rolls back all changes.
+#[must_use = "a database cursor must be committed to persist changes"]
+pub struct DatabaseCursor {
+    transaction: sqlx::Transaction<'static, sqlx::Sqlite>,
 }
 
 impl Database {
@@ -34,8 +41,31 @@ impl Database {
         Ok(Self { pool })
     }
 
+    /// Begin a transaction, reserving the SQLite writer lock up front.
+    pub async fn cursor(&self) -> Result<DatabaseCursor, DbError> {
+        let transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        Ok(DatabaseCursor { transaction })
+    }
+
+    /// Close the pool after all active cursors have been committed or dropped.
     pub async fn close(&self) {
         self.pool.close().await;
+    }
+}
+
+impl DatabaseCursor {
+    fn connection(&mut self) -> &mut sqlx::SqliteConnection {
+        &mut self.transaction
+    }
+
+    pub async fn commit(self) -> Result<(), DbError> {
+        self.transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn rollback(self) -> Result<(), DbError> {
+        self.transaction.rollback().await?;
+        Ok(())
     }
 }
 

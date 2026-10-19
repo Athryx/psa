@@ -1,31 +1,45 @@
 use super::{
-    Database, DbError,
+    DatabaseCursor, DbError,
     agents::get_agent,
     payloads::{event_kind, insert_payload, load_payloads},
-    schema::{EventRow, decode_integer, decode_time, encode_integer, encode_time, now_us},
+    schema::{
+        EventRow, decode_integer, decode_time, encode_agent_state, encode_integer, encode_time,
+        now_us, parse_agent_state,
+    },
     sessions::get_session,
 };
 use crate::agents::{
-    AgentId,
+    AgentId, AgentState,
     events::{Event, EventId, EventRange, EventType, NewEvent},
 };
-use sqlx::SqliteConnection;
+use sqlx::{Acquire, SqliteConnection};
 use std::collections::HashSet;
 
-impl Database {
+/// Changes staged by an append; commit the cursor to persist them.
+#[derive(Debug, Clone)]
+pub struct AddEventResult {
+    pub events: Vec<Event>,
+    /// The last state in the batch, only if it differs from the previous state.
+    pub new_state: Option<AgentState>,
+}
+
+impl DatabaseCursor {
     pub async fn add_events(
-        &self,
+        &mut self,
         agent: AgentId,
         events: &[NewEvent],
-    ) -> Result<Vec<Event>, DbError> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let stream = get_agent(&mut tx, agent).await?;
+    ) -> Result<AddEventResult, DbError> {
+        let mut savepoint = self.transaction.begin().await?;
+        let stream = get_agent(&mut savepoint, agent).await?;
         if events.is_empty() {
-            tx.commit().await?;
-            return Ok(Vec::new());
+            savepoint.commit().await?;
+            return Ok(AddEventResult {
+                events: Vec::new(),
+                new_state: None,
+            });
         }
 
-        let session = get_session(&mut tx, stream.session_id).await?;
+        let session = get_session(&mut savepoint, stream.session_id).await?;
         let count = i64::try_from(events.len())
             .map_err(|_| DbError::InvalidInput("too many events".into()))?;
         let first_seq = encode_integer(stream.next_event_id.0)?;
@@ -61,9 +75,9 @@ impl Database {
                 timestamp,
                 kind
             )
-            .execute(&mut *tx)
+            .execute(&mut *savepoint)
             .await?;
-            insert_payload(&mut tx, result.last_insert_rowid(), &payload).await?;
+            insert_payload(&mut savepoint, result.last_insert_rowid(), &payload).await?;
             saved.push(Event {
                 id: EventId(decode_integer(seq)?),
                 source_agent_id: agent,
@@ -72,14 +86,24 @@ impl Database {
             });
         }
 
+        let new_state = events
+            .iter()
+            .rev()
+            .find_map(|event| match &event.kind {
+                EventType::StatusChange(change) => Some(change.new_status),
+                _ => None,
+            })
+            .filter(|state| *state != stream.state);
+        let state = new_state.map(encode_agent_state);
         let now = now_us()?;
         sqlx::query!(
-            "UPDATE agents SET next_event_seq = ?, updated_at_us = ? WHERE id = ?",
+            "UPDATE agents SET next_event_seq = ?, state = COALESCE(?, state), updated_at_us = ? WHERE id = ?",
             next_seq,
+            state,
             now,
             agent_id
         )
-        .execute(&mut *tx)
+        .execute(&mut *savepoint)
         .await?;
         sqlx::query!(
             "UPDATE sessions SET next_position = ?, updated_at_us = ? WHERE id = ?",
@@ -87,15 +111,18 @@ impl Database {
             now,
             session_id
         )
-        .execute(&mut *tx)
+        .execute(&mut *savepoint)
         .await?;
 
-        tx.commit().await?;
-        Ok(saved)
+        savepoint.commit().await?;
+        Ok(AddEventResult {
+            events: saved,
+            new_state,
+        })
     }
 
     pub async fn load_events(
-        &self,
+        &mut self,
         agent: AgentId,
         range: EventRange,
     ) -> Result<Vec<Event>, DbError> {
@@ -105,8 +132,8 @@ impl Database {
             ));
         }
 
-        let mut tx = self.pool.begin().await?;
-        let rows = load_event_rows(&mut tx, agent, &range).await?;
+        let conn = self.connection();
+        let rows = load_event_rows(conn, agent, &range).await?;
         let mut result = Vec::with_capacity(rows.len());
 
         // A page can span multiple ancestors. Load each owner's payloads in a batch.
@@ -125,7 +152,7 @@ impl Database {
                 .find(|r| r.agent_id == owner)
                 .unwrap()
                 .event_seq;
-            payloads.extend(load_payloads(&mut tx, owner, first, last).await?);
+            payloads.extend(load_payloads(conn, owner, first, last).await?);
         }
 
         for row in rows {
@@ -145,7 +172,6 @@ impl Database {
             });
         }
 
-        tx.commit().await?;
         Ok(result)
     }
 }
@@ -184,6 +210,29 @@ pub(super) async fn load_event_rows(
         rows.extend(batch);
     }
     Ok(rows)
+}
+
+pub(super) async fn agent_state_at(
+    conn: &mut SqliteConnection,
+    agent: AgentId,
+    through: EventId,
+) -> Result<AgentState, DbError> {
+    let segments = load_segments(conn, agent, EventId(0), Some(through)).await?;
+    for (owner, lower, upper) in segments.into_iter().rev() {
+        let row = sqlx::query!(
+            "SELECT s.status FROM events e JOIN event_status_change s ON s.event_pk = e.event_pk WHERE e.agent_id = ? AND e.event_seq BETWEEN ? AND ? ORDER BY e.event_seq DESC LIMIT 1",
+            owner,
+            lower,
+            upper
+        )
+        .fetch_optional(&mut *conn)
+        .await?;
+        if let Some(row) = row {
+            return parse_agent_state(&row.status);
+        }
+    }
+
+    Ok(AgentState::Idle)
 }
 
 pub(super) async fn event_cutoff_at(

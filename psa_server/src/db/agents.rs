@@ -1,5 +1,5 @@
 use super::{
-    Database, DbError,
+    DatabaseCursor, DbError,
     schema::{AgentRow, encode_integer, now_us, validate_name},
     sessions::get_session,
 };
@@ -7,14 +7,18 @@ use crate::{
     agents::{Agent, AgentId, NewAgent},
     sessions::SessionId,
 };
-use sqlx::SqliteConnection;
+use sqlx::{Acquire, SqliteConnection};
 
-impl Database {
-    pub async fn create_agent(&self, session: SessionId, new: NewAgent) -> Result<Agent, DbError> {
+impl DatabaseCursor {
+    pub async fn create_agent(
+        &mut self,
+        session: SessionId,
+        new: NewAgent,
+    ) -> Result<Agent, DbError> {
         validate_name(&new.name)?;
 
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let owner = get_session(&mut tx, session).await?;
+        let mut savepoint = self.transaction.begin().await?;
+        let owner = get_session(&mut savepoint, session).await?;
         let session_id = encode_integer(session.0)?;
         let position = encode_integer(owner.next_position)?;
         let next = position
@@ -30,7 +34,7 @@ impl Database {
             now,
             now
         )
-        .execute(&mut *tx)
+        .execute(&mut *savepoint)
         .await?;
         sqlx::query!(
             "UPDATE sessions SET next_position = ?, updated_at_us = ? WHERE id = ?",
@@ -38,29 +42,25 @@ impl Database {
             now,
             session_id
         )
-        .execute(&mut *tx)
+        .execute(&mut *savepoint)
         .await?;
         let agent = get_agent(
-            &mut tx,
+            &mut savepoint,
             AgentId(super::schema::decode_integer(result.last_insert_rowid())?),
         )
         .await?;
 
-        tx.commit().await?;
+        savepoint.commit().await?;
         Ok(agent)
     }
 
-    pub async fn get_agent(&self, id: AgentId) -> Result<Agent, DbError> {
-        get_agent(&mut *self.pool.acquire().await?, id).await
+    pub async fn get_agent(&mut self, id: AgentId) -> Result<Agent, DbError> {
+        get_agent(self.connection(), id).await
     }
 
-    pub async fn list_agents(&self, session: SessionId) -> Result<Vec<Agent>, DbError> {
-        let mut tx = self.pool.begin().await?;
-        get_session(&mut tx, session).await?;
-        let result = list_agents(&mut tx, session).await?;
-
-        tx.commit().await?;
-        Ok(result)
+    pub async fn list_agents(&mut self, session: SessionId) -> Result<Vec<Agent>, DbError> {
+        get_session(self.connection(), session).await?;
+        list_agents(self.connection(), session).await
     }
 }
 
@@ -68,7 +68,7 @@ pub(super) async fn get_agent(conn: &mut SqliteConnection, id: AgentId) -> Resul
     let key = encode_integer(id.0)?;
     let row = sqlx::query_as!(
         AgentRow,
-        "SELECT id, session_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, created_at_us, updated_at_us FROM agents WHERE id = ?",
+        "SELECT id, session_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, state, created_at_us, updated_at_us FROM agents WHERE id = ?",
         key
     )
     .fetch_optional(conn)
@@ -85,7 +85,7 @@ pub(super) async fn list_agents(
     let key = encode_integer(session.0)?;
     let rows = sqlx::query_as!(
         AgentRow,
-        "SELECT id, session_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, created_at_us, updated_at_us FROM agents WHERE session_id = ? ORDER BY id",
+        "SELECT id, session_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, state, created_at_us, updated_at_us FROM agents WHERE session_id = ? ORDER BY id",
         key
     )
     .fetch_all(conn)

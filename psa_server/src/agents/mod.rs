@@ -1,15 +1,19 @@
 //! Main agent runtime
 
-use crate::sessions::SessionId;
+use crate::{agents::agent_context::ProjectionError, db::DbError, sessions::SessionId};
 use events::EventId;
 use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AgentId(pub u64);
 
-pub mod agent_state;
+pub mod agent_context;
+pub mod agent_loop;
 pub mod events;
 
+pub use agent_loop::AgentState;
+
+/// Represents the state of the agent in the database, mostly immutable except for state
 #[derive(Debug, Clone)]
 pub struct Agent {
     pub id: AgentId,
@@ -19,6 +23,7 @@ pub struct Agent {
     pub next_event_id: EventId,
     pub created_position: u64,
     pub name: String,
+    pub state: AgentState,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -28,15 +33,10 @@ pub struct NewAgent {
     pub name: String,
 }
 
-/// Current state of the agent
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentStatus {
-    /// Agent is idle and has no pending inference requests.
-    ///
-    /// Agent becomes idle after finishing on its own accord.
-    Idle,
-    /// Agent was running, but was stopped due to user interrupt, api error, or quitting
-    Interrupted,
-    /// Agent is currently running / ready to run
-    Running,
+#[derive(Debug, thiserror::Error)]
+pub enum AgentError {
+    #[error("Error converting event state into model context: {0}")]
+    Context(#[from] ProjectionError),
+    #[error("Database Error: {0}")]
+    Database(#[from] DbError),
 }

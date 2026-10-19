@@ -1,11 +1,8 @@
 use super::{
     DbError,
-    schema::{decode_integer, encode_integer},
+    schema::{decode_integer, encode_agent_state, encode_integer, parse_agent_state},
 };
-use crate::{
-    agents::{AgentStatus, events::*},
-    tools::ToolId,
-};
+use crate::{agents::events::*, tools::ToolId};
 use llm_api::{
     api::{self, Outcome, Usage},
     providers::{Effort, Model, ModelConfig, ProviderType},
@@ -126,11 +123,7 @@ pub(super) async fn insert_payload(
 ) -> Result<(), DbError> {
     match event {
         EventType::StatusChange(value) => {
-            let status = match value.new_status {
-                AgentStatus::Idle => "idle",
-                AgentStatus::Running => "running",
-                AgentStatus::Interrupted => "interrupted",
-            };
+            let status = encode_agent_state(value.new_status);
             sqlx::query!(
                 "INSERT INTO event_status_change (event_pk,status,reason) VALUES (?,?,?)",
                 pk,
@@ -175,20 +168,15 @@ pub(super) async fn insert_payload(
                 MessageDelivery::Steer => "steer",
             });
             let metadata = serialize_json(&value.metadata)?;
-            let content = value
-                .replay_content
-                .as_ref()
-                .map(serialize_json)
-                .transpose()?;
+            let content = serialize_json(&value.content)?;
 
             sqlx::query!(
-                "INSERT INTO event_message (event_pk,message_type,delivery,contents,metadata,replay_content) VALUES (?,?,?,?,?,?)",
+                "INSERT INTO event_message (event_pk,message_type,delivery,content,metadata) VALUES (?,?,?,?,?)",
                 pk,
                 message_type,
                 delivery,
-                value.contents,
-                metadata,
-                content
+                content,
+                metadata
             )
             .execute(&mut *conn)
             .await?;
@@ -408,12 +396,7 @@ pub(super) async fn load_payloads(
     load!(
         "SELECT p.event_pk, p.status, p.reason FROM event_status_change p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
         |r| EventType::StatusChange(StatusChange {
-            new_status: match r.status.as_str() {
-                "idle" => AgentStatus::Idle,
-                "running" => AgentStatus::Running,
-                "interrupted" => AgentStatus::Interrupted,
-                s => return Err(invalid(s)),
-            },
+            new_status: parse_agent_state(&r.status)?,
             reason: r.reason
         })
     );
@@ -426,7 +409,7 @@ pub(super) async fn load_payloads(
         |r| EventType::NewContext
     );
     load!(
-        "SELECT p.event_pk, p.message_type, p.delivery, p.contents, p.metadata, p.replay_content FROM event_message p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+        "SELECT p.event_pk, p.message_type, p.delivery, p.content, p.metadata FROM event_message p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
         |r| EventType::Message(Message {
             message_type: match r.message_type.as_str() {
                 "human" => MessageType::Human,
@@ -441,9 +424,8 @@ pub(super) async fn load_payloads(
                 Some("steer") => Some(MessageDelivery::Steer),
                 Some(s) => return Err(invalid(s)),
             },
-            contents: r.contents,
-            metadata: parse_json(&r.metadata)?,
-            replay_content: r.replay_content.as_deref().map(parse_json).transpose()?
+            content: parse_json(&r.content)?,
+            metadata: parse_json(&r.metadata)?
         })
     );
     load!(

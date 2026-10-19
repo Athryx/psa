@@ -1,8 +1,11 @@
 use super::{
-    Database, DbError,
+    DatabaseCursor, DbError,
     agents::{get_agent, list_agents},
-    events::{event_cutoff_at, load_event_rows},
-    schema::{SessionRow, decode_integer, encode_integer, encode_path, now_us, validate_name},
+    events::{agent_state_at, event_cutoff_at, load_event_rows},
+    schema::{
+        SessionRow, decode_integer, encode_agent_state, encode_integer, encode_path, now_us,
+        validate_name,
+    },
 };
 use crate::{
     agents::{
@@ -13,15 +16,15 @@ use crate::{
         ForkPoint, ForkedSession, NewSession, Session, SessionFork, SessionId, SessionUpdate,
     },
 };
-use sqlx::SqliteConnection;
+use sqlx::{Acquire, SqliteConnection};
 
-impl Database {
-    pub async fn create_session(&self, new: NewSession) -> Result<Session, DbError> {
+impl DatabaseCursor {
+    pub async fn create_session(&mut self, new: NewSession) -> Result<Session, DbError> {
         validate_name(&new.name)?;
         let path = encode_path(&new.working_directory)?;
         let now = now_us()?;
 
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut savepoint = self.transaction.begin().await?;
         let result = sqlx::query!(
             "INSERT INTO sessions (first_position, next_position, name, working_directory, created_at_us, updated_at_us) VALUES (1,1,?,?,?,?)",
             new.name,
@@ -29,38 +32,41 @@ impl Database {
             now,
             now
         )
-        .execute(&mut *tx)
+        .execute(&mut *savepoint)
         .await?;
         let session = get_session(
-            &mut tx,
+            &mut savepoint,
             SessionId(decode_integer(result.last_insert_rowid())?),
         )
         .await?;
 
-        tx.commit().await?;
+        savepoint.commit().await?;
         Ok(session)
     }
 
-    pub async fn get_session(&self, id: SessionId) -> Result<Session, DbError> {
-        get_session(&mut *self.pool.acquire().await?, id).await
+    pub async fn get_session(&mut self, id: SessionId) -> Result<Session, DbError> {
+        get_session(self.connection(), id).await
     }
 
     /// `None` lists roots, `Some(id)` lists immediate children.
-    pub async fn list_sessions(&self, parent: Option<SessionId>) -> Result<Vec<Session>, DbError> {
+    pub async fn list_sessions(
+        &mut self,
+        parent: Option<SessionId>,
+    ) -> Result<Vec<Session>, DbError> {
         let parent = parent.map(|id| encode_integer(id.0)).transpose()?;
         let rows = sqlx::query_as!(
             SessionRow,
             "SELECT id, parent_session_id, first_position, next_position, name, working_directory, created_at_us, updated_at_us FROM sessions WHERE parent_session_id IS ? ORDER BY id",
             parent
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.connection())
         .await?;
 
         rows.into_iter().map(TryInto::try_into).collect()
     }
 
     pub async fn update_session(
-        &self,
+        &mut self,
         id: SessionId,
         update: SessionUpdate,
     ) -> Result<Session, DbError> {
@@ -75,8 +81,8 @@ impl Database {
         let key = encode_integer(id.0)?;
         let now = now_us()?;
 
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        get_session(&mut tx, id).await?;
+        let mut savepoint = self.transaction.begin().await?;
+        get_session(&mut savepoint, id).await?;
         sqlx::query!(
             "UPDATE sessions SET name = COALESCE(?, name), working_directory = COALESCE(?, working_directory), updated_at_us = ? WHERE id = ?",
             update.name,
@@ -84,26 +90,26 @@ impl Database {
             now,
             key
         )
-        .execute(&mut *tx)
+        .execute(&mut *savepoint)
         .await?;
-        let session = get_session(&mut tx, id).await?;
+        let session = get_session(&mut savepoint, id).await?;
 
-        tx.commit().await?;
+        savepoint.commit().await?;
         Ok(session)
     }
 
     pub async fn fork_session(
-        &self,
+        &mut self,
         source: SessionId,
         fork: SessionFork,
     ) -> Result<ForkedSession, DbError> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let original = get_session(&mut tx, source).await?;
+        let mut savepoint = self.transaction.begin().await?;
+        let original = get_session(&mut savepoint, source).await?;
 
         let position = match fork.point {
             ForkPoint::Head => original.next_position - 1,
             ForkPoint::ThroughEvent { agent_id, event_id } => {
-                let agent = get_agent(&mut tx, agent_id).await?;
+                let agent = get_agent(&mut savepoint, agent_id).await?;
                 if agent.session_id != source || event_id.0 == 0 {
                     return Err(DbError::InvalidInput(
                         "fork event must belong to a stream in the source session".into(),
@@ -115,7 +121,7 @@ impl Database {
                     through: Some(event_id),
                     limit: 1,
                 };
-                let rows = load_event_rows(&mut tx, agent_id, &range).await?;
+                let rows = load_event_rows(&mut savepoint, agent_id, &range).await?;
                 decode_integer(
                     rows.first()
                         .ok_or_else(|| DbError::InvalidInput("fork event is not visible".into()))?
@@ -147,20 +153,20 @@ impl Database {
             now,
             now
         )
-        .execute(&mut *tx)
+        .execute(&mut *savepoint)
         .await?;
         let child_id = SessionId(decode_integer(result.last_insert_rowid())?);
 
         let mut agents = Vec::new();
-        for agent in list_agents(&mut tx, source).await? {
+        for agent in list_agents(&mut savepoint, source).await? {
             if agent.created_position <= position {
-                let child = fork_agent(&mut tx, &agent, child_id, position).await?;
+                let child = fork_agent(&mut savepoint, &agent, child_id, position).await?;
                 agents.push((agent.id, child));
             }
         }
-        let session = get_session(&mut tx, child_id).await?;
+        let session = get_session(&mut savepoint, child_id).await?;
 
-        tx.commit().await?;
+        savepoint.commit().await?;
         Ok(ForkedSession { session, agents })
     }
 }
@@ -189,6 +195,8 @@ async fn fork_agent(
     position: u64,
 ) -> Result<Agent, DbError> {
     let cutoff = event_cutoff_at(conn, agent.id, position).await?;
+    let state =
+        encode_agent_state(agent_state_at(conn, agent.id, EventId(decode_integer(cutoff)?)).await?);
     let first = cutoff
         .checked_add(1)
         .ok_or_else(|| DbError::InvalidInput("event sequence exhausted".into()))?;
@@ -198,13 +206,14 @@ async fn fork_agent(
     let now = now_us()?;
 
     let result = sqlx::query!(
-        "INSERT INTO agents (session_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT INTO agents (session_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, state, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?,?,?)",
         session_id,
         parent,
         first,
         first,
         created,
         agent.name,
+        state,
         now,
         now
     )

@@ -9,7 +9,7 @@ use llm_api::{
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
 use psa_server::{
-    agents::NewAgent, agents::agent_state::AgentState, agents::events::*, db::Database,
+    agents::NewAgent, agents::agent_context::AgentContext, agents::events::*, db::Database,
     sessions::NewSession,
 };
 use serde_json::Value;
@@ -36,14 +36,15 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
         let db = Database::open(dir.path().join("test.sqlite3"))
             .await
             .unwrap();
-        let session = db
+        let mut cursor = db.cursor().await.unwrap();
+        let session = cursor
             .create_session(NewSession {
                 name: "test".into(),
                 working_directory: "/work".into(),
             })
             .await
             .unwrap();
-        let agent = db
+        let agent = cursor
             .create_agent(
                 session.id,
                 NewAgent {
@@ -52,33 +53,35 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
             )
             .await
             .unwrap();
-        db.add_events(
-            agent.id,
-            &[
-                NewEvent::new(EventType::NewContext),
-                NewEvent::new(EventType::Model(ModelConfig {
-                    model: Model::new("test-model").unwrap(),
-                    provider: ProviderType::Openrouter,
-                    effort: Effort::High,
-                })),
-                NewEvent::new(EventType::Compaction(Compaction {
-                    summary: CompactionSummary::Text("previous work".into()),
-                    usage: Usage::default(),
-                })),
-                NewEvent::new(EventType::Message(Message::text(
-                    MessageType::Agent,
-                    "retained reply",
-                ))),
-                NewEvent::new(EventType::Message(Message::text(
-                    MessageType::Human,
-                    "continue",
-                ))),
-            ],
-        )
-        .await
-        .unwrap();
-        let state = AgentState::replay(
-            &db.load_events(agent.id, EventRange::default())
+        cursor
+            .add_events(
+                agent.id,
+                &[
+                    NewEvent::new(EventType::NewContext),
+                    NewEvent::new(EventType::Model(ModelConfig {
+                        model: Model::new("test-model").unwrap(),
+                        provider: ProviderType::Openrouter,
+                        effort: Effort::High,
+                    })),
+                    NewEvent::new(EventType::Compaction(Compaction {
+                        summary: CompactionSummary::Text("previous work".into()),
+                        usage: Usage::default(),
+                    })),
+                    NewEvent::new(EventType::Message(Message::text(
+                        MessageType::Agent,
+                        "retained reply",
+                    ))),
+                    NewEvent::new(EventType::Message(Message::text(
+                        MessageType::Human,
+                        "continue",
+                    ))),
+                ],
+            )
+            .await
+            .unwrap();
+        let state = AgentContext::replay(
+            &cursor
+                .load_events(agent.id, EventRange::default())
                 .await
                 .unwrap(),
         )
@@ -89,6 +92,7 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
                 ..Default::default()
             })
             .unwrap();
+        cursor.commit().await.unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (sender, mut received) = mpsc::channel(2);

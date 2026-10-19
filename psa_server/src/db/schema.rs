@@ -2,7 +2,7 @@
 
 use super::DbError;
 use crate::{
-    agents::{Agent, AgentId, events::EventId},
+    agents::{Agent, AgentId, AgentState, events::EventId},
     sessions::{Session, SessionId},
 };
 use std::path::{Path, PathBuf};
@@ -47,6 +47,7 @@ pub(super) struct AgentRow {
     pub next_event_seq: i64,
     pub created_position: i64,
     pub name: String,
+    pub state: String,
     pub created_at_us: i64,
     pub updated_at_us: i64,
 }
@@ -66,6 +67,7 @@ impl TryFrom<AgentRow> for Agent {
             next_event_id: EventId(decode_integer(row.next_event_seq)?),
             created_position: decode_integer(row.created_position)?,
             name: row.name,
+            state: parse_agent_state(&row.state)?,
             created_at: decode_time(row.created_at_us)?,
             updated_at: decode_time(row.updated_at_us)?,
         })
@@ -79,6 +81,23 @@ pub(super) struct EventRow {
     pub session_position: i64,
     pub timestamp_us: i64,
     pub kind: String,
+}
+
+pub(super) fn encode_agent_state(state: AgentState) -> &'static str {
+    match state {
+        AgentState::Idle => "idle",
+        AgentState::Running => "running",
+        AgentState::Interrupted => "interrupted",
+    }
+}
+
+pub(super) fn parse_agent_state(state: &str) -> Result<AgentState, DbError> {
+    match state {
+        "idle" => Ok(AgentState::Idle),
+        "running" => Ok(AgentState::Running),
+        "interrupted" => Ok(AgentState::Interrupted),
+        _ => Err(DbError::Corrupt(format!("invalid agent state: {state}"))),
+    }
 }
 
 pub(super) fn encode_integer(value: u64) -> Result<i64, DbError> {

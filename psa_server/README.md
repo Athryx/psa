@@ -37,29 +37,47 @@ are not implemented by this foundation.
 
 ## Storage and replay API
 
-`db::Database` exposes session creation/update/listing, agent creation/listing,
-atomic event batches, whole-session forks, and bounded event reads. SQL row types
-and the pool are private. All new errors use `thiserror`.
+`db::Database` manages the pool and migrations. Call `db.cursor().await?` to get a
+`DatabaseCursor`; all session, agent, and event operations take `&mut self` on the
+cursor. Call `commit().await?` to persist changes or `rollback().await?` to discard
+them. Dropping the cursor also rolls back. Both methods consume the cursor.
+
+A cursor begins an immediate transaction, including for reads. Keep cursors short
+lived and release them before model/tool/network work or closing the database.
+Multiple operations share one coherent snapshot and can be committed atomically.
+Multi-step writes use savepoints: a failed operation rolls back its own changes,
+so callers can catch the error and still commit earlier successful operations.
+SQL row types and the pool are private. All new errors use `thiserror`.
+Each `Agent` exposes its current `state`. New agents start idle; event appends
+atomically update this field using the last `StatusChange` in the batch. A fork
+inherits the state visible at its cutoff, not its parent's later state. Migration
+0005 backfills existing agents from their bounded event histories.
+`add_events` returns `db::AddEventResult` with the assigned `events` and
+`new_state: Option<AgentState>`. `new_state` is `Some` only if the batch changes the
+current state; these changes remain staged until the cursor is committed.
 
 ```rust,no_run
 use psa_server::{
-    agent_state::AgentState,
-    agents::NewAgent,
+    agents::{
+        NewAgent,
+        agent_context::AgentContext,
+        events::{EventId, EventRange, EventType, Message, MessageType, NewEvent},
+    },
     db::Database,
-    events::{EventId, EventRange, EventType, Message, MessageType, NewEvent},
     sessions::{NewSession, ForkPoint, SessionFork, SessionUpdate},
 };
 use llm_api::{api::RequestConfig, providers::{Effort, Model, ModelConfig, ProviderType}};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let db = Database::open("psa.sqlite3").await?;
-let session = db.create_session(NewSession {
+let mut cursor = db.cursor().await?;
+let session = cursor.create_session(NewSession {
     name: "Example".into(),
     working_directory: "/work/project".into(),
 }).await?;
-let agent = db.create_agent(session.id, NewAgent { name: "Main".into() }).await?;
+let agent = cursor.create_agent(session.id, NewAgent { name: "Main".into() }).await?;
 
-db.add_events(agent.id, &[
+cursor.add_events(agent.id, &[
     NewEvent::new(EventType::Model(ModelConfig {
         model: Model::new("example-model")?,
         provider: ProviderType::Openrouter,
@@ -69,10 +87,10 @@ db.add_events(agent.id, &[
 ]).await?;
 
 // Capture the head once so pagination replays a stable prefix during appends.
-let head = EventId(db.get_agent(agent.id).await?.next_event_id.0 - 1);
-let mut state = AgentState::default();
+let head = EventId(cursor.get_agent(agent.id).await?.next_event_id.0 - 1);
+let mut state = AgentContext::default();
 while state.last_event_id < head {
-    let page = db.load_events(agent.id, EventRange {
+    let page = cursor.load_events(agent.id, EventRange {
         after: state.last_event_id,
         through: Some(head),
         limit: 1000,
@@ -82,12 +100,13 @@ while state.last_event_id < head {
 let request = state.prepare_request(RequestConfig::default())?;
 // Future execution calls provider.generate(&request.history, &request.input, &request.config).
 
-let fork = db.fork_session(session.id, SessionFork {
+let fork = cursor.fork_session(session.id, SessionFork {
     point: ForkPoint::Head,
     metadata: SessionUpdate { name: Some("Alternative".into()), ..Default::default() },
 }).await?;
 // fork.agents maps each source AgentId to its child agent, including empty streams.
 # let _ = (request, fork);
+cursor.commit().await?;
 db.close().await;
 # Ok(())
 # }
@@ -104,7 +123,7 @@ creation consumes a position too, so an older fork excludes agents born later.
 Parent appends cannot change a fork's inherited prefix. Forks can select any
 visible event, including a prefix that cannot yet form a valid model request.
 
-`AgentState` is a pure reducer. `AgentHistory.items` is flat context: user prompts,
+`AgentContext` is a pure reducer. `AgentHistory.items` is flat context: user prompts,
 compaction summaries, retained assistant messages, and completed model outputs
 appear in their original order. There is no `ModelTurn` pairing. The prepared
 request contains this history and an empty separate `ModelTurnInput`; direct
@@ -136,6 +155,9 @@ blocks are stored as a JSON array and passed unchanged into history; there is no
 separate display-text or replay-content field for tool results. Migration 0003
 converts existing results, preserving rich content when present and wrapping
 plain text in a text block otherwise.
+Messages likewise have a single `content: Vec<ContentBlock>` payload, with
+`Message::text` as a convenience constructor. Migration 0004 converts existing
+messages using the same rich-content-first rule, preserving delivery and metadata.
 
 Migration 0002 upgrades the previous inference payload tables and backfills model
 snapshots through the bounded agent ancestry. Stored envelope tags remain

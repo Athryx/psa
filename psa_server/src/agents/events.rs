@@ -1,9 +1,9 @@
 //! Immutable transcript events. Sequence numbers are local to an agent lineage.
 
-use crate::{agents::AgentId, agents::AgentStatus, tools::ToolId};
+use crate::{agents::AgentId, agents::AgentState, tools::ToolId};
 use llm_api::api::{
-    HistoryItem, HistoryItemMetadata, Outcome, ProviderMetadata, Reasoning, RequestConfig,
-    ToolDefinition as ApiToolDefinition, Usage,
+    ContentBlock, HistoryItem, HistoryItemMetadata, Outcome, ProviderMetadata, Reasoning,
+    RequestConfig, TextBlock, ToolDefinition as ApiToolDefinition, Usage,
 };
 use llm_api::providers::ModelConfig;
 use std::time::Duration;
@@ -88,21 +88,20 @@ pub enum MessageDelivery {
 pub struct Message {
     pub message_type: MessageType,
     pub delivery: Option<MessageDelivery>,
-    pub contents: String,
+    pub content: Vec<ContentBlock>,
     pub metadata: HistoryItemMetadata,
-    /// Original rich content (citations, refusals, attachments) when available.
-    /// `contents` remains the display text; plain messages leave this unset.
-    pub replay_content: Option<Vec<llm_api::api::ContentBlock>>,
 }
 
 impl Message {
     pub fn text(message_type: MessageType, contents: impl Into<String>) -> Self {
         Self {
             message_type,
-            contents: contents.into(),
+            content: vec![ContentBlock::Text(TextBlock {
+                text: contents.into(),
+                annotations: Vec::new(),
+            })],
             delivery: None,
             metadata: HistoryItemMetadata::default(),
-            replay_content: None,
         }
     }
 }
@@ -161,7 +160,7 @@ pub struct Compaction {
 
 #[derive(Debug, Clone)]
 pub struct StatusChange {
-    pub new_status: AgentStatus,
+    pub new_status: AgentState,
     pub reason: Option<String>,
 }
 

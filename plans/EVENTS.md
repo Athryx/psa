@@ -53,7 +53,10 @@ There is no independent single-agent fork operation in this first implementation
 
 Session metadata initially includes name, working directory, creation/update
 timestamps, and immutable parent/fork metadata. Agent metadata includes name and
-creation/update timestamps; use the session's working directory initially.
+creation/update timestamps and the current `AgentState`; use the session's working
+directory initially. New agents default to idle. Appending events atomically
+updates the cached state from the last `StatusChange` in the batch; forks inherit
+the state visible at their event cutoff.
 Represent working directories as `PathBuf` in Rust and explicitly validated UTF-8
 text in SQLite. Reject unsupported paths rather than using lossy conversion.
 Do not require the directory to exist on the server; it may later refer to a probe.
@@ -140,6 +143,7 @@ a duplicate schema SQL file. Put low-level Rust row schemas in `db/schema.rs`.
 - `created_position INTEGER NOT NULL CHECK (created_position >= 1)`.
 - `name TEXT NOT NULL`, `created_at_us INTEGER NOT NULL`,
   `updated_at_us INTEGER NOT NULL`.
+- `state TEXT NOT NULL DEFAULT 'idle'`, checked against the lifecycle states.
 - Root streams have `first_event_seq = 1`.
 - `created_position` means the logical agent's original creation position in the
   branch. A forked agent copies this value; creating the fork representation is
@@ -181,7 +185,7 @@ payload existence before commit.
 | `event_status_change` | Status discriminator; nullable reason. |
 | `event_model` | Provider, API model name, reasoning effort. |
 | `event_new_context` | None. |
-| `event_message` | Message type, nullable delivery mode, contents; optional replay metadata. |
+| `event_message` | Message type, nullable delivery mode, content blocks (JSON array), replay metadata. |
 | `event_thinking` | Structured provider reasoning/replay payload. |
 | `event_tool_definition` | Stable tool ID; resolved definition snapshot. |
 | `event_tool_call` | Call ID, tool name, arguments as the original string; replay metadata. |
@@ -251,7 +255,7 @@ Keep SQL, transactions, and low-level row types private under `psa_server/src/db
 
 ```text
 db/
-  mod.rs          Database, pool initialization, migration execution
+  mod.rs          Database, DatabaseCursor, pool initialization, migrations
   schema.rs       Low-level SQLite row types and stored discriminators
   sessions.rs     Session create/update/list and whole-session forks
   agents.rs       Agent create/get/list and ancestry operations
@@ -270,16 +274,29 @@ create_agent(session: SessionId, new: NewAgent) -> Agent
 get_agent(id: AgentId) -> Agent
 list_agents(session: SessionId) -> Vec<Agent>
 fork_session(source: SessionId, fork: SessionFork) -> ForkedSession
-add_events(agent: AgentId, events: &[NewEvent]) -> Vec<Event>
+add_events(agent: AgentId, events: &[NewEvent]) -> AddEventResult
 load_events(agent: AgentId, range: EventRange) -> Vec<Event>
 ```
 
-All return `Result<_, DbError>` asynchronously. `NewEvent` contains a timestamp
+All operations live on `DatabaseCursor`, take `&mut self`, and return
+`Result<_, DbError>` asynchronously. `Database::cursor()` starts a SQLx-managed
+`BEGIN IMMEDIATE` transaction. Explicit `commit` and `rollback` consume the
+cursor; dropping it rolls back. Keep cursors short lived, including for reads,
+and release them before external work or closing the pool. Multi-step mutations
+use savepoints to undo an individual failed operation without discarding earlier
+successful work in the same cursor.
+
+`NewEvent` contains a timestamp
 and payload, without a caller-assigned sequence or SQL key. `EventRange` has an
 exclusive `after` and optional inclusive `through`, plus a bounded page size.
 Fork points support `Head` and `ThroughEvent { agent_id, event_id }`; require the
 agent to belong to the source session, and resolve its inherited events correctly.
 Return the source-to-child agent ID mapping from a session fork.
+
+`AddEventResult` contains the assigned `events` and `new_state: Option<AgentState>`.
+The latter is set only when the last state-change event differs from the current
+agent state. Empty batches, batches without state changes, and batches ending in
+the original state return `None`. Results are staged until the cursor is committed.
 
 `list_agents` returns the session's own agent representations, not all historical
 ancestor rows. No raw SQL rows or database handles escape through this API.
@@ -287,12 +304,14 @@ Keep request rendering above the database layer.
 
 ### Atomic appends
 
-For a nonempty append, acquire a connection and start a SQLx-managed immediate
-write transaction before reading either allocator. Read the target agent and
+For a nonempty append, start a savepoint in the cursor's immediate transaction
+before reading either allocator. Read the target agent and
 owning session, reserve consecutive agent event sequences and shared session
 positions, insert all envelopes and payloads, and update both counters/timestamps
-inside that transaction. Return assigned events only after successful commit.
-Use the driver's transaction abstraction so cancellation/error triggers rollback.
+inside that savepoint. Release the savepoint before returning assigned events;
+the caller must commit the cursor to persist them. Use the driver's transaction
+abstraction so cancellation/error rolls back the savepoint and dropping the
+cursor rolls back its entire transaction.
 
 Do not allocate from `MAX(event_seq) + 1` outside a write transaction. Rollback
 must undo both counter reservations and every payload/envelope. Empty appends
@@ -305,7 +324,7 @@ by rendering/validation, not by forbidding such prefixes in the database.
 
 ### Whole-session forks
 
-Run the entire fork in one immediate transaction:
+Run the entire fork in a savepoint within the cursor's immediate transaction:
 
 1. Resolve `Head` to the source session's current branch position, or resolve the
    specified visible event to its shared session position `P`.
@@ -315,7 +334,8 @@ Run the entire fork in one immediate transaction:
    Create a child agent with that source agent as parent, first/next event sequence
    = cutoff + 1, and the original logical `created_position`.
 5. Copy current mutable metadata as documented, return every agent mapping,
-   and commit. Do not copy inherited event/payload rows.
+   and release the savepoint. Do not copy inherited event/payload rows. The caller
+   commits the cursor to persist the fork along with any other operations.
 
 This includes empty streams, excludes agents born after the cutoff, and freezes
 every parent-stream boundary together. Source writes after the fork cannot leak
@@ -346,9 +366,9 @@ Validate lineage consistency and detect missing parents/cycles as stored-data
 errors. An optional upper bound is a prefix read, so later pages can reuse the
 same captured head while writers continue appending.
 
-## Event projection into agent state and LLM requests
+## Event projection into agent context and LLM requests
 
-Add `agent_state.rs` for a deterministic reducer. It takes ordered high-level
+Add `agents/agent_context.rs` for a deterministic reducer. It takes ordered high-level
 events, not SQL rows, and exposes both `apply_event` and a full replay constructor.
 Start by replaying the full visible stream; persisted projection checkpoints and
 optimized loading from the latest reset are future improvements.

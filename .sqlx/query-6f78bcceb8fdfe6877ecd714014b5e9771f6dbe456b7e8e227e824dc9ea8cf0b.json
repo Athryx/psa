@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO event_message (event_pk,message_type,delivery,content,metadata) VALUES (?,?,?,?,?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "6f78bcceb8fdfe6877ecd714014b5e9771f6dbe456b7e8e227e824dc9ea8cf0b"
+}

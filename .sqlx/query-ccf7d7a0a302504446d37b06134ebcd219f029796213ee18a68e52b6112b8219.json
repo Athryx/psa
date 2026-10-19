@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, session_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, created_at_us, updated_at_us FROM agents WHERE id = ?",
+  "query": "SELECT id, session_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, state, created_at_us, updated_at_us FROM agents WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -81,8 +81,19 @@
         }
       },
       {
-        "name": "created_at_us",
+        "name": "state",
         "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agents",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "created_at_us",
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -93,7 +104,7 @@
       },
       {
         "name": "updated_at_us",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -115,8 +126,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "843094b0f47fd6ea81859abcfe38a44fafb5771c80e0de40fc21686f54a2d8a5"
+  "hash": "ccf7d7a0a302504446d37b06134ebcd219f029796213ee18a68e52b6112b8219"
 }

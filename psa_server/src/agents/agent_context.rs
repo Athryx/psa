@@ -1,7 +1,7 @@
 //! Pure transcript projection. Replaying never runs tools or makes requests.
 
 use super::events::*;
-use crate::{agents::AgentStatus, tools::ToolId};
+use crate::{agents::AgentState, tools::ToolId};
 use llm_api::{
     api::{
         self, AgentHistory, HistoryItem, HistoryItemKind, HistoryItemMetadata, ModelResponse,
@@ -45,9 +45,10 @@ pub struct PreparedRequest {
     pub config: RequestConfig,
 }
 
+/// Reconstructs an agent's context from events and prepares model requests.
 #[derive(Debug, Clone)]
-pub struct AgentState {
-    pub status: AgentStatus,
+pub struct AgentContext {
+    pub status: AgentState,
     pub status_reason: Option<String>,
     pub last_event_id: EventId,
     model_config: Option<ModelConfig>,
@@ -57,10 +58,10 @@ pub struct AgentState {
     last_response: Option<ModelResponse>,
 }
 
-impl Default for AgentState {
+impl Default for AgentContext {
     fn default() -> Self {
         Self {
-            status: AgentStatus::Idle,
+            status: AgentState::Idle,
             status_reason: None,
             last_event_id: EventId(0),
             model_config: None,
@@ -72,7 +73,7 @@ impl Default for AgentState {
     }
 }
 
-impl AgentState {
+impl AgentContext {
     pub fn replay(events: &[Event]) -> Result<Self, ProjectionError> {
         let mut state = Self::default();
         for event in events {
@@ -176,10 +177,7 @@ impl AgentState {
                 self.append_item(HistoryItem {
                     kind: HistoryItemKind::Message(api::Message {
                         role,
-                        content: message
-                            .replay_content
-                            .clone()
-                            .unwrap_or_else(|| vec![build_text_block(&message.contents)]),
+                        content: message.content.clone(),
                     }),
                     metadata: message.metadata.clone(),
                 });
