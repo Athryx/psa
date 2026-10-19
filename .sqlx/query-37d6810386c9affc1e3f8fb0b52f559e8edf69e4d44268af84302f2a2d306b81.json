@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT p.event_pk, p.tool_id, p.name, p.description, p.parameters, p.strict FROM event_tool_definition p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "event_pk",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_tool_definition",
+            "name": "event_pk"
+          }
+        }
+      },
+      {
+        "name": "tool_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_tool_definition",
+            "name": "tool_id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_tool_definition",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "description",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_tool_definition",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "name": "parameters",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_tool_definition",
+            "name": "parameters"
+          }
+        }
+      },
+      {
+        "name": "strict",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_tool_definition",
+            "name": "strict"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "37d6810386c9affc1e3f8fb0b52f559e8edf69e4d44268af84302f2a2d306b81"
+}

@@ -106,7 +106,7 @@ fn input() -> ModelTurnInput {
     }
 }
 
-fn text(output: &ModelTurnOutput) -> String {
+fn text(output: &ModelResponse) -> String {
     output
         .items
         .iter()
@@ -430,10 +430,8 @@ async fn responses_retags_and_replays_native_state_for_supplied_identity() {
     assert_eq!(text.annotations[0].provider, ProviderType::Openrouter);
 
     let mut history = history(ProviderType::Openrouter);
-    history.turns.push(ModelTurn {
-        input: input(),
-        output,
-    });
+    history.items.extend(input().items);
+    history.items.extend(output.items);
     let (url, request) = server("200 OK", "text/event-stream", "", responses_stream()).await;
     let client = OpenAiResponses::new(url, "test-key", ProviderType::Openrouter).unwrap();
 

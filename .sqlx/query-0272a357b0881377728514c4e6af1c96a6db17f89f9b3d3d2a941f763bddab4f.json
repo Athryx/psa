@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sessions SET name = COALESCE(?, name), working_directory = COALESCE(?, working_directory), updated_at_us = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "0272a357b0881377728514c4e6af1c96a6db17f89f9b3d3d2a941f763bddab4f"
+}

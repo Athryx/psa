@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, RETRY_AFTER};
 use serde_json::Value;
 
-use super::{ModelTurnOutput, Outcome, TurnEvent, Usage};
+use super::{ModelResponse, Outcome, TurnEvent, Usage};
 use crate::Error;
 
 /// Maximum buffered SSE event size, including generated media.
@@ -154,7 +154,7 @@ pub(super) trait Decoder: Send {
     fn decode(
         &mut self,
         event: SseEvent,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<bool, Error>;
 }
@@ -163,13 +163,13 @@ pub(super) struct StreamingResponse<P> {
     response: Option<reqwest::Response>,
     parser: P,
     sse: SseDecoder,
-    output: ModelTurnOutput,
+    output: ModelResponse,
     events: VecDeque<TurnEvent>,
     terminal: bool,
 }
 
 impl<P: Decoder> StreamingResponse<P> {
-    pub(super) fn new(response: reqwest::Response, output: ModelTurnOutput, parser: P) -> Self {
+    pub(super) fn new(response: reqwest::Response, output: ModelResponse, parser: P) -> Self {
         Self {
             response: Some(response),
             parser,
@@ -180,7 +180,7 @@ impl<P: Decoder> StreamingResponse<P> {
         }
     }
 
-    pub(super) fn current(&self) -> &ModelTurnOutput {
+    pub(super) fn current(&self) -> &ModelResponse {
         &self.output
     }
 
@@ -257,7 +257,7 @@ impl<P: Decoder> StreamingResponse<P> {
         }
     }
 
-    pub(super) fn into_output(mut self) -> ModelTurnOutput {
+    pub(super) fn into_output(mut self) -> ModelResponse {
         self.close();
         self.output
     }
@@ -530,7 +530,7 @@ mod tests {
             fn decode(
                 &mut self,
                 event: SseEvent,
-                output: &mut ModelTurnOutput,
+                output: &mut ModelResponse,
                 _: &mut VecDeque<TurnEvent>,
             ) -> Result<bool, Error> {
                 assert_eq!(event.data, "partial");
@@ -541,7 +541,7 @@ mod tests {
             }
         }
         let response = reqwest::get(format!("http://{address}")).await.unwrap();
-        let output = ModelTurnOutput::default_for_model(crate::providers::ModelConfig {
+        let output = ModelResponse::default_for_model(crate::providers::ModelConfig {
             provider: crate::providers::ProviderType::OpenAiCodex,
             model: crate::providers::Model::new("test-model").unwrap(),
             effort: crate::providers::Effort::Medium,

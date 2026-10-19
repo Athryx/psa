@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT MAX(event_seq) AS event_seq FROM events WHERE agent_id = ? AND event_seq BETWEEN ? AND ? AND session_position <= ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "event_seq",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "0c2495f92fedf88b3b4aa5c62523b5288284c22e2723a32101f8dfadb5b30e5c"
+}

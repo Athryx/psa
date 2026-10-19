@@ -40,7 +40,7 @@ impl Model {
     }
 
     /// Validate a nonempty API model name with no surrounding whitespace.
-    fn validate(&self) -> Result<(), crate::Error> {
+    pub(crate) fn validate(&self) -> Result<(), crate::Error> {
         let name = self.api_name.as_str();
 
         if name.trim().is_empty() || name.trim() != name {

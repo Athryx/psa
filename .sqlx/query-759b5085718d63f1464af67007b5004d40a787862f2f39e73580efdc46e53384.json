@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT p.event_pk, p.call_id, p.tool_name, p.arguments, p.metadata FROM event_tool_call p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "event_pk",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_tool_call",
+            "name": "event_pk"
+          }
+        }
+      },
+      {
+        "name": "call_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_tool_call",
+            "name": "call_id"
+          }
+        }
+      },
+      {
+        "name": "tool_name",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_tool_call",
+            "name": "tool_name"
+          }
+        }
+      },
+      {
+        "name": "arguments",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_tool_call",
+            "name": "arguments"
+          }
+        }
+      },
+      {
+        "name": "metadata",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_tool_call",
+            "name": "metadata"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "759b5085718d63f1464af67007b5004d40a787862f2f39e73580efdc46e53384"
+}

@@ -4,7 +4,7 @@ use crate::Error;
 use crate::providers::ProviderType;
 
 use super::{
-    AgentHistory, ApiProvider, ModelTurnInput, ModelTurnOutput, ModelTurnStream, OpenAiCompletions,
+    AgentHistory, ApiProvider, ModelResponse, ModelTurnInput, ModelTurnStream, OpenAiCompletions,
     OpenAiCompletionsConfig, OpenAiCompletionsStream, OpenAiResponses, OpenAiResponsesStream,
     RequestConfig, TurnEvent,
 };
@@ -81,7 +81,7 @@ pub enum ProviderStream {
 }
 
 impl ModelTurnStream for ProviderStream {
-    fn current(&self) -> &ModelTurnOutput {
+    fn current(&self) -> &ModelResponse {
         match self {
             Self::Responses(stream) => stream.current(),
             Self::Completions(stream) => stream.current(),
@@ -102,7 +102,7 @@ impl ModelTurnStream for ProviderStream {
         }
     }
 
-    fn into_output(self) -> ModelTurnOutput {
+    fn into_output(self) -> ModelResponse {
         match self {
             Self::Responses(stream) => stream.into_output(),
             Self::Completions(stream) => stream.into_output(),

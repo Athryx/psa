@@ -25,18 +25,18 @@
 //! invalid parameter schemas, missing forced tools, required tools with an
 //! empty tool list, zero output-token limits, and model/provider mismatches.
 //! Reject malformed tool-call/result relationships (missing, duplicate, or
-//! unresolved calls), and history containing nonterminal outputs. Do not require
+//! unresolved calls), including unfinished tool items. Do not require
 //! historical tool names to remain in the current tool list.
 //!
 //! Unsupported settings, content, or provider-specific replay state must return
 //! an explicit error, never be silently dropped. Validate what is knowable
 //! locally; provider-side schema/capability validation may still reject requests.
 //!
-//! History contains prior input/output pairs, each input holding only new items
-//! for that request. Serialize those pairs in order, then append the separately
-//! supplied new input exactly once. Incomplete/cancelled/failed output may be
-//! replayed only if structurally valid for the target API; otherwise the caller
-//! must repair or remove it. Never execute a partial tool call during replay.
+//! History is a flat, ordered list of context items. Serialize it in order, then
+//! append the separately supplied new input exactly once. Response outcomes and
+//! usage are separate audit data. The caller must only add items safe to replay;
+//! unfinished tool calls remain invalid even if their response was cancelled.
+//! Never execute a partial tool call during replay.
 
 pub mod agent_history;
 pub mod openai_completions;
@@ -133,7 +133,7 @@ pub trait ApiProvider: Send + Sync {
 /// Handles and their polling futures must be Send; handles need not be Sync.
 pub trait ModelTurnStream: Send {
     /// Latest accumulated response, including any partial output.
-    fn current(&self) -> &ModelTurnOutput;
+    fn current(&self) -> &ModelResponse;
 
     /// Applies each event to the current output before returning it.
     /// A provider terminal outcome emits `Finished` exactly once, then `None`.
@@ -160,7 +160,7 @@ pub trait ModelTurnStream: Send {
     /// If still streaming, performs the same cleanup as `close`, marking the
     /// output cancelled and retaining partial items/usage. Terminal outcomes are
     /// preserved. No further events are emitted and no server cancel is sent.
-    fn into_output(self) -> ModelTurnOutput
+    fn into_output(self) -> ModelResponse
     where
         Self: Sized;
 }

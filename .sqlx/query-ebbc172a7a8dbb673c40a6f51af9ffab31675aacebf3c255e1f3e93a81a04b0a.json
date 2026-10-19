@@ -1,0 +1,182 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT p.event_pk, p.inference_id, p.outcome, p.stop_reason, p.failure, p.request_time_us, p.response_id, p.provider_metadata, p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens, p.usage_details FROM event_inference_result_end p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "event_pk",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "event_pk"
+          }
+        }
+      },
+      {
+        "name": "inference_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "inference_id"
+          }
+        }
+      },
+      {
+        "name": "outcome",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "outcome"
+          }
+        }
+      },
+      {
+        "name": "stop_reason",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "stop_reason"
+          }
+        }
+      },
+      {
+        "name": "failure",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "failure"
+          }
+        }
+      },
+      {
+        "name": "request_time_us",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "request_time_us"
+          }
+        }
+      },
+      {
+        "name": "response_id",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "response_id"
+          }
+        }
+      },
+      {
+        "name": "provider_metadata",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "provider_metadata"
+          }
+        }
+      },
+      {
+        "name": "input_tokens",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "input_tokens"
+          }
+        }
+      },
+      {
+        "name": "output_tokens",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "output_tokens"
+          }
+        }
+      },
+      {
+        "name": "total_tokens",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "total_tokens"
+          }
+        }
+      },
+      {
+        "name": "cached_tokens",
+        "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "cached_tokens"
+          }
+        }
+      },
+      {
+        "name": "reasoning_tokens",
+        "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "reasoning_tokens"
+          }
+        }
+      },
+      {
+        "name": "usage_details",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "usage_details"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "ebbc172a7a8dbb673c40a6f51af9ffab31675aacebf3c255e1f3e93a81a04b0a"
+}

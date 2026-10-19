@@ -24,7 +24,7 @@ use super::transport::{
 use super::{
     AgentHistory, Annotation, ApiProvider, ContentBlock, ContentDelta, HistoryItem,
     HistoryItemKind, HistoryItemMetadata, ImageDetail, ItemUpdate, MediaSource, Message,
-    ModelTurnInput, ModelTurnOutput, ModelTurnStream, Outcome, ProviderOpaqueData, Reasoning,
+    ModelResponse, ModelTurnInput, ModelTurnStream, Outcome, ProviderOpaqueData, Reasoning,
     RefusalBlock, RequestConfig, Role, StopReason, TextBlock, ToolCall, ToolChoice, TurnEvent,
     validate_request,
 };
@@ -87,7 +87,7 @@ impl ApiProvider for OpenAiCompletions {
         Ok(OpenAiCompletionsStream {
             inner: StreamingResponse::new(
                 response,
-                ModelTurnOutput::default_for_model(history.config.clone()),
+                ModelResponse::default_for_model(history.config.clone()),
                 CompletionsDecoder::new(self.config.openrouter_reasoning_fields),
             ),
         })
@@ -95,7 +95,7 @@ impl ApiProvider for OpenAiCompletions {
 }
 
 impl ModelTurnStream for OpenAiCompletionsStream {
-    fn current(&self) -> &ModelTurnOutput {
+    fn current(&self) -> &ModelResponse {
         self.inner.current()
     }
 
@@ -107,7 +107,7 @@ impl ModelTurnStream for OpenAiCompletionsStream {
         self.inner.close();
     }
 
-    fn into_output(self) -> ModelTurnOutput {
+    fn into_output(self) -> ModelResponse {
         self.inner.into_output()
     }
 }
@@ -136,10 +136,7 @@ fn build_request_body(
     }
     let mut messages = Vec::new();
 
-    for turn in &history.turns {
-        append_messages(&turn.input.items, &mut messages, provider, adapter_config)?;
-        append_messages(&turn.output.items, &mut messages, provider, adapter_config)?;
-    }
+    append_messages(&history.items, &mut messages, provider, adapter_config)?;
     append_messages(&input.items, &mut messages, provider, adapter_config)?;
 
     let mut body = json!({
@@ -517,7 +514,7 @@ impl Decoder for CompletionsDecoder {
     fn decode(
         &mut self,
         event: SseEvent,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<bool, Error> {
         let data = event.data.trim();
@@ -576,7 +573,7 @@ impl Decoder for CompletionsDecoder {
 
 fn update_response_metadata(
     object: &Map<String, Value>,
-    output: &mut ModelTurnOutput,
+    output: &mut ModelResponse,
     events: &mut VecDeque<TurnEvent>,
 ) -> Result<(), Error> {
     let mut metadata_changed = false;
@@ -647,7 +644,7 @@ impl CompletionsDecoder {
     fn decode_choice(
         &mut self,
         choice: &Map<String, Value>,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
         self.validate_reasoning_fields(choice)?;
@@ -706,7 +703,7 @@ impl CompletionsDecoder {
     fn decode_delta(
         &mut self,
         delta: &Map<String, Value>,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
         self.validate_reasoning_fields(delta)?;
@@ -762,7 +759,7 @@ impl CompletionsDecoder {
     fn append_annotations(
         &mut self,
         annotations: &Value,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
         let annotations = annotations
@@ -800,7 +797,7 @@ impl CompletionsDecoder {
     fn decode_reasoning_text(
         &mut self,
         delta: &Map<String, Value>,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
         let reasoning_text = delta.get("reasoning").filter(|value| !value.is_null());
@@ -889,7 +886,7 @@ impl CompletionsDecoder {
         &mut self,
         fragment: &str,
         refusal: bool,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) {
         let index = *self.message.get_or_insert_with(|| {
@@ -956,7 +953,7 @@ impl CompletionsDecoder {
 
     fn ensure_reasoning(
         &mut self,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> usize {
         *self.reasoning.get_or_insert_with(|| {
@@ -973,7 +970,7 @@ impl CompletionsDecoder {
     fn merge_reasoning_details(
         &mut self,
         details: &Value,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
         let details = details
@@ -1035,11 +1032,7 @@ impl CompletionsDecoder {
         Ok(index)
     }
 
-    fn update_reasoning_state(
-        &self,
-        output: &mut ModelTurnOutput,
-        events: &mut VecDeque<TurnEvent>,
-    ) {
+    fn update_reasoning_state(&self, output: &mut ModelResponse, events: &mut VecDeque<TurnEvent>) {
         let index = self.reasoning.expect("reasoning item was initialized");
         let mut data = Map::new();
         if let Some(text) = &self.reasoning_text {
@@ -1067,7 +1060,7 @@ impl CompletionsDecoder {
     fn finalize_output_items(
         &mut self,
         reason: &str,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
         // Names and IDs are arbitrary fragments. There is no safe early boundary
@@ -1197,7 +1190,7 @@ fn append_string_fragment(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{AudioBlock, ImageBlock, ModelTurn, ToolDefinition, ToolResult};
+    use crate::api::{AudioBlock, ImageBlock, ToolDefinition, ToolResult};
     use crate::providers::{Effort, Model, ModelConfig};
 
     const ROUTER_CONFIG: OpenAiCompletionsConfig = OpenAiCompletionsConfig {
@@ -1276,15 +1269,6 @@ mod tests {
         }))
     }
 
-    fn output(items: Vec<HistoryItem>) -> ModelTurnOutput {
-        let mut output = ModelTurnOutput::default_for_model(model());
-        output.outcome = Outcome::Completed {
-            reason: StopReason::EndTurn,
-        };
-        output.items = items;
-        output
-    }
-
     fn native_reasoning() -> HistoryItem {
         item(HistoryItemKind::Reasoning(Reasoning {
             summary: vec!["display summary".into()],
@@ -1297,7 +1281,7 @@ mod tests {
 
     fn decode(
         decoder: &mut CompletionsDecoder,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
         value: Value,
     ) -> Result<bool, Error> {
@@ -1317,7 +1301,7 @@ mod tests {
 
     fn done(
         decoder: &mut CompletionsDecoder,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<bool, Error> {
         decoder.decode(
@@ -1413,16 +1397,13 @@ mod tests {
                 state.provider = provider;
                 state.data["reasoning"] = json!("native text");
             }
-            let mut saved = ModelTurnOutput::default_for_model(model_for(provider));
+            let mut saved = ModelResponse::default_for_model(model_for(provider));
             saved.outcome = Outcome::Completed {
                 reason: StopReason::EndTurn,
             };
             saved.items = vec![reasoning, message(Role::Assistant, "answer")];
             let mut history = AgentHistory::new(model_for(provider));
-            history.turns.push(ModelTurn {
-                input: ModelTurnInput::default(),
-                output: saved,
-            });
+            history.items = saved.items;
             let body = super::build_request_body(
                 &history,
                 &ModelTurnInput::default(),
@@ -1450,9 +1431,7 @@ mod tests {
                 ProviderType::OpenAiCodex => ProviderType::Openrouter,
                 ProviderType::Openrouter => ProviderType::OpenAiCodex,
             };
-            if let HistoryItemKind::Reasoning(reasoning) =
-                &mut history.turns[0].output.items[0].kind
-            {
+            if let HistoryItemKind::Reasoning(reasoning) = &mut history.items[0].kind {
                 reasoning.opaque_state.as_mut().unwrap().provider = other;
             }
             for config in [OpenAiCompletionsConfig::default(), ROUTER_CONFIG] {
@@ -1468,7 +1447,7 @@ mod tests {
         for provider in [ProviderType::OpenAiCodex, ProviderType::Openrouter] {
             for enabled in [false, true] {
                 let mut decoder = CompletionsDecoder::new(enabled);
-                let mut output = ModelTurnOutput::default_for_model(model_for(provider));
+                let mut output = ModelResponse::default_for_model(model_for(provider));
                 let mut events = VecDeque::new();
                 let mut delta = json!({"content":"answer", "annotations":[{"type":"url_citation","url":"https://example.com"}]});
                 if enabled {
@@ -1514,7 +1493,7 @@ mod tests {
                 ("reasoning_details", json!([])),
             ] {
                 let mut decoder = CompletionsDecoder::new(false);
-                let mut output = ModelTurnOutput::default_for_model(model_for(provider));
+                let mut output = ModelResponse::default_for_model(model_for(provider));
                 let mut events = VecDeque::new();
                 let mut delta = json!({"content":"must not silently discard native state"});
                 delta[field] = value;
@@ -1535,24 +1514,14 @@ mod tests {
     #[test]
     fn serializes_history_once_and_keeps_assistant_tool_groups() {
         let mut history = AgentHistory::new(model());
-        history.turns = vec![
-            ModelTurn {
-                input: ModelTurnInput {
-                    items: vec![message(Role::User, "old")],
-                },
-                output: output(vec![message(Role::Assistant, "unrelated")]),
-            },
-            ModelTurn {
-                input: ModelTurnInput {
-                    items: vec![message(Role::User, "next")],
-                },
-                output: output(vec![
-                    native_reasoning(),
-                    message(Role::Assistant, "checking"),
-                    call("a", "one"),
-                    call("b", "two"),
-                ]),
-            },
+        history.items = vec![
+            message(Role::User, "old"),
+            message(Role::Assistant, "unrelated"),
+            message(Role::User, "next"),
+            native_reasoning(),
+            message(Role::Assistant, "checking"),
+            call("a", "one"),
+            call("b", "two"),
         ];
         history.tools.push(ToolDefinition {
             name: "current_tool".into(),
@@ -1752,7 +1721,7 @@ mod tests {
     #[test]
     fn decodes_text_refusal_and_replace_only_reported_usage() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelTurnOutput::default_for_model(model());
+        let mut output = ModelResponse::default_for_model(model());
         let mut events = VecDeque::new();
         assert!(
             !decode(
@@ -1840,7 +1809,7 @@ mod tests {
     #[test]
     fn buffers_fragmented_interleaved_tool_identity_and_arguments() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelTurnOutput::default_for_model(model());
+        let mut output = ModelResponse::default_for_model(model());
         let mut events = VecDeque::new();
         decode(&mut decoder, &mut output, &mut events, chunk(json!({"tool_calls":[
             {"index":1,"id":"b","type":"function","function":{"name":"sec","arguments":"{"}},
@@ -1920,7 +1889,7 @@ mod tests {
     #[test]
     fn incomplete_calls_cannot_be_replayed() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelTurnOutput::default_for_model(model());
+        let mut output = ModelResponse::default_for_model(model());
         let mut events = VecDeque::new();
         decode(&mut decoder, &mut output, &mut events, chunk(json!({"tool_calls":[{"index":0,"id":"a","function":{"name":"test","arguments":"{"}}]}), json!("length"))).unwrap();
         done(&mut decoder, &mut output, &mut events).unwrap();
@@ -1935,10 +1904,7 @@ mod tests {
             Some("incomplete")
         );
         let mut history = AgentHistory::new(model());
-        history.turns.push(ModelTurn {
-            input: ModelTurnInput::default(),
-            output,
-        });
+        history.items = output.items;
         let input = ModelTurnInput {
             items: vec![result("a")],
         };
@@ -1951,7 +1917,7 @@ mod tests {
     #[test]
     fn replays_plain_native_reasoning_in_a_tool_loop() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelTurnOutput::default_for_model(model());
+        let mut output = ModelResponse::default_for_model(model());
         let mut events = VecDeque::new();
         decode(
             &mut decoder,
@@ -1974,12 +1940,8 @@ mod tests {
             json!({"reasoning":"thinking"})
         );
         let mut history = AgentHistory::new(model());
-        history.turns.push(ModelTurn {
-            input: ModelTurnInput {
-                items: vec![message(Role::User, "question")],
-            },
-            output,
-        });
+        history.items.push(message(Role::User, "question"));
+        history.items.extend(output.items);
         let body = request_body(
             &history,
             &ModelTurnInput {
@@ -1997,7 +1959,7 @@ mod tests {
     #[test]
     fn null_reasoning_fields_are_absent_and_identity_can_arrive_later() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelTurnOutput::default_for_model(model());
+        let mut output = ModelResponse::default_for_model(model());
         let mut events = VecDeque::new();
         for detail in [
             json!({"index":0,"id":null,"type":"reasoning.text","format":null,"text":"a","signature":null,"data":null,"summary":null}),
@@ -2040,7 +2002,7 @@ mod tests {
     #[test]
     fn unindexed_reasoning_details_use_ids_not_delta_array_positions() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelTurnOutput::default_for_model(model());
+        let mut output = ModelResponse::default_for_model(model());
         let mut events = VecDeque::new();
         for detail in [
             json!({"id":"a","type":"reasoning.text","text":"x"}),
@@ -2081,7 +2043,7 @@ mod tests {
     #[test]
     fn retains_and_replays_fragmented_native_reasoning() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelTurnOutput::default_for_model(model());
+        let mut output = ModelResponse::default_for_model(model());
         let mut events = VecDeque::new();
         decode(&mut decoder, &mut output, &mut events, chunk(json!({"reasoning":"think", "reasoning_details":[{"index":0,"type":"reasoning.encrypted","data":"ab","id":"r","format":"native"}]}), Value::Null)).unwrap();
         decode(&mut decoder, &mut output, &mut events, chunk(json!({"reasoning":"ing", "reasoning_details":[{"index":0,"type":"reasoning.encrypted","data":"cd"}], "content":"answer"}), json!("stop"))).unwrap();
@@ -2111,7 +2073,7 @@ mod tests {
             assert!(
                 decode(
                     &mut CompletionsDecoder::new(true),
-                    &mut ModelTurnOutput::default_for_model(model()),
+                    &mut ModelResponse::default_for_model(model()),
                     &mut VecDeque::new(),
                     payload
                 )
@@ -2119,7 +2081,7 @@ mod tests {
             );
         }
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelTurnOutput::default_for_model(model());
+        let mut output = ModelResponse::default_for_model(model());
         let mut events = VecDeque::new();
         assert!(done(&mut decoder, &mut output, &mut events).is_err());
         decode(
@@ -2158,7 +2120,7 @@ mod tests {
     #[test]
     fn error_finish_reason_is_a_failed_provider_outcome() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelTurnOutput::default_for_model(model());
+        let mut output = ModelResponse::default_for_model(model());
         let mut events = VecDeque::new();
         decode(
             &mut decoder,
@@ -2180,7 +2142,7 @@ mod tests {
     #[test]
     fn provider_errors_and_unsupported_output_are_explicit() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelTurnOutput::default_for_model(model());
+        let mut output = ModelResponse::default_for_model(model());
         let mut events = VecDeque::new();
         assert!(
             matches!(decode(&mut decoder, &mut output, &mut events, json!({"error":{"message":"bad","code":"denied"}})), Err(Error::Provider { code: Some(code), message, .. }) if code == "denied" && message == "bad")

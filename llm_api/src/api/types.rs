@@ -20,23 +20,15 @@ pub struct ToolDefinition {
     pub strict: Option<bool>,
 }
 
-/// A prior request/response pair retained for replay.
-/// `generate` requires an output with a terminal outcome for each stored turn.
-#[derive(Debug, Clone)]
-pub struct ModelTurn {
-    pub input: ModelTurnInput,
-    pub output: ModelTurnOutput,
-}
-
 /// Only the new items for a single request, not a repeated copy of history.
 #[derive(Debug, Clone, Default)]
 pub struct ModelTurnInput {
     pub items: Vec<HistoryItem>,
 }
 
-/// One API response
+/// One API response, independent of the model-facing conversation history.
 #[derive(Debug, Clone)]
-pub struct ModelTurnOutput {
+pub struct ModelResponse {
     /// Model config which returned the request
     pub config: ModelConfig,
     pub response_id: Option<String>,
@@ -47,7 +39,7 @@ pub struct ModelTurnOutput {
     pub provider_metadata: ProviderMetadata,
 }
 
-impl ModelTurnOutput {
+impl ModelResponse {
     /// Initial default state before data starts streaming in
     pub fn default_for_model(config: ModelConfig) -> Self {
         Self {

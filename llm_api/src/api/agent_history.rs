@@ -6,17 +6,17 @@ use crate::Error;
 use crate::providers::{ModelConfig, ProviderType};
 
 use super::{
-    ContentBlock, HistoryItem, HistoryItemKind, HistoryItemMetadata, MediaSource, ModelTurn,
-    ModelTurnInput, Outcome, RequestConfig, ToolCall, ToolChoice, ToolDefinition,
+    ContentBlock, HistoryItem, HistoryItemKind, HistoryItemMetadata, MediaSource, ModelTurnInput,
+    RequestConfig, ToolCall, ToolChoice, ToolDefinition,
 };
 
-/// Prior input/output pairs and tools available to the next request.
-/// Pass the new input separately to `ApiProvider::generate`, not as a pending turn.
+/// Ordered model-facing context and tools available to the next request.
+/// Additional request input is passed separately to `ApiProvider::generate`.
 #[derive(Debug, Clone)]
 pub struct AgentHistory {
     /// Active replay configuration, not the attribution of historical outputs.
     pub config: ModelConfig,
-    pub turns: Vec<ModelTurn>,
+    pub items: Vec<HistoryItem>,
     pub tools: Vec<ToolDefinition>,
 }
 
@@ -24,7 +24,7 @@ impl AgentHistory {
     pub fn new(config: ModelConfig) -> Self {
         Self {
             config,
-            turns: Vec::new(),
+            items: Vec::new(),
             tools: Vec::new(),
         }
     }
@@ -34,8 +34,8 @@ impl AgentHistory {
     /// Changing model/provider explicitly discards reasoning, native provider
     /// items/content, citations, and item replay metadata. Portable messages,
     /// tool calls/results, and inline/URL media remain. Effort-only changes do
-    /// not discard replay state. Historical output configs, response IDs, usage,
-    /// and response metadata remain audit data, not continuation instructions.
+    /// not discard replay state. Response attribution and usage belong to the
+    /// caller's audit log rather than this model-facing context.
     ///
     /// Provider file IDs cannot be translated: cross-provider files fail rather
     /// than silently dropping attachments. Audio IDs require an alternate source.
@@ -46,16 +46,10 @@ impl AgentHistory {
         let mut converted = self.clone();
 
         if changed {
-            for turn in &mut converted.turns {
-                strip_items_replay_state(&mut turn.input.items, config.provider)?;
-                strip_items_replay_state(&mut turn.output.items, config.provider)?;
-            }
+            strip_items_replay_state(&mut converted.items, config.provider)?;
         }
 
-        for turn in &converted.turns {
-            validate_item_providers(&turn.input.items, config.provider)?;
-            validate_item_providers(&turn.output.items, config.provider)?;
-        }
+        validate_item_providers(&converted.items, config.provider)?;
         converted.config = config;
         *self = converted;
 
@@ -73,6 +67,7 @@ pub fn validate_request(
     config: &RequestConfig,
 ) -> Result<(), Error> {
     require_provider(provider, history.config.provider)?;
+    history.config.model.validate()?;
     if config.max_output_tokens == Some(0) {
         return Err(Error::InvalidConfig {
             field: "max_output_tokens".into(),
@@ -81,7 +76,22 @@ pub fn validate_request(
     }
 
     validate_tools(&history.tools, config.tool_choice.as_ref())?;
-    validate_turns(&history.turns, provider, input)
+    validate_history_items(&history.items, provider, input)
+}
+
+/// Convert request/context items using the same policy as stored history.
+/// Returns a converted copy; input remains unchanged on failure.
+pub fn convert_items_for_model(
+    items: &[HistoryItem],
+    previous: &ModelConfig,
+    config: &ModelConfig,
+) -> Result<Vec<HistoryItem>, Error> {
+    let mut converted = items.to_vec();
+    if previous.provider != config.provider || previous.model != config.model {
+        strip_items_replay_state(&mut converted, config.provider)?;
+    }
+    validate_item_providers(&converted, config.provider)?;
+    Ok(converted)
 }
 
 fn validate_tools(tools: &[ToolDefinition], choice: Option<&ToolChoice>) -> Result<(), Error> {
@@ -120,26 +130,14 @@ fn validate_tools(tools: &[ToolDefinition], choice: Option<&ToolChoice>) -> Resu
     Ok(())
 }
 
-fn validate_turns(
-    turns: &[ModelTurn],
+fn validate_history_items(
+    items: &[HistoryItem],
     provider: ProviderType,
     input: &ModelTurnInput,
 ) -> Result<(), Error> {
     let mut calls = ToolCalls::default();
-    for (index, turn) in turns.iter().enumerate() {
-        let output = &turn.output;
-        if matches!(output.outcome, Outcome::InProgress) {
-            return Err(invalid_history(format!(
-                "turn {index} is still in progress"
-            )));
-        }
-
-        validate_item_providers(&turn.input.items, provider)?;
-        calls.apply_items(&turn.input.items)?;
-        calls.require_resolved()?;
-        validate_item_providers(&output.items, provider)?;
-        calls.apply_items(&output.items)?;
-    }
+    validate_item_providers(items, provider)?;
+    calls.apply_items(items)?;
 
     validate_item_providers(&input.items, provider)?;
     calls.apply_items(&input.items)?;
@@ -353,8 +351,8 @@ fn strip_item_replay_state(item: &mut HistoryItem, provider: ProviderType) -> Re
 mod tests {
     use super::*;
     use crate::api::{
-        FileBlock, Message, ModelTurnOutput, ProviderOpaqueData, Reasoning, Role, StopReason,
-        TextBlock, ToolCall, ToolResult,
+        FileBlock, Message, ModelResponse, Outcome, ProviderOpaqueData, Reasoning, Role,
+        StopReason, TextBlock, ToolCall, ToolResult,
     };
     use crate::providers::{Effort, Model};
 
@@ -384,8 +382,8 @@ mod tests {
         })
     }
 
-    fn output(config: ModelConfig, items: Vec<HistoryItem>) -> ModelTurnOutput {
-        let mut output = ModelTurnOutput::default_for_model(config);
+    fn output(config: ModelConfig, items: Vec<HistoryItem>) -> ModelResponse {
+        let mut output = ModelResponse::default_for_model(config);
         output.outcome = Outcome::Completed {
             reason: StopReason::EndTurn,
         };
@@ -404,26 +402,20 @@ mod tests {
             }))],
         };
         validate_request(&history, config.provider, &input, &RequestConfig::default()).unwrap();
-        assert!(history.turns.is_empty());
+        assert!(history.items.is_empty());
     }
 
     #[test]
-    fn requires_terminal_historical_outputs() {
+    fn accepts_context_without_a_response() {
         let config = config(ProviderType::OpenAiCodex);
         let mut history = AgentHistory::new(config.clone());
-        history.turns.push(ModelTurn {
-            input: ModelTurnInput::default(),
-            output: ModelTurnOutput::default_for_model(config.clone()),
-        });
+        history.items.push(item(HistoryItemKind::Message(Message {
+            role: Role::Assistant,
+            content: vec![text()],
+        })));
         let input = ModelTurnInput::default();
         let request = RequestConfig::default();
 
-        assert!(matches!(
-            validate_request(&history, config.provider, &input, &request),
-            Err(Error::InvalidHistory { message }) if message == "turn 0 is still in progress"
-        ));
-
-        history.turns[0].output.outcome = Outcome::Cancelled;
         validate_request(&history, config.provider, &input, &request).unwrap();
     }
 
@@ -502,17 +494,11 @@ mod tests {
     fn matches_tool_results_across_request_boundaries() {
         let config = config(ProviderType::OpenAiCodex);
         let mut history = AgentHistory::new(config.clone());
-        history.turns.push(ModelTurn {
-            input: ModelTurnInput::default(),
-            output: output(
-                config.clone(),
-                vec![item(HistoryItemKind::ToolCall(ToolCall {
-                    call_id: "call_1".into(),
-                    name: "historical_tool".into(),
-                    arguments: "{}".into(),
-                }))],
-            ),
-        });
+        history.items.push(item(HistoryItemKind::ToolCall(ToolCall {
+            call_id: "call_1".into(),
+            name: "historical_tool".into(),
+            arguments: "{}".into(),
+        })));
         let request = RequestConfig::default();
         assert!(matches!(
             validate_request(
@@ -560,18 +546,15 @@ mod tests {
         );
         response.response_id = Some("resp_1".into());
         response.items[1].metadata.item_id = Some("msg_1".into());
-        history.turns.push(ModelTurn {
-            input: ModelTurnInput::default(),
-            output: response,
-        });
+        history.items = response.items.clone();
         let new = config(ProviderType::Openrouter);
         history.update_model_config(new.clone()).unwrap();
         assert_eq!(history.config, new);
-        let response = &history.turns[0].output;
         assert_eq!(response.config, old);
         assert_eq!(response.response_id.as_deref(), Some("resp_1"));
-        assert_eq!(response.items.len(), 1);
-        assert!(response.items[0].metadata.item_id.is_none());
+        assert_eq!(response.items.len(), 2);
+        assert_eq!(history.items.len(), 1);
+        assert!(history.items[0].metadata.item_id.is_none());
         validate_request(
             &history,
             new.provider,
@@ -585,44 +568,35 @@ mod tests {
     fn incompatible_files_fail_without_mutating_history() {
         let old = config(ProviderType::OpenAiCodex);
         let mut history = AgentHistory::new(old.clone());
-        history.turns.push(ModelTurn {
-            input: ModelTurnInput {
-                items: vec![item(HistoryItemKind::Message(Message {
-                    role: Role::User,
-                    content: vec![ContentBlock::File(FileBlock {
-                        source: MediaSource::ProviderFile {
-                            provider: old.provider,
-                            file_id: "file_1".into(),
-                        },
-                        filename: None,
-                        mime_type: None,
-                    })],
-                }))],
-            },
-            output: output(old.clone(), Vec::new()),
-        });
+        history.items = vec![item(HistoryItemKind::Message(Message {
+            role: Role::User,
+            content: vec![ContentBlock::File(FileBlock {
+                source: MediaSource::ProviderFile {
+                    provider: old.provider,
+                    file_id: "file_1".into(),
+                },
+                filename: None,
+                mime_type: None,
+            })],
+        }))];
         assert!(matches!(
             history.update_model_config(config(ProviderType::Openrouter)),
             Err(Error::ProviderMismatch { .. })
         ));
         assert_eq!(history.config, old);
-        assert_eq!(history.turns[0].input.items.len(), 1);
+        assert_eq!(history.items.len(), 1);
     }
 
     #[test]
     fn effort_change_preserves_reasoning() {
         let old = config(ProviderType::OpenAiCodex);
         let mut history = AgentHistory::new(old.clone());
-        history.turns.push(ModelTurn {
-            input: ModelTurnInput::default(),
-            output: output(
-                old.clone(),
-                vec![item(HistoryItemKind::Reasoning(Reasoning::default()))],
-            ),
-        });
+        history
+            .items
+            .push(item(HistoryItemKind::Reasoning(Reasoning::default())));
         let mut new = old;
         new.effort = Effort::Low;
         history.update_model_config(new).unwrap();
-        assert_eq!(history.turns[0].output.items.len(), 1);
+        assert_eq!(history.items.len(), 1);
     }
 }

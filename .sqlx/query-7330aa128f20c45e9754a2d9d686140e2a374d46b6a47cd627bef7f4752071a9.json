@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO event_new_context (event_pk) VALUES (?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "7330aa128f20c45e9754a2d9d686140e2a374d46b6a47cd627bef7f4752071a9"
+}

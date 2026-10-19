@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO event_model (event_pk,provider,model,effort) VALUES (?,?,?,?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "677b0fd377c38e3cdf81123ab41f2a5741e405a4d9822135632e002c03b555b5"
+}

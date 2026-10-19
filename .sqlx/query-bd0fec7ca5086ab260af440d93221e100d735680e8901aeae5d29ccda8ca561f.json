@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT event_pk, agent_id, event_seq, session_position, timestamp_us, kind FROM events WHERE agent_id = ? AND event_seq BETWEEN ? AND ? ORDER BY event_seq LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "event_pk",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "event_pk"
+          }
+        }
+      },
+      {
+        "name": "agent_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "agent_id"
+          }
+        }
+      },
+      {
+        "name": "event_seq",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "event_seq"
+          }
+        }
+      },
+      {
+        "name": "session_position",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "session_position"
+          }
+        }
+      },
+      {
+        "name": "timestamp_us",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "timestamp_us"
+          }
+        }
+      },
+      {
+        "name": "kind",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "kind"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "bd0fec7ca5086ab260af440d93221e100d735680e8901aeae5d29ccda8ca561f"
+}

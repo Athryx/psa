@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO event_status_change (event_pk,status,reason) VALUES (?,?,?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "f3481cc78e1bfe100ede522c8357ba389a4f3b82927c3d69549e3d9bfde08567"
+}

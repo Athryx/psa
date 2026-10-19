@@ -60,7 +60,7 @@ impl ApiProvider for OpenAiResponses {
         Ok(OpenAiResponsesStream {
             inner: StreamingResponse::new(
                 response,
-                ModelTurnOutput::default_for_model(history.config.clone()),
+                ModelResponse::default_for_model(history.config.clone()),
                 ResponsesDecoder::default(),
             ),
         })
@@ -73,7 +73,7 @@ pub struct OpenAiResponsesStream {
 }
 
 impl ModelTurnStream for OpenAiResponsesStream {
-    fn current(&self) -> &ModelTurnOutput {
+    fn current(&self) -> &ModelResponse {
         self.inner.current()
     }
 
@@ -85,7 +85,7 @@ impl ModelTurnStream for OpenAiResponsesStream {
         self.inner.close();
     }
 
-    fn into_output(self) -> ModelTurnOutput {
+    fn into_output(self) -> ModelResponse {
         self.inner.into_output()
     }
 }
@@ -156,14 +156,8 @@ fn build_request_items(
     let provider = history.config.provider;
     let mut items = Vec::new();
 
-    for turn in &history.turns {
-        for item in &turn.input.items {
-            items.push(serialize_item(provider, item)?);
-        }
-
-        for item in &turn.output.items {
-            items.push(serialize_item(provider, item)?);
-        }
+    for item in &history.items {
+        items.push(serialize_item(provider, item)?);
     }
 
     for item in &input.items {
@@ -557,7 +551,7 @@ impl ResponsesDecoder {
     fn update_output_items(
         &mut self,
         index: usize,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
         update: Option<ItemUpdate>,
     ) -> Result<(), Error> {
@@ -601,7 +595,7 @@ impl ResponsesDecoder {
         index: usize,
         raw: Value,
         done: bool,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
         if !raw.is_object() {
@@ -653,7 +647,7 @@ impl ResponsesDecoder {
 
     fn apply_response_metadata(
         response: &Value,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
         let object = response
@@ -691,7 +685,7 @@ impl ResponsesDecoder {
     fn complete_remaining_items(
         &mut self,
         status: &str,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
         // Tolerate servers omitting redundant terminal output snapshots,
@@ -722,7 +716,7 @@ impl ResponsesDecoder {
         &mut self,
         kind: &str,
         response: &Value,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
         Self::apply_response_metadata(response, output, events)?;
@@ -767,7 +761,7 @@ impl ResponsesDecoder {
         &mut self,
         kind: &str,
         value: &Value,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
         let index = parse_index(value, "output_index")?;
@@ -802,7 +796,7 @@ impl ResponsesDecoder {
         &mut self,
         kind: &str,
         value: &Value,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
         let index = parse_index(value, "output_index")?;
@@ -871,7 +865,7 @@ impl ResponsesDecoder {
     fn handle_annotation(
         &mut self,
         value: &Value,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
         let index = parse_index(value, "output_index")?;
@@ -905,7 +899,7 @@ impl ResponsesDecoder {
         &mut self,
         kind: &str,
         value: &Value,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
         let index = parse_index(value, "output_index")?;
@@ -947,7 +941,7 @@ impl ResponsesDecoder {
         &mut self,
         kind: &str,
         value: &Value,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
         let index = parse_index(value, "output_index")?;
@@ -1004,7 +998,7 @@ impl Decoder for ResponsesDecoder {
     fn decode(
         &mut self,
         event: SseEvent,
-        output: &mut ModelTurnOutput,
+        output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<bool, Error> {
         if event.data.trim().is_empty()
@@ -1083,7 +1077,7 @@ impl Decoder for ResponsesDecoder {
     }
 }
 
-fn parse_terminal_outcome(status: &str, response: &Value, output: &ModelTurnOutput) -> Outcome {
+fn parse_terminal_outcome(status: &str, response: &Value, output: &ModelResponse) -> Outcome {
     match status {
         "completed" => Outcome::Completed {
             reason: if output
@@ -1467,7 +1461,7 @@ mod tests {
 
     struct Harness {
         decoder: ResponsesDecoder,
-        output: ModelTurnOutput,
+        output: ModelResponse,
         events: VecDeque<TurnEvent>,
     }
 
@@ -1475,7 +1469,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 decoder: ResponsesDecoder::default(),
-                output: ModelTurnOutput::default_for_model(model()),
+                output: ModelResponse::default_for_model(model()),
                 events: VecDeque::new(),
             }
         }
@@ -1519,19 +1513,15 @@ mod tests {
     }
 
     #[test]
-    fn request_flattens_pairs_and_new_input_exactly_once() {
+    fn request_serializes_flat_history_and_new_input_exactly_once() {
         let mut history = AgentHistory::new(model());
-        let mut output = ModelTurnOutput::default_for_model(model());
+        let mut output = ModelResponse::default_for_model(model());
         output.outcome = Outcome::Completed {
             reason: StopReason::EndTurn,
         };
         output.items.push(message(Role::Assistant, "old reply"));
-        history.turns.push(ModelTurn {
-            input: ModelTurnInput {
-                items: vec![message(Role::User, "old input")],
-            },
-            output,
-        });
+        history.items.push(message(Role::User, "old input"));
+        history.items.extend(output.items);
         history.tools.push(ToolDefinition {
             name: "read".into(),
             description: "read file".into(),
@@ -2063,15 +2053,12 @@ mod tests {
         let native = parse_item(&raw, true).unwrap().unwrap();
         assert_eq!(serialize_item(&native).unwrap(), raw);
         let mut history = AgentHistory::new(model());
-        let mut output = ModelTurnOutput::default_for_model(model());
+        let mut output = ModelResponse::default_for_model(model());
         output.outcome = Outcome::Completed {
             reason: StopReason::EndTurn,
         };
         output.items.push(native);
-        history.turns.push(ModelTurn {
-            input: ModelTurnInput::default(),
-            output,
-        });
+        history.items = output.items;
         let mut switched = model();
         switched.model.api_name = "other-model".into();
         history.update_model_config(switched).unwrap();
@@ -2232,10 +2219,7 @@ mod tests {
             assert_eq!(super::serialize_item(provider, item).unwrap(), raw[index]);
         }
         let mut history = AgentHistory::new(h.output.config.clone());
-        history.turns.push(ModelTurn {
-            input: ModelTurnInput::default(),
-            output: h.output,
-        });
+        history.items = h.output.items;
         let input = ModelTurnInput {
             items: vec![item(HistoryItemKind::Message(Message {
                 role: Role::User,

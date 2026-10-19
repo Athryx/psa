@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT p.event_pk, p.message_type, p.delivery, p.contents, p.metadata, p.replay_content FROM event_message p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "event_pk",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "event_pk"
+          }
+        }
+      },
+      {
+        "name": "message_type",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "message_type"
+          }
+        }
+      },
+      {
+        "name": "delivery",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "delivery"
+          }
+        }
+      },
+      {
+        "name": "contents",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "contents"
+          }
+        }
+      },
+      {
+        "name": "metadata",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "metadata"
+          }
+        }
+      },
+      {
+        "name": "replay_content",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "replay_content"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "10d28b6fc7672adf01d7c10d03ec663a8d1d72c61b5e02c831f0ddbd4468afa2"
+}

@@ -1,0 +1,122 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT p.event_pk, p.summary_type, p.summary, p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens, p.usage_details FROM event_compaction p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "event_pk",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_compaction",
+            "name": "event_pk"
+          }
+        }
+      },
+      {
+        "name": "summary_type",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_compaction",
+            "name": "summary_type"
+          }
+        }
+      },
+      {
+        "name": "summary",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_compaction",
+            "name": "summary"
+          }
+        }
+      },
+      {
+        "name": "input_tokens",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_compaction",
+            "name": "input_tokens"
+          }
+        }
+      },
+      {
+        "name": "output_tokens",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_compaction",
+            "name": "output_tokens"
+          }
+        }
+      },
+      {
+        "name": "total_tokens",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_compaction",
+            "name": "total_tokens"
+          }
+        }
+      },
+      {
+        "name": "cached_tokens",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_compaction",
+            "name": "cached_tokens"
+          }
+        }
+      },
+      {
+        "name": "reasoning_tokens",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_compaction",
+            "name": "reasoning_tokens"
+          }
+        }
+      },
+      {
+        "name": "usage_details",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_compaction",
+            "name": "usage_details"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "1b03665b598fa7d13fbc1c2a9dc9a0aa0a6dc80e81a075fe7851928b1fd6865f"
+}

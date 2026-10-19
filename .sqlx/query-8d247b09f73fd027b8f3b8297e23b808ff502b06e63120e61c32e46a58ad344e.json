@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO event_thinking (event_pk,reasoning,metadata) VALUES (?,?,?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "8d247b09f73fd027b8f3b8297e23b808ff502b06e63120e61c32e46a58ad344e"
+}

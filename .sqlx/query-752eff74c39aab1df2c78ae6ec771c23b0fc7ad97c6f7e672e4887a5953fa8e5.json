@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT p.event_pk, p.reasoning, p.metadata FROM event_thinking p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "event_pk",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_thinking",
+            "name": "event_pk"
+          }
+        }
+      },
+      {
+        "name": "reasoning",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_thinking",
+            "name": "reasoning"
+          }
+        }
+      },
+      {
+        "name": "metadata",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_thinking",
+            "name": "metadata"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "752eff74c39aab1df2c78ae6ec771c23b0fc7ad97c6f7e672e4887a5953fa8e5"
+}
