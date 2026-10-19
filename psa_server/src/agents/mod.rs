@@ -8,10 +8,11 @@ use time::OffsetDateTime;
 pub struct AgentId(pub u64);
 
 pub mod agent_context;
-pub mod agent_loop;
+pub mod agent_manager;
 pub mod events;
+pub mod session_manager;
 
-pub use agent_loop::AgentState;
+pub use agent_manager::AgentState;
 
 /// Represents the state of the agent in the database, mostly immutable except for state
 #[derive(Debug, Clone)]

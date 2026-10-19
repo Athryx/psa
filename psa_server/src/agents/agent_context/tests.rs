@@ -110,7 +110,6 @@ fn renders_flat_context_and_tracks_the_latest_response_separately() {
     assert!(
         matches!(&prepared.history.items[3].kind,HistoryItemKind::ToolResult(result) if result.is_error)
     );
-    assert!(prepared.input.items.is_empty());
     let mut incremental = AgentContext::default();
     for event in &transcript {
         incremental.apply_event(event).unwrap();
@@ -151,7 +150,6 @@ fn compaction_and_retained_messages_go_directly_into_history() {
     let context = AgentContext::replay(&transcript[..11]).unwrap();
     let request = context.prepare_request(RequestConfig::default()).unwrap();
     assert_eq!(request.history.items.len(), 3);
-    assert!(request.input.items.is_empty());
     assert!(
         matches!(&request.history.items[1].kind,HistoryItemKind::Message(m) if m.role == Role::Assistant)
     );
@@ -161,7 +159,6 @@ fn compaction_and_retained_messages_go_directly_into_history() {
         .prepare_request(RequestConfig::default())
         .unwrap();
     assert_eq!(finished.history.items.len(), 4);
-    assert!(finished.input.items.is_empty());
 }
 
 #[test]
@@ -210,7 +207,6 @@ fn model_switches_convert_context_but_preserve_the_response_snapshot() {
     assert_eq!(state.last_response().unwrap().config, config());
     assert_eq!(state.last_response().unwrap().items.len(), 2);
     assert_eq!(request.history.items.len(), 3);
-    assert!(request.input.items.is_empty());
 }
 
 #[test]
@@ -408,6 +404,5 @@ fn empty_failed_and_cancelled_results_are_complete_blocks() {
         assert!(response.items.is_empty());
         let request = state.prepare_request(RequestConfig::default()).unwrap();
         assert_eq!(request.history.items.len(), 1);
-        assert!(request.input.items.is_empty());
     }
 }

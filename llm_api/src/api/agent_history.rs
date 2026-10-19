@@ -6,12 +6,12 @@ use crate::Error;
 use crate::providers::{ModelConfig, ProviderType};
 
 use super::{
-    ContentBlock, HistoryItem, HistoryItemKind, HistoryItemMetadata, MediaSource, ModelTurnInput,
-    RequestConfig, ToolCall, ToolChoice, ToolDefinition,
+    ContentBlock, HistoryItem, HistoryItemKind, HistoryItemMetadata, MediaSource, RequestConfig,
+    ToolCall, ToolChoice, ToolDefinition,
 };
 
 /// Ordered model-facing context and tools available to the next request.
-/// Additional request input is passed separately to `ApiProvider::generate`.
+/// Includes all messages and tool results to send with `ApiProvider::generate`.
 #[derive(Debug, Clone)]
 pub struct AgentHistory {
     /// Active replay configuration, not the attribution of historical outputs.
@@ -63,7 +63,6 @@ impl AgentHistory {
 pub fn validate_request(
     history: &AgentHistory,
     provider: ProviderType,
-    input: &ModelTurnInput,
     config: &RequestConfig,
 ) -> Result<(), Error> {
     require_provider(provider, history.config.provider)?;
@@ -76,7 +75,7 @@ pub fn validate_request(
     }
 
     validate_tools(&history.tools, config.tool_choice.as_ref())?;
-    validate_history_items(&history.items, provider, input)
+    validate_history_items(&history.items, provider)
 }
 
 /// Convert request/context items using the same policy as stored history.
@@ -130,17 +129,11 @@ fn validate_tools(tools: &[ToolDefinition], choice: Option<&ToolChoice>) -> Resu
     Ok(())
 }
 
-fn validate_history_items(
-    items: &[HistoryItem],
-    provider: ProviderType,
-    input: &ModelTurnInput,
-) -> Result<(), Error> {
+fn validate_history_items(items: &[HistoryItem], provider: ProviderType) -> Result<(), Error> {
     let mut calls = ToolCalls::default();
     validate_item_providers(items, provider)?;
     calls.apply_items(items)?;
 
-    validate_item_providers(&input.items, provider)?;
-    calls.apply_items(&input.items)?;
     calls.require_resolved()
 }
 
@@ -392,17 +385,17 @@ mod tests {
     }
 
     #[test]
-    fn accepts_empty_history_and_separate_input() {
+    fn accepts_empty_history_and_prompt_items() {
         let config = config(ProviderType::OpenAiCodex);
-        let history = AgentHistory::new(config.clone());
-        let input = ModelTurnInput {
-            items: vec![item(HistoryItemKind::Message(Message {
-                role: Role::User,
-                content: vec![text()],
-            }))],
-        };
-        validate_request(&history, config.provider, &input, &RequestConfig::default()).unwrap();
+        let mut history = AgentHistory::new(config.clone());
+        validate_request(&history, config.provider, &RequestConfig::default()).unwrap();
         assert!(history.items.is_empty());
+        history.items.push(item(HistoryItemKind::Message(Message {
+            role: Role::User,
+            content: vec![text()],
+        })));
+        validate_request(&history, config.provider, &RequestConfig::default()).unwrap();
+        assert_eq!(history.items.len(), 1);
     }
 
     #[test]
@@ -413,10 +406,9 @@ mod tests {
             role: Role::Assistant,
             content: vec![text()],
         })));
-        let input = ModelTurnInput::default();
         let request = RequestConfig::default();
 
-        validate_request(&history, config.provider, &input, &request).unwrap();
+        validate_request(&history, config.provider, &request).unwrap();
     }
 
     #[test]
@@ -425,22 +417,12 @@ mod tests {
         let mut history = AgentHistory::new(config);
         let request = RequestConfig::default();
         assert!(matches!(
-            validate_request(
-                &history,
-                ProviderType::Openrouter,
-                &ModelTurnInput::default(),
-                &request
-            ),
+            validate_request(&history, ProviderType::Openrouter, &request),
             Err(Error::ProviderMismatch { .. })
         ));
         history.config.model.api_name = " ".into();
         assert!(matches!(
-            validate_request(
-                &history,
-                ProviderType::OpenAiCodex,
-                &ModelTurnInput::default(),
-                &request
-            ),
+            validate_request(&history, ProviderType::OpenAiCodex, &request),
             Err(Error::InvalidConfig { .. })
         ));
     }
@@ -449,18 +431,19 @@ mod tests {
     fn checks_tool_definitions_and_choice() {
         let config = config(ProviderType::OpenAiCodex);
         let mut history = AgentHistory::new(config.clone());
-        let mut request = RequestConfig::default();
-        let input = ModelTurnInput::default();
-        request.tool_choice = Some(ToolChoice::Required);
+        let mut request = RequestConfig {
+            tool_choice: Some(ToolChoice::Required),
+            ..Default::default()
+        };
         assert!(matches!(
-            validate_request(&history, config.provider, &input, &request),
+            validate_request(&history, config.provider, &request),
             Err(Error::InvalidConfig { .. })
         ));
         request.tool_choice = Some(ToolChoice::Function {
             name: "read".into(),
         });
         assert!(matches!(
-            validate_request(&history, config.provider, &input, &request),
+            validate_request(&history, config.provider, &request),
             Err(Error::UnknownTool { .. })
         ));
         history.tools.push(ToolDefinition {
@@ -469,29 +452,29 @@ mod tests {
             parameters: serde_json::json!({"type":"object"}),
             strict: None,
         });
-        validate_request(&history, config.provider, &input, &request).unwrap();
+        validate_request(&history, config.provider, &request).unwrap();
         history.tools.push(history.tools[0].clone());
         assert!(matches!(
-            validate_request(&history, config.provider, &input, &request),
+            validate_request(&history, config.provider, &request),
             Err(Error::DuplicateToolName { .. })
         ));
         history.tools.pop();
         history.tools[0].parameters = serde_json::json!(42);
         assert!(matches!(
-            validate_request(&history, config.provider, &input, &request),
+            validate_request(&history, config.provider, &request),
             Err(Error::InvalidToolDefinition { .. })
         ));
         history.tools.clear();
         request.tool_choice = None;
         request.max_output_tokens = Some(0);
         assert!(matches!(
-            validate_request(&history, config.provider, &input, &request),
+            validate_request(&history, config.provider, &request),
             Err(Error::InvalidConfig { .. })
         ));
     }
 
     #[test]
-    fn matches_tool_results_across_request_boundaries() {
+    fn matches_tool_results_in_flat_history() {
         let config = config(ProviderType::OpenAiCodex);
         let mut history = AgentHistory::new(config.clone());
         history.items.push(item(HistoryItemKind::ToolCall(ToolCall {
@@ -501,25 +484,20 @@ mod tests {
         })));
         let request = RequestConfig::default();
         assert!(matches!(
-            validate_request(
-                &history,
-                config.provider,
-                &ModelTurnInput::default(),
-                &request
-            ),
+            validate_request(&history, config.provider, &request),
             Err(Error::InvalidHistory { .. })
         ));
-        let mut input = ModelTurnInput {
-            items: vec![item(HistoryItemKind::ToolResult(ToolResult {
+        history
+            .items
+            .push(item(HistoryItemKind::ToolResult(ToolResult {
                 call_id: "call_1".into(),
                 content: vec![text()],
                 is_error: false,
-            }))],
-        };
-        validate_request(&history, config.provider, &input, &request).unwrap();
-        input.items.push(input.items[0].clone());
+            })));
+        validate_request(&history, config.provider, &request).unwrap();
+        history.items.push(history.items[1].clone());
         assert!(matches!(
-            validate_request(&history, config.provider, &input, &request),
+            validate_request(&history, config.provider, &request),
             Err(Error::InvalidHistory { .. })
         ));
     }
@@ -555,13 +533,7 @@ mod tests {
         assert_eq!(response.items.len(), 2);
         assert_eq!(history.items.len(), 1);
         assert!(history.items[0].metadata.item_id.is_none());
-        validate_request(
-            &history,
-            new.provider,
-            &ModelTurnInput::default(),
-            &RequestConfig::default(),
-        )
-        .unwrap();
+        validate_request(&history, new.provider, &RequestConfig::default()).unwrap();
     }
 
     #[test]

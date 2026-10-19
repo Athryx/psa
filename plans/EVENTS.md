@@ -386,8 +386,8 @@ The projection tracks:
 - Pending tool-call IDs and reasons a fresh request is not ready.
 - The last applied event sequence, for incremental updates.
 
-`prepare_request()` returns an owned value containing flat `AgentHistory`, empty
-separate `ModelTurnInput`, and `RequestConfig`, or a structured readiness error. It does
+`prepare_request()` returns an owned value containing the complete flat
+`AgentHistory` and `RequestConfig`, or a structured readiness error. It does
 not send HTTP. The reducer also exposes inspectable state for prefixes that are
 not runnable. Session working directory and other execution context remain
 separate from the provider request values.
@@ -420,7 +420,8 @@ Outside a result block, append model-facing content directly to flat history.
 Compacted assistant messages retain their role without needing a generated output
 or synthetic inference markers. `ModelTurn` is removed from `llm_api`; its response
 type is `ModelResponse` with the former output fields unchanged. The low-level
-`generate(history, input, config)` API still permits additional separate input.
+`generate(history, config)` API takes all prompt messages and tool results from
+history; there is no separate request-input type or parameter.
 
 Use the existing `llm_api` item conversion policy for model changes. Preserve the
 original events and response snapshots; conversion only changes model-facing
@@ -530,7 +531,7 @@ Meaningful verification for the implementation:
   produces an accurate agent mapping, and never exposes a half-created fork.
 - Verify prefix/paginated reads across ancestry boundaries using a captured head.
 - Replay user input, assistant output, reasoning, tool calls/results, usage,
-  interruptions, and logs into exactly the expected history/input/config.
+  interruptions, and logs into exactly the expected history/config.
 - Replay reset/compaction with retained assistant messages and no inference
   markers, then continue with a real inference without duplicating content.
 - Compare full replay with incremental `apply_event` across the same events.

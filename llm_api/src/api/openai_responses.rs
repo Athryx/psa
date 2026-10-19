@@ -49,12 +49,11 @@ impl ApiProvider for OpenAiResponses {
     async fn generate_unvalidated(
         &self,
         history: &AgentHistory,
-        input: &ModelTurnInput,
         config: &RequestConfig,
     ) -> Result<Self::Stream, Error> {
         require_provider(self.provider, history.config.provider)?;
 
-        let body = build_request_body(history, input, config)?;
+        let body = build_request_body(history, config)?;
         let response = self.client.post(&body).await?;
 
         Ok(OpenAiResponsesStream {
@@ -104,11 +103,7 @@ fn require_provider(expected: ProviderType, actual: ProviderType) -> Result<(), 
     Ok(())
 }
 
-fn build_request_body(
-    history: &AgentHistory,
-    input: &ModelTurnInput,
-    config: &RequestConfig,
-) -> Result<Value, Error> {
+fn build_request_body(history: &AgentHistory, config: &RequestConfig) -> Result<Value, Error> {
     if history.config.effort == crate::providers::Effort::Max {
         return Err(unsupported("max reasoning effort in the Responses API"));
     }
@@ -116,7 +111,7 @@ fn build_request_body(
         super::schema::validate_tool(tool)?;
     }
 
-    let items = build_request_items(history, input)?;
+    let items = build_request_items(history)?;
 
     let mut body = json!({
         "model": history.config.model.api_name,
@@ -149,22 +144,12 @@ fn build_request_body(
     Ok(body)
 }
 
-fn build_request_items(
-    history: &AgentHistory,
-    input: &ModelTurnInput,
-) -> Result<Vec<Value>, Error> {
-    let provider = history.config.provider;
-    let mut items = Vec::new();
-
-    for item in &history.items {
-        items.push(serialize_item(provider, item)?);
-    }
-
-    for item in &input.items {
-        items.push(serialize_item(provider, item)?);
-    }
-
-    Ok(items)
+fn build_request_items(history: &AgentHistory) -> Result<Vec<Value>, Error> {
+    history
+        .items
+        .iter()
+        .map(|item| serialize_item(history.config.provider, item))
+        .collect()
 }
 
 fn serialize_tool(tool: &ToolDefinition) -> Value {
@@ -1513,7 +1498,7 @@ mod tests {
     }
 
     #[test]
-    fn request_serializes_flat_history_and_new_input_exactly_once() {
+    fn request_serializes_flat_history_exactly_once() {
         let mut history = AgentHistory::new(model());
         let mut output = ModelResponse::default_for_model(model());
         output.outcome = Outcome::Completed {
@@ -1528,9 +1513,7 @@ mod tests {
             parameters: json!({"type":"object","properties":{}}),
             strict: Some(true),
         });
-        let input = ModelTurnInput {
-            items: vec![message(Role::User, "new input")],
-        };
+        history.items.push(message(Role::User, "new input"));
         let config = RequestConfig {
             max_output_tokens: Some(123),
             parallel_tool_calls: Some(false),
@@ -1538,7 +1521,7 @@ mod tests {
                 name: "read".into(),
             }),
         };
-        let body = build_request_body(&history, &input, &config).unwrap();
+        let body = build_request_body(&history, &config).unwrap();
         assert_eq!(body["input"].as_array().unwrap().len(), 3);
         assert_eq!(body["input"][0]["content"][0]["text"], "old input");
         assert_eq!(body["input"][1]["content"][0]["type"], "input_text");
@@ -1563,7 +1546,6 @@ mod tests {
     #[test]
     fn all_tool_choices_and_optional_settings_are_serialized() {
         let history = AgentHistory::new(model());
-        let input = ModelTurnInput::default();
         for (choice, expected) in [
             (ToolChoice::Auto, "auto"),
             (ToolChoice::None, "none"),
@@ -1574,11 +1556,11 @@ mod tests {
                 ..Default::default()
             };
             assert_eq!(
-                build_request_body(&history, &input, &config).unwrap()["tool_choice"],
+                build_request_body(&history, &config).unwrap()["tool_choice"],
                 expected
             );
         }
-        let body = build_request_body(&history, &input, &RequestConfig::default()).unwrap();
+        let body = build_request_body(&history, &RequestConfig::default()).unwrap();
         assert!(body.get("tools").is_none());
         assert!(body.get("max_output_tokens").is_none());
         assert!(body.get("parallel_tool_calls").is_none());
@@ -1665,18 +1647,13 @@ mod tests {
             transcript: Some("text".into()),
             provider_audio: None,
         });
-        let input = ModelTurnInput {
-            items: vec![item(HistoryItemKind::Message(Message {
-                role: Role::User,
-                content: vec![audio],
-            }))],
-        };
+        let mut history = AgentHistory::new(model());
+        history.items = vec![item(HistoryItemKind::Message(Message {
+            role: Role::User,
+            content: vec![audio],
+        }))];
         assert!(matches!(
-            build_request_body(
-                &AgentHistory::new(model()),
-                &input,
-                &RequestConfig::default()
-            ),
+            build_request_body(&history, &RequestConfig::default()),
             Err(Error::Unsupported { .. })
         ));
         let native = item(HistoryItemKind::ProviderItem(ProviderItem {
@@ -2062,12 +2039,7 @@ mod tests {
         let mut switched = model();
         switched.model.api_name = "other-model".into();
         history.update_model_config(switched).unwrap();
-        let body = build_request_body(
-            &history,
-            &ModelTurnInput::default(),
-            &RequestConfig::default(),
-        )
-        .unwrap();
+        let body = build_request_body(&history, &RequestConfig::default()).unwrap();
         assert_eq!(
             body["input"][0],
             json!({"type":"message","role":"assistant","content":[{"type":"input_text","text":"previous answer"}]})
@@ -2120,21 +2092,12 @@ mod tests {
         let mut history = AgentHistory::new(model());
         history.config.effort = Effort::Max;
         assert!(matches!(
-            build_request_body(
-                &history,
-                &ModelTurnInput::default(),
-                &RequestConfig::default()
-            ),
+            build_request_body(&history, &RequestConfig::default()),
             Err(Error::Unsupported { .. })
         ));
         history.config.effort = Effort::Xhigh;
         assert_eq!(
-            build_request_body(
-                &history,
-                &ModelTurnInput::default(),
-                &RequestConfig::default()
-            )
-            .unwrap()["reasoning"]["effort"],
+            build_request_body(&history, &RequestConfig::default()).unwrap()["reasoning"]["effort"],
             "xhigh"
         );
         history.tools.push(ToolDefinition {
@@ -2144,11 +2107,7 @@ mod tests {
             strict: None,
         });
         assert!(matches!(
-            build_request_body(
-                &history,
-                &ModelTurnInput::default(),
-                &RequestConfig::default()
-            ),
+            build_request_body(&history, &RequestConfig::default()),
             Err(Error::InvalidToolDefinition { .. })
         ));
     }
@@ -2220,29 +2179,27 @@ mod tests {
         }
         let mut history = AgentHistory::new(h.output.config.clone());
         history.items = h.output.items;
-        let input = ModelTurnInput {
-            items: vec![item(HistoryItemKind::Message(Message {
-                role: Role::User,
-                content: vec![
-                    ContentBlock::Image(ImageBlock {
-                        source: MediaSource::ProviderFile {
-                            provider,
-                            file_id: "image".into(),
-                        },
-                        detail: None,
-                    }),
-                    ContentBlock::File(FileBlock {
-                        source: MediaSource::ProviderFile {
-                            provider,
-                            file_id: "file".into(),
-                        },
-                        filename: None,
-                        mime_type: None,
-                    }),
-                ],
-            }))],
-        };
-        let body = build_request_body(&history, &input, &RequestConfig::default()).unwrap();
+        history.items.push(item(HistoryItemKind::Message(Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Image(ImageBlock {
+                    source: MediaSource::ProviderFile {
+                        provider,
+                        file_id: "image".into(),
+                    },
+                    detail: None,
+                }),
+                ContentBlock::File(FileBlock {
+                    source: MediaSource::ProviderFile {
+                        provider,
+                        file_id: "file".into(),
+                    },
+                    filename: None,
+                    mime_type: None,
+                }),
+            ],
+        })));
+        let body = build_request_body(&history, &RequestConfig::default()).unwrap();
         assert_eq!(body["model"], "vendor/responses-model");
         assert_eq!(body["input"][0], raw[0]);
         assert_eq!(body["input"][1], raw[1]);
@@ -2306,10 +2263,9 @@ mod tests {
         .unwrap();
         assert_eq!(client.clone().provider_type(), ProviderType::Openrouter);
         let history = AgentHistory::new(model());
-        let input = ModelTurnInput::default();
         let config = RequestConfig::default();
         assert!(matches!(
-            client.generate(&history, &input, &config).await,
+            client.generate(&history, &config).await,
             Err(Error::ProviderMismatch {
                 expected: ProviderType::Openrouter,
                 actual: ProviderType::OpenAiCodex
@@ -2318,7 +2274,7 @@ mod tests {
         // Even direct generate_unvalidated calls cannot send a different provider's
         // history to this client. No HTTP listener is needed for these checks.
         assert!(matches!(
-            client.generate_unvalidated(&history, &input, &config).await,
+            client.generate_unvalidated(&history, &config).await,
             Err(Error::ProviderMismatch {
                 expected: ProviderType::Openrouter,
                 actual: ProviderType::OpenAiCodex

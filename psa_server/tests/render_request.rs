@@ -118,7 +118,7 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
         .unwrap();
         drop(
             responses
-                .generate(&request.history, &request.input, &request.config)
+                .generate(&request.history, &request.config)
                 .await
                 .unwrap(),
         );
@@ -137,7 +137,7 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
         .unwrap();
         drop(
             completions
-                .generate(&request.history, &request.input, &request.config)
+                .generate(&request.history, &request.config)
                 .await
                 .unwrap(),
         );

@@ -98,7 +98,7 @@ while state.last_event_id < head {
     for event in page { state.apply_event(&event)?; }
 }
 let request = state.prepare_request(RequestConfig::default())?;
-// Future execution calls provider.generate(&request.history, &request.input, &request.config).
+// Future execution calls provider.generate(&request.history, &request.config).
 
 let fork = cursor.fork_session(session.id, SessionFork {
     point: ForkPoint::Head,
@@ -126,8 +126,9 @@ visible event, including a prefix that cannot yet form a valid model request.
 `AgentContext` is a pure reducer. `AgentHistory.items` is flat context: user prompts,
 compaction summaries, retained assistant messages, and completed model outputs
 appear in their original order. There is no `ModelTurn` pairing. The prepared
-request contains this history and an empty separate `ModelTurnInput`; direct
-`llm_api` callers can still supply additional input to `generate`.
+request contains this complete history and its request configuration.
+`generate(&history, &config)` sends all history items once, in order; append new
+messages and tool results to history before calling it.
 
 Generated output is delimited by `InferenceResultStart` (ID and actual model/request
 snapshots), output item events, and `InferenceResultEnd` (matching ID, terminal

@@ -4,7 +4,7 @@ use crate::Error;
 use crate::providers::ProviderType;
 
 use super::{
-    AgentHistory, ApiProvider, ModelResponse, ModelTurnInput, ModelTurnStream, OpenAiCompletions,
+    AgentHistory, ApiProvider, ModelResponse, ModelTurnStream, OpenAiCompletions,
     OpenAiCompletionsConfig, OpenAiCompletionsStream, OpenAiResponses, OpenAiResponsesStream,
     RequestConfig, TurnEvent,
 };
@@ -58,16 +58,15 @@ impl ApiProvider for Provider {
     async fn generate_unvalidated(
         &self,
         history: &AgentHistory,
-        input: &ModelTurnInput,
         config: &RequestConfig,
     ) -> Result<Self::Stream, Error> {
         match self {
             Self::Responses(provider) => provider
-                .generate_unvalidated(history, input, config)
+                .generate_unvalidated(history, config)
                 .await
                 .map(ProviderStream::Responses),
             Self::Completions(provider) => provider
-                .generate_unvalidated(history, input, config)
+                .generate_unvalidated(history, config)
                 .await
                 .map(ProviderStream::Completions),
         }
@@ -151,7 +150,7 @@ mod tests {
             });
 
             assert!(
-                matches!(client.generate(&history, &ModelTurnInput::default(), &RequestConfig::default()).await,
+                matches!(client.generate(&history, &RequestConfig::default()).await,
                 Err(Error::ProviderMismatch { expected, actual }) if expected == provider && actual == other)
             );
         }

@@ -20,12 +20,6 @@ pub struct ToolDefinition {
     pub strict: Option<bool>,
 }
 
-/// Only the new items for a single request, not a repeated copy of history.
-#[derive(Debug, Clone, Default)]
-pub struct ModelTurnInput {
-    pub items: Vec<HistoryItem>,
-}
-
 /// One API response, independent of the model-facing conversation history.
 #[derive(Debug, Clone)]
 pub struct ModelResponse {

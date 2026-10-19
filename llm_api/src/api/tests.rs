@@ -84,15 +84,12 @@ async fn server(
 }
 
 fn history(provider: ProviderType) -> AgentHistory {
-    AgentHistory::new(ModelConfig {
-        provider,
-        model: Model::new("test-model").unwrap(),
-        effort: Effort::Medium,
-    })
-}
-
-fn input() -> ModelTurnInput {
-    ModelTurnInput {
+    AgentHistory {
+        config: ModelConfig {
+            provider,
+            model: Model::new("test-model").unwrap(),
+            effort: Effort::Medium,
+        },
         items: vec![HistoryItem {
             kind: HistoryItemKind::Message(Message {
                 role: Role::User,
@@ -103,6 +100,7 @@ fn input() -> ModelTurnInput {
             }),
             metadata: HistoryItemMetadata::default(),
         }],
+        tools: Vec::new(),
     }
 }
 
@@ -216,7 +214,7 @@ async fn combined_provider_streams_delegate_both_protocols_and_cleanup() {
             let client = provider_at_url(provider, url);
 
             let mut stream = client
-                .generate(&history(provider), &input(), &RequestConfig::default())
+                .generate(&history(provider), &RequestConfig::default())
                 .await
                 .unwrap();
             assert!(matches!(
@@ -266,7 +264,6 @@ async fn completions_http_round_trip() {
     let mut stream = client
         .generate(
             &history(ProviderType::Openrouter),
-            &input(),
             &RequestConfig::default(),
         )
         .await
@@ -314,7 +311,6 @@ async fn responses_http_round_trip() {
     let mut stream = client
         .generate(
             &history(ProviderType::OpenAiCodex),
-            &input(),
             &RequestConfig::default(),
         )
         .await
@@ -357,7 +353,6 @@ async fn standard_completions_uses_supplied_identity_and_standard_reasoning_fiel
     let mut stream = client
         .generate(
             &history(ProviderType::OpenAiCodex),
-            &input(),
             &RequestConfig::default(),
         )
         .await
@@ -402,7 +397,6 @@ async fn responses_retags_and_replays_native_state_for_supplied_identity() {
     let mut stream = client
         .generate(
             &history(ProviderType::Openrouter),
-            &input(),
             &RequestConfig::default(),
         )
         .await
@@ -430,13 +424,13 @@ async fn responses_retags_and_replays_native_state_for_supplied_identity() {
     assert_eq!(text.annotations[0].provider, ProviderType::Openrouter);
 
     let mut history = history(ProviderType::Openrouter);
-    history.items.extend(input().items);
     history.items.extend(output.items);
+    history.items.push(history.items[0].clone());
     let (url, request) = server("200 OK", "text/event-stream", "", responses_stream()).await;
     let client = OpenAiResponses::new(url, "test-key", ProviderType::Openrouter).unwrap();
 
     let stream = client
-        .generate(&history, &input(), &RequestConfig::default())
+        .generate(&history, &RequestConfig::default())
         .await
         .unwrap();
     drop(stream);
@@ -466,7 +460,6 @@ async fn unexpected_eof_retains_partial_output_and_errors_once() {
     let mut stream = client
         .generate(
             &history(ProviderType::Openrouter),
-            &input(),
             &RequestConfig::default(),
         )
         .await
@@ -501,7 +494,6 @@ async fn close_and_into_output_preserve_terminal_or_partial_state() {
     let mut stream = client
         .generate(
             &history(ProviderType::Openrouter),
-            &input(),
             &RequestConfig::default(),
         )
         .await
@@ -521,7 +513,6 @@ async fn close_and_into_output_preserve_terminal_or_partial_state() {
     let mut stream = client
         .generate(
             &history(ProviderType::OpenAiCodex),
-            &input(),
             &RequestConfig::default(),
         )
         .await
@@ -546,7 +537,6 @@ async fn http_errors_retain_status_and_retry_delay() {
     let error = match client
         .generate(
             &history(ProviderType::OpenAiCodex),
-            &input(),
             &RequestConfig::default(),
         )
         .await
@@ -586,7 +576,6 @@ async fn truncated_error_body_keeps_http_status() {
         client
             .generate(
                 &history(ProviderType::OpenAiCodex),
-                &input(),
                 &RequestConfig::default()
             )
             .await,
@@ -629,7 +618,6 @@ async fn dropping_a_stream_closes_the_http_body() {
     let stream = client
         .generate(
             &history(ProviderType::OpenAiCodex),
-            &input(),
             &RequestConfig::default(),
         )
         .await
@@ -655,7 +643,6 @@ async fn validation_fails_before_http() {
         client
             .generate(
                 &history(ProviderType::Openrouter),
-                &input(),
                 &RequestConfig::default()
             )
             .await,
@@ -668,7 +655,7 @@ async fn validation_fails_before_http() {
     };
     assert!(matches!(
         client
-            .generate(&history(ProviderType::OpenAiCodex), &input(), &options)
+            .generate(&history(ProviderType::OpenAiCodex), &options)
             .await,
         Err(Error::InvalidConfig { .. })
     ));
@@ -691,7 +678,6 @@ async fn rejects_non_sse_success_response() {
         client
             .generate(
                 &history(ProviderType::Openrouter),
-                &input(),
                 &RequestConfig::default()
             )
             .await,
@@ -726,7 +712,6 @@ async fn cancelling_next_event_does_not_lose_buffered_output() {
     let mut stream = client
         .generate(
             &history(ProviderType::Openrouter),
-            &input(),
             &RequestConfig::default(),
         )
         .await

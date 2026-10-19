@@ -1278,7 +1278,6 @@ async fn atomically_persists_and_replays_a_complete_result_block() {
         .prepare_request(api::RequestConfig::default())
         .unwrap();
     assert_eq!(request.history.items.len(), 2);
-    assert!(request.input.items.is_empty());
     cursor.commit().await.unwrap();
     db.close().await;
 }

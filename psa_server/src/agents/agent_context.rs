@@ -5,7 +5,7 @@ use crate::{agents::AgentState, tools::ToolId};
 use llm_api::{
     api::{
         self, AgentHistory, HistoryItem, HistoryItemKind, HistoryItemMetadata, ModelResponse,
-        ModelTurnInput, RequestConfig, Role,
+        RequestConfig, Role,
     },
     providers::ModelConfig,
 };
@@ -41,7 +41,6 @@ struct OpenInferenceResult {
 #[derive(Debug, Clone)]
 pub struct PreparedRequest {
     pub history: AgentHistory,
-    pub input: ModelTurnInput,
     pub config: RequestConfig,
 }
 
@@ -126,14 +125,9 @@ impl AgentContext {
         }
 
         let history = self.build_history()?;
-        let input = ModelTurnInput::default();
-        api::validate_request(&history, history.config.provider, &input, &config)?;
+        api::validate_request(&history, history.config.provider, &config)?;
 
-        Ok(PreparedRequest {
-            history,
-            input,
-            config,
-        })
+        Ok(PreparedRequest { history, config })
     }
 
     pub fn apply_event(&mut self, event: &Event) -> Result<(), ProjectionError> {
@@ -269,12 +263,7 @@ impl AgentContext {
                         "result model snapshot differs from the active context model",
                     ));
                 }
-                api::validate_request(
-                    &history,
-                    history.config.provider,
-                    &ModelTurnInput::default(),
-                    &start.request_config,
-                )?;
+                api::validate_request(&history, history.config.provider, &start.request_config)?;
 
                 self.open = Some(OpenInferenceResult {
                     start: start.clone(),

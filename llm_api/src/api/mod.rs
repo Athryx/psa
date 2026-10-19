@@ -20,7 +20,7 @@
 //!
 //! # Request validation
 //!
-//! Before sending HTTP, adapters must validate the history, new input, tool
+//! Before sending HTTP, adapters must validate the history, tool
 //! definitions, and request configuration. Reject duplicate/empty tool names,
 //! invalid parameter schemas, missing forced tools, required tools with an
 //! empty tool list, zero output-token limits, and model/provider mismatches.
@@ -32,10 +32,10 @@
 //! an explicit error, never be silently dropped. Validate what is knowable
 //! locally; provider-side schema/capability validation may still reject requests.
 //!
-//! History is a flat, ordered list of context items. Serialize it in order, then
-//! append the separately supplied new input exactly once. Response outcomes and
-//! usage are separate audit data. The caller must only add items safe to replay;
-//! unfinished tool calls remain invalid even if their response was cancelled.
+//! History is the complete, ordered request context. Serialize its items exactly
+//! once, in order. Response outcomes and usage are separate audit data. The caller
+//! must only add items safe to replay; unfinished tool calls remain invalid even
+//! if their response was cancelled.
 //! Never execute a partial tool call during replay.
 
 pub mod agent_history;
@@ -87,7 +87,7 @@ pub enum ToolChoice {
 /// Providers support use from multithreaded executors; generation futures are Send.
 pub trait ApiProvider: Send + Sync {
     /// Owned, Send stream with provider-specific parsing and accumulation.
-    /// It must not borrow the provider, history, input, or request configuration.
+    /// It must not borrow the provider, history, or request configuration.
     type Stream: ModelTurnStream + 'static;
 
     /// Provider served by this client instance.
@@ -101,12 +101,11 @@ pub trait ApiProvider: Send + Sync {
     fn generate(
         &self,
         history: &AgentHistory,
-        input: &ModelTurnInput,
         config: &RequestConfig,
     ) -> impl std::future::Future<Output = Result<Self::Stream, Error>> + Send {
         async move {
-            validate_request(history, self.provider_type(), input, config)?;
-            self.generate_unvalidated(history, input, config).await
+            validate_request(history, self.provider_type(), config)?;
+            self.generate_unvalidated(history, config).await
         }
     }
 
@@ -117,7 +116,6 @@ pub trait ApiProvider: Send + Sync {
     fn generate_unvalidated(
         &self,
         history: &AgentHistory,
-        input: &ModelTurnInput,
         config: &RequestConfig,
     ) -> impl std::future::Future<Output = Result<Self::Stream, Error>> + Send;
 }

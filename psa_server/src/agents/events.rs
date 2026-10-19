@@ -78,16 +78,9 @@ pub enum MessageType {
     System,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MessageDelivery {
-    Queue,
-    Steer,
-}
-
 #[derive(Debug, Clone)]
 pub struct Message {
     pub message_type: MessageType,
-    pub delivery: Option<MessageDelivery>,
     pub content: Vec<ContentBlock>,
     pub metadata: HistoryItemMetadata,
 }
@@ -100,7 +93,6 @@ impl Message {
                 text: contents.into(),
                 annotations: Vec::new(),
             })],
-            delivery: None,
             metadata: HistoryItemMetadata::default(),
         }
     }

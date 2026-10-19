@@ -26,7 +26,7 @@ pub enum Error {
     #[error("requested tool is not defined: {name}")]
     UnknownTool { name: String },
 
-    #[error("invalid history or input: {message}")]
+    #[error("invalid history: {message}")]
     InvalidHistory { message: String },
 
     #[error("provider mismatch: expected {expected:?}, got {actual:?}")]
