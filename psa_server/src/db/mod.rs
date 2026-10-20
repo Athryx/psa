@@ -4,6 +4,7 @@ mod agents;
 mod error;
 mod events;
 mod payloads;
+mod queries;
 mod schema;
 mod sessions;
 
@@ -12,6 +13,7 @@ use std::{path::Path, time::Duration};
 
 pub use error::DbError;
 pub use events::AddEventResult;
+pub use queries::InferenceResultEvents;
 
 #[derive(Debug, Clone)]
 pub struct Database {

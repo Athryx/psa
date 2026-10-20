@@ -1,0 +1,262 @@
+//! Higher level convenience functions to return specific types or ranges of events.
+
+use super::{
+    DatabaseCursor, DbError,
+    events::{add_usage, event_cutoff_at, load_event_rows, load_segments},
+    schema::{decode_integer, encode_integer},
+};
+use crate::{
+    agents::{AgentId, AgentUsage},
+    sessions::SessionId,
+};
+use psa_api::{EventEnvelope, events::*};
+use sqlx::SqliteConnection;
+
+#[derive(Debug, Clone)]
+pub struct InferenceResultEvents {
+    pub start: Event,
+    pub end: Event,
+    pub items: Vec<Event>,
+}
+
+impl DatabaseCursor {
+    /// Includes staged appends in this cursor. Never silently truncates a window.
+    pub async fn load_all_events(&mut self, agent: AgentId) -> Result<Vec<Event>, DbError> {
+        self.load_event_window(agent, EventId(0), None).await
+    }
+
+    pub async fn load_context_window(&mut self, agent: AgentId) -> Result<Vec<Event>, DbError> {
+        let first = self.find_last_marker(agent, "new_context").await?;
+        self.load_event_window(agent, EventId(first.unwrap_or(1) - 1), None)
+            .await
+    }
+
+    pub async fn load_events_since_last_inference(
+        &mut self,
+        agent: AgentId,
+    ) -> Result<Option<Vec<Event>>, DbError> {
+        let Some(first) = self.find_last_marker(agent, "inference_start").await? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            self.load_event_window(agent, EventId(first - 1), None)
+                .await?,
+        ))
+    }
+
+    pub async fn load_last_inference_result(
+        &mut self,
+        agent: AgentId,
+    ) -> Result<Option<InferenceResultEvents>, DbError> {
+        let Some(events) = self.load_events_since_last_inference(agent).await? else {
+            return Ok(None);
+        };
+        let mut events = events.into_iter();
+        let start = events
+            .next()
+            .ok_or_else(|| DbError::Corrupt("missing inference start".into()))?;
+        let EventType::InferenceResultStart(ref marker) = start.kind else {
+            return Err(DbError::Corrupt("invalid inference start".into()));
+        };
+        let id = marker.id;
+        let mut items = Vec::new();
+        for event in events {
+            match &event.kind {
+                EventType::InferenceResultEnd(end) if end.id == id => {
+                    return Ok(Some(InferenceResultEvents {
+                        start,
+                        end: event,
+                        items,
+                    }));
+                }
+                EventType::NewContext => return Err(DbError::IncompleteInference(id)),
+                EventType::InferenceResultStart(_) | EventType::InferenceResultEnd(_) => {
+                    return Err(DbError::Corrupt("mismatched inference delimiters".into()));
+                }
+                _ => items.push(event),
+            }
+        }
+        Err(DbError::IncompleteInference(id))
+    }
+
+    pub(super) async fn load_event_window(
+        &mut self,
+        agent: AgentId,
+        mut after: EventId,
+        through: Option<EventId>,
+    ) -> Result<Vec<Event>, DbError> {
+        let head = self.get_agent(agent).await?.next_event_id.0 - 1;
+        let through = EventId(through.map_or(head, |id| id.0.min(head)));
+        let mut events = Vec::new();
+        while after < through {
+            let page = self
+                .load_events(
+                    agent,
+                    EventRange {
+                        after,
+                        through: Some(through),
+                        limit: 10_000,
+                    },
+                )
+                .await?;
+            let Some(last) = page.last() else {
+                break;
+            };
+            after = last.id;
+            events.extend(page);
+        }
+        Ok(events)
+    }
+
+    async fn find_last_marker(
+        &mut self,
+        agent: AgentId,
+        kind: &str,
+    ) -> Result<Option<u64>, DbError> {
+        for (owner, lower, upper) in load_segments(self.connection(), agent, EventId(0), None)
+            .await?
+            .into_iter()
+            .rev()
+        {
+            let row = sqlx::query!("SELECT MAX(event_seq) AS seq FROM events WHERE agent_id = ? AND event_seq BETWEEN ? AND ? AND kind = ?", owner, lower, upper, kind)
+                .fetch_one(self.connection()).await?;
+            if let Some(seq) = row.seq {
+                return Ok(Some(decode_integer(seq)?));
+            }
+        }
+        Ok(None)
+    }
+
+    pub async fn require_agent_session(
+        &mut self,
+        session: SessionId,
+        agent: AgentId,
+    ) -> Result<crate::agents::Agent, DbError> {
+        let agent = self.get_agent(agent).await?;
+        if agent.session_id != session {
+            return Err(DbError::NotFound {
+                entity: "agent in session",
+                id: agent.id.0,
+            });
+        }
+        Ok(agent)
+    }
+
+    pub async fn load_agent_envelopes(
+        &mut self,
+        session: SessionId,
+        agent: AgentId,
+        range: EventRange,
+    ) -> Result<Vec<EventEnvelope>, DbError> {
+        self.require_agent_session(session, agent).await?;
+        let events = self.load_events(agent, range.clone()).await?;
+        let rows = load_event_rows(self.connection(), agent, &range).await?;
+        events
+            .into_iter()
+            .zip(rows)
+            .map(|(event, row)| {
+                Ok(EventEnvelope {
+                    session_id: session,
+                    agent_id: agent,
+                    position: decode_integer(row.session_position)?,
+                    event,
+                })
+            })
+            .collect()
+    }
+
+    /// Shared session positions include agent creation; event IDs remain per stream.
+    pub async fn load_session_events(
+        &mut self,
+        session: SessionId,
+        after: u64,
+        through: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<EventEnvelope>, DbError> {
+        if limit == 0 || limit > 10_000 {
+            return Err(DbError::InvalidInput(
+                "event page size must be between 1 and 10000".into(),
+            ));
+        }
+        let head = self.get_session(session).await?.next_position - 1;
+        let through = through.unwrap_or(head).min(head);
+        if after >= through {
+            return Ok(Vec::new());
+        }
+        let mut events = Vec::new();
+        for agent in self.list_agents(session).await? {
+            let lower = event_cutoff_at(self.connection(), agent.id, after).await?;
+            let upper = event_cutoff_at(self.connection(), agent.id, through).await?;
+            events.extend(
+                self.load_agent_envelopes(
+                    session,
+                    agent.id,
+                    EventRange {
+                        after: EventId(decode_integer(lower)?),
+                        through: Some(EventId(decode_integer(upper)?)),
+                        limit,
+                    },
+                )
+                .await?,
+            );
+        }
+        events.sort_by_key(|event| event.position);
+        events.truncate(limit as usize);
+        Ok(events)
+    }
+
+    pub async fn list_all_agents(&mut self) -> Result<Vec<crate::agents::Agent>, DbError> {
+        let rows = sqlx::query!("SELECT id FROM agents ORDER BY id")
+            .fetch_all(self.connection())
+            .await?;
+        let mut agents = Vec::new();
+        for row in rows {
+            agents.push(self.get_agent(AgentId(decode_integer(row.id)?)).await?);
+        }
+        Ok(agents)
+    }
+}
+
+pub(super) async fn usage_at(
+    conn: &mut SqliteConnection,
+    agent: AgentId,
+    through: EventId,
+) -> Result<AgentUsage, DbError> {
+    let mut total = AgentUsage::default();
+    for (owner, lower, upper) in load_segments(conn, agent, EventId(0), Some(through)).await? {
+        let rows = sqlx::query!(
+            "SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens FROM event_inference_result_end p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ? UNION ALL SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens FROM event_compaction p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+            owner, lower, upper, owner, lower, upper
+        ).fetch_all(&mut *conn).await?;
+        for row in rows {
+            add_usage(
+                &mut total,
+                &llm_api::api::Usage {
+                    input_tokens: row.input_tokens.map(decode_integer).transpose()?,
+                    output_tokens: row.output_tokens.map(decode_integer).transpose()?,
+                    total_tokens: row.total_tokens.map(decode_integer).transpose()?,
+                    cached_input_tokens: row.cached_tokens.map(decode_integer).transpose()?,
+                    reasoning_output_tokens: row
+                        .reasoning_tokens
+                        .map(decode_integer)
+                        .transpose()?,
+                    provider_details: Default::default(),
+                },
+            )?;
+        }
+    }
+    // Validate the final known totals against SQLite's integer domain as well.
+    for count in [
+        total.input_tokens,
+        total.output_tokens,
+        total.total_tokens,
+        total.cached_input_tokens,
+        total.reasoning_output_tokens,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        encode_integer(count)?;
+    }
+    Ok(total)
+}

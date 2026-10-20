@@ -1,10 +1,11 @@
 use super::{fixture, log, state_change};
 use crate::{
-    agents::{AgentState, NewAgent, events::*},
+    agents::{AgentState, NewAgent},
     db::DbError,
     sessions::{ForkPoint, NewSession, SessionFork, SessionUpdate},
 };
 use llm_api::api::{Outcome, Usage};
+use psa_api::events::*;
 use std::time::Duration;
 
 #[tokio::test]

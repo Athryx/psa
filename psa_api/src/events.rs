@@ -1,27 +1,31 @@
 //! Immutable transcript events. Sequence numbers are local to an agent lineage.
 
-use crate::{agents::AgentId, agents::AgentState, tools::ToolId};
+use crate::{AgentId, AgentState, ToolId};
 use llm_api::api::{
     ContentBlock, HistoryItem, HistoryItemMetadata, Outcome, ProviderMetadata, Reasoning,
     RequestConfig, TextBlock, ToolDefinition as ApiToolDefinition, Usage,
 };
 use llm_api::providers::ModelConfig;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use time::OffsetDateTime;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 pub struct EventId(pub u64);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: EventId,
     /// Physical owner, which may be an ancestor of the requested agent.
     pub source_agent_id: AgentId,
+    #[serde(with = "time::serde::rfc3339")]
     pub timestamp: OffsetDateTime,
     pub kind: EventType,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewEvent {
     pub timestamp: OffsetDateTime,
     pub kind: EventType,
@@ -36,7 +40,7 @@ impl NewEvent {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventRange {
     pub after: EventId,
     pub through: Option<EventId>,
@@ -53,7 +57,7 @@ impl Default for EventRange {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EventType {
     StatusChange(StatusChange),
     Model(ModelConfig),
@@ -70,7 +74,7 @@ pub enum EventType {
     InferenceResultEnd(InferenceResultEnd),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageType {
     Human,
     Agent,
@@ -78,7 +82,7 @@ pub enum MessageType {
     System,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub message_type: MessageType,
     pub content: Vec<ContentBlock>,
@@ -98,30 +102,21 @@ impl Message {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Thinking {
     pub contents: Reasoning,
     pub metadata: HistoryItemMetadata,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
     pub id: ToolId,
     pub definition: ApiToolDefinition,
 }
 
-impl ToolDefinition {
-    pub fn for_tool(id: ToolId) -> Self {
-        Self {
-            id,
-            definition: id.tool_definition(),
-        }
-    }
-}
-
 pub type ToolCallId = String;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub call_id: ToolCallId,
     pub tool_name: String,
@@ -130,33 +125,33 @@ pub struct ToolCall {
     pub metadata: HistoryItemMetadata,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     pub call_id: ToolCallId,
-    pub content: crate::tools::ToolResult,
+    pub content: crate::ToolResult,
     pub error: bool,
     pub metadata: HistoryItemMetadata,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CompactionSummary {
     Text(String),
     ProviderItem(HistoryItem),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Compaction {
     pub summary: CompactionSummary,
     pub usage: Usage,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusChange {
     pub new_status: AgentState,
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Log {
     pub error: bool,
     pub message: String,
@@ -164,7 +159,7 @@ pub struct Log {
 
 pub type InferenceId = u64;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceResultStart {
     pub id: InferenceId,
     /// Snapshot of the model that produced this result, not a request-start event.
@@ -172,7 +167,7 @@ pub struct InferenceResultStart {
     pub request_config: RequestConfig,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceResultEnd {
     pub id: InferenceId,
     /// Must be terminal. Preserves incomplete/failed/cancelled distinctions.

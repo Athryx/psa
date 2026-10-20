@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE agents SET next_event_seq = ?, state = COALESCE(?, state), usage = COALESCE(?, usage), updated_at_us = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "505f0c560267310cf94a384f72e74fc9213627a58f0cc1ef69ef5cbea46f43b2"
+}

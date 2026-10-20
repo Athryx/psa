@@ -1,4 +1,4 @@
-# PSA server foundation
+# PSA server
 
 Start the server from the workspace root:
 
@@ -30,10 +30,91 @@ path = "psa.sqlite3"
 
 Relative database paths resolve against the selected data directory. The listen
 CLI option overrides TOML. Startup applies embedded migrations before listening;
-Ctrl-C or SIGTERM drains HTTP requests and closes the SQLite pool. No provider
-credentials are needed. `/health` is currently the only HTTP endpoint; sessions
-and events are accessed through the Rust library. Agent/tool execution and queues
-are not implemented by this foundation.
+Ctrl-C or SIGTERM stops accepting commands, interrupts active agents, waits for
+tool/hook cleanup and persistence, joins workers, closes SSE, drains HTTP, and
+closes SQLite. Queued but unconsumed messages are memory-only and discarded.
+No credentials are needed for storage/query operations or `/health`.
+
+## HTTP client and credentials
+
+This is a trusted-client API, with no authentication/authorization layer yet.
+Keep it on loopback or behind a trusted authenticated transport; do not expose
+agent execution, filesystem paths, or provider replay metadata publicly.
+
+Place `auth.toml` beside the selected `config.toml` (including with `--config`):
+
+```toml
+[openrouter]
+api_key = "YOUR_API_KEY"
+
+# Optional; uses the existing llm_api adapter and its compatibility limitations.
+#[openai_codex]
+#access_token = "YOUR_ACCESS_TOKEN"
+```
+
+Create the file with owner-only access (`chmod 600 auth.toml` on Unix). The server
+does not create or overwrite it. Missing auth means no providers configured;
+malformed auth fails startup without printing source excerpts/secrets. Login,
+token refresh, and live credential reload are not implemented.
+
+`psa_api` provides shared request/response types, route definitions, and an async
+`Client`. Session views include runtime-derived `busy`; agent views include
+lifecycle state and cumulative usage. Requests are accepted into bounded queues,
+not necessarily persisted or executed at the time HTTP 202 is returned.
+
+```rust,no_run
+use psa_api::{Client, CreateSession, CreateAgent, AgentRequest, MessageDelivery};
+use llm_api::{api::{ContentBlock, TextBlock}, providers::{Effort, Model, ModelConfig, ProviderType}};
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let client = Client::new("http://127.0.0.1:8080")?;
+let session = client.create_session(&CreateSession {
+    name: "Example".into(), working_directory: "/work/project".into(),
+}).await?;
+let agent = client.create_agent(session.id, &CreateAgent {
+    name: "Main".into(),
+    model: ModelConfig { provider: ProviderType::Openrouter,
+        model: Model::new("your-provider/model")?, effort: Effort::Medium },
+    tools: vec![psa_api::ToolId::Noop],
+}).await?;
+client.submit_request(session.id, agent.id, &AgentRequest::Message {
+    delivery: MessageDelivery::Queue,
+    content: vec![ContentBlock::Text(TextBlock { text: "Hello".into(), annotations: vec![] })],
+}).await?;
+# Ok(())
+# }
+```
+
+Routes are defined in `psa_api::routes`: create/list/get/update/fork sessions,
+create/list/get agents, submit requests, and query session or agent events. Event
+GETs return paged JSON or SSE with `stream=true`. `after` is an exclusive agent
+EventId on an agent route, or shared session position on a session route;
+`through` is inclusive. `limit` accepts 1–10,000. JSON pages expose `head`,
+`next_after`, and `has_more`. Session lists default to roots; `parent` lists
+immediate children.
+
+Use `Client::stream_events(session, optional_agent, query, last_event_id)` with
+`include_pending=true` to receive provisional upserts, committed events with
+optional promotion IDs, and removal messages. Upserts contain complete current
+snapshots with stable IDs/revisions, not independently persisted token deltas.
+The initial `Snapshot` replaces pending client state after replaying the captured
+durable head. Persist the stream's last SSE ID for reconnect; replayed committed
+events must be upserted by viewed agent/event identity, not blindly appended.
+The client intentionally leaves reconnect policy to callers: after EOF or
+`ResyncRequired`, open another stream using that durable ID. Headers are supported
+by using `Client::with_http_client` with a configured reqwest client.
+
+One global session-manager task supervises lazy per-agent workers. Workers get
+fresh context on restart, run `before_request` (currently no-op), infer/persist,
+run `after_request` (`StopWithoutTools`), and resolve every committed tool call.
+The hook emits Idle for responses without tool calls; the loop follows persisted
+state. Compaction, probe execution, and custom agent definitions remain future
+work. Tools/hooks receive the same `Cancellation` wrapper and choose their own
+cancellation grace periods. Orphaned tool calls are repaired with interrupted,
+unknown-outcome results, never automatically retried. All model-facing harness
+strings are built in `src/prompts.rs`.
+Incomplete tool calls with terminal error results are rendered as ordinary
+context on replay, retaining the original call/result events for audit rather
+than forwarding an unfinished native tool call to the provider.
 
 ## Storage and replay API
 
@@ -53,19 +134,30 @@ atomically update this field using the last `StatusChange` in the batch. A fork
 inherits the state visible at its cutoff, not its parent's later state. Migration
 0005 backfills existing agents from their bounded event histories.
 `add_events` returns `db::AddEventResult` with the assigned `events` and
-`new_state: Option<AgentState>`. `new_state` is `Some` only if the batch changes the
-current state; these changes remain staged until the cursor is committed.
+`new_state: Option<AgentState>` and `new_usage: Option<AgentUsage>`. These are
+updated snapshots only when changed; they remain staged until cursor commit.
+Migration 0006 backfills cumulative token usage from inference results and
+compaction calls through each ancestor cutoff. Counts are exact where known;
+omitted per-call counts make that cumulative field unknown. Fork totals include
+inherited usage, so adding totals across forks double-counts shared history.
+
+Cursor helpers include `load_all_events`, `load_context_window` (inclusive of the
+last NewContext), `load_events_since_last_inference` (latest start through head,
+including tool results), and `load_last_inference_result` (`start`, `end`, `items`
+strictly between the markers). Helpers page internally without truncation,
+respect fork boundaries, and see staged writes. A latest result without an end
+returns `DbError::IncompleteInference`, not an older completed result.
 
 ```rust,no_run
 use psa_server::{
     agents::{
         NewAgent,
         agent_context::AgentContext,
-        events::{EventId, EventRange, EventType, Message, MessageType, NewEvent},
     },
     db::Database,
     sessions::{NewSession, ForkPoint, SessionFork, SessionUpdate},
 };
+use psa_api::events::{EventId, EventRange, EventType, Message, MessageType, NewEvent};
 use llm_api::{api::RequestConfig, providers::{Effort, Model, ModelConfig, ProviderType}};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -98,7 +190,7 @@ while state.last_event_id < head {
     for event in page { state.apply_event(&event)?; }
 }
 let request = state.prepare_request(RequestConfig::default())?;
-// Future execution calls provider.generate(&request.history, &request.config).
+// Direct provider access calls generate(&request.history, &request.config).
 
 let fork = cursor.fork_session(session.id, SessionFork {
     point: ForkPoint::Head,
@@ -158,7 +250,9 @@ converts existing results, preserving rich content when present and wrapping
 plain text in a text block otherwise.
 Messages likewise have a single `content: Vec<ContentBlock>` payload, with
 `Message::text` as a convenience constructor. Migration 0004 converts existing
-messages using the same rich-content-first rule, preserving delivery and metadata.
+messages using the same rich-content-first rule, preserving metadata. Legacy
+delivery columns remain on disk for compatibility; scheduling delivery now lives
+on API requests, not persisted messages.
 
 Migration 0002 upgrades the previous inference payload tables and backfills model
 snapshots through the bounded agent ancestry. Stored envelope tags remain

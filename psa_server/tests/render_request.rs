@@ -8,9 +8,9 @@ use llm_api::{
     },
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
+use psa_api::events::*;
 use psa_server::{
-    agents::NewAgent, agents::agent_context::AgentContext, agents::events::*, db::Database,
-    sessions::NewSession,
+    agents::NewAgent, agents::agent_context::AgentContext, db::Database, sessions::NewSession,
 };
 use serde_json::Value;
 use tokio::{

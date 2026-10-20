@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>PSA · Architecture</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fa;
+      --surface: #fff;
+      --text: #202b3c;
+      --muted: #647084;
+      --line: #dce2ea;
+      --accent: #386cbd;
+      --tint: #edf3fc;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+    main { max-width: 1100px; margin: 0 auto; padding: 64px 32px; }
+    .eyebrow { color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+    h1 { margin: 8px 0; font-size: clamp(28px, 5vw, 40px); font-weight: 650; letter-spacing: -.04em; }
+    .intro { margin: 0 0 36px; color: var(--muted); }
+    .diagram { padding: 28px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); }
+    .section-label { margin: 0 0 20px; color: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+    .flow { display: grid; grid-template-columns: 1fr 32px 1fr 32px 1fr 32px 1fr; align-items: stretch; }
+    .node { min-width: 0; padding: 20px 16px; border: 1px solid var(--line); border-radius: 12px; }
+    .node.active { border-color: var(--accent); background: var(--tint); }
+    .node h2, .resource h3 { margin: 8px 0 4px; font-size: 16px; font-weight: 650; }
+    .node p, .resource p { margin: 0; color: var(--muted); font-size: 13px; }
+    .tag { color: var(--accent); font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+    .arrow { display: grid; place-items: center; color: var(--muted); font-size: 22px; }
+    .flow-note { margin: 16px 0 28px; color: var(--muted); font-size: 12px; text-align: right; }
+    .shared { border-top: 1px solid var(--line); padding-top: 24px; }
+    .shared .section-label { margin-bottom: 14px; }
+    .resources { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .resource { border-radius: 10px; background: var(--bg); padding: 16px 20px; }
+    .resource h3 { margin-top: 0; }
+    code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .88em; }
+    .details { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; margin-top: 28px; }
+    .detail h2 { font-size: 14px; margin: 0 0 6px; }
+    .detail p { margin: 0; color: var(--muted); font-size: 13px; }
+    footer { margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    .crates { display: flex; flex-wrap: wrap; gap: 8px 24px; }
+    .crates strong { color: var(--text); font-weight: 600; }
+    @media (max-width: 720px) {
+      main { padding: 32px 18px; }
+      .diagram { padding: 20px; }
+      .flow { grid-template-columns: 1fr; }
+      .arrow { height: 32px; font-size: 0; }
+      .arrow::after { content: "↓"; font-size: 22px; }
+      .resources, .details { grid-template-columns: 1fr; }
+      .details { gap: 20px; }
+      .flow-note { text-align: left; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #131922;
+        --surface: #1a2230;
+        --text: #e3eaf4;
+        --muted: #a4b0c3;
+        --line: #344155;
+        --accent: #8ab6ff;
+        --tint: #22334e;
+      }
+    }
+    @media print {
+      :root { --bg: #fff; --surface: #fff; --text: #202b3c; --muted: #536176; --line: #cbd3df; --accent: #386cbd; --tint: #edf3fc; }
+      main { padding: 20px; }
+      .diagram, .details { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="eyebrow">PSA / Architecture</div>
+      <h1>One server. Many agents.</h1>
+      <p class="intro">A central async server owns agent execution and durable history.</p>
+    </header>
+
+    <section class="diagram" aria-label="Runtime architecture">
+      <p class="section-label">Request → execution</p>
+      <div class="flow">
+        <article class="node">
+          <span class="tag">Clients</span>
+          <h2>API consumers</h2>
+          <p>Send requests over HTTP.<br>Receive updates over SSE.</p>
+        </article>
+        <span class="arrow" aria-hidden="true">→</span>
+        <article class="node">
+          <span class="tag">Axum</span>
+          <h2>HTTP API</h2>
+          <p>Validate requests.<br>Submit via <code>RuntimeHandle</code>.</p>
+        </article>
+        <span class="arrow" aria-hidden="true">→</span>
+        <article class="node active">
+          <span class="tag">One supervisor task</span>
+          <h2>SessionManager</h2>
+          <p>Own request queues.<br>Start and supervise workers.</p>
+        </article>
+        <span class="arrow" aria-hidden="true">→</span>
+        <article class="node">
+          <span class="tag">Per active agent</span>
+          <h2>Worker tasks</h2>
+          <p>Run hooks, inference, tools.<br>Call providers via <code>llm_api</code>.</p>
+        </article>
+      </div>
+      <p class="flow-note">Arrows show request flow. SSE updates travel back to clients.</p>
+
+      <div class="shared">
+        <p class="section-label">Shared by HTTP and agent execution</p>
+        <div class="resources">
+          <article class="resource">
+            <h3>Database <span class="tag">· durable</span></h3>
+            <p>SQLite sessions, agents, and transcript events.<br>Agent context is rebuilt by replaying events.</p>
+          </article>
+          <article class="resource">
+            <h3>Publication <span class="tag">· in memory</span></h3>
+            <p>Pending output drafts and live broadcasts.<br>One gate orders commits with SSE replay snapshots.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="details" aria-label="Key boundaries">
+      <article class="detail">
+        <h2>Tasks, not dedicated threads</h2>
+        <p>One multi-threaded Tokio runtime. Sessions group agents; idle agents need no worker task.</p>
+      </article>
+      <article class="detail">
+        <h2>Handles, not another runtime</h2>
+        <p><code>Runtime</code> owns the supervisor lifecycle. <code>RuntimeHandle</code> sends commands and queries busy status through the supervisor.</p>
+      </article>
+      <article class="detail">
+        <h2>Execution details stay in hooks</h2>
+        <p><code>src/hooks/</code> owns hook definitions and cancellation. <code>hooks/tools/</code> owns tool execution.</p>
+      </article>
+    </section>
+
+    <footer>
+      <div class="crates" aria-label="Workspace crates">
+        <span><strong>psa_api</strong> · wire types &amp; client</span>
+        <span><strong>psa_server</strong> · execution &amp; persistence</span>
+        <span><strong>llm_api</strong> · provider APIs &amp; streams</span>
+      </div>
+    </footer>
+  </main>
+</body>
+</html>

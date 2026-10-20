@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>psa_server · Tasks & channels</title>
+<style>
+:root{color-scheme:light;--bg:#f5f7fa;--panel:#fff;--ink:#233044;--muted:#69768a;--line:#dce3ed;--blue:#326dc3;--green:#187e72;--purple:#8057b5;--soft:#edf4ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,-apple-system,sans-serif}main{max-width:1510px;padding:36px;margin:auto}header{display:flex;justify-content:space-between;align-items:end;gap:20px;margin-bottom:22px}h1{font-size:29px;letter-spacing:-1px;margin:0}header p{color:var(--muted);margin:5px 0 0}.eyebrow{color:var(--blue);font-size:11px;font-weight:750;letter-spacing:2px;text-transform:uppercase;margin-bottom:5px}.toolbar{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px}button{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:7px 13px;cursor:pointer}button[aria-pressed="true"]{background:var(--blue);border-color:var(--blue);color:white}button:hover{border-color:var(--blue)}button:focus-visible,a:focus-visible{outline:3px solid var(--blue);outline-offset:3px}.reset{margin-left:auto}.layout{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:18px;align-items:start}.canvas,aside{background:var(--panel);border:1px solid var(--line);border-radius:12px}.canvas{overflow:hidden}.scroll{overflow-x:auto}svg{display:block;width:100%;min-width:720px;height:auto}.node{cursor:pointer;outline:none}.node rect{fill:var(--panel);stroke:var(--line);stroke-width:1.5}.node.task rect{stroke:var(--blue)}.node.resource rect{stroke:var(--green);stroke-dasharray:5 4}.node.owner rect{stroke:var(--purple)}.node:hover rect,.node:focus-visible rect,.node.selected rect{fill:var(--soft);stroke:var(--blue);stroke-width:2.5}.node text{fill:var(--ink);pointer-events:none}.node .kind{fill:var(--muted);font-size:10px;letter-spacing:1px}.node .title{font-size:17px;font-weight:650}.node .caption{fill:var(--muted);font-size:12px}.edge path{fill:none;stroke:var(--blue);stroke-width:1.7;marker-end:url(#arrow)}.edge.state path{stroke:var(--green);stroke-dasharray:5 4;marker-end:url(#state-arrow)}.edge.lifecycle path{stroke:var(--purple);marker-end:url(#life-arrow)}.edge text{font-size:11px;fill:var(--muted);paint-order:stroke;stroke:var(--panel);stroke-width:5px;stroke-linejoin:round}.dim{opacity:.13}.edge.focus path{stroke-width:2.8}.legend{border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:16px;padding:12px 18px;font-size:11px;color:var(--muted)}.key::before{content:"";display:inline-block;width:12px;height:10px;border:1.5px solid var(--blue);border-radius:3px;margin-right:6px;vertical-align:-1px}.key.shared::before{border-color:var(--green);border-style:dashed}.key.owner::before{border-color:var(--purple)}aside{padding:22px;min-height:460px}aside h2{margin:4px 0 8px;font-size:20px;line-height:1.25}aside h3{margin:20px 0 6px;font-size:10px;text-transform:uppercase;letter-spacing:1.4px;color:var(--muted)}aside p{margin:0 0 10px;font-size:13px}aside ul,aside ol{margin:0;padding-left:18px;font-size:13px}aside li{margin:5px 0}.badge{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--blue)}code{font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.source{display:block;color:var(--muted);margin-top:18px;text-decoration:none}.source:hover{text-decoration:underline}.foot{margin:17px 0 0;color:var(--muted);font-size:12px}.hint{font-size:12px;color:var(--muted)}noscript p{padding:15px;background:var(--soft)}
+@media(max-width:1050px){main{padding:24px 16px}.layout{grid-template-columns:1fr}aside{min-height:0}header{display:block}.hint{margin-top:10px}}
+@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#111822;--panel:#1a2330;--ink:#e0e8f4;--muted:#a1b0c6;--line:#3b4b62;--blue:#8ab8ff;--green:#6bc9b9;--purple:#c3a0f0;--soft:#263b57}button[aria-pressed="true"]{color:#111822}}
+@media print{main{padding:0}.toolbar,.hint{display:none}.layout{display:block}aside{min-height:0;margin-top:16px}.dim{opacity:1}svg{min-width:0}.canvas,aside{break-inside:avoid}}
+</style>
+</head>
+<body>
+<main>
+<header><div><div class="eyebrow">psa_server / runtime map</div><h1>Tasks, channels & ownership</h1><p>One Tokio runtime. One global supervisor. Workers only while agents are active.</p></div><div class="hint">Click a node to inspect · Esc to reset</div></header>
+<nav class="toolbar" aria-label="Diagram view">
+<button data-view="messages" aria-pressed="true">Communication</button>
+<button data-view="lifecycle" aria-pressed="false">Start / stop</button>
+<button data-view="state" aria-pressed="false">State access</button>
+<button class="reset" id="reset">Show all nodes</button>
+</nav>
+<div class="layout">
+<section class="canvas" aria-label="Interactive task graph">
+<div class="scroll">
+<svg id="graph" viewBox="0 0 1040 690" aria-labelledby="graph-title graph-desc">
+<title id="graph-title">psa_server runtime tasks and communication</title>
+<desc id="graph-desc">The server owns HTTP and a supervisor task. HTTP submits commands to the supervisor, which starts agent worker tasks. Workers report boundaries and consumption through the manager mailbox; controls and replies return on separate channels. Publication broadcasts to SSE streams. Database and Publication are shared objects, not tasks. Select nodes for exact state and lifecycle details.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" style="fill:var(--blue)"/></marker>
+<marker id="state-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" style="fill:var(--green)"/></marker>
+<marker id="life-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" style="fill:var(--purple)"/></marker>
+</defs>
+<g id="edges"></g>
+<g id="nodes">
+<g class="node owner" data-node="server" role="button" tabindex="0" aria-label="Server lifecycle owner" transform="translate(400 30)"><rect width="240" height="100" rx="11"/><text x="18" y="24" class="kind">LIFECYCLE OWNER · 1</text><text x="18" y="50" class="title">serve_with_providers</text><text x="18" y="75" class="caption">Owns Runtime + HTTP future</text></g>
+<g class="node task" data-node="http" role="button" tabindex="0" aria-label="HTTP request handling" transform="translate(30 240)"><rect width="240" height="100" rx="11"/><text x="18" y="24" class="kind">AXUM REQUEST HANDLING · N</text><text x="18" y="50" class="title">HTTP handlers</text><text x="18" y="75" class="caption">AppState / RuntimeHandle</text></g>
+<g class="node task" data-node="manager" role="button" tabindex="0" aria-label="Global SessionManager task" transform="translate(400 240)"><rect width="240" height="100" rx="11"/><text x="18" y="24" class="kind">SPAWNED TASK · 1 GLOBAL</text><text x="18" y="50" class="title">SessionManager</text><text x="18" y="75" class="caption">Queues + worker supervision</text></g>
+<g class="node task" data-node="worker" role="button" tabindex="0" aria-label="Agent worker tasks" transform="translate(770 240)"><rect width="240" height="100" rx="11"/><text x="18" y="24" class="kind">SPAWNED TASK · 0…N</text><text x="18" y="50" class="title">run_worker</text><text x="18" y="75" class="caption">One per active agent</text></g>
+<g class="node task" data-node="sse" role="button" tabindex="0" aria-label="SSE response streams" transform="translate(30 510)"><rect width="240" height="100" rx="11"/><text x="18" y="24" class="kind">RESPONSE STREAM · PER CLIENT</text><text x="18" y="50" class="title">SSE replay + live</text><text x="18" y="75" class="caption">Polled by HTTP, not own spawn</text></g>
+<g class="node resource" data-node="publication" role="button" tabindex="0" aria-label="Publication shared object, not a task" transform="translate(400 510)"><rect width="240" height="100" rx="11"/><text x="18" y="24" class="kind">SHARED OBJECT · NOT A TASK</text><text x="18" y="50" class="title">Publication</text><text x="18" y="75" class="caption">Drafts / broadcast / commit gate</text></g>
+<g class="node resource" data-node="db" role="button" tabindex="0" aria-label="Database shared pool, not an agent task" transform="translate(770 510)"><rect width="240" height="100" rx="11"/><text x="18" y="24" class="kind">SHARED POOL · DURABLE</text><text x="18" y="50" class="title">Database</text><text x="18" y="75" class="caption">SQLite · up to 4 connections</text></g>
+</g>
+<text x="520" y="666" text-anchor="middle" style="fill:var(--muted);font-size:12px">Hooks, tools & provider streams are awaited inside each worker — not separate agent tasks.</text>
+</svg>
+</div>
+<div class="legend"><span class="key">Task / HTTP execution</span><span class="key owner">Lifecycle owner</span><span class="key shared">Shared state, not a task</span><span>Arrows are directed; labels name the transport.</span></div>
+</section>
+<aside id="inspector" aria-live="polite" aria-atomic="true"></aside>
+</div>
+<p class="foot">Static map of the implementation, not live telemetry. A session is a grouping, not a task. “Busy” means at least one worker exists in the session.</p>
+<noscript><p>Enable JavaScript to draw channel connections and inspect lifecycle/state. The task nodes above remain visible.</p></noscript>
+</main>
+<script>
+'use strict';
+const descriptions = {
+ server: {title:'Server lifecycle',kind:'Owner future · server.rs',summary:'Creates shared resources and owns the supervisor JoinHandle through Runtime. The HTTP server is a pinned future polled here, not an explicit tokio::spawn.',state:['Runtime { handle, task }','Pinned HTTP future; accepting: Arc<AtomicBool>','HTTP shutdown oneshot sender'],start:'Recover agents → spawn supervisor → build router → poll HTTP alongside the shutdown signal.',stop:'Reject new work → await runtime shutdown → close Publication → signal and await HTTP → close DB.',source:'server.rs'},
+ http: {title:'HTTP handlers',kind:'Axum-managed execution',summary:'Cloned AppState carries handles, not copies of the runtime. RuntimeHandle is a command client, not tokio::runtime::Handle.',state:['database: Database','publication: Publication','runtime: RuntimeHandle { commands }','accepting: Arc<AtomicBool>'],start:'Axum serves incoming connections and dispatches requests. A message request submits a command and awaits a oneshot acceptance reply.',stop:'Admission flag rejects relevant new operations. Axum drains connections after its graceful-shutdown signal.',source:'http.rs'},
+ manager: {title:'SessionManager',kind:'One spawned supervisor task',summary:'Owns every agent’s request queue. Its select! loop receives commands or reaps workers from a JoinSet. There is no manager task per session.',state:['workers: HashMap<AgentId, Worker>','tasks: JoinSet<WorkerResult>','Worker: queue, in_flight, generation, task_id, controls, stopping','next_request_id, next_generation: owned counters','DB, Publication, providers; shutdown flags/reply'],start:'Runtime::start repairs persisted agents, then tokio::spawn(manager.run()). A valid message starts a missing worker via JoinSet::spawn.',stop:'Shutdown clears queues and sends Interrupt to workers. Exit only after workers are gone; acknowledge and join. Failed workers are repaired; remaining queued work can get a new worker.',source:'agents/session_manager.rs'},
+ worker: {title:'Agent worker',kind:'One spawned task per active agent',summary:'Owns mutable AgentManagerState. In sequence: boundary → before hook → inference → after hook → tool results. Hooks/tools are ordinary awaited futures.',state:['Agent snapshot: status, usage, event counters','AgentContext: replayed model history / config / tools','Session snapshot; Database + Publication handles','Control receiver, generation, invocation counter, hooks'],start:'Supervisor loads Agent + Session + replayed context, allocates a generation and control channel, then spawns run_worker.',stop:'BoundaryReply::Stop returns from the task. Interrupt cancels inference or signals cooperative hook/tool cancellation with a grace timeout; persists repair/status. Errors/panics are reaped by supervisor.',source:'agents/agent_manager.rs'},
+ sse: {title:'SSE response stream',kind:'Per connected subscriber',summary:'Not an explicitly spawned agent task. Axum polls the response body. Under the publication gate: subscribe, capture replay head, snapshot drafts; then replay and tail updates.',state:['broadcast::Receiver<StreamMessage>','watch::Receiver<bool> for shutdown','Replay head/cursor, scope, pending snapshot'],start:'A streaming events request creates the response stream. Replays committed history, sends Snapshot, then reads live broadcasts.',stop:'Client disconnect, finite replay completion, shutdown watch, or lag. Lag emits ResyncRequired rather than silently skipping updates.',source:'http.rs'},
+ publication: {title:'Publication',kind:'Shared coordination object · no task',summary:'One global mutex orders transcript commits and publication with SSE replay snapshots. It is not held throughout inference or tool execution.',state:['Arc<Mutex<PublicationState>>','pending: HashMap<String, PendingEvent>','broadcast::Sender<StreamMessage> · capacity 1024','shutdown: watch::Sender<bool>'],start:'Server creates Publication::default(); HTTP, supervisor and workers clone shared handles.',stop:'After runtime cleanup, close() sets the shutdown watch to true. Drafts are ephemeral; committed events remain in SQLite.',source:'agents/publication.rs'},
+ db: {title:'Database',kind:'Shared SQLite pool · no agent task',summary:'Durable sessions, agents and transcript events. AgentContext is a projection rebuilt by replay, not another durable store.',state:['sqlx::SqlitePool · max_connections(4)','DatabaseCursor owns a transaction','Every cursor begins with BEGIN IMMEDIATE'],start:'Open the SQLite pool and apply migrations before starting Runtime. Worker startup loads its snapshots and replays events.',stop:'After runtime and HTTP finish, await pool.close(). A dropped uncommitted cursor rolls back.',source:'db/mod.rs'}
+};
+const views = {
+ messages: {title:'Communication',summary:'Command traffic and live output. Click a node to isolate its direct connections.',items:['Manager mailbox: bounded mpsc, capacity 256.','Workers report Boundary / Consumed. Replies: Work / Continue / Stop.','Controls: unbounded mpsc. Replies: oneshot. SSE: broadcast + watch.','Accepted ≠ persisted: Consumed follows the committed human message.']},
+ lifecycle: {title:'Start / stop',summary:'Lifecycle edges show who starts, interrupts, observes, or closes each component.',items:['Start: DB + providers → recovery → supervisor → HTTP.','Worker starts lazily on a valid message; idle agents have no task.','Shutdown: reject → interrupt → join workers/supervisor → close streams → drain HTTP → close DB.','A worker generation rejects stale messages after restart.']},
+ state: {title:'State access',summary:'Dashed edges mean shared-handle access or awaited calls, not a channel or a background task.',items:['HTTP AppState shares DB, Publication, RuntimeHandle and accepting flag.','Supervisor owns queues (up to 128 pending per agent); workers own their execution state.','Publication validates projection → commits DB → broadcasts.','Busy status is queried over mpsc and derived from workers; no shared busy set. IDs are supervisor-owned counters.']}
+};
+// Explicit routes keep opposite-direction channels and shared-state links apart.
+const edges = [
+ ['submit','http','manager','messages','M270 266 L400 266','mpsc · submit / busy',335,254],
+ ['accepted','manager','http','messages','M400 317 L270 317','oneshot · reply',335,337],
+ ['controls','manager','worker','messages','M640 262 L770 262','mpsc ∞ · controls',705,250],
+ ['boundary','worker','manager','messages','M770 294 L640 294','mpsc · report',705,286],
+ ['work','manager','worker','messages','M640 327 L770 327','oneshot · decision',705,350],
+ ['response','http','sse','messages','M150 340 L150 510','HTTP response body',150,430],
+ ['drafts','worker','publication','messages','M825 340 C825 440 620 420 590 510','await · upsert / append',720,440],
+ ['mutate','http','publication','messages','M240 340 C240 440 420 430 440 510','await · commit / publish',325,461],
+ ['status','manager','publication','messages','M520 340 L520 510','await · busy / failure',520,404],
+ ['broadcast','publication','sse','messages','M400 550 L270 550','broadcast · updates',335,536],
+ ['stream-close','publication','sse','messages','M400 586 L270 586','watch · shutdown',335,606],
+ ['serve','server','http','lifecycle','M400 65 C150 65 150 150 150 240','poll HTTP / shutdown oneshot',210,165],
+ ['spawn-manager','server','manager','lifecycle','M520 130 L520 240','spawn / Shutdown + join',520,189],
+ ['spawn-worker','manager','worker','lifecycle','M640 265 L770 265','spawn / Interrupt',705,252],
+ ['join-worker','worker','manager','lifecycle','M770 315 L640 315','JoinSet · exit',705,337],
+ ['close-pub','server','publication','lifecycle','M640 95 C710 95 700 440 610 510','close after runtime cleanup',704,410],
+ ['close-sse','publication','sse','lifecycle','M400 560 L270 560','watch · close streams',335,546],
+ ['drain','http','sse','lifecycle','M150 340 L150 510','Axum polls / drops body',150,430],
+ ['close-db','server','db','lifecycle','M640 65 C1030 65 1030 420 935 510','close after HTTP drains',908,165],
+ ['http-db','http','db','state','M205 340 C205 465 760 420 805 510','queries / mutations',410,439],
+ ['manager-db','manager','db','state','M610 340 C665 390 850 385 865 510','validate / load / recover',754,397],
+ ['worker-db','worker','db','state','M935 340 L935 510','load / hook queries',935,430],
+ ['http-pub','http','publication','state','M110 340 C110 470 395 425 435 510','gate / subscribe / snapshot',266,478],
+ ['worker-pub','worker','publication','state','M800 340 C795 450 590 410 580 510','drafts / append',707,468],
+ ['manager-pub','manager','publication','state','M520 340 L520 510','busy / failures / cleanup',520,394],
+ ['pub-db','publication','db','state','M640 560 L770 560','await · commit',705,546],
+ ['sse-db','sse','db','state','M270 598 C400 647 660 647 770 598','replay pages via Database',520,637]
+].map(([id,from,to,view,path,label,x,y])=>({id,from,to,view,path,label,x,y}));
+const ns='http://www.w3.org/2000/svg';
+const edgeLayer=document.getElementById('edges');
+const inspector=document.getElementById('inspector');
+let view='messages', selected=null;
+function svgElement(tag,attrs){const el=document.createElementNS(ns,tag);for(const [key,value] of Object.entries(attrs))el.setAttribute(key,value);return el;}
+for(const edge of edges){
+ const group=svgElement('g',{'class':`edge ${edge.view}`, 'data-edge':edge.id});
+ const path=svgElement('path',{d:edge.path});
+ const label=svgElement('text',{x:edge.x,y:edge.y,'text-anchor':'middle'});label.textContent=edge.label;
+ const title=svgElement('title',{});title.textContent=`${descriptions[edge.from].title} → ${descriptions[edge.to].title}: ${edge.label}`;
+ group.append(title,path,label);edgeLayer.append(group);edge.element=group;
+}
+function appendText(parent,tag,text,className){const el=document.createElement(tag);el.textContent=text;if(className)el.className=className;parent.append(el);return el;}
+function render(){
+ const visible=edges.filter(edge=>edge.view===view);
+ const adjacent=new Set(selected?[selected]:Object.keys(descriptions));
+ if(selected)for(const edge of visible)if(edge.from===selected||edge.to===selected){adjacent.add(edge.from);adjacent.add(edge.to);}
+ for(const edge of edges){const focus=!selected||edge.from===selected||edge.to===selected;edge.element.style.display=edge.view===view?'':'none';edge.element.classList.toggle('dim',!focus);edge.element.classList.toggle('focus',!!selected&&focus);}
+ for(const node of document.querySelectorAll('[data-node]')){const id=node.dataset.node;node.classList.toggle('dim',!adjacent.has(id));node.classList.toggle('selected',id===selected);node.setAttribute('aria-pressed',String(id===selected));}
+ for(const button of document.querySelectorAll('[data-view]'))button.setAttribute('aria-pressed',String(button.dataset.view===view));
+ inspector.replaceChildren();
+ if(!selected){const info=views[view];appendText(inspector,'span','Overview','badge');appendText(inspector,'h2',info.title);appendText(inspector,'p',info.summary);const list=appendText(inspector,'ul','');for(const item of info.items)appendText(list,'li',item);appendText(inspector,'h3','Explore');appendText(inspector,'p','Select any node. Its direct connections stay bright; everything else fades. Switch views to keep exploring the same node.');return;}
+ const info=descriptions[selected];appendText(inspector,'span',info.kind,'badge');appendText(inspector,'h2',info.title);appendText(inspector,'p',info.summary);appendText(inspector,'h3','Important state');const list=appendText(inspector,'ul','');for(const item of info.state){const li=appendText(list,'li','');appendText(li,'code',item);}appendText(inspector,'h3','Starts');appendText(inspector,'p',info.start);appendText(inspector,'h3','Stops');appendText(inspector,'p',info.stop);
+ appendText(inspector,'h3','Connections in this view');const connections=appendText(inspector,'ul','');let count=0;for(const edge of visible){if(edge.from!==selected&&edge.to!==selected)continue;count++;appendText(connections,'li',`${edge.from===selected?'→ '+descriptions[edge.to].title:'← '+descriptions[edge.from].title}: ${edge.label}`);}if(!count)appendText(connections,'li','No channel edges here. Try Start / stop or State access.');
+ const link=appendText(inspector,'a','src/'+info.source,'source');link.href='../psa_server/src/'+info.source;
+}
+function select(id){selected=selected===id?null:id;render();}
+for(const node of document.querySelectorAll('[data-node]')){node.addEventListener('click',()=>select(node.dataset.node));node.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();select(node.dataset.node);}});}
+for(const button of document.querySelectorAll('[data-view]'))button.addEventListener('click',()=>{view=button.dataset.view;render();});
+document.getElementById('reset').addEventListener('click',()=>{selected=null;render();});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'){selected=null;render();}});
+render();
+</script>
+</body>
+</html>

@@ -1,9 +1,19 @@
+use crate::agents::{
+    publication::Publication,
+    session_manager::{Runtime, RuntimeError},
+};
 use crate::{
     config::ResolvedConfig,
     db::{Database, DbError},
+    providers::{AuthError, ProviderRegistry},
 };
-use axum::{Router, routing::get};
-use std::future::Future;
+use std::{
+    future::{Future, IntoFuture},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use tokio::net::TcpListener;
 
 #[derive(Debug, thiserror::Error)]
@@ -12,6 +22,10 @@ pub enum ServerError {
     Database(#[from] DbError),
     #[error("server I/O error: {0}")]
     Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Auth(#[from] AuthError),
+    #[error(transparent)]
+    Runtime(#[from] RuntimeError),
 }
 
 pub async fn start(config: ResolvedConfig) -> Result<(), ServerError> {
@@ -19,6 +33,7 @@ pub async fn start(config: ResolvedConfig) -> Result<(), ServerError> {
         tokio::fs::create_dir_all(parent).await?;
     }
 
+    let providers = ProviderRegistry::load(&config.config_path.with_file_name("auth.toml")).await?;
     let database = Database::open(&config.database_path).await?;
     let listener = TcpListener::bind(config.listen).await?;
     tracing::info!(
@@ -28,7 +43,7 @@ pub async fn start(config: ResolvedConfig) -> Result<(), ServerError> {
         "server ready"
     );
 
-    serve(listener, database, shutdown_signal()).await
+    serve_with_providers(listener, database, providers, shutdown_signal()).await
 }
 
 /// Injectable listener and shutdown future permit isolated startup tests.
@@ -37,16 +52,54 @@ pub async fn serve(
     database: Database,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
-    let app = Router::new()
-        .route("/health", get(|| async { "ok\n" }))
-        .with_state(database.clone());
+    serve_with_providers(listener, database, ProviderRegistry::default(), shutdown).await
+}
 
-    let result = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await;
+pub async fn serve_with_providers(
+    listener: TcpListener,
+    database: Database,
+    providers: ProviderRegistry,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), ServerError> {
+    let publication = Publication::default();
+    let runtime = Runtime::start(database.clone(), publication.clone(), providers).await?;
+    let accepting = Arc::new(AtomicBool::new(true));
+    let app = crate::http::router(crate::http::AppState {
+        database: database.clone(),
+        publication: publication.clone(),
+        runtime: runtime.handle.clone(),
+        accepting: accepting.clone(),
+    });
+    // signals http server to stop when anything sent on stopped
+    let (stopped, received) = tokio::sync::oneshot::channel();
+
+    let mut http = Box::pin(
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = received.await;
+            })
+            .into_future(),
+    );
+
+    // wait for either stop signal (app getting killed), or http server error to decide to shutdown
+    let early_result = tokio::select! {
+        result = &mut http => Some(result),
+        _ = shutdown => None,
+    };
+    accepting.store(false, Ordering::Release);
+    let cleanup = runtime.shutdown().await;
+    publication.close();
+
+    // shutdown http server if it hasn't yet
+    let _ = stopped.send(());
+    let result = match early_result {
+        Some(result) => result,
+        None => http.await,
+    };
 
     database.close().await;
     result?;
+    cleanup?;
     Ok(())
 }
 

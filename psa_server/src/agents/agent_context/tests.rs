@@ -1,5 +1,9 @@
 use super::*;
-use crate::agents::AgentId;
+
+fn build_text_block(value: &str) -> api::ContentBlock {
+    crate::prompts::text(value).remove(0)
+}
+use crate::agents::{AgentId, ToolDefinitionExt};
 use llm_api::{
     api::{Outcome, ProviderOpaqueData, Reasoning, StopReason, Usage},
     providers::{Effort, Model, ProviderType},
@@ -12,6 +16,49 @@ fn config() -> ModelConfig {
         provider: ProviderType::Openrouter,
         effort: Effort::High,
     }
+}
+
+#[test]
+fn interrupted_incomplete_calls_replay_as_context_only_after_an_error_result() {
+    let mut state = AgentContext::replay(&events(vec![
+        EventType::Model(config()),
+        EventType::ToolCall(ToolCall {
+            call_id: "partial".into(),
+            tool_name: "noop".into(),
+            arguments: "{".into(),
+            metadata: HistoryItemMetadata {
+                item_status: Some("incomplete".into()),
+                ..Default::default()
+            },
+        }),
+    ]))
+    .unwrap();
+    assert!(state.prepare_request(RequestConfig::default()).is_err());
+    state
+        .apply_event(&Event {
+            id: EventId(3),
+            source_agent_id: AgentId(1),
+            timestamp: time::OffsetDateTime::UNIX_EPOCH,
+            kind: EventType::ToolResult(ToolResult {
+                call_id: "partial".into(),
+                content: crate::prompts::tool_interrupted(),
+                error: true,
+                metadata: Default::default(),
+            }),
+        })
+        .unwrap();
+    let request = state.prepare_request(RequestConfig::default()).unwrap();
+    assert_eq!(request.history.items.len(), 1);
+    assert!(matches!(
+        request.history.items[0].kind,
+        HistoryItemKind::Message(_)
+    ));
+    // The original call/result remain visible for audit and orphan detection.
+    assert_eq!(state.items().len(), 2);
+    assert_eq!(
+        state.items()[0].metadata.item_status.as_deref(),
+        Some("incomplete")
+    );
 }
 fn events(kinds: Vec<EventType>) -> Vec<Event> {
     kinds
@@ -213,7 +260,6 @@ fn model_switches_convert_context_but_preserve_the_response_snapshot() {
 fn preserves_rich_content_and_checks_snapshotted_tools() {
     let rich = Message {
         message_type: MessageType::Agent,
-        delivery: None,
         content: vec![
             api::ContentBlock::Text(api::TextBlock {
                 text: "actual text".into(),
@@ -267,7 +313,6 @@ fn renders_plain_and_empty_message_content() {
         message(MessageType::Human, "hello"),
         EventType::Message(Message {
             message_type: MessageType::Agent,
-            delivery: None,
             content: vec![],
             metadata: Default::default(),
         }),
@@ -291,7 +336,7 @@ fn renders_plain_and_empty_message_content() {
 
 #[test]
 fn preserves_tool_result_content_blocks() {
-    let content: crate::tools::ToolResult = vec![
+    let content: crate::hooks::tools::ToolResult = vec![
         build_text_block("tool output"),
         api::ContentBlock::Image(api::ImageBlock {
             source: api::MediaSource::Url("https://example.test/output.png".into()),

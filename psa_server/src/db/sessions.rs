@@ -8,14 +8,12 @@ use super::{
     },
 };
 use crate::{
-    agents::{
-        Agent, AgentId,
-        events::{EventId, EventRange},
-    },
+    agents::{Agent, AgentId},
     sessions::{
         ForkPoint, ForkedSession, NewSession, Session, SessionFork, SessionId, SessionUpdate,
     },
 };
+use psa_api::events::{EventId, EventRange};
 use sqlx::{Acquire, SqliteConnection};
 
 impl DatabaseCursor {
@@ -197,6 +195,9 @@ async fn fork_agent(
     let cutoff = event_cutoff_at(conn, agent.id, position).await?;
     let state =
         encode_agent_state(agent_state_at(conn, agent.id, EventId(decode_integer(cutoff)?)).await?);
+    let usage = serde_json::to_string(
+        &super::queries::usage_at(conn, agent.id, EventId(decode_integer(cutoff)?)).await?,
+    )?;
     let first = cutoff
         .checked_add(1)
         .ok_or_else(|| DbError::InvalidInput("event sequence exhausted".into()))?;
@@ -206,7 +207,7 @@ async fn fork_agent(
     let now = now_us()?;
 
     let result = sqlx::query!(
-        "INSERT INTO agents (session_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, state, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO agents (session_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, state, usage, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?,?,?,?)",
         session_id,
         parent,
         first,
@@ -214,6 +215,7 @@ async fn fork_agent(
         created,
         agent.name,
         state,
+        usage,
         now,
         now
     )

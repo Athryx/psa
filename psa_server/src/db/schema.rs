@@ -2,9 +2,10 @@
 
 use super::DbError;
 use crate::{
-    agents::{Agent, AgentId, AgentState, events::EventId},
+    agents::{Agent, AgentId, AgentState},
     sessions::{Session, SessionId},
 };
+use psa_api::events::EventId;
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 
@@ -48,6 +49,7 @@ pub(super) struct AgentRow {
     pub created_position: i64,
     pub name: String,
     pub state: String,
+    pub usage: String,
     pub created_at_us: i64,
     pub updated_at_us: i64,
 }
@@ -68,6 +70,7 @@ impl TryFrom<AgentRow> for Agent {
             created_position: decode_integer(row.created_position)?,
             name: row.name,
             state: parse_agent_state(&row.state)?,
+            usage: serde_json::from_str(&row.usage)?,
             created_at: decode_time(row.created_at_us)?,
             updated_at: decode_time(row.updated_at_us)?,
         })

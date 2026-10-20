@@ -1,18 +1,20 @@
 use super::{Database, DbError};
 use crate::{
     agents::AgentState,
-    agents::{Agent, NewAgent, events::*},
+    agents::{Agent, NewAgent, ToolDefinitionExt},
+    hooks::tools::ToolId,
     sessions::*,
-    tools::ToolId,
 };
 use llm_api::{
     api::{self, HistoryItem, HistoryItemKind, HistoryItemMetadata, Outcome, StopReason, Usage},
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
+use psa_api::events::*;
 use sqlx::SqlSafeStr;
 use std::time::Duration;
 
 mod cursor;
+mod usage;
 
 async fn fixture() -> (tempfile::TempDir, Database, Session, Agent) {
     let dir = tempfile::tempdir().unwrap();
@@ -172,23 +174,16 @@ async fn round_trips_all_payloads_and_reopens_database() {
             reason: Some("reason".into()),
         }));
     }
-    for (i, message_type) in [
+    for message_type in [
         MessageType::Human,
         MessageType::Agent,
         MessageType::Harness,
         MessageType::System,
     ]
     .into_iter()
-    .enumerate()
     {
         kinds.push(EventType::Message(Message {
             message_type,
-            delivery: [
-                None,
-                Some(MessageDelivery::Queue),
-                Some(MessageDelivery::Steer),
-                None,
-            ][i],
             content: vec![api::ContentBlock::Refusal(api::RefusalBlock {
                 text: "refused".into(),
             })],
@@ -200,7 +195,6 @@ async fn round_trips_all_payloads_and_reopens_database() {
     }
     kinds.push(EventType::Message(Message {
         message_type: MessageType::Human,
-        delivery: None,
         content: vec![],
         metadata: Default::default(),
     }));
@@ -1177,7 +1171,6 @@ async fn upgrades_legacy_messages_to_content_blocks() {
         messages.push(message);
     }
     assert_eq!(messages[0].message_type, MessageType::Human);
-    assert_eq!(messages[0].delivery, Some(MessageDelivery::Queue));
     assert_eq!(
         messages[0].metadata.item_id.as_deref(),
         Some("legacy-message")
@@ -1187,7 +1180,6 @@ async fn upgrades_legacy_messages_to_content_blocks() {
         matches!(&messages[0].content[0], api::ContentBlock::Text(text) if text.text == "plain text")
     );
     assert_eq!(messages[1].message_type, MessageType::Agent);
-    assert_eq!(messages[1].delivery, None);
     assert_eq!(messages[1].content.len(), 2);
     assert!(
         matches!(&messages[1].content[0], api::ContentBlock::Text(text) if text.text == "actual text")
@@ -1197,7 +1189,6 @@ async fn upgrades_legacy_messages_to_content_blocks() {
         api::ContentBlock::Image(_)
     ));
     assert_eq!(messages[2].message_type, MessageType::Harness);
-    assert_eq!(messages[2].delivery, Some(MessageDelivery::Steer));
     assert!(messages[2].content.is_empty());
 
     let context = crate::agents::agent_context::AgentContext::replay(&events).unwrap();

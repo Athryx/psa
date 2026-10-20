@@ -8,10 +8,8 @@ use super::{
     },
     sessions::get_session,
 };
-use crate::agents::{
-    AgentId, AgentState,
-    events::{Event, EventId, EventRange, EventType, NewEvent},
-};
+use crate::agents::{AgentId, AgentState, AgentUsage};
+use psa_api::events::{Event, EventId, EventRange, EventType, NewEvent};
 use sqlx::{Acquire, SqliteConnection};
 use std::collections::HashSet;
 
@@ -21,6 +19,7 @@ pub struct AddEventResult {
     pub events: Vec<Event>,
     /// The last state in the batch, only if it differs from the previous state.
     pub new_state: Option<AgentState>,
+    pub new_usage: Option<AgentUsage>,
 }
 
 impl DatabaseCursor {
@@ -36,6 +35,7 @@ impl DatabaseCursor {
             return Ok(AddEventResult {
                 events: Vec::new(),
                 new_state: None,
+                new_usage: None,
             });
         }
 
@@ -94,12 +94,23 @@ impl DatabaseCursor {
                 _ => None,
             })
             .filter(|state| *state != stream.state);
+        let mut usage = stream.usage.clone();
+        for event in events {
+            match &event.kind {
+                EventType::InferenceResultEnd(end) => add_usage(&mut usage, &end.usage)?,
+                EventType::Compaction(compaction) => add_usage(&mut usage, &compaction.usage)?,
+                _ => {}
+            }
+        }
+        let new_usage = (usage != stream.usage).then_some(usage);
+        let encoded_usage = new_usage.as_ref().map(serde_json::to_string).transpose()?;
         let state = new_state.map(encode_agent_state);
         let now = now_us()?;
         sqlx::query!(
-            "UPDATE agents SET next_event_seq = ?, state = COALESCE(?, state), updated_at_us = ? WHERE id = ?",
+            "UPDATE agents SET next_event_seq = ?, state = COALESCE(?, state), usage = COALESCE(?, usage), updated_at_us = ? WHERE id = ?",
             next_seq,
             state,
+            encoded_usage,
             now,
             agent_id
         )
@@ -118,6 +129,7 @@ impl DatabaseCursor {
         Ok(AddEventResult {
             events: saved,
             new_state,
+            new_usage,
         })
     }
 
@@ -259,7 +271,7 @@ pub(super) async fn event_cutoff_at(
     Ok(0)
 }
 
-async fn load_segments(
+pub(super) async fn load_segments(
     conn: &mut SqliteConnection,
     agent: AgentId,
     after: EventId,
@@ -306,4 +318,29 @@ async fn load_segments(
     }
     segments.reverse();
     Ok(segments)
+}
+
+pub(super) fn add_usage(
+    total: &mut AgentUsage,
+    usage: &llm_api::api::Usage,
+) -> Result<(), DbError> {
+    fn add(a: Option<u64>, b: Option<u64>) -> Result<Option<u64>, DbError> {
+        match (a, b) {
+            (Some(a), Some(b)) => {
+                let sum = a
+                    .checked_add(b)
+                    .ok_or_else(|| DbError::InvalidInput("token usage overflow".into()))?;
+                encode_integer(sum)?;
+                Ok(Some(sum))
+            }
+            _ => Ok(None),
+        }
+    }
+    total.input_tokens = add(total.input_tokens, usage.input_tokens)?;
+    total.output_tokens = add(total.output_tokens, usage.output_tokens)?;
+    total.total_tokens = add(total.total_tokens, usage.total_tokens)?;
+    total.cached_input_tokens = add(total.cached_input_tokens, usage.cached_input_tokens)?;
+    total.reasoning_output_tokens =
+        add(total.reasoning_output_tokens, usage.reasoning_output_tokens)?;
+    Ok(())
 }

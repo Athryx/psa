@@ -1,9 +1,9 @@
-use crate::agents::{Agent, AgentId, events::EventId};
+use crate::agents::{Agent, AgentId};
+use psa_api::events::EventId;
 use std::path::PathBuf;
 use time::OffsetDateTime;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SessionId(pub u64);
+pub use psa_api::SessionId;
 
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -15,6 +15,20 @@ pub struct Session {
     pub working_directory: PathBuf,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+}
+
+impl Session {
+    pub fn into_api(self, busy: bool) -> psa_api::Session {
+        psa_api::Session {
+            id: self.id,
+            parent_id: self.parent_id,
+            name: self.name,
+            working_directory: self.working_directory,
+            busy,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

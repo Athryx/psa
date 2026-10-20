@@ -2,11 +2,12 @@ use super::{
     DbError,
     schema::{decode_integer, encode_agent_state, encode_integer, parse_agent_state},
 };
-use crate::{agents::events::*, tools::ToolId};
+use crate::hooks::tools::ToolId;
 use llm_api::{
     api::{self, Outcome, Usage},
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
+use psa_api::events::*;
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::SqliteConnection;
 use std::{collections::HashMap, time::Duration};
@@ -163,10 +164,7 @@ pub(super) async fn insert_payload(
                 MessageType::Harness => "harness",
                 MessageType::System => "system",
             };
-            let delivery = value.delivery.map(|d| match d {
-                MessageDelivery::Queue => "queue",
-                MessageDelivery::Steer => "steer",
-            });
+            let delivery: Option<&str> = None;
             let metadata = serialize_json(&value.metadata)?;
             let content = serialize_json(&value.content)?;
 
@@ -417,12 +415,6 @@ pub(super) async fn load_payloads(
                 "harness" => MessageType::Harness,
                 "system" => MessageType::System,
                 s => return Err(invalid(s)),
-            },
-            delivery: match r.delivery.as_deref() {
-                None => None,
-                Some("queue") => Some(MessageDelivery::Queue),
-                Some("steer") => Some(MessageDelivery::Steer),
-                Some(s) => return Err(invalid(s)),
             },
             content: parse_json(&r.content)?,
             metadata: parse_json(&r.metadata)?

@@ -1,7 +1,6 @@
 //! Pure transcript projection. Replaying never runs tools or makes requests.
 
-use super::events::*;
-use crate::{agents::AgentState, tools::ToolId};
+use crate::{agents::AgentState, hooks::tools::ToolId};
 use llm_api::{
     api::{
         self, AgentHistory, HistoryItem, HistoryItemKind, HistoryItemMetadata, ModelResponse,
@@ -9,6 +8,8 @@ use llm_api::{
     },
     providers::ModelConfig,
 };
+use psa_api::events::*;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectionError {
@@ -110,7 +111,7 @@ impl AgentContext {
 
         Ok(AgentHistory {
             config: config.clone(),
-            items: self.items.clone(),
+            items: self.build_replay_items(),
             tools: self
                 .tools
                 .iter()
@@ -236,9 +237,7 @@ impl AgentContext {
                     CompactionSummary::Text(summary) => HistoryItem {
                         kind: HistoryItemKind::Message(api::Message {
                             role: Role::User,
-                            content: vec![build_text_block(&format!(
-                                "Previous context summary:\n{summary}"
-                            ))],
+                            content: crate::prompts::text(crate::prompts::context_summary(summary)),
                         }),
                         metadata: HistoryItemMetadata::default(),
                     },
@@ -305,13 +304,73 @@ impl AgentContext {
         self.items.push(item);
     }
 
+    /// Keep the audit response intact, but never forward unfinished native calls
+    /// to a provider. Once terminally resolved as errors, render those pairs as
+    /// ordinary context instead of making an incomplete call appear completed.
+    fn build_replay_items(&self) -> Vec<HistoryItem> {
+        let errors: HashMap<_, _> = self
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                HistoryItemKind::ToolResult(result) if result.is_error => {
+                    Some((result.call_id.as_str(), result))
+                }
+                _ => None,
+            })
+            .collect();
+
+        let incomplete: HashSet<_> = self
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                HistoryItemKind::ToolCall(call)
+                    if matches!(
+                        item.metadata.item_status.as_deref(),
+                        Some("in_progress" | "incomplete")
+                    ) && errors.contains_key(call.call_id.as_str()) =>
+                {
+                    Some(call.call_id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+
+        self.items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                HistoryItemKind::ToolCall(call) if incomplete.contains(call.call_id.as_str()) => {
+                    let mut content =
+                        crate::prompts::incomplete_tool_call(&call.name, &call.arguments);
+                    content.extend(errors[call.call_id.as_str()].content.iter().cloned());
+                    Some(HistoryItem {
+                        kind: HistoryItemKind::Message(api::Message {
+                            role: Role::User,
+                            content,
+                        }),
+                        metadata: Default::default(),
+                    })
+                }
+                HistoryItemKind::ToolResult(result)
+                    if incomplete.contains(result.call_id.as_str()) =>
+                {
+                    None
+                }
+                _ => Some(item.clone()),
+            })
+            .collect()
+    }
+
     fn update_model_config(&mut self, config: &ModelConfig) -> Result<(), ProjectionError> {
         if self.open.is_some() {
             return Err(invalid("cannot change model inside a result block"));
         }
 
         let previous = self.model_config.as_ref().unwrap_or(config);
-        let items = api::agent_history::convert_items_for_model(&self.items, previous, config)?;
+        let items = api::agent_history::convert_items_for_model(
+            &self.build_replay_items(),
+            previous,
+            config,
+        )?;
 
         self.model_config = Some(config.clone());
         self.items = items;
@@ -321,13 +380,6 @@ impl AgentContext {
 
 fn invalid(message: &str) -> ProjectionError {
     ProjectionError::InvalidTranscript(message.into())
-}
-
-fn build_text_block(value: &str) -> api::ContentBlock {
-    api::ContentBlock::Text(api::TextBlock {
-        text: value.into(),
-        annotations: Vec::new(),
-    })
 }
 
 #[cfg(test)]

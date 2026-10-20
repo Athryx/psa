@@ -12,4 +12,6 @@ pub enum DbError {
     InvalidInput(String),
     #[error("invalid stored data: {0}")]
     Corrupt(String),
+    #[error("inference result {0} has no visible end marker")]
+    IncompleteInference(u64),
 }
