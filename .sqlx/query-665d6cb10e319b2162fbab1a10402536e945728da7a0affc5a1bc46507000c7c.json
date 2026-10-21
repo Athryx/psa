@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT metadata, created_at, last_connected_at FROM probes ORDER BY created_at, id",
+  "describe": {
+    "columns": [
+      {
+        "name": "metadata",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "probes",
+            "name": "metadata"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "probes",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "last_connected_at",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "probes",
+            "name": "last_connected_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "665d6cb10e319b2162fbab1a10402536e945728da7a0affc5a1bc46507000c7c"
+}

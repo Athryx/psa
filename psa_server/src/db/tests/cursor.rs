@@ -14,6 +14,7 @@ async fn commit_persists_multiple_operations_together() {
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             name: "atomic setup".into(),
             working_directory: "/work".into(),
         })

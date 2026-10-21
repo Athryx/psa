@@ -13,6 +13,14 @@ The following crates are present in the workspace:
 - `llm_api`: a generic wrapper over different llm api types, like OpenAI responses and completions, low level close to the api.
 - `psa_server`: main server managing sessions and calling into `llm_api` to make inference requests.
 - `psa_api`: defines common types and endpoints clients and probes use to communicate to psa server, and provides a thin client library for making the requests.
+- `psa_probe`: standalone Linux probe providing remote file, directory, and process operations over an authenticated WebSocket.
+- `actors`: provides async mailboxes and handles for actor-style message passing, with the `#[mailbox]` macro supplied by `actors_macros`.
+
+# Architecture
+
+- Prefer actor-style designs where they make ownership, concurrency, and lifecycle management clearer, especially for long-lived tasks that own mutable state.
+- Use the workspace's `actors` crate for mailbox-based communication between tasks. Keep actor state owned by its task and expose operations through messages and mailbox handles where appropriate.
+- Keep simple operations as ordinary async functions when an actor would add unnecessary complexity.
 
 # Coding Style
 
@@ -22,7 +30,7 @@ The following crates are present in the workspace:
   - Avoid extracting helpers that require many arguments merely to pass local context around. Reconsider the extraction boundary; keep the operation inline when that is clearer. Don’t introduce a state struct solely to reduce argument count.
 - Prefer early returns for invalid inputs and exceptional cases. Aim for no more than about three nested control-flow levels.
 - Keep straightforward sequences, builders, dispatch matches, and linear tests together when splitting them would obscure their flow.
-- Run `cargo fmt --all` and relevant tests after changes.
+- Run `cargo fmt --all` and relevant tests after changes. Workspace builds require prepared static probe tools; see `psa_probe/README.md`.
 
 ## Naming
 

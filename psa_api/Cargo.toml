@@ -13,5 +13,11 @@ futures-util = "0.3"
 eventsource-stream = "0.2"
 thiserror = "2"
 
+tracing = "0.1"
+actors = { path = "../actors" }
+uuid = { version = "1", features = ["v4", "serde"] }
+tokio = { version = "1", features = ["rt", "sync", "time", "macros", "io-util", "fs"] }
+
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+futures-channel = { version = "0.3", features = ["sink"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }

@@ -18,15 +18,18 @@ use sqlx::{Acquire, SqliteConnection};
 
 impl DatabaseCursor {
     pub async fn create_session(&mut self, new: NewSession) -> Result<Session, DbError> {
+        self.get_probe(new.probe_id).await?;
+        let probe_id = new.probe_id.to_string();
         validate_name(&new.name)?;
         let path = encode_path(&new.working_directory)?;
         let now = now_us()?;
 
         let mut savepoint = self.transaction.begin().await?;
         let result = sqlx::query!(
-            "INSERT INTO sessions (first_position, next_position, name, working_directory, created_at_us, updated_at_us) VALUES (1,1,?,?,?,?)",
+            "INSERT INTO sessions (first_position, next_position, name, working_directory, probe_id, created_at_us, updated_at_us) VALUES (1,1,?,?,?,?,?)",
             new.name,
             path,
+            probe_id,
             now,
             now
         )
@@ -54,7 +57,7 @@ impl DatabaseCursor {
         let parent = parent.map(|id| encode_integer(id.0)).transpose()?;
         let rows = sqlx::query_as!(
             SessionRow,
-            "SELECT id, parent_session_id, first_position, next_position, name, working_directory, created_at_us, updated_at_us FROM sessions WHERE parent_session_id IS ? ORDER BY id",
+            "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, created_at_us, updated_at_us FROM sessions WHERE parent_session_id IS ? ORDER BY id",
             parent
         )
         .fetch_all(self.connection())
@@ -136,18 +139,20 @@ impl DatabaseCursor {
         validate_name(&name)?;
         let path = encode_path(&path)?;
         let parent = encode_integer(source.0)?;
+        let probe_id = original.probe_id.to_string();
         let first = encode_integer(position)?
             .checked_add(1)
             .ok_or_else(|| DbError::InvalidInput("session position exhausted".into()))?;
         let now = now_us()?;
 
         let result = sqlx::query!(
-            "INSERT INTO sessions (parent_session_id, first_position, next_position, name, working_directory, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO sessions (parent_session_id, first_position, next_position, name, working_directory, probe_id, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?,?)",
             parent,
             first,
             first,
             name,
             path,
+            probe_id,
             now,
             now
         )
@@ -176,7 +181,7 @@ pub(super) async fn get_session(
     let key = encode_integer(id.0)?;
     let row = sqlx::query_as!(
         SessionRow,
-        "SELECT id, parent_session_id, first_position, next_position, name, working_directory, created_at_us, updated_at_us FROM sessions WHERE id = ?",
+        "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, created_at_us, updated_at_us FROM sessions WHERE id = ?",
         key
     )
     .fetch_optional(conn)

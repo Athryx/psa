@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO probes (id, metadata, created_at, last_connected_at)\n             VALUES (?, ?, ?, ?)\n             ON CONFLICT(id) DO UPDATE SET\n                 metadata = excluded.metadata,\n                 last_connected_at = excluded.last_connected_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "d9d43c0e72bcc4e01b2ec28a53b5d3a8895c43d46be69f4f97130557d55172d4"
+}

@@ -1,3 +1,10 @@
+CREATE TABLE probes (
+    id TEXT PRIMARY KEY NOT NULL,
+    metadata TEXT NOT NULL CHECK (json_valid(metadata)),
+    created_at INTEGER NOT NULL,
+    last_connected_at INTEGER NOT NULL
+);
+
 CREATE TABLE sessions (
     id INTEGER PRIMARY KEY,
     parent_session_id INTEGER REFERENCES sessions(id),
@@ -5,6 +12,7 @@ CREATE TABLE sessions (
     next_position INTEGER NOT NULL CHECK (next_position >= first_position),
     name TEXT NOT NULL,
     working_directory TEXT NOT NULL,
+    probe_id TEXT NOT NULL REFERENCES probes(id),
     created_at_us INTEGER NOT NULL,
     updated_at_us INTEGER NOT NULL,
     CHECK (parent_session_id IS NOT NULL OR first_position = 1)

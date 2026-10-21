@@ -34,6 +34,7 @@ impl ProviderRegistry {
         };
 
         let auth: Auth = toml::from_str(&contents).map_err(|_| AuthError::Invalid)?;
+        let _ = &auth.psa;
         let mut providers = Vec::new();
         for (kind, credential) in [
             (
@@ -60,6 +61,7 @@ impl ProviderRegistry {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Auth {
+    psa: Option<toml::Value>,
     openrouter: Option<OpenrouterAuth>,
     openai_codex: Option<CodexAuth>,
 }

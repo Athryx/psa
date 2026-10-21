@@ -55,6 +55,7 @@ pub struct Session {
     pub parent_id: Option<SessionId>,
     pub name: String,
     pub working_directory: PathBuf,
+    pub probe_id: crate::ProbeId,
     pub busy: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -82,6 +83,7 @@ pub struct Agent {
 pub struct CreateSession {
     pub name: String,
     pub working_directory: PathBuf,
+    pub probe_id: crate::ProbeId,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

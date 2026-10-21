@@ -29,8 +29,8 @@ use std::sync::{
 use tokio::sync::{broadcast, watch};
 
 struct ApiJson<T>(T);
-struct ApiQuery<T>(T);
-struct ApiPath<T>(T);
+pub(crate) struct ApiQuery<T>(pub(crate) T);
+pub(crate) struct ApiPath<T>(pub(crate) T);
 
 impl<S: Send + Sync, T: serde::de::DeserializeOwned> axum::extract::FromRequest<S> for ApiJson<T> {
     type Rejection = HttpError;
@@ -81,6 +81,7 @@ pub struct AppState {
     pub publication: Publication,
     pub runtime: RuntimeHandle,
     pub accepting: Arc<AtomicBool>,
+    pub probes: crate::probes::ProbeRegistry,
 }
 
 impl AppState {
@@ -108,7 +109,8 @@ pub enum HttpError {
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
-            Self::Database(DbError::NotFound { .. })
+            Self::Database(DbError::ProbeNotFound(_))
+            | Self::Database(DbError::NotFound { .. })
             | Self::Runtime(RuntimeError::Database(DbError::NotFound { .. })) => {
                 (StatusCode::NOT_FOUND, "not_found", self.to_string())
             }
@@ -158,6 +160,7 @@ pub fn router(state: AppState) -> Router {
         .route(routes::REQUESTS, post(submit_request))
         .route(routes::SESSION_EVENTS, get(session_events))
         .route(routes::AGENT_EVENTS, get(agent_events))
+        .merge(crate::probes::router())
         .with_state(state)
 }
 
@@ -173,6 +176,7 @@ async fn create_session(
         .create_session(sessions::NewSession {
             name: request.name,
             working_directory: request.working_directory,
+            probe_id: request.probe_id,
         })
         .await?;
     cursor.commit().await?;
@@ -703,9 +707,11 @@ mod tests {
         let db = Database::open(dir.path().join("test.sqlite3"))
             .await
             .unwrap();
+        crate::test_support::register_probe(&db).await;
         let mut cursor = db.cursor().await.unwrap();
         let session = cursor
             .create_session(sessions::NewSession {
+                probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
                 name: "test".into(),
                 working_directory: "/work".into(),
             })
@@ -730,6 +736,7 @@ mod tests {
             publication: publication.clone(),
             runtime: runtime.handle.clone(),
             accepting: Arc::new(AtomicBool::new(true)),
+            probes: crate::probes::ProbeRegistry::start("test".into()),
         };
         let response = events_response(
             state,

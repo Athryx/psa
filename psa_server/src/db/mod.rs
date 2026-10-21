@@ -4,6 +4,7 @@ mod agents;
 mod error;
 mod events;
 mod payloads;
+mod probes;
 mod queries;
 mod schema;
 mod sessions;

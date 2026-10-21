@@ -53,8 +53,9 @@ api_key = "YOUR_API_KEY"
 ```
 
 Create the file with owner-only access (`chmod 600 auth.toml` on Unix). The server
-does not create or overwrite it. Missing auth means no providers configured;
-malformed auth fails startup without printing source excerpts/secrets. Login,
+creates a missing file and adds `[psa].probe_key` when absent, preserving provider
+credentials. Missing provider auth means no providers configured; malformed auth
+fails startup without printing source excerpts/secrets. Login,
 token refresh, and live credential reload are not implemented.
 
 `psa_api` provides shared request/response types, route definitions, and an async
@@ -67,7 +68,9 @@ use psa_api::{Client, CreateSession, CreateAgent, AgentRequest, MessageDelivery}
 use llm_api::{api::{ContentBlock, TextBlock}, providers::{Effort, Model, ModelConfig, ProviderType}};
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let client = Client::new("http://127.0.0.1:8080")?;
+let probe = client.list_probes().await?.into_iter().next().ok_or("connect a probe first")?;
 let session = client.create_session(&CreateSession {
+    probe_id: probe.metadata.id,
     name: "Example".into(), working_directory: "/work/project".into(),
 }).await?;
 let agent = client.create_agent(session.id, &CreateAgent {
@@ -163,7 +166,9 @@ use llm_api::{api::RequestConfig, providers::{Effort, Model, ModelConfig, Provid
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let db = Database::open("psa.sqlite3").await?;
 let mut cursor = db.cursor().await?;
+let probe = cursor.list_probes().await?.into_iter().next().ok_or("connect a probe first")?;
 let session = cursor.create_session(NewSession {
+    probe_id: probe.metadata.id,
     name: "Example".into(),
     working_directory: "/work/project".into(),
 }).await?;
@@ -293,3 +298,9 @@ cargo sqlx prepare --check --workspace -- --all-targets
 Tests use temporary file-backed databases for WAL/concurrent-write behavior,
 and loopback HTTP listeners. They do not use provider credentials or the default
 application-data directory.
+
+## Probes
+
+See [the probe README](../psa_probe/README.md) for static builds, authentication,
+probe discovery, and server-side remote operations. Sessions now require a
+registered `probe_id`; forks inherit it. Agent-loop execution does not use probes yet.

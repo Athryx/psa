@@ -6,10 +6,10 @@ use crate::agents::{
     agent_manager::{AgentManagerMessage, AgentManagerState},
     publication::status_event,
 };
+use actors::UnboundedMailbox;
 use cancellation::{Cancellation, run_cancellable};
 use psa_api::events::EventType;
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 pub trait Hook: Send {
     fn cancellation_timeout(&self) -> Duration;
@@ -107,7 +107,7 @@ impl Hook for HookKind {
 pub(crate) async fn run_hook(
     hook: &mut HookKind,
     state: &mut AgentManagerState,
-    controls: &mut mpsc::UnboundedReceiver<AgentManagerMessage>,
+    controls: &mut UnboundedMailbox<AgentManagerMessage>,
 ) -> Result<bool, AgentError> {
     let (sender, cancellation) = Cancellation::channel();
     let grace = hook.cancellation_timeout();

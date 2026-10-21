@@ -41,3 +41,19 @@ scoped `Last-Event-ID` resume cursors and provisional-to-persistent promotion.
 Session views include runtime `busy`; agent views include state and cumulative
 token usage. See `../psa_server/README.md` for startup, `auth.toml`, client examples,
 queue/shutdown semantics, and the trusted-client-only security boundary.
+
+## Probes
+
+`GET /probes` lists registered systems; `GET /probes/{probe_id}` fetches one UUID.
+Both return flattened probe metadata (`id`, `hostname`, `os`, `architecture`,
+optional `label`, absolute `data_dir`), timestamps, and live `is_active`.
+`Client::list_probes` and `Client::get_probe` wrap these endpoints.
+
+Probes authenticate `GET /probes/connect` with `Authorization: Bearer <probe_key>`.
+Query parameters are `version=1` and the metadata fields above; success upgrades
+to WebSocket. Invalid auth returns 401, incompatible versions/metadata return
+400, and an already-connected UUID returns 409. Offline records persist.
+
+Session creation requires `probe_id`, referencing a registered probe. It is
+returned in session responses, remains fixed, and is inherited on fork. No
+remote-operation HTTP endpoints are exposed yet: use server-side probe handles.

@@ -1,5 +1,6 @@
 use crate::{agents::agent_manager::AgentManagerMessage, sessions::Session};
-use tokio::sync::{mpsc, oneshot};
+use actors::UnboundedMailbox;
+use tokio::sync::oneshot;
 
 /// Single-invocation cooperative cancellation. Sender drop cancels as well.
 pub struct Cancellation {
@@ -40,12 +41,12 @@ impl Cancellation {
 
 pub(crate) async fn wait_for_interrupt(
     session: &mut Session,
-    controls: &mut mpsc::UnboundedReceiver<AgentManagerMessage>,
+    controls: &mut UnboundedMailbox<AgentManagerMessage>,
 ) {
     while let Some(message) = controls.recv().await {
         match message {
             AgentManagerMessage::Interrupt => return,
-            AgentManagerMessage::SessionUpdated(updated) => *session = updated,
+            AgentManagerMessage::SessionUpdated { session: updated } => *session = updated,
         }
     }
 }
@@ -55,7 +56,7 @@ pub(crate) async fn run_cancellable<F: std::future::Future>(
     sender: oneshot::Sender<()>,
     grace: std::time::Duration,
     session: &mut Session,
-    controls: &mut mpsc::UnboundedReceiver<AgentManagerMessage>,
+    controls: &mut UnboundedMailbox<AgentManagerMessage>,
 ) -> (Option<F::Output>, bool) {
     tokio::pin!(future);
     tokio::select! {

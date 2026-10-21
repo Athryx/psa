@@ -135,9 +135,9 @@ async fn migration_backfills_usage_through_each_ancestor_cutoff() {
     let path = dir.path().join("legacy.sqlite3");
     let pool = create_legacy_database(&path).await;
     sqlx::raw_sql(
-        "INSERT INTO sessions VALUES (1,NULL,1,4,'root','/work',0,0);
-         INSERT INTO sessions VALUES (2,1,3,4,'child','/work',0,0);
-         INSERT INTO sessions VALUES (3,2,4,4,'nested','/work',0,0);
+        "INSERT INTO sessions VALUES (1,NULL,1,4,'root','/work','00000000-0000-0000-0000-000000000000',0,0);
+         INSERT INTO sessions VALUES (2,1,3,4,'child','/work','00000000-0000-0000-0000-000000000000',0,0);
+         INSERT INTO sessions VALUES (3,2,4,4,'nested','/work','00000000-0000-0000-0000-000000000000',0,0);
          INSERT INTO agents VALUES (1,1,NULL,1,3,1,'root',0,0);
          INSERT INTO agents VALUES (2,2,1,2,3,1,'child',0,0);
          INSERT INTO agents VALUES (3,3,2,3,3,1,'nested',0,0);
@@ -152,6 +152,7 @@ async fn migration_backfills_usage_through_each_ancestor_cutoff() {
     ).execute(&pool).await.unwrap();
     pool.close().await;
     let db = Database::open(path).await.unwrap();
+    crate::test_support::register_probe(&db).await;
     let mut cursor = db.cursor().await.unwrap();
     let root = cursor.get_agent(crate::agents::AgentId(1)).await.unwrap();
     assert_eq!(root.usage.input_tokens, None);

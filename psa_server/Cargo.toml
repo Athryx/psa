@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+actors = { path = "../actors" }
 psa_api = { path = "../psa_api" }
 llm_api = { path = "../llm_api" }
 time = "0.3.55"
@@ -14,7 +15,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "net", "
 directories = "6"
 clap = { version = "4", features = ["derive"] }
 toml = "0.9"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
+toml_edit = "0.23"
+rand = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"

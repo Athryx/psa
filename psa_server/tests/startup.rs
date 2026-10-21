@@ -1,3 +1,4 @@
+mod support;
 use clap::Parser;
 use psa_server::{
     config::{Cli, Command, ConfigError, StartOptions},
@@ -84,6 +85,7 @@ async fn migrated_server_serves_health_and_shuts_down_cleanly() {
         let database = Database::open(dir.path().join("server.sqlite3"))
             .await
             .unwrap();
+        support::register_probe(&database).await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (stop, wait) = tokio::sync::oneshot::channel();
@@ -104,6 +106,7 @@ async fn migrated_server_serves_health_and_shuts_down_cleanly() {
         let reopened = Database::open(dir.path().join("server.sqlite3"))
             .await
             .unwrap();
+        support::register_probe(&reopened).await;
         reopened.close().await;
     })
     .await

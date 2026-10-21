@@ -4,10 +4,10 @@ use crate::{
     prompts,
     sessions::Session,
 };
+use actors::UnboundedMailbox;
 use llm_api::api::{self, HistoryItemKind, ToolDefinition};
 use psa_api::events::ToolResult as ToolResultEvent;
 use std::{path::PathBuf, time::Duration};
-use tokio::sync::mpsc;
 
 /// Tool output content, independent of call IDs and event metadata.
 pub use psa_api::{ToolId, ToolResult};
@@ -35,7 +35,7 @@ pub(crate) async fn execute(
     context: &AgentContext,
     session: &mut Session,
     interrupted: &mut bool,
-    controls: Option<&mut mpsc::UnboundedReceiver<AgentManagerMessage>>,
+    controls: Option<&mut UnboundedMailbox<AgentManagerMessage>>,
 ) -> ToolResultEvent {
     if *interrupted
         || is_incomplete_call(context, &call.call_id)

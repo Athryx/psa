@@ -2,7 +2,7 @@
 
 use super::{
     AgentError, AgentId, AgentState,
-    agent_manager::{AgentManagerMessage, AgentManagerState, recover_agent, run_worker},
+    agent_manager::{AgentClient, AgentManagerState, recover_agent, run_worker},
     publication::Publication,
 };
 use crate::{
@@ -10,13 +10,14 @@ use crate::{
     providers::ProviderRegistry,
     sessions::{Session, SessionId},
 };
+use actors::Mailbox;
 use psa_api::{
     AgentRequest, MessageDelivery, RequestAccepted, StreamMessage,
     events::{EventType, Log, NewEvent},
 };
 use std::collections::{HashMap, VecDeque};
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::oneshot,
     task::{Id, JoinError, JoinHandle, JoinSet},
 };
 
@@ -45,7 +46,35 @@ pub enum RuntimeError {
 
 #[derive(Clone)]
 pub struct RuntimeHandle {
-    commands: mpsc::Sender<ManagerCommand>,
+    commands: ManagerClient,
+}
+
+impl RuntimeHandle {
+    pub async fn is_busy(&self, session: SessionId) -> Result<bool, RuntimeError> {
+        self.commands
+            .is_busy(session)
+            .await
+            .map_err(|_| RuntimeError::Unavailable)
+    }
+
+    pub async fn submit(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        request: AgentRequest,
+    ) -> Result<RequestAccepted, RuntimeError> {
+        self.commands
+            .submit(session, agent, request)
+            .await
+            .map_err(|_| RuntimeError::Unavailable)?
+    }
+
+    pub async fn update_session(&self, session: Session) -> Result<(), RuntimeError> {
+        self.commands
+            .session_updated(session)
+            .await
+            .map_err(|_| RuntimeError::Unavailable)
+    }
 }
 
 pub struct Runtime {
@@ -69,7 +98,8 @@ impl Runtime {
             recover_agent(&db, &publication, agent.id).await?;
         }
 
-        let (commands, received) = mpsc::channel(256);
+        let (commands, received) = actors::channel(256);
+        let commands = ManagerClient::new(commands);
         let handle = RuntimeHandle {
             commands: commands.clone(),
         };
@@ -94,51 +124,8 @@ impl Runtime {
     }
 
     pub async fn shutdown(self) -> Result<(), RuntimeError> {
-        let (reply, received) = oneshot::channel();
-        let _ = self
-            .handle
-            .commands
-            .send(ManagerCommand::Shutdown { reply })
-            .await;
-        let _ = received.await;
+        let _ = self.handle.commands.shutdown().await;
         self.task.await.map_err(|_| RuntimeError::CleanupFailed)?
-    }
-}
-
-impl RuntimeHandle {
-    pub async fn is_busy(&self, session: SessionId) -> Result<bool, RuntimeError> {
-        let (reply, received) = oneshot::channel();
-        self.commands
-            .send(ManagerCommand::IsBusy { session, reply })
-            .await
-            .map_err(|_| RuntimeError::Unavailable)?;
-        received.await.map_err(|_| RuntimeError::Unavailable)
-    }
-
-    pub async fn submit(
-        &self,
-        session: SessionId,
-        agent: AgentId,
-        request: AgentRequest,
-    ) -> Result<RequestAccepted, RuntimeError> {
-        let (reply, received) = oneshot::channel();
-        self.commands
-            .send(ManagerCommand::Submit {
-                session,
-                agent,
-                request,
-                reply,
-            })
-            .await
-            .map_err(|_| RuntimeError::Unavailable)?;
-        received.await.map_err(|_| RuntimeError::Unavailable)?
-    }
-
-    pub async fn update_session(&self, session: Session) -> Result<(), RuntimeError> {
-        self.commands
-            .send(ManagerCommand::SessionUpdated(session))
-            .await
-            .map_err(|_| RuntimeError::Unavailable)
     }
 }
 
@@ -155,30 +142,41 @@ pub(crate) enum BoundaryReply {
     Stop,
 }
 
+#[actors::mailbox(client = ManagerClient)]
 pub(crate) enum ManagerCommand {
+    /// Check whether a session has any active workers.
     IsBusy {
         session: SessionId,
+        #[reply]
         reply: oneshot::Sender<bool>,
     },
+    /// Validate and enqueue an agent request, starting its worker if needed.
     Submit {
         session: SessionId,
         agent: AgentId,
         request: AgentRequest,
+        #[reply]
         reply: oneshot::Sender<Result<RequestAccepted, RuntimeError>>,
     },
+    /// Report worker state and select queued work, continuation, or stop.
     Boundary {
         agent: AgentId,
         generation: u64,
         state: AgentState,
+        #[reply]
         reply: oneshot::Sender<BoundaryReply>,
     },
+    /// Clear the in-flight request after its worker consumes it.
     Consumed {
         agent: AgentId,
         generation: u64,
         request_id: String,
     },
-    SessionUpdated(Session),
+    /// Forward updated session settings to its active workers.
+    SessionUpdated { session: Session },
+    /// Discard queued work, interrupt workers, and wait for their exit.
     Shutdown {
+        #[reply]
         reply: oneshot::Sender<()>,
     },
 }
@@ -187,7 +185,7 @@ struct Worker {
     session: SessionId,
     generation: u64,
     task_id: Id,
-    controls: mpsc::UnboundedSender<AgentManagerMessage>,
+    controls: AgentClient,
     queue: VecDeque<QueuedRequest>,
     in_flight: Option<QueuedRequest>,
     stopping: bool,
@@ -199,8 +197,8 @@ struct SessionManager {
     db: Database,
     publication: Publication,
     providers: ProviderRegistry,
-    commands: mpsc::Sender<ManagerCommand>,
-    received: mpsc::Receiver<ManagerCommand>,
+    commands: ManagerClient,
+    received: Mailbox<ManagerCommand>,
     workers: HashMap<AgentId, Worker>,
     tasks: JoinSet<WorkerResult>,
     next_request_id: u64,
@@ -305,15 +303,13 @@ impl SessionManager {
                     worker.in_flight = None;
                 }
             }
-            ManagerCommand::SessionUpdated(session) => {
+            ManagerCommand::SessionUpdated { session } => {
                 for worker in self
                     .workers
                     .values()
                     .filter(|worker| worker.session == session.id)
                 {
-                    let _ = worker
-                        .controls
-                        .send(AgentManagerMessage::SessionUpdated(session.clone()));
+                    let _ = worker.controls.session_updated(session.clone());
                 }
             }
             ManagerCommand::Shutdown { reply } => {
@@ -321,7 +317,7 @@ impl SessionManager {
                 self.shutdown_reply = Some(reply);
                 for worker in self.workers.values_mut() {
                     worker.queue.clear();
-                    let _ = worker.controls.send(AgentManagerMessage::Interrupt);
+                    let _ = worker.controls.interrupt();
                 }
             }
         }
@@ -413,7 +409,7 @@ impl SessionManager {
         self.next_request_id += 1;
         let AgentRequest::Message { delivery, content } = request else {
             if let Some(worker) = self.workers.get(&agent) {
-                let _ = worker.controls.send(AgentManagerMessage::Interrupt);
+                let _ = worker.controls.interrupt();
             }
             return Ok(RequestAccepted { request_id: id });
         };
@@ -473,7 +469,8 @@ impl SessionManager {
 
         let generation = self.next_generation;
         self.next_generation += 1;
-        let (controls, received) = mpsc::unbounded_channel();
+        let (controls, received) = actors::unbounded_channel();
+        let controls = AgentClient::new(controls);
         let manager = self.commands.clone();
         let providers = self.providers.clone();
         let task = self.tasks.spawn(async move {

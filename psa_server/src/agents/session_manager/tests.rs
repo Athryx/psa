@@ -2,8 +2,10 @@ use super::*;
 
 #[tokio::test]
 async fn busy_query_uses_mailbox_and_reports_unavailable_supervisor() {
-    let (commands, mut received) = mpsc::channel(1);
-    let handle = RuntimeHandle { commands };
+    let (commands, mut received) = actors::channel(1);
+    let handle = RuntimeHandle {
+        commands: ManagerClient::new(commands),
+    };
 
     for busy in [true, false] {
         let query = handle.is_busy(SessionId(7));

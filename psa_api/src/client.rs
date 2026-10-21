@@ -88,6 +88,14 @@ impl Client {
         Ok(response.json().await?)
     }
 
+    pub async fn list_probes(&self) -> Result<Vec<crate::Probe>, ClientError> {
+        self.get(routes::PROBES, &()).await
+    }
+
+    pub async fn get_probe(&self, id: crate::ProbeId) -> Result<crate::Probe, ClientError> {
+        self.get(&routes::probe_path(id), &()).await
+    }
+
     pub async fn create_session(&self, request: &CreateSession) -> Result<Session, ClientError> {
         self.send(Method::POST, routes::SESSIONS, request).await
     }
@@ -240,4 +248,30 @@ async fn require_success(response: Response) -> Result<Response, ClientError> {
         message: "server returned an invalid error response".into(),
     });
     Err(ClientError::Api { status, error })
+}
+
+/// Normalize a configured server base URL for a probe websocket connection.
+pub fn parse_probe_server_url(value: &str) -> Result<String, ClientError> {
+    let mut url = reqwest::Url::parse(value).map_err(|_| ClientError::InvalidBaseUrl)?;
+    if url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.host_str().is_none()
+    {
+        return Err(ClientError::InvalidBaseUrl);
+    }
+    let scheme = match url.scheme() {
+        "http" | "ws" => "ws",
+        "https" | "wss" => "wss",
+        _ => return Err(ClientError::InvalidBaseUrl),
+    };
+    url.set_scheme(scheme)
+        .map_err(|_| ClientError::InvalidBaseUrl)?;
+    url.set_path(&format!(
+        "{}{}",
+        url.path().trim_end_matches('/'),
+        routes::PROBES_CONNECT
+    ));
+    Ok(url.into())
 }

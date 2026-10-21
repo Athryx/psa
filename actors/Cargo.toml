@@ -1,0 +1,12 @@
+[package]
+name = "actors"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+actors_macros = { path = "../actors_macros" }
+tokio = { version = "1", features = ["sync"] }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "time"] }

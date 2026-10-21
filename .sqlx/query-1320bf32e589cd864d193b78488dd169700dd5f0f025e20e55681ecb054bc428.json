@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, parent_session_id, first_position, next_position, name, working_directory, created_at_us, updated_at_us FROM sessions WHERE parent_session_id IS ? ORDER BY id",
+  "query": "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, created_at_us, updated_at_us FROM sessions WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -70,8 +70,19 @@
         }
       },
       {
-        "name": "created_at_us",
+        "name": "probe_id",
         "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "probe_id"
+          }
+        }
+      },
+      {
+        "name": "created_at_us",
+        "ordinal": 7,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -82,7 +93,7 @@
       },
       {
         "name": "updated_at_us",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -103,8 +114,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "8de80868882f75e429d2e25ba2dc464f26c01f32dd0ce81c51a82f26c8e097cf"
+  "hash": "1320bf32e589cd864d193b78488dd169700dd5f0f025e20e55681ecb054bc428"
 }

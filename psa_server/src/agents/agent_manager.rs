@@ -4,7 +4,7 @@ use super::{
     Agent, AgentError, AgentId,
     agent_context::AgentContext,
     publication::{Publication, status_event},
-    session_manager::{BoundaryReply, ManagerCommand},
+    session_manager::{BoundaryReply, ManagerClient},
 };
 use crate::{
     db::Database,
@@ -18,19 +18,22 @@ use crate::{
     providers::ProviderRegistry,
     sessions::Session,
 };
+use actors::UnboundedMailbox;
 use llm_api::api::{
     self, ApiProvider, HistoryItem, HistoryItemKind, ModelResponse, ModelTurnStream, Outcome,
     RequestConfig,
 };
 use psa_api::events::*;
 use std::time::Instant;
-use tokio::sync::{mpsc, oneshot};
 
 pub use psa_api::{AgentState, MessageDelivery};
 
+#[actors::mailbox(client = AgentClient, unbounded)]
 pub enum AgentManagerMessage {
+    /// Interrupt the agent's current inference or tool execution.
     Interrupt,
-    SessionUpdated(Session),
+    /// Replace the worker's cached session settings.
+    SessionUpdated { session: Session },
 }
 
 pub struct AgentManagerState {
@@ -140,7 +143,7 @@ impl AgentManagerState {
     async fn resolve_tools(
         &mut self,
         mut interrupted: bool,
-        mut controls: Option<&mut mpsc::UnboundedReceiver<AgentManagerMessage>>,
+        mut controls: Option<&mut UnboundedMailbox<AgentManagerMessage>>,
     ) -> Result<(), AgentError> {
         for call in self.outstanding_calls() {
             if let Some(controls) = controls.as_deref_mut() {
@@ -170,7 +173,7 @@ impl AgentManagerState {
     async fn infer(
         &mut self,
         providers: &ProviderRegistry,
-        controls: &mut mpsc::UnboundedReceiver<AgentManagerMessage>,
+        controls: &mut UnboundedMailbox<AgentManagerMessage>,
         invocation: &str,
     ) -> Result<(), AgentError> {
         let request = self.context.prepare_request(RequestConfig::default())?;
@@ -234,7 +237,7 @@ impl AgentManagerState {
     async fn collect_response(
         &mut self,
         mut stream: impl ModelTurnStream,
-        controls: &mut mpsc::UnboundedReceiver<AgentManagerMessage>,
+        controls: &mut UnboundedMailbox<AgentManagerMessage>,
         invocation: &str,
     ) -> Result<ModelResponse, AgentError> {
         loop {
@@ -365,13 +368,13 @@ fn build_item_event(item: &HistoryItem) -> Result<EventType, AgentError> {
 
 fn drain_controls(
     state: &mut AgentManagerState,
-    controls: &mut mpsc::UnboundedReceiver<AgentManagerMessage>,
+    controls: &mut UnboundedMailbox<AgentManagerMessage>,
 ) -> bool {
     let mut interrupted = false;
     while let Ok(message) = controls.try_recv() {
         match message {
             AgentManagerMessage::Interrupt => interrupted = true,
-            AgentManagerMessage::SessionUpdated(session) => state.session = session,
+            AgentManagerMessage::SessionUpdated { session } => state.session = session,
         }
     }
     interrupted || controls.is_closed()
@@ -380,8 +383,8 @@ fn drain_controls(
 pub(crate) async fn run_worker(
     mut state: AgentManagerState,
     generation: u64,
-    manager: mpsc::Sender<ManagerCommand>,
-    mut controls: mpsc::UnboundedReceiver<AgentManagerMessage>,
+    manager: ManagerClient,
+    mut controls: UnboundedMailbox<AgentManagerMessage>,
     providers: ProviderRegistry,
 ) -> Result<(), AgentError> {
     let mut hooks = Hooks::default();
@@ -392,17 +395,8 @@ pub(crate) async fn run_worker(
             state.interrupt().await?;
         }
 
-        let (reply, received) = oneshot::channel();
-        manager
-            .send(ManagerCommand::Boundary {
-                agent: state.agent.id,
-                generation,
-                state: state.agent.state,
-                reply,
-            })
-            .await
-            .map_err(|_| AgentError::SupervisorUnavailable)?;
-        match received
+        match manager
+            .boundary(state.agent.id, generation, state.agent.state)
             .await
             .map_err(|_| AgentError::SupervisorUnavailable)?
         {
@@ -419,11 +413,7 @@ pub(crate) async fn run_worker(
                     ])
                     .await?;
                 manager
-                    .send(ManagerCommand::Consumed {
-                        agent: state.agent.id,
-                        generation,
-                        request_id: request.id,
-                    })
+                    .consumed(state.agent.id, generation, request.id)
                     .await
                     .map_err(|_| AgentError::SupervisorUnavailable)?;
                 continue;

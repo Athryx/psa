@@ -21,9 +21,11 @@ async fn fixture() -> (tempfile::TempDir, Database, Session, Agent) {
     let db = Database::open(dir.path().join("events.sqlite3"))
         .await
         .unwrap();
+    crate::test_support::register_probe(&db).await;
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             name: "test".into(),
             working_directory: "/work".into(),
         })
@@ -236,6 +238,7 @@ async fn round_trips_all_payloads_and_reopens_database() {
     let db = Database::open(dir.path().join("events.sqlite3"))
         .await
         .unwrap();
+    crate::test_support::register_probe(&db).await;
     let mut cursor = db.cursor().await.unwrap();
     let loaded = cursor
         .load_events(agent.id, EventRange::default())
@@ -427,6 +430,7 @@ async fn event_batches_update_the_current_agent_state() {
     let db = Database::open(dir.path().join("events.sqlite3"))
         .await
         .unwrap();
+    crate::test_support::register_probe(&db).await;
     let mut cursor = db.cursor().await.unwrap();
     assert_eq!(
         cursor.get_agent(agent.id).await.unwrap().state,
@@ -762,6 +766,7 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
     );
     let blank = cursor
         .create_session(NewSession {
+            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             name: "blank".into(),
             working_directory: "/".into(),
         })
@@ -953,6 +958,10 @@ async fn create_legacy_database(path: &std::path::Path) -> sqlx::SqlitePool {
         .run(&pool)
         .await
         .unwrap();
+    sqlx::query!("INSERT INTO probes VALUES ('00000000-0000-0000-0000-000000000000','{}',0,0)")
+        .execute(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -962,10 +971,10 @@ async fn backfills_agent_states_from_bounded_legacy_history() {
     let path = dir.path().join("legacy.sqlite3");
     let pool = create_legacy_database(&path).await;
     sqlx::raw_sql(
-        "INSERT INTO sessions VALUES (1,NULL,1,5,'root','/work',0,0);
-         INSERT INTO sessions VALUES (2,1,4,5,'child','/work',0,0);
-         INSERT INTO sessions VALUES (3,2,4,4,'grandchild','/work',0,0);
-         INSERT INTO sessions VALUES (4,1,4,4,'sibling','/work',0,0);
+        "INSERT INTO sessions VALUES (1,NULL,1,5,'root','/work','00000000-0000-0000-0000-000000000000',0,0);
+         INSERT INTO sessions VALUES (2,1,4,5,'child','/work','00000000-0000-0000-0000-000000000000',0,0);
+         INSERT INTO sessions VALUES (3,2,4,4,'grandchild','/work','00000000-0000-0000-0000-000000000000',0,0);
+         INSERT INTO sessions VALUES (4,1,4,4,'sibling','/work','00000000-0000-0000-0000-000000000000',0,0);
          INSERT INTO agents VALUES (1,1,NULL,1,3,1,'root',0,0);
          INSERT INTO agents VALUES (2,2,1,2,3,1,'child',0,0);
          INSERT INTO agents VALUES (3,3,2,2,2,1,'grandchild',0,0);
@@ -979,6 +988,7 @@ async fn backfills_agent_states_from_bounded_legacy_history() {
     pool.close().await;
 
     let db = Database::open(&path).await.unwrap();
+    crate::test_support::register_probe(&db).await;
     let mut cursor = db.cursor().await.unwrap();
     for (id, expected) in [
         (1, AgentState::Interrupted),
@@ -1002,6 +1012,7 @@ async fn backfills_agent_states_from_bounded_legacy_history() {
     cursor.commit().await.unwrap();
     db.close().await;
     let db = Database::open(&path).await.unwrap();
+    crate::test_support::register_probe(&db).await;
     let mut cursor = db.cursor().await.unwrap();
     assert_eq!(
         cursor
@@ -1024,8 +1035,8 @@ async fn upgrades_legacy_delimiters_and_backfills_inherited_model_snapshots() {
     // Parent appends a newer model after the fork. The child must inherit the
     // model visible at its fork, not the parent's later configuration.
     sqlx::raw_sql(
-        "INSERT INTO sessions VALUES (1,NULL,1,4,'parent','/work',0,0);
-         INSERT INTO sessions VALUES (2,1,3,4,'child','/work',0,0);
+        "INSERT INTO sessions VALUES (1,NULL,1,4,'parent','/work','00000000-0000-0000-0000-000000000000',0,0);
+         INSERT INTO sessions VALUES (2,1,3,4,'child','/work','00000000-0000-0000-0000-000000000000',0,0);
          INSERT INTO agents VALUES (1,1,NULL,1,3,1,'parent agent',0,0);
          INSERT INTO agents VALUES (2,2,1,2,3,1,'child agent',0,0);
          INSERT INTO events VALUES (1,1,1,2,0,'model');
@@ -1038,6 +1049,7 @@ async fn upgrades_legacy_delimiters_and_backfills_inherited_model_snapshots() {
     pool.close().await;
 
     let db = Database::open(&path).await.unwrap();
+    crate::test_support::register_probe(&db).await;
     let mut cursor = db.cursor().await.unwrap();
     let events = cursor
         .load_events(crate::agents::AgentId(2), EventRange::default())
@@ -1071,7 +1083,7 @@ async fn upgrades_legacy_tool_results_to_content_blocks() {
     let path = dir.path().join("legacy.sqlite3");
     let pool = create_legacy_database(&path).await;
     sqlx::raw_sql(
-        "INSERT INTO sessions VALUES (1,NULL,1,5,'test','/work',0,0);
+        "INSERT INTO sessions VALUES (1,NULL,1,5,'test','/work','00000000-0000-0000-0000-000000000000',0,0);
          INSERT INTO agents VALUES (1,1,NULL,1,4,1,'main',0,0);
          INSERT INTO events VALUES (1,1,1,2,0,'tool_result');
          INSERT INTO events VALUES (2,1,2,3,0,'tool_result');
@@ -1087,6 +1099,7 @@ async fn upgrades_legacy_tool_results_to_content_blocks() {
     pool.close().await;
 
     let db = Database::open(&path).await.unwrap();
+    crate::test_support::register_probe(&db).await;
     let mut cursor = db.cursor().await.unwrap();
     let events = cursor
         .load_events(crate::agents::AgentId(1), EventRange::default())
@@ -1140,7 +1153,7 @@ async fn upgrades_legacy_messages_to_content_blocks() {
     let path = dir.path().join("legacy.sqlite3");
     let pool = create_legacy_database(&path).await;
     sqlx::raw_sql(
-        "INSERT INTO sessions VALUES (1,NULL,1,5,'test','/work',0,0);
+        "INSERT INTO sessions VALUES (1,NULL,1,5,'test','/work','00000000-0000-0000-0000-000000000000',0,0);
          INSERT INTO agents VALUES (1,1,NULL,1,4,1,'main',0,0);
          INSERT INTO events VALUES (1,1,1,2,0,'message');
          INSERT INTO events VALUES (2,1,2,3,0,'message');
@@ -1156,6 +1169,7 @@ async fn upgrades_legacy_messages_to_content_blocks() {
     pool.close().await;
 
     let db = Database::open(&path).await.unwrap();
+    crate::test_support::register_probe(&db).await;
     let mut cursor = db.cursor().await.unwrap();
     let events = cursor
         .load_events(crate::agents::AgentId(1), EventRange::default())

@@ -33,7 +33,10 @@ pub async fn start(config: ResolvedConfig) -> Result<(), ServerError> {
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    let providers = ProviderRegistry::load(&config.config_path.with_file_name("auth.toml")).await?;
+    let auth_path = config.config_path.with_file_name("auth.toml");
+    // Validate existing provider credentials before changing the shared file.
+    let providers = ProviderRegistry::load(&auth_path).await?;
+    let probe_key = crate::auth::ensure_probe_key(&auth_path).await?;
     let database = Database::open(&config.database_path).await?;
     let listener = TcpListener::bind(config.listen).await?;
     tracing::info!(
@@ -43,7 +46,7 @@ pub async fn start(config: ResolvedConfig) -> Result<(), ServerError> {
         "server ready"
     );
 
-    serve_with_providers(listener, database, providers, shutdown_signal()).await
+    serve_with_probe_key(listener, database, providers, probe_key, shutdown_signal()).await
 }
 
 /// Injectable listener and shutdown future permit isolated startup tests.
@@ -61,6 +64,35 @@ pub async fn serve_with_providers(
     providers: ProviderRegistry,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
+    serve_with_probe_key(
+        listener,
+        database,
+        providers,
+        psa_api::probes::Uuid::new_v4().to_string(),
+        shutdown,
+    )
+    .await
+}
+
+pub async fn serve_with_probe_key(
+    listener: TcpListener,
+    database: Database,
+    providers: ProviderRegistry,
+    probe_key: String,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), ServerError> {
+    let probes = crate::probes::ProbeRegistry::start(probe_key);
+    serve_with_probe_registry(listener, database, providers, probes, shutdown).await
+}
+
+/// The registry exposes remote-operation handles to server-side integrations.
+pub async fn serve_with_probe_registry(
+    listener: TcpListener,
+    database: Database,
+    providers: ProviderRegistry,
+    probes: crate::probes::ProbeRegistry,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), ServerError> {
     let publication = Publication::default();
     let runtime = Runtime::start(database.clone(), publication.clone(), providers).await?;
     let accepting = Arc::new(AtomicBool::new(true));
@@ -69,6 +101,7 @@ pub async fn serve_with_providers(
         publication: publication.clone(),
         runtime: runtime.handle.clone(),
         accepting: accepting.clone(),
+        probes: probes.clone(),
     });
     // signals http server to stop when anything sent on stopped
     let (stopped, received) = tokio::sync::oneshot::channel();
@@ -87,6 +120,7 @@ pub async fn serve_with_providers(
         _ = shutdown => None,
     };
     accepting.store(false, Ordering::Release);
+    probes.shutdown().await;
     let cleanup = runtime.shutdown().await;
     publication.close();
 

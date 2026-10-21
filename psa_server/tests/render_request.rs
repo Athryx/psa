@@ -1,5 +1,6 @@
 //! Exercise persistence -> projection -> both real provider serializers over loopback.
 
+mod support;
 use axum::{Json, Router, extract::State, http::header, routing::post};
 use llm_api::{
     api::{
@@ -36,9 +37,11 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
         let db = Database::open(dir.path().join("test.sqlite3"))
             .await
             .unwrap();
+        support::register_probe(&db).await;
         let mut cursor = db.cursor().await.unwrap();
         let session = cursor
             .create_session(NewSession {
+                probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
                 name: "test".into(),
                 working_directory: "/work".into(),
             })

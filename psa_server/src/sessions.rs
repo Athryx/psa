@@ -13,6 +13,7 @@ pub struct Session {
     pub next_position: u64,
     pub name: String,
     pub working_directory: PathBuf,
+    pub probe_id: psa_api::ProbeId,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -24,6 +25,7 @@ impl Session {
             parent_id: self.parent_id,
             name: self.name,
             working_directory: self.working_directory,
+            probe_id: self.probe_id,
             busy,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -35,6 +37,7 @@ impl Session {
 pub struct NewSession {
     pub name: String,
     pub working_directory: PathBuf,
+    pub probe_id: psa_api::ProbeId,
 }
 
 #[derive(Debug, Clone, Default)]

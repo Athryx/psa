@@ -1,5 +1,6 @@
 //! Real HTTP/client/SSE tests against an in-process fake inference endpoint.
 
+mod support;
 use axum::{
     Json, Router,
     body::Body,
@@ -111,6 +112,7 @@ impl Harness {
         let db = Database::open(dir.path().join("test.sqlite3"))
             .await
             .unwrap();
+        support::register_probe(&db).await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let fake_address = listener.local_addr().unwrap();
         let (requests, received) = mpsc::unbounded_channel();
@@ -166,6 +168,7 @@ impl Harness {
         let session = self
             .client
             .create_session(&wire::CreateSession {
+                probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
                 name: "session".into(),
                 working_directory: "/work".into(),
             })
@@ -505,6 +508,7 @@ async fn http_tools_hooks_usage_streaming_and_reconnect() {
     let other = harness
         .client
         .create_session(&wire::CreateSession {
+            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             name: "other".into(),
             working_directory: "/other".into(),
         })
@@ -598,6 +602,7 @@ async fn shutdown_interrupts_inference_persists_partial_output_and_discards_queu
         .unwrap();
     assert!(harness.requests.try_recv().is_err());
     let db = Database::open(path).await.unwrap();
+    support::register_probe(&db).await;
     let mut cursor = db.cursor().await.unwrap();
     assert_eq!(
         cursor.get_agent(agent.id).await.unwrap().state,
@@ -650,9 +655,11 @@ fn inference_events(id: u64) -> Vec<NewEvent> {
 async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::open(dir.path().join("db.sqlite3")).await.unwrap();
+    support::register_probe(&db).await;
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             name: "root".into(),
             working_directory: "/work".into(),
         })
@@ -812,9 +819,11 @@ async fn persistence_failure_does_not_mutate_worker_memory() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db.sqlite3");
     let db = Database::open(&path).await.unwrap();
+    support::register_probe(&db).await;
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             name: "root".into(),
             working_directory: "/work".into(),
         })

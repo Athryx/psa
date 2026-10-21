@@ -8,9 +8,11 @@ async fn committed_calls_get_not_run_results_when_interrupted_before_execution()
     let db = Database::open(dir.path().join("test.sqlite3"))
         .await
         .unwrap();
+    crate::test_support::register_probe(&db).await;
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             name: "test".into(),
             working_directory: "/work".into(),
         })

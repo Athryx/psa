@@ -9,6 +9,30 @@ use psa_api::events::EventId;
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 
+pub(super) struct ProbeRow {
+    pub metadata: String,
+    pub created_at: i64,
+    pub last_connected_at: i64,
+}
+
+impl TryFrom<ProbeRow> for psa_api::Probe {
+    type Error = DbError;
+
+    fn try_from(row: ProbeRow) -> Result<Self, DbError> {
+        let decode_timestamp = |timestamp| {
+            OffsetDateTime::from_unix_timestamp(timestamp)
+                .map_err(|error| DbError::Corrupt(format!("invalid probe timestamp: {error}")))
+        };
+
+        Ok(Self {
+            metadata: serde_json::from_str(&row.metadata)?,
+            is_active: false,
+            created_at: decode_timestamp(row.created_at)?,
+            last_connected_at: decode_timestamp(row.last_connected_at)?,
+        })
+    }
+}
+
 pub(super) struct SessionRow {
     pub id: i64,
     pub parent_session_id: Option<i64>,
@@ -16,6 +40,7 @@ pub(super) struct SessionRow {
     pub next_position: i64,
     pub name: String,
     pub working_directory: String,
+    pub probe_id: String,
     pub created_at_us: i64,
     pub updated_at_us: i64,
 }
@@ -34,6 +59,10 @@ impl TryFrom<SessionRow> for Session {
             next_position: decode_integer(row.next_position)?,
             name: row.name,
             working_directory: PathBuf::from(row.working_directory),
+            probe_id: psa_api::ProbeId(
+                psa_api::probes::Uuid::parse_str(&row.probe_id)
+                    .map_err(|e| DbError::Corrupt(e.to_string()))?,
+            ),
             created_at: decode_time(row.created_at_us)?,
             updated_at: decode_time(row.updated_at_us)?,
         })

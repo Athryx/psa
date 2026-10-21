@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO probes VALUES ('00000000-0000-0000-0000-000000000000','{}',0,0)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "d652cc42a9b1c6ee2c5ab182859b26f35e67da49cfb4320d9a184e33d2fbca65"
+}
