@@ -1,6 +1,6 @@
 //! Main agent runtime
 
-use crate::{agents::agent_context::ProjectionError, db::DbError, sessions::SessionId};
+use crate::{agents::agent_projection::ProjectionError, db::DbError, sessions::SessionId};
 use psa_api::events::{EventId, ToolDefinition};
 use time::OffsetDateTime;
 
@@ -8,8 +8,10 @@ pub use psa_api::{AgentId, AgentState, AgentUsage};
 
 pub mod agent_context;
 pub mod agent_manager;
+pub mod agent_projection;
 pub mod publication;
 pub mod session_manager;
+pub mod sessions;
 
 /// Server-only convenience for taking a tool definition snapshot.
 pub trait ToolDefinitionExt {
@@ -69,11 +71,15 @@ pub enum AgentError {
     #[error("Database Error: {0}")]
     Database(#[from] DbError),
     #[error("invalid inference request: {0}")]
-    Request(#[from] agent_context::RequestError),
+    Request(#[from] agent_projection::RequestError),
     #[error("model request failed: {0}")]
     Model(#[from] llm_api::Error),
+    #[error("hook failed: {0}")]
+    Hook(Box<crate::hooks::HookError>),
     #[error("hook cancellation timed out")]
     HookTimeout,
+    #[error("event persistence task failed: {0}")]
+    PersistenceTask(tokio::task::JoinError),
     #[error("agent worker supervisor is unavailable")]
     SupervisorUnavailable,
 }

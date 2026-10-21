@@ -119,6 +119,41 @@ Incomplete tool calls with terminal error results are rendered as ordinary
 context on replay, retaining the original call/result events for audit rather
 than forwarding an unfinished native tool call to the provider.
 
+## Tools, hooks, and session operations
+
+Tools and hooks borrow `agents::agent_context::AgentContext` for each invocation.
+It exposes `agent()`, `session()`, `projection()`, the iteration's `probe()`, and
+`sessions()`. Trace methods mirror the database queries with the current agent
+ID filled in: `load_events`, `load_all_events`, `load_context_window`,
+`load_events_since_last_inference`, `load_last_inference_result`, and
+`load_agent_envelopes`.
+
+`save_events` persists and publishes auxiliary events through worker persistence,
+keeping its projection/status/usage synchronized. Repeated status changes to the
+same status are omitted, including duplicates within one batch. Started saves
+finish even if their tool/hook times out, before the worker continues.
+
+Hooks implement `Hook` and return `Result<(), HookError>`. Tools implement `Tool`
+and return `ToolOutput { content, error }`; the flag is model-facing, not an agent
+control signal. The worker persists each tool response separately. To interrupt,
+a tool/hook explicitly saves an `Interrupted` status event. Both interfaces retain
+cooperative cancellation and bounded cleanup. Session definitions are invocation
+snapshots; mailbox updates are applied after the invocation.
+
+The worker resolves a fresh probe handle before each inference iteration and
+interrupts without inference if the probe is missing. A mid-iteration disconnect
+is reported through probe-operation errors; tools/hooks decide whether to change
+status. Operations are never automatically retried.
+
+`agents::sessions::Sessions` is the shared async facade for session create/query/
+update/fork, agent create/query, request submission, steering, resume, interrupt,
+and busy queries. `Runtime::handle` and `AgentContext::sessions()` expose it.
+It returns server-native `Session`, `Agent`, and `ForkedSession` values, including
+internal event/position metadata; HTTP handlers convert these to wire types and
+query busy status separately. Request queues and worker lifecycles
+remain owned by the session-manager actor. The event-replayed transcript type is
+now `agents::agent_projection::AgentProjection`, distinct from execution context.
+
 ## Storage and replay API
 
 `db::Database` manages the pool and migrations. Call `db.cursor().await?` to get a
@@ -155,7 +190,7 @@ returns `DbError::IncompleteInference`, not an older completed result.
 use psa_server::{
     agents::{
         NewAgent,
-        agent_context::AgentContext,
+        agent_projection::AgentProjection,
     },
     db::Database,
     sessions::{NewSession, ForkPoint, SessionFork, SessionUpdate},
@@ -185,7 +220,7 @@ cursor.add_events(agent.id, &[
 
 // Capture the head once so pagination replays a stable prefix during appends.
 let head = EventId(cursor.get_agent(agent.id).await?.next_event_id.0 - 1);
-let mut state = AgentContext::default();
+let mut state = AgentProjection::default();
 while state.last_event_id < head {
     let page = cursor.load_events(agent.id, EventRange {
         after: state.last_event_id,
@@ -220,7 +255,7 @@ creation consumes a position too, so an older fork excludes agents born later.
 Parent appends cannot change a fork's inherited prefix. Forks can select any
 visible event, including a prefix that cannot yet form a valid model request.
 
-`AgentContext` is a pure reducer. `AgentHistory.items` is flat context: user prompts,
+`AgentProjection` is a pure reducer. `AgentHistory.items` is flat context: user prompts,
 compaction summaries, retained assistant messages, and completed model outputs
 appear in their original order. There is no `ModelTurn` pairing. The prepared
 request contains this complete history and its request configuration.

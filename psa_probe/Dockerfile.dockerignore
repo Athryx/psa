@@ -1,0 +1,26 @@
+# Include the Rust workspace and packaging script, not local build/data files.
+**
+!Cargo.toml
+!Cargo.lock
+!.sqlx/
+!.sqlx/**
+!actors/
+!actors/**
+!actors_macros/
+!actors_macros/**
+!llm_api/
+!llm_api/**
+!psa_api/
+!psa_api/**
+!psa_probe/
+!psa_probe/**
+!psa_server/
+!psa_server/**
+!scripts/
+!scripts/package-probe.sh
+
+**/target
+**/.git
+**/.env*
+**/auth.toml
+**/probe.toml

@@ -1,15 +1,8 @@
 //! Trusted-client HTTP/SSE API. Transcript mutations share the publication gate.
 
 use crate::{
-    agents::{
-        NewAgent, ToolDefinitionExt,
-        agent_context::AgentContext,
-        agent_manager::build_recovery_events,
-        publication::Publication,
-        session_manager::{RuntimeError, RuntimeHandle},
-    },
+    agents::{publication::Publication, session_manager::RuntimeError, sessions::Sessions},
     db::{Database, DbError},
-    sessions,
 };
 use axum::{
     Json, Router,
@@ -79,7 +72,7 @@ impl<S: Send + Sync, T: serde::de::DeserializeOwned + Send> axum::extract::FromR
 pub struct AppState {
     pub database: Database,
     pub publication: Publication,
-    pub runtime: RuntimeHandle,
+    pub runtime: Sessions,
     pub accepting: Arc<AtomicBool>,
     pub probes: crate::probes::ProbeRegistry,
 }
@@ -111,10 +104,13 @@ impl IntoResponse for HttpError {
         let (status, code, message) = match &self {
             Self::Database(DbError::ProbeNotFound(_))
             | Self::Database(DbError::NotFound { .. })
-            | Self::Runtime(RuntimeError::Database(DbError::NotFound { .. })) => {
-                (StatusCode::NOT_FOUND, "not_found", self.to_string())
-            }
-            Self::Invalid(_) | Self::Database(DbError::InvalidInput(_)) => {
+            | Self::Runtime(RuntimeError::Database(
+                DbError::NotFound { .. } | DbError::ProbeNotFound(_),
+            )) => (StatusCode::NOT_FOUND, "not_found", self.to_string()),
+            Self::Invalid(_)
+            | Self::Database(DbError::InvalidInput(_))
+            | Self::Runtime(RuntimeError::Invalid(_))
+            | Self::Runtime(RuntimeError::Database(DbError::InvalidInput(_))) => {
                 (StatusCode::BAD_REQUEST, "invalid_input", self.to_string())
             }
             Self::Runtime(RuntimeError::InvalidResume) => {
@@ -170,53 +166,30 @@ async fn create_session(
 ) -> Result<impl IntoResponse, HttpError> {
     state.require_accepting()?;
 
-    let publication = state.publication.lock().await;
-    let mut cursor = state.database.cursor().await?;
-    let session = cursor
-        .create_session(sessions::NewSession {
-            name: request.name,
-            working_directory: request.working_directory,
-            probe_id: request.probe_id,
-        })
-        .await?;
-    cursor.commit().await?;
-
-    let session = session.into_api(false);
-    publication.publish(api::StreamMessage::SessionUpdated {
-        session: session.clone(),
-    });
-
-    Ok((StatusCode::CREATED, Json(session)))
+    let session = state.runtime.create_session(request).await?;
+    Ok((StatusCode::CREATED, Json(session.into_api(false))))
 }
 
 async fn list_sessions(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<api::ListSessions>,
 ) -> Result<Json<Vec<api::Session>>, HttpError> {
-    let mut cursor = state.database.cursor().await?;
-    let sessions = cursor.list_sessions(query.parent).await?;
-    cursor.rollback().await?;
-
-    let mut result = Vec::new();
+    let sessions = state.runtime.list_sessions(query).await?;
+    let mut views = Vec::with_capacity(sessions.len());
     for session in sessions {
         let busy = state.runtime.is_busy(session.id).await?;
-        result.push(session.into_api(busy));
+        views.push(session.into_api(busy));
     }
-
-    Ok(Json(result))
+    Ok(Json(views))
 }
 
 async fn get_session(
     State(state): State<AppState>,
     ApiPath(id): ApiPath<u64>,
 ) -> Result<Json<api::Session>, HttpError> {
-    let mut cursor = state.database.cursor().await?;
-    let session = cursor.get_session(SessionId(id)).await?;
-    cursor.rollback().await?;
-
-    Ok(Json(
-        session.into_api(state.runtime.is_busy(SessionId(id)).await?),
-    ))
+    let session = state.runtime.get_session(SessionId(id)).await?;
+    let busy = state.runtime.is_busy(session.id).await?;
+    Ok(Json(session.into_api(busy)))
 }
 
 async fn update_session(
@@ -226,29 +199,9 @@ async fn update_session(
 ) -> Result<Json<api::Session>, HttpError> {
     state.require_accepting()?;
 
-    // Never wait on the supervisor while holding the publication gate.
-    let busy = state.runtime.is_busy(SessionId(id)).await?;
-    let publication = state.publication.lock().await;
-    let mut cursor = state.database.cursor().await?;
-    let session = cursor
-        .update_session(
-            SessionId(id),
-            sessions::SessionUpdate {
-                name: request.name,
-                working_directory: request.working_directory,
-            },
-        )
-        .await?;
-    cursor.commit().await?;
-
-    let result = session.clone().into_api(busy);
-    publication.publish(api::StreamMessage::SessionUpdated {
-        session: result.clone(),
-    });
-    drop(publication);
-
-    state.runtime.update_session(session).await?;
-    Ok(Json(result))
+    let session = state.runtime.update_session(SessionId(id), request).await?;
+    let busy = state.runtime.is_busy(session.id).await?;
+    Ok(Json(session.into_api(busy)))
 }
 
 async fn fork_session(
@@ -258,66 +211,16 @@ async fn fork_session(
 ) -> Result<impl IntoResponse, HttpError> {
     state.require_accepting()?;
 
-    let publication = state.publication.lock().await;
-    let mut cursor = state.database.cursor().await?;
-    let fork = cursor
-        .fork_session(
-            SessionId(id),
-            sessions::SessionFork {
-                point: match request.point {
-                    api::ForkPoint::Head => sessions::ForkPoint::Head,
-                    api::ForkPoint::ThroughEvent { agent_id, event_id } => {
-                        sessions::ForkPoint::ThroughEvent { agent_id, event_id }
-                    }
-                },
-                metadata: sessions::SessionUpdate {
-                    name: request.metadata.name,
-                    working_directory: request.metadata.working_directory,
-                },
-            },
-        )
-        .await?;
-
-    let mut agents = Vec::new();
-    let mut committed = Vec::new();
-    for (parent, agent) in fork.agents {
-        let context = AgentContext::replay(&cursor.load_all_events(agent.id).await?)
-            .map_err(crate::agents::AgentError::from)?;
-        let events = build_recovery_events(&agent, &context)?;
-        let result = cursor.add_events(agent.id, &events).await?;
-        let first =
-            cursor.get_session(agent.session_id).await?.next_position - result.events.len() as u64;
-        committed.extend(
-            result
-                .events
-                .into_iter()
-                .enumerate()
-                .map(|(offset, event)| api::StreamMessage::Committed {
-                    event: api::EventEnvelope {
-                        session_id: agent.session_id,
-                        agent_id: agent.id,
-                        position: first + offset as u64,
-                        event,
-                    },
-                    pending_id: None,
-                }),
-        );
-        agents.push((parent, cursor.get_agent(agent.id).await?.into()));
-    }
-    cursor.commit().await?;
-
-    for message in committed {
-        publication.publish(message);
-    }
-    let session = fork.session.into_api(false);
-    publication.publish(api::StreamMessage::SessionUpdated {
-        session: session.clone(),
-    });
-
-    Ok((
-        StatusCode::CREATED,
-        Json(api::ForkedSession { session, agents }),
-    ))
+    let fork = state.runtime.fork_session(SessionId(id), request).await?;
+    let view = api::ForkedSession {
+        session: fork.session.into_api(false),
+        agents: fork
+            .agents
+            .into_iter()
+            .map(|(parent, agent)| (parent, agent.into()))
+            .collect(),
+    };
+    Ok((StatusCode::CREATED, Json(view)))
 }
 
 async fn create_agent(
@@ -327,50 +230,10 @@ async fn create_agent(
 ) -> Result<impl IntoResponse, HttpError> {
     state.require_accepting()?;
 
-    let mut history = llm_api::api::AgentHistory::new(request.model.clone());
-    history.tools = request
-        .tools
-        .iter()
-        .map(|id| crate::hooks::tools::tool_definition(*id))
-        .collect();
-    llm_api::api::validate_request(&history, request.model.provider, &Default::default())
-        .map_err(|error| HttpError::Invalid(error.to_string()))?;
-
-    let publication = state.publication.lock().await;
-    let mut cursor = state.database.cursor().await?;
-    let agent = cursor
-        .create_agent(SessionId(session), NewAgent { name: request.name })
+    let agent = state
+        .runtime
+        .create_agent(SessionId(session), request)
         .await?;
-    let mut events = vec![NewEvent::new(EventType::Model(request.model))];
-    events.extend(
-        request
-            .tools
-            .into_iter()
-            .map(|id| NewEvent::new(EventType::ToolDefinition(ToolDefinition::for_tool(id)))),
-    );
-    let result = cursor.add_events(agent.id, &events).await?;
-    AgentContext::replay(&result.events).map_err(crate::agents::AgentError::from)?;
-    let agent = cursor.get_agent(agent.id).await?;
-    let first_position =
-        cursor.get_session(agent.session_id).await?.next_position - result.events.len() as u64;
-    cursor.commit().await?;
-
-    for (offset, event) in result.events.into_iter().enumerate() {
-        publication.publish(api::StreamMessage::Committed {
-            event: api::EventEnvelope {
-                session_id: agent.session_id,
-                agent_id: agent.id,
-                position: first_position + offset as u64,
-                event,
-            },
-            pending_id: None,
-        });
-    }
-    publication.publish(api::StreamMessage::AgentUpdated {
-        agent: agent.clone().into(),
-    });
-    drop(publication);
-
     Ok((StatusCode::CREATED, Json(api::Agent::from(agent))))
 }
 
@@ -378,10 +241,7 @@ async fn list_agents(
     State(state): State<AppState>,
     ApiPath(session): ApiPath<u64>,
 ) -> Result<Json<Vec<api::Agent>>, HttpError> {
-    let mut cursor = state.database.cursor().await?;
-    let agents = cursor.list_agents(SessionId(session)).await?;
-    cursor.rollback().await?;
-
+    let agents = state.runtime.list_agents(SessionId(session)).await?;
     Ok(Json(agents.into_iter().map(Into::into).collect()))
 }
 
@@ -389,11 +249,10 @@ async fn get_agent(
     State(state): State<AppState>,
     ApiPath((session, agent)): ApiPath<(u64, u64)>,
 ) -> Result<Json<api::Agent>, HttpError> {
-    let mut cursor = state.database.cursor().await?;
-    let agent = cursor
-        .require_agent_session(SessionId(session), AgentId(agent))
+    let agent = state
+        .runtime
+        .get_agent(SessionId(session), AgentId(agent))
         .await?;
-    cursor.rollback().await?;
     Ok(Json(agent.into()))
 }
 
@@ -403,11 +262,6 @@ async fn submit_request(
     ApiJson(request): ApiJson<api::AgentRequest>,
 ) -> Result<impl IntoResponse, HttpError> {
     state.require_accepting()?;
-    if matches!(&request, api::AgentRequest::Message { content, .. } if content.is_empty()) {
-        return Err(HttpError::Invalid(
-            "message content must not be empty".into(),
-        ));
-    }
 
     let accepted = state
         .runtime
@@ -490,16 +344,16 @@ async fn load_page(
     cursor.rollback().await?;
 
     let head = query.through.unwrap_or(head).min(head);
-    let next = events
+    let last_cursor = events
         .last()
         .map_or(query.after, |event| event_cursor(event, agent));
-    let has_more = events.len() == query.limit as usize && next < head;
+    let has_more = events.len() == query.limit as usize && last_cursor < head;
 
     Ok(api::EventsPage {
         events,
         pending: Vec::new(),
         next_after: if has_more {
-            next
+            last_cursor
         } else {
             head.max(query.after)
         },
@@ -516,6 +370,7 @@ async fn events_response(
     headers: HeaderMap,
 ) -> Result<Response, HttpError> {
     state.require_accepting()?;
+
     if query.stream
         && let Some(id) = headers.get("last-event-id")
     {
@@ -682,6 +537,7 @@ fn decode_cursor(id: &str, session: SessionId, agent: Option<AgentId>) -> Result
             "Last-Event-ID belongs to a different stream".into(),
         ));
     }
+
     parts[2]
         .parse()
         .map_err(|_| HttpError::Invalid("invalid Last-Event-ID".into()))
@@ -699,7 +555,7 @@ fn encode_sse(message: api::StreamMessage, id: Option<String>) -> Result<SseEven
 mod tests {
     use super::*;
     use crate::agents::{NewAgent, session_manager::Runtime};
-    use crate::providers::ProviderRegistry;
+    use crate::{providers::ProviderRegistry, sessions};
 
     #[tokio::test]
     async fn lagged_subscriber_is_told_to_resync_instead_of_silently_skipping() {
@@ -728,9 +584,14 @@ mod tests {
             .unwrap();
         cursor.commit().await.unwrap();
         let publication = Publication::default();
-        let runtime = Runtime::start(db.clone(), publication.clone(), ProviderRegistry::default())
-            .await
-            .unwrap();
+        let runtime = Runtime::start(
+            db.clone(),
+            publication.clone(),
+            ProviderRegistry::default(),
+            crate::probes::ProbeRegistry::start("test".into()),
+        )
+        .await
+        .unwrap();
         let state = AppState {
             database: db.clone(),
             publication: publication.clone(),
@@ -770,6 +631,68 @@ mod tests {
         );
         runtime.shutdown().await.unwrap();
         db.close().await;
+    }
+
+    #[tokio::test]
+    async fn facade_errors_preserve_http_status_codes_and_messages() {
+        let cases = [
+            (
+                RuntimeError::Invalid("message content must not be empty".into()),
+                StatusCode::BAD_REQUEST,
+                "invalid_input",
+            ),
+            (
+                RuntimeError::Database(DbError::InvalidInput("invalid name".into())),
+                StatusCode::BAD_REQUEST,
+                "invalid_input",
+            ),
+            (
+                RuntimeError::Database(DbError::NotFound {
+                    entity: "agent",
+                    id: 7,
+                }),
+                StatusCode::NOT_FOUND,
+                "not_found",
+            ),
+            (
+                RuntimeError::Database(DbError::ProbeNotFound(psa_api::ProbeId(
+                    psa_api::probes::Uuid::nil(),
+                ))),
+                StatusCode::NOT_FOUND,
+                "not_found",
+            ),
+            (
+                RuntimeError::InvalidResume,
+                StatusCode::CONFLICT,
+                "invalid_state",
+            ),
+            (
+                RuntimeError::MissingProvider,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+            ),
+            (
+                RuntimeError::Unavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+            ),
+            (
+                RuntimeError::Overloaded,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+            ),
+        ];
+        for (error, status, code) in cases {
+            let message = error.to_string();
+            let response = HttpError::from(error).into_response();
+            assert_eq!(response.status(), status);
+            let body = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let error: api::ApiError = serde_json::from_slice(&body).unwrap();
+            assert_eq!(error.code, code);
+            assert_eq!(error.message, message);
+        }
     }
 
     #[test]

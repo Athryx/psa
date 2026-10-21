@@ -99,7 +99,7 @@
         <article class="node">
           <span class="tag">Axum</span>
           <h2>HTTP API</h2>
-          <p>Validate requests.<br>Submit via <code>RuntimeHandle</code>.</p>
+          <p>Thin wire adapters.<br>Delegate to <code>Sessions</code>.</p>
         </article>
         <span class="arrow" aria-hidden="true">→</span>
         <article class="node active">
@@ -111,7 +111,7 @@
         <article class="node">
           <span class="tag">Per active agent</span>
           <h2>Worker tasks</h2>
-          <p>Run hooks, inference, tools.<br>Call providers via <code>llm_api</code>.</p>
+          <p>Receive <code>ProbeRegistry</code> + <code>Sessions</code>.<br>Run hooks, inference, tools.</p>
         </article>
       </div>
       <p class="flow-note">Arrows show request flow. SSE updates travel back to clients.</p>
@@ -121,7 +121,7 @@
         <div class="resources">
           <article class="resource">
             <h3>Database <span class="tag">· durable</span></h3>
-            <p>SQLite sessions, agents, and transcript events.<br>Agent context is rebuilt by replaying events.</p>
+            <p>SQLite sessions, agents, and transcript events.<br><code>AgentProjection</code> is rebuilt by replaying events.</p>
           </article>
           <article class="resource">
             <h3>Publication <span class="tag">· in memory</span></h3>
@@ -138,11 +138,11 @@
       </article>
       <article class="detail">
         <h2>Handles, not another runtime</h2>
-        <p><code>Runtime</code> owns the supervisor lifecycle. <code>RuntimeHandle</code> sends commands and queries busy status through the supervisor.</p>
+        <p><code>Runtime</code> owns the supervisor lifecycle. <code>Sessions</code> combines <code>Database</code>, <code>Publication</code>, and <code>ManagerClient</code> for validation, persistence, and request orchestration.</p>
       </article>
       <article class="detail">
         <h2>Execution details stay in hooks</h2>
-        <p><code>src/hooks/</code> owns hook definitions and cancellation. <code>hooks/tools/</code> owns tool execution.</p>
+        <p>Each iteration resolves the current probe and lends tools/hooks an <code>AgentContext</code> for agent-scoped traces, worker persistence, snapshots, the probe handle, and <code>Sessions</code>.</p>
       </article>
     </section>
 

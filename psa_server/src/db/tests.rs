@@ -440,7 +440,7 @@ async fn event_batches_update_the_current_agent_state() {
         .load_events(agent.id, EventRange::default())
         .await
         .unwrap();
-    let context = crate::agents::agent_context::AgentContext::replay(&events).unwrap();
+    let context = crate::agents::agent_projection::AgentProjection::replay(&events).unwrap();
     assert_eq!(context.status, AgentState::Running);
     cursor.commit().await.unwrap();
     db.close().await;
@@ -1000,7 +1000,7 @@ async fn backfills_agent_states_from_bounded_legacy_history() {
         let id = crate::agents::AgentId(id);
         assert_eq!(cursor.get_agent(id).await.unwrap().state, expected);
         let events = cursor.load_events(id, EventRange::default()).await.unwrap();
-        let context = crate::agents::agent_context::AgentContext::replay(&events).unwrap();
+        let context = crate::agents::agent_projection::AgentProjection::replay(&events).unwrap();
         assert_eq!(context.status, expected);
     }
     assert!(
@@ -1065,7 +1065,7 @@ async fn upgrades_legacy_delimiters_and_backfills_inherited_model_snapshots() {
     assert_eq!(start.request_config.max_output_tokens, Some(42));
     assert_eq!(events[1].id, EventId(2));
     assert_eq!(events[1].source_agent_id, crate::agents::AgentId(2));
-    let state = crate::agents::agent_context::AgentContext::replay(&events).unwrap();
+    let state = crate::agents::agent_projection::AgentProjection::replay(&events).unwrap();
     assert_eq!(state.open_inference_result().unwrap().id, 17);
     let violations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
         .fetch_one(cursor.connection())
@@ -1205,7 +1205,7 @@ async fn upgrades_legacy_messages_to_content_blocks() {
     assert_eq!(messages[2].message_type, MessageType::Harness);
     assert!(messages[2].content.is_empty());
 
-    let context = crate::agents::agent_context::AgentContext::replay(&events).unwrap();
+    let context = crate::agents::agent_projection::AgentProjection::replay(&events).unwrap();
     assert_eq!(context.items().len(), 3);
     let violations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
         .fetch_one(cursor.connection())
@@ -1263,16 +1263,16 @@ async fn atomically_persists_and_replays_a_complete_result_block() {
         )
         .await
         .unwrap();
-    let incomplete = crate::agents::agent_context::AgentContext::replay(&prefix).unwrap();
+    let incomplete = crate::agents::agent_projection::AgentProjection::replay(&prefix).unwrap();
     assert!(matches!(
         incomplete.prepare_request(api::RequestConfig::default()),
-        Err(crate::agents::agent_context::RequestError::OpenInferenceResult(1))
+        Err(crate::agents::agent_projection::RequestError::OpenInferenceResult(1))
     ));
     let loaded = cursor
         .load_events(agent.id, EventRange::default())
         .await
         .unwrap();
-    let state = crate::agents::agent_context::AgentContext::replay(&loaded).unwrap();
+    let state = crate::agents::agent_projection::AgentProjection::replay(&loaded).unwrap();
     assert_eq!(state.items().len(), 2);
     assert_eq!(
         state.last_response().unwrap().response_id.as_deref(),

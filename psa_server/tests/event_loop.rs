@@ -1,5 +1,7 @@
 //! Real HTTP/client/SSE tests against an in-process fake inference endpoint.
 
+#[path = "support/fake_probe.rs"]
+mod fake_probe;
 mod support;
 use axum::{
     Json, Router,
@@ -22,6 +24,7 @@ use psa_server::{
     },
     db::{Database, DbError},
     hooks::tools::ToolId,
+    probes::ProbeRegistry,
     providers::ProviderRegistry,
     sessions::{ForkPoint, NewSession, SessionFork, SessionUpdate},
 };
@@ -104,15 +107,22 @@ struct Harness {
     server: JoinHandle<Result<(), psa_server::server::ServerError>>,
     fake_stop: watch::Sender<bool>,
     fake_server: JoinHandle<()>,
+    probes: ProbeRegistry,
+    probe: Option<fake_probe::FakeProbe>,
 }
 
 impl Harness {
     async fn start(scripts: Vec<Script>) -> Self {
+        Self::start_with_probe(scripts, true).await
+    }
+
+    async fn start_with_probe(scripts: Vec<Script>, connect_probe: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let db = Database::open(dir.path().join("test.sqlite3"))
             .await
             .unwrap();
         support::register_probe(&db).await;
+
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let fake_address = listener.local_addr().unwrap();
         let (requests, received) = mpsc::unbounded_channel();
@@ -133,6 +143,7 @@ impl Harness {
                 .await
                 .unwrap();
         });
+
         let provider = OpenAiCompletions::new(
             format!("http://{fake_address}/inference"),
             "fake-key",
@@ -144,14 +155,23 @@ impl Harness {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (stop, stopped) = oneshot::channel();
-        let server = tokio::spawn(psa_server::server::serve_with_providers(
+        let probes = ProbeRegistry::start(fake_probe::PROBE_KEY.into());
+        let server = tokio::spawn(psa_server::server::serve_with_probe_registry(
             listener,
             db.clone(),
             providers,
+            probes.clone(),
             async {
                 let _ = stopped.await;
             },
         ));
+
+        let probe = if connect_probe {
+            Some(fake_probe::FakeProbe::connect(address, &probes).await)
+        } else {
+            None
+        };
+
         Self {
             _dir: dir,
             db,
@@ -161,6 +181,8 @@ impl Harness {
             server,
             fake_stop,
             fake_server,
+            probes,
+            probe,
         }
     }
 
@@ -199,6 +221,10 @@ impl Harness {
         .unwrap();
     }
 
+    async fn disconnect_probe(&mut self) {
+        self.probe.take().unwrap().disconnect(&self.probes).await;
+    }
+
     async fn close(self) {
         self.stop.send(()).unwrap();
         tokio::time::timeout(Duration::from_secs(5), self.server)
@@ -219,6 +245,95 @@ fn message(delivery: MessageDelivery) -> AgentRequest {
         delivery,
         content: psa_server::prompts::text("test input"),
     }
+}
+
+#[tokio::test]
+async fn offline_probe_interrupts_before_calling_the_provider() {
+    let mut harness = Harness::start_with_probe(vec![], false).await;
+    let (session, agent) = harness.create_agent().await;
+
+    harness
+        .client
+        .submit_request(session.id, agent.id, &message(MessageDelivery::Queue))
+        .await
+        .unwrap();
+    harness.wait_stopped(session.id).await;
+    assert_eq!(
+        harness
+            .client
+            .get_agent(session.id, agent.id)
+            .await
+            .unwrap()
+            .state,
+        AgentState::Interrupted
+    );
+    assert!(harness.requests.try_recv().is_err());
+
+    let mut cursor = harness.db.cursor().await.unwrap();
+    let events = cursor.load_all_events(agent.id).await.unwrap();
+    assert!(events.iter().any(|event| matches!(
+        &event.kind,
+        EventType::StatusChange(change)
+            if change.new_status == AgentState::Interrupted && change.reason.is_some()
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(&event.kind, EventType::InferenceResultStart(_)))
+    );
+    cursor.rollback().await.unwrap();
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn disconnected_probe_interrupts_the_next_request_before_provider_call() {
+    let mut harness = Harness::start(vec![Script::Text]).await;
+    let (session, agent) = harness.create_agent().await;
+
+    harness
+        .client
+        .submit_request(session.id, agent.id, &message(MessageDelivery::Queue))
+        .await
+        .unwrap();
+    harness.requests.recv().await.unwrap();
+    harness.wait_stopped(session.id).await;
+    assert_eq!(
+        harness
+            .client
+            .get_agent(session.id, agent.id)
+            .await
+            .unwrap()
+            .state,
+        AgentState::Idle
+    );
+
+    harness.disconnect_probe().await;
+    harness
+        .client
+        .submit_request(session.id, agent.id, &message(MessageDelivery::Queue))
+        .await
+        .unwrap();
+    harness.wait_stopped(session.id).await;
+    let agent = harness
+        .client
+        .get_agent(session.id, agent.id)
+        .await
+        .unwrap();
+    assert_eq!(agent.state, AgentState::Interrupted);
+    assert_eq!(agent.usage.total_tokens, Some(7));
+    assert!(harness.requests.try_recv().is_err());
+
+    let mut cursor = harness.db.cursor().await.unwrap();
+    let events = cursor.load_all_events(agent.id).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(&event.kind, EventType::InferenceResultStart(_)))
+            .count(),
+        1
+    );
+    cursor.rollback().await.unwrap();
+    harness.close().await;
 }
 
 #[tokio::test]
@@ -773,9 +888,15 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
     cursor.commit().await.unwrap();
 
     let publication = Publication::default();
-    let runtime = Runtime::start(db.clone(), publication, ProviderRegistry::default())
-        .await
-        .unwrap();
+    let probes = ProbeRegistry::start(fake_probe::PROBE_KEY.into());
+    let runtime = Runtime::start(
+        db.clone(),
+        publication,
+        ProviderRegistry::default(),
+        probes.clone(),
+    )
+    .await
+    .unwrap();
     let mut cursor = db.cursor().await.unwrap();
     let child_events = cursor.load_all_events(child.id).await.unwrap();
     let repaired_len = child_events.len();
@@ -800,6 +921,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
         db.clone(),
         Publication::default(),
         ProviderRegistry::default(),
+        probes.clone(),
     )
     .await
     .unwrap();
@@ -810,6 +932,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
     );
     cursor.rollback().await.unwrap();
     runtime.shutdown().await.unwrap();
+    probes.shutdown().await;
     db.close().await;
 }
 

@@ -4,9 +4,11 @@ use super::{
     AgentError, AgentId, AgentState,
     agent_manager::{AgentClient, AgentManagerState, recover_agent, run_worker},
     publication::Publication,
+    sessions::Sessions,
 };
 use crate::{
     db::{Database, DbError},
+    probes::ProbeRegistry,
     providers::ProviderRegistry,
     sessions::{Session, SessionId},
 };
@@ -42,43 +44,12 @@ pub enum RuntimeError {
     InvalidResume,
     #[error("worker cleanup or persistence failed")]
     CleanupFailed,
-}
-
-#[derive(Clone)]
-pub struct RuntimeHandle {
-    commands: ManagerClient,
-}
-
-impl RuntimeHandle {
-    pub async fn is_busy(&self, session: SessionId) -> Result<bool, RuntimeError> {
-        self.commands
-            .is_busy(session)
-            .await
-            .map_err(|_| RuntimeError::Unavailable)
-    }
-
-    pub async fn submit(
-        &self,
-        session: SessionId,
-        agent: AgentId,
-        request: AgentRequest,
-    ) -> Result<RequestAccepted, RuntimeError> {
-        self.commands
-            .submit(session, agent, request)
-            .await
-            .map_err(|_| RuntimeError::Unavailable)?
-    }
-
-    pub async fn update_session(&self, session: Session) -> Result<(), RuntimeError> {
-        self.commands
-            .session_updated(session)
-            .await
-            .map_err(|_| RuntimeError::Unavailable)
-    }
+    #[error("{0}")]
+    Invalid(String),
 }
 
 pub struct Runtime {
-    pub handle: RuntimeHandle,
+    pub handle: Sessions,
     task: JoinHandle<Result<(), RuntimeError>>,
 }
 
@@ -87,26 +58,26 @@ impl Runtime {
         db: Database,
         publication: Publication,
         providers: ProviderRegistry,
+        probes: ProbeRegistry,
     ) -> Result<Self, RuntimeError> {
         let mut cursor = db.cursor().await?;
         let agents = cursor.list_all_agents().await?;
         cursor.rollback().await?;
 
-        // adds repair events for agents which may have had event stream in invalid state
-        // after a sudden server shutdown or crash
+        // Repair incomplete event streams left by a server crash.
         for agent in agents {
             recover_agent(&db, &publication, agent.id).await?;
         }
 
         let (commands, received) = actors::channel(256);
         let commands = ManagerClient::new(commands);
-        let handle = RuntimeHandle {
-            commands: commands.clone(),
-        };
+        let handle = Sessions::new(db.clone(), publication.clone(), commands.clone());
         let manager = SessionManager {
             db,
             publication,
             providers,
+            probes,
+            sessions: handle.clone(),
             commands,
             received,
             workers: HashMap::new(),
@@ -197,6 +168,8 @@ struct SessionManager {
     db: Database,
     publication: Publication,
     providers: ProviderRegistry,
+    probes: ProbeRegistry,
+    sessions: Sessions,
     commands: ManagerClient,
     received: Mailbox<ManagerCommand>,
     workers: HashMap<AgentId, Worker>,
@@ -469,16 +442,20 @@ impl SessionManager {
 
         let generation = self.next_generation;
         self.next_generation += 1;
+
         let (controls, received) = actors::unbounded_channel();
         let controls = AgentClient::new(controls);
         let manager = self.commands.clone();
         let providers = self.providers.clone();
+        let probes = self.probes.clone();
+        let sessions = self.sessions.clone();
+
         let task = self.tasks.spawn(async move {
-            (
-                agent,
-                generation,
-                run_worker(state, generation, manager, received, providers).await,
+            let result = run_worker(
+                state, generation, manager, received, providers, probes, sessions,
             )
+            .await;
+            (agent, generation, result)
         });
 
         self.workers.insert(

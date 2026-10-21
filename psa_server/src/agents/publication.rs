@@ -1,6 +1,6 @@
 //! One gate serializes transcript commits/publication with SSE replay snapshots.
 
-use super::{AgentError, AgentId, agent_context::AgentContext};
+use super::{AgentError, AgentId, agent_projection::AgentProjection};
 use crate::{
     db::{AddEventResult, Database},
     sessions::SessionId,
@@ -94,8 +94,8 @@ impl Publication {
         agent: AgentId,
         events: &[NewEvent],
         promotions: &[(usize, String)],
-        context: &AgentContext,
-    ) -> Result<(AddEventResult, AgentContext), AgentError> {
+        context: &AgentProjection,
+    ) -> Result<(AddEventResult, AgentProjection), AgentError> {
         let mut publication = self.lock().await;
         let mut cursor = db.cursor().await?;
         let result = cursor.add_events(agent, events).await?;

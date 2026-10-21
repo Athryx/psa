@@ -14,6 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+
     let Command::Start(options) = Cli::parse().command;
     let config = options.resolve().await?;
     psa_probe::run(config, async {
@@ -23,5 +24,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
     })
     .await?;
+
     Ok(())
 }

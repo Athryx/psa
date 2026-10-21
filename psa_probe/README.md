@@ -5,7 +5,70 @@ an authenticated WebSocket. A connection provides concurrent file operations,
 process pipes and signals, and streaming tar directory transfers. Operations are
 currently available to server-side Rust integrations; agent tools do not use them.
 
-## Build
+## Packaging overview
+
+`scripts/package-probe.sh` is the packaging entry point. It:
+
+1. Installs the selected Rust musl target and LLVM strip tool.
+2. Fetches pinned ripgrep/fd sources and cross-compiles static `rg` and `fd`.
+3. Stages those tools and license notices in `target/probe-assets/<architecture>`.
+4. Builds `psa_probe` with the tools/licenses embedded, then strips the binary.
+5. Uses `readelf` to reject dynamic dependencies in the probe and bundled tools.
+
+The deliverable is **one executable**, not an archive or runtime container:
+`target/<target>/release/psa_probe`. Copy it to the target Linux machine. At startup,
+it extracts its embedded tools/licenses into the configured data directory.
+Authentication and configuration are separate files, never embedded in the binary.
+
+## Build with Docker
+
+Only Docker with Buildx/BuildKit is needed on the host. From the workspace root:
+
+```sh
+scripts/package-probe-docker.sh          # amd64
+scripts/package-probe-docker.sh arm64
+scripts/package-probe-docker.sh all      # both, built separately
+scripts/package-probe-docker.sh all ./dist/probes
+```
+
+Binaries are exported to `target/probe-package/<architecture>/psa_probe` by default.
+The optional second argument selects another output root, relative to your current
+working directory. Rust target names are also accepted. The script works from any
+working directory when invoked by its path. It cross-compiles on the builder's
+native architecture without QEMU; `all` uses two builds so it does not require a
+multi-platform builder.
+
+For direct Docker access (including extra build options), the equivalent command is:
+
+```sh
+docker buildx build -f psa_probe/Dockerfile \
+  --platform linux/amd64 \
+  --output type=local,dest=target/probe-package/amd64 .
+```
+
+To export both architectures in one Docker build:
+
+```sh
+docker buildx build -f psa_probe/Dockerfile \
+  --platform linux/amd64,linux/arm64 \
+  --output type=local,dest=target/probe-package .
+```
+
+Multi-platform exports place binaries under `linux_amd64/` and `linux_arm64/`.
+If your default builder does not support multi-platform builds, first create one
+with `docker buildx create --name psa-probe-builder --driver docker-container --use`.
+
+The Dockerfile is a **probe-only build environment**, reusing the packaging script;
+it does not build the server or run the probe in a container. It installs pinned
+Zig/cargo-zigbuild versions matching CI, with cached Cargo dependencies and build
+outputs. First builds need network access and several GB of disk space. The
+Dockerfile-specific ignore file excludes host build outputs and auth/config files.
+
+The base Rust image follows `rust:slim-bookworm`; to select a specific toolchain,
+pass `--build-arg RUST_IMAGE=rust:<version>-slim-bookworm` (or an image digest).
+`ZIG_VERSION` and `CARGO_ZIGBUILD_VERSION` are also build arguments.
+
+## Build without Docker
 
 Install Rust, Git, Zig, binutils (`readelf`), and `cargo-zigbuild` (`cargo install cargo-zigbuild --version
 0.23.4 --locked`). From the workspace root:

@@ -3,28 +3,35 @@
 use super::{
     Agent, AgentError, AgentId,
     agent_context::AgentContext,
+    agent_projection::AgentProjection,
     publication::{Publication, status_event},
     session_manager::{BoundaryReply, ManagerClient},
+    sessions::Sessions,
 };
 use crate::{
-    db::Database,
+    db::{AddEventResult, Database},
     hooks::{
         Hooks,
         cancellation::wait_for_interrupt,
         run_hook,
         tools::{self, failed_tool_result},
     },
+    probes::{ProbeHandle, ProbeRegistry},
     prompts,
     providers::ProviderRegistry,
     sessions::Session,
 };
 use actors::UnboundedMailbox;
+use futures_util::FutureExt;
 use llm_api::api::{
     self, ApiProvider, HistoryItem, HistoryItemKind, ModelResponse, ModelTurnStream, Outcome,
     RequestConfig,
 };
 use psa_api::events::*;
-use std::time::Instant;
+use std::{panic::AssertUnwindSafe, time::Instant};
+use tokio::task::JoinHandle;
+
+type PendingPersistence = JoinHandle<Result<(AddEventResult, AgentProjection), AgentError>>;
 
 pub use psa_api::{AgentState, MessageDelivery};
 
@@ -39,9 +46,10 @@ pub enum AgentManagerMessage {
 pub struct AgentManagerState {
     db: Database,
     agent: Agent,
-    context: AgentContext,
+    context: AgentProjection,
     session: Session,
     publication: Publication,
+    pending_persistence: Option<PendingPersistence>,
 }
 
 impl AgentManagerState {
@@ -53,7 +61,7 @@ impl AgentManagerState {
         &self.agent
     }
 
-    pub fn context(&self) -> &AgentContext {
+    pub fn context(&self) -> &AgentProjection {
         &self.context
     }
 
@@ -73,7 +81,7 @@ impl AgentManagerState {
         let mut cursor = db.cursor().await?;
         let agent = cursor.get_agent(id).await?;
         let session = cursor.get_session(agent.session_id).await?;
-        let context = AgentContext::replay(&cursor.load_all_events(id).await?)?;
+        let context = AgentProjection::replay(&cursor.load_all_events(id).await?)?;
         cursor.rollback().await?;
 
         Ok(Self {
@@ -82,6 +90,7 @@ impl AgentManagerState {
             agent,
             session,
             context,
+            pending_persistence: None,
         })
     }
 
@@ -94,10 +103,36 @@ impl AgentManagerState {
         events: &[NewEvent],
         promotions: &[(usize, String)],
     ) -> Result<Vec<Event>, AgentError> {
-        let (result, context) = self
-            .publication
-            .append(&self.db, self.agent.id, events, promotions, &self.context)
-            .await?;
+        self.finish_persistence().await?;
+
+        let (events, promotions) = build_persistence_batch(events, promotions, self.agent.state);
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // A tool/hook may be dropped after its cancellation grace period. Keep
+        // the append owned by the worker so a started commit always completes,
+        // then reconcile memory before any subsequent work or tool response.
+        let db = self.db.clone();
+        let publication = self.publication.clone();
+        let agent = self.agent.id;
+        let context = self.context.clone();
+        self.pending_persistence = Some(tokio::spawn(async move {
+            publication
+                .append(&db, agent, &events, &promotions, &context)
+                .await
+        }));
+        self.finish_persistence().await
+    }
+
+    pub(crate) async fn finish_persistence(&mut self) -> Result<Vec<Event>, AgentError> {
+        let Some(pending) = self.pending_persistence.as_mut() else {
+            return Ok(Vec::new());
+        };
+
+        let result = pending.await;
+        self.pending_persistence = None;
+        let (result, context) = result.map_err(AgentError::PersistenceTask)??;
 
         self.context = context;
         if let Some(state) = result.new_state {
@@ -116,7 +151,12 @@ impl AgentManagerState {
             return Ok(());
         }
 
-        self.resolve_tools(true, None).await?;
+        for call in self.outstanding_calls() {
+            let result = failed_tool_result(call.call_id, prompts::tool_not_run());
+            self.persist_events(&[NewEvent::new(EventType::ToolResult(result))])
+                .await?;
+        }
+
         if self.agent.state != AgentState::Interrupted {
             self.persist_events(&[status_event(AgentState::Interrupted)])
                 .await?;
@@ -142,24 +182,21 @@ impl AgentManagerState {
 
     async fn resolve_tools(
         &mut self,
-        mut interrupted: bool,
-        mut controls: Option<&mut UnboundedMailbox<AgentManagerMessage>>,
+        probe: &ProbeHandle,
+        sessions: &Sessions,
+        controls: &mut UnboundedMailbox<AgentManagerMessage>,
     ) -> Result<(), AgentError> {
+        let mut interrupted = false;
         for call in self.outstanding_calls() {
-            if let Some(controls) = controls.as_deref_mut() {
-                interrupted |= drain_controls(self, controls);
-            }
-
-            let result = tools::execute(
-                call,
-                &self.context,
-                &mut self.session,
+            interrupted |= drain_controls(self, controls);
+            let output = tools::execute(
+                &call,
+                &mut AgentContext::new(self, probe, sessions),
                 &mut interrupted,
-                controls.as_deref_mut(),
+                controls,
             )
             .await;
-            self.persist_events(&[NewEvent::new(EventType::ToolResult(result))])
-                .await?;
+            self.save_tool_output(call.call_id, output).await?;
         }
 
         if interrupted && self.agent.state == AgentState::Running {
@@ -167,6 +204,23 @@ impl AgentManagerState {
                 .await?;
         }
 
+        Ok(())
+    }
+
+    pub(crate) async fn save_tool_output(
+        &mut self,
+        call_id: String,
+        output: tools::ToolOutput,
+    ) -> Result<(), AgentError> {
+        let result = ToolResult {
+            call_id,
+            content: output.content,
+            error: output.error,
+            metadata: Default::default(),
+        };
+
+        self.persist_events(&[NewEvent::new(EventType::ToolResult(result))])
+            .await?;
         Ok(())
     }
 
@@ -293,7 +347,7 @@ pub(crate) async fn recover_agent(
 
 pub(crate) fn build_recovery_events(
     agent: &Agent,
-    context: &AgentContext,
+    context: &AgentProjection,
 ) -> Result<Vec<NewEvent>, AgentError> {
     let mut events = Vec::new();
     let mut context = context.clone();
@@ -366,6 +420,30 @@ fn build_item_event(item: &HistoryItem) -> Result<EventType, AgentError> {
     })
 }
 
+/// Omit redundant statuses while preserving promotion offsets after filtering.
+fn build_persistence_batch(
+    events: &[NewEvent],
+    promotions: &[(usize, String)],
+    mut status: AgentState,
+) -> (Vec<NewEvent>, Vec<(usize, String)>) {
+    let mut filtered = Vec::new();
+    let mut filtered_promotions = Vec::new();
+    for (index, event) in events.iter().enumerate() {
+        if let EventType::StatusChange(change) = &event.kind {
+            if change.new_status == status {
+                continue;
+            }
+            status = change.new_status;
+        }
+        for (_, id) in promotions.iter().filter(|(offset, _)| *offset == index) {
+            filtered_promotions.push((filtered.len(), id.clone()));
+        }
+        filtered.push(event.clone());
+    }
+
+    (filtered, filtered_promotions)
+}
+
 fn drain_controls(
     state: &mut AgentManagerState,
     controls: &mut UnboundedMailbox<AgentManagerMessage>,
@@ -386,71 +464,113 @@ pub(crate) async fn run_worker(
     manager: ManagerClient,
     mut controls: UnboundedMailbox<AgentManagerMessage>,
     providers: ProviderRegistry,
+    probes: ProbeRegistry,
+    sessions: Sessions,
 ) -> Result<(), AgentError> {
-    let mut hooks = Hooks::default();
-    let mut invocation = 0u64;
+    let outcome = AssertUnwindSafe(async {
+        let mut hooks = Hooks::default();
+        let mut invocation = 0u64;
 
-    loop {
-        if drain_controls(&mut state, &mut controls) {
-            state.interrupt().await?;
-        }
+        loop {
+            if drain_controls(&mut state, &mut controls) {
+                state.interrupt().await?;
+            }
 
-        match manager
-            .boundary(state.agent.id, generation, state.agent.state)
-            .await
-            .map_err(|_| AgentError::SupervisorUnavailable)?
-        {
-            BoundaryReply::Stop => return Ok(()),
-            BoundaryReply::Work(request) => {
-                state
-                    .persist_events(&[
-                        NewEvent::new(EventType::Message(Message {
-                            message_type: MessageType::Human,
-                            content: request.content,
-                            metadata: Default::default(),
-                        })),
-                        status_event(AgentState::Running),
-                    ])
-                    .await?;
-                manager
-                    .consumed(state.agent.id, generation, request.id)
-                    .await
-                    .map_err(|_| AgentError::SupervisorUnavailable)?;
+            match manager
+                .boundary(state.agent.id, generation, state.agent.state)
+                .await
+                .map_err(|_| AgentError::SupervisorUnavailable)?
+            {
+                BoundaryReply::Stop => return Ok(()),
+                BoundaryReply::Work(request) => {
+                    state
+                        .persist_events(&[
+                            NewEvent::new(EventType::Message(Message {
+                                message_type: MessageType::Human,
+                                content: request.content,
+                                metadata: Default::default(),
+                            })),
+                            status_event(AgentState::Running),
+                        ])
+                        .await?;
+                    manager
+                        .consumed(state.agent.id, generation, request.id)
+                        .await
+                        .map_err(|_| AgentError::SupervisorUnavailable)?;
+                    continue;
+                }
+                BoundaryReply::Continue => {}
+            }
+
+            if state.agent.state != AgentState::Running {
                 continue;
             }
-            BoundaryReply::Continue => {}
-        }
+            if drain_controls(&mut state, &mut controls) {
+                state.interrupt().await?;
+                continue;
+            }
 
-        if state.agent.state != AgentState::Running {
-            continue;
-        }
-        if drain_controls(&mut state, &mut controls) {
-            state.interrupt().await?;
-            continue;
-        }
-        if run_hook(&mut hooks.before_request, &mut state, &mut controls).await? {
-            state.interrupt().await?;
-            continue;
-        }
+            let Ok(probe) = probes.handle(state.session.probe_id).await else {
+                state
+                    .persist_events(&[NewEvent::new(EventType::StatusChange(StatusChange {
+                        new_status: AgentState::Interrupted,
+                        reason: Some("session probe is disconnected".into()),
+                    }))])
+                    .await?;
+                state.interrupt().await?;
+                continue;
+            };
 
-        invocation += 1;
-        state
-            .infer(
-                &providers,
+            if run_hook(
+                &mut hooks.before_request,
+                &mut AgentContext::new(&mut state, &probe, &sessions),
                 &mut controls,
-                &format!(
-                    "{}:{generation}:{invocation}:{}",
-                    state.agent.id.0,
-                    time::OffsetDateTime::now_utc().unix_timestamp_nanos()
-                ),
             )
-            .await?;
+            .await?
+            {
+                state.interrupt().await?;
+                continue;
+            }
 
-        if run_hook(&mut hooks.after_request, &mut state, &mut controls).await? {
-            state.interrupt().await?;
-            continue;
+            if state.agent.state != AgentState::Running {
+                state.interrupt().await?;
+                continue;
+            }
+
+            invocation += 1;
+            let invocation_id = format!(
+                "{}:{generation}:{invocation}:{}",
+                state.agent.id.0,
+                time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+            );
+            state
+                .infer(&providers, &mut controls, &invocation_id)
+                .await?;
+
+            if run_hook(
+                &mut hooks.after_request,
+                &mut AgentContext::new(&mut state, &probe, &sessions),
+                &mut controls,
+            )
+            .await?
+            {
+                state.interrupt().await?;
+                continue;
+            }
+
+            state
+                .resolve_tools(&probe, &sessions, &mut controls)
+                .await?;
         }
-        state.resolve_tools(false, Some(&mut controls)).await?;
+    })
+    .catch_unwind()
+    .await;
+
+    // Do not let supervisor recovery race a save detached by a panicking tool.
+    state.finish_persistence().await?;
+    match outcome {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
     }
 }
 

@@ -94,7 +94,13 @@ pub async fn serve_with_probe_registry(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
     let publication = Publication::default();
-    let runtime = Runtime::start(database.clone(), publication.clone(), providers).await?;
+    let runtime = Runtime::start(
+        database.clone(),
+        publication.clone(),
+        providers,
+        probes.clone(),
+    )
+    .await?;
     let accepting = Arc::new(AtomicBool::new(true));
     let app = crate::http::router(crate::http::AppState {
         database: database.clone(),

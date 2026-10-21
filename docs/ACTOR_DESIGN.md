@@ -68,9 +68,17 @@ names. Enum and variant conditional gates are preserved. Use the dependency name
 
 - `ManagerCommand` generates a bounded `ManagerClient` for the global supervisor.
 - `AgentManagerMessage` generates an unbounded `AgentClient` for worker controls.
-- `RuntimeHandle` retains the public domain-oriented API: it delegates to the
-  generated client, maps transport failures to `RuntimeError::Unavailable`, and
-  unwraps application replies for callers.
+- `Sessions` is the public domain-oriented facade, combining `Database`,
+  `Publication`, and the generated `ManagerClient`. It centralizes session/agent
+  validation, persistence, publication, and request orchestration; HTTP handlers
+  remain thin wire adapters. Manager transport failures map to
+  `RuntimeError::Unavailable`, and application replies are unwrapped for callers.
+- The facade releases database cursors and publication guards before awaiting
+  manager operations. Queues and worker lifecycle ownership stay in the manager.
+- Workers receive `ProbeRegistry` and `Sessions`. Each iteration resolves its
+  current probe and lends tools/hooks an `AgentContext` with worker persistence,
+  agent-scoped trace queries, snapshots, the probe handle, and the facade.
+  `AgentProjection` remains the separate replayed transcript projection.
 - Worker boundaries and consumption acknowledgments use generated client methods.
 - Existing receive matches, reply sends, queues, recovery, and shutdown ownership
   remain explicit and unchanged.

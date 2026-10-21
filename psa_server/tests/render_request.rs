@@ -11,7 +11,7 @@ use llm_api::{
 };
 use psa_api::events::*;
 use psa_server::{
-    agents::NewAgent, agents::agent_context::AgentContext, db::Database, sessions::NewSession,
+    agents::NewAgent, agents::agent_projection::AgentProjection, db::Database, sessions::NewSession,
 };
 use serde_json::Value;
 use tokio::{
@@ -82,7 +82,7 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
             )
             .await
             .unwrap();
-        let state = AgentContext::replay(
+        let state = AgentProjection::replay(
             &cursor
                 .load_events(agent.id, EventRange::default())
                 .await
