@@ -96,6 +96,7 @@ impl Fixture {
         let mut cursor = self.database.cursor().await.unwrap();
         let session = cursor
             .create_session(NewSession {
+                model_config: crate::test_support::model_config(),
                 name: "context test".into(),
                 working_directory: "/work".into(),
                 probe_id: support::probe_metadata().id,
@@ -106,6 +107,8 @@ impl Fixture {
             .create_agent(
                 session.id,
                 NewAgent {
+                    interactive: false,
+                    definition_id: psa_api::AgentDefinitionId(1),
                     name: "agent".into(),
                 },
             )
@@ -212,6 +215,8 @@ async fn trace_queries_match_database_and_bind_inherited_fork_history() {
         .create_agent(
             parent.session_id,
             NewAgent {
+                interactive: false,
+                definition_id: psa_api::AgentDefinitionId(1),
                 name: "other".into(),
             },
         )
@@ -280,7 +285,7 @@ async fn trace_queries_match_database_and_bind_inherited_fork_history() {
     assert_eq!(context.agent().id, child.id);
     assert_eq!(context.session().id, child.session_id);
     assert_eq!(context.session().probe_id, support::probe_metadata().id);
-    assert!(std::ptr::eq(context.probe(), &probe));
+    assert!(std::ptr::eq(context.probe().unwrap(), &probe));
     assert_eq!(
         context
             .sessions()
@@ -401,7 +406,11 @@ struct TraceTool {
 }
 
 impl Tool for TraceTool {
-    fn tool_definition() -> api::ToolDefinition {
+    fn new(_agent: &Agent, _session: &crate::sessions::Session) -> Self {
+        Self { interrupt: false }
+    }
+
+    fn tool_definition(&self) -> api::ToolDefinition {
         crate::hooks::tools::tool_definition(psa_api::ToolId::Noop)
     }
 
@@ -450,6 +459,7 @@ async fn tool_trace_and_status_are_saved_separately_from_worker_response() {
     let (_controls, mut controls) = actors::unbounded_channel();
     let mut interrupted = false;
     let skipped = crate::hooks::tools::execute(
+        &[],
         &api::ToolCall {
             call_id: "unstarted-next".into(),
             name: "noop".into(),
@@ -502,6 +512,10 @@ async fn tool_trace_and_status_are_saved_separately_from_worker_response() {
 struct TraceHook;
 
 impl Hook for TraceHook {
+    fn new(_agent: &Agent, _session: &crate::sessions::Session) -> Self {
+        Self
+    }
+
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(1)
     }
@@ -551,6 +565,76 @@ async fn hooks_share_trace_and_session_capabilities_and_save_status() {
     assert!(
         matches!(&saved[2].kind, EventType::StatusChange(change) if change.new_status == AgentState::Idle)
     );
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn extra_system_prompt_hook_persists_verbatim_system_message_and_skips_empty() {
+    let fixture = Fixture::new().await;
+    let seed = fixture.create_agent(&[]).await;
+    let probe = fixture
+        .probes
+        .handle(support::probe_metadata().id)
+        .await
+        .unwrap();
+
+    for prompt in [
+        "",
+        " \n",
+        "  Follow these extra instructions.\n<literal> & text\n",
+    ] {
+        let mut cursor = fixture.database.cursor().await.unwrap();
+        let definition = cursor
+            .create_agent_definition(psa_api::CreateAgentDefinition {
+                name: "extra prompt".into(),
+                extra_system_prompt: prompt.into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let agent = cursor
+            .create_agent(
+                seed.session_id,
+                NewAgent {
+                    interactive: false,
+                    definition_id: definition.id,
+                    name: "extra prompt".into(),
+                },
+            )
+            .await
+            .unwrap();
+        cursor.commit().await.unwrap();
+
+        let mut state = fixture.load_state(&agent).await;
+        let mut hook = crate::hooks::HookKind::new(
+            psa_api::HookId::ExtraSystemPrompt,
+            state.agent(),
+            state.session(),
+        );
+        let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
+        let (_controls, mut controls) = actors::unbounded_channel();
+        assert!(
+            !run_hook(&mut hook, &mut context, &mut controls)
+                .await
+                .unwrap()
+        );
+
+        let saved = context.load_all_events().await.unwrap();
+        if prompt.is_empty() {
+            assert!(saved.is_empty());
+        } else {
+            assert_eq!(saved.len(), 1);
+            let EventType::Message(message) = &saved[0].kind else {
+                panic!("expected a system message");
+            };
+            assert_eq!(message.message_type, MessageType::System);
+            let [api::ContentBlock::Text(block)] = message.content.as_slice() else {
+                panic!("expected one text block");
+            };
+            assert_eq!(block.text, prompt);
+        }
+    }
+
     fixture.close().await;
 }
 

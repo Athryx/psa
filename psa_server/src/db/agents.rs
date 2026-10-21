@@ -20,6 +20,7 @@ impl DatabaseCursor {
         let mut savepoint = self.transaction.begin().await?;
         let owner = get_session(&mut savepoint, session).await?;
         let session_id = encode_integer(session.0)?;
+        let definition_id = encode_integer(new.definition_id.0)?;
         let position = encode_integer(owner.next_position)?;
         let next = position
             .checked_add(1)
@@ -27,10 +28,12 @@ impl DatabaseCursor {
         let now = now_us()?;
 
         let result = sqlx::query!(
-            "INSERT INTO agents (session_id, first_event_seq, next_event_seq, created_position, name, created_at_us, updated_at_us) VALUES (?,1,1,?,?,?,?)",
+            "INSERT INTO agents (session_id, definition_id, first_event_seq, next_event_seq, created_position, name, interactive, created_at_us, updated_at_us) VALUES (?,?,1,1,?,?,?,?,?)",
             session_id,
+            definition_id,
             position,
             new.name,
+            new.interactive,
             now,
             now
         )
@@ -68,7 +71,7 @@ pub(super) async fn get_agent(conn: &mut SqliteConnection, id: AgentId) -> Resul
     let key = encode_integer(id.0)?;
     let row = sqlx::query_as!(
         AgentRow,
-        "SELECT id, session_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, state, usage, created_at_us, updated_at_us FROM agents WHERE id = ?",
+        "SELECT id, session_id, definition_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, interactive, state, usage, created_at_us, updated_at_us FROM agents WHERE id = ?",
         key
     )
     .fetch_optional(conn)
@@ -85,7 +88,7 @@ pub(super) async fn list_agents(
     let key = encode_integer(session.0)?;
     let rows = sqlx::query_as!(
         AgentRow,
-        "SELECT id, session_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, state, usage, created_at_us, updated_at_us FROM agents WHERE session_id = ? ORDER BY id",
+        "SELECT id, session_id, definition_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, interactive, state, usage, created_at_us, updated_at_us FROM agents WHERE session_id = ? ORDER BY id",
         key
     )
     .fetch_all(conn)

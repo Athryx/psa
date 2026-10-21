@@ -22,6 +22,16 @@ pub struct Mailbox<T>(mpsc::Receiver<T>);
 /// Cloneable sending half of a bounded mailbox.
 pub struct MailboxHandle<T>(mpsc::Sender<T>);
 
+/// Reserved bounded-mailbox capacity for a later synchronous notification.
+/// Dropping the permit without sending releases its capacity.
+pub struct MailboxPermit<'a, T>(mpsc::Permit<'a, T>);
+
+impl<T> MailboxPermit<'_, T> {
+    pub fn send(self, message: T) {
+        self.0.send(message);
+    }
+}
+
 /// Receiving half of an unbounded mailbox, for existing non-blocking control paths.
 pub struct UnboundedMailbox<T>(mpsc::UnboundedReceiver<T>);
 
@@ -53,6 +63,15 @@ impl<T> Clone for UnboundedMailboxHandle<T> {
 }
 
 impl<T> MailboxHandle<T> {
+    /// Reserve capacity before starting work that must enqueue without awaiting.
+    pub async fn reserve(&self) -> Result<MailboxPermit<'_, T>, MailboxError> {
+        self.0
+            .reserve()
+            .await
+            .map(MailboxPermit)
+            .map_err(|_| MailboxError::Closed)
+    }
+
     /// Wait for capacity and enqueue a message; this does not await its handling.
     pub async fn send(&self, message: T) -> Result<(), MailboxError> {
         self.0.send(message).await.map_err(|_| MailboxError::Closed)

@@ -41,6 +41,7 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
         let mut cursor = db.cursor().await.unwrap();
         let session = cursor
             .create_session(NewSession {
+                model_config: support::model_config(),
                 probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
                 name: "test".into(),
                 working_directory: "/work".into(),
@@ -51,6 +52,8 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
             .create_agent(
                 session.id,
                 NewAgent {
+                    interactive: false,
+                    definition_id: psa_api::AgentDefinitionId(1),
                     name: "main".into(),
                 },
             )

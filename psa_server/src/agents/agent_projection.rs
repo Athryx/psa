@@ -99,6 +99,10 @@ impl AgentProjection {
         self.open.as_ref().map(|o| &o.start)
     }
 
+    pub fn tool_definitions(&self) -> &[ToolDefinition] {
+        &self.tools
+    }
+
     pub fn tool_ids(&self) -> impl Iterator<Item = ToolId> + '_ {
         self.tools.iter().map(|t| t.id)
     }

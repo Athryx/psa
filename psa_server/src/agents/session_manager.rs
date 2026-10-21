@@ -24,6 +24,8 @@ use tokio::{
 };
 
 #[cfg(test)]
+pub(crate) mod lifecycle_tests;
+#[cfg(test)]
 mod tests;
 
 const MAX_PENDING: usize = 128;
@@ -107,7 +109,13 @@ pub(crate) struct QueuedRequest {
     pub content: Vec<llm_api::api::ContentBlock>,
 }
 
+pub(crate) enum LifecycleHook {
+    AgentCreate,
+    SessionUpdate(Session),
+}
+
 pub(crate) enum BoundaryReply {
+    Hook(LifecycleHook),
     Work(QueuedRequest),
     Continue,
     Stop,
@@ -143,7 +151,9 @@ pub(crate) enum ManagerCommand {
         generation: u64,
         request_id: String,
     },
-    /// Forward updated session settings to its active workers.
+    /// Schedule the creation hook only for a newly committed agent.
+    AgentsCreated { agents: Vec<AgentId> },
+    /// Notify every agent in the session, starting idle workers as needed.
     SessionUpdated { session: Session },
     /// Discard queued work, interrupt workers, and wait for their exit.
     Shutdown {
@@ -152,12 +162,24 @@ pub(crate) enum ManagerCommand {
     },
 }
 
+impl ManagerClient {
+    pub(crate) async fn reserve_notification(
+        &self,
+    ) -> Result<actors::MailboxPermit<'_, ManagerCommand>, RuntimeError> {
+        self.handle
+            .reserve()
+            .await
+            .map_err(|_| RuntimeError::Unavailable)
+    }
+}
+
 struct Worker {
     session: SessionId,
     generation: u64,
     task_id: Id,
     controls: AgentClient,
     queue: VecDeque<QueuedRequest>,
+    lifecycle: VecDeque<LifecycleHook>,
     in_flight: Option<QueuedRequest>,
     stopping: bool,
 }
@@ -276,13 +298,16 @@ impl SessionManager {
                     worker.in_flight = None;
                 }
             }
+            ManagerCommand::AgentsCreated { agents } => {
+                for agent in agents {
+                    if let Err(error) = self.schedule_agent_create(agent).await {
+                        tracing::error!(agent = agent.0, %error, "failed to schedule agent creation hook");
+                    }
+                }
+            }
             ManagerCommand::SessionUpdated { session } => {
-                for worker in self
-                    .workers
-                    .values()
-                    .filter(|worker| worker.session == session.id)
-                {
-                    let _ = worker.controls.session_updated(session.clone());
+                if let Err(error) = self.schedule_session_update(&session).await {
+                    tracing::error!(session = session.id.0, %error, "failed to schedule session update hooks");
                 }
             }
             ManagerCommand::Shutdown { reply } => {
@@ -290,6 +315,7 @@ impl SessionManager {
                 self.shutdown_reply = Some(reply);
                 for worker in self.workers.values_mut() {
                     worker.queue.clear();
+                    worker.lifecycle.clear();
                     let _ = worker.controls.interrupt();
                 }
             }
@@ -334,7 +360,14 @@ impl SessionManager {
                     MessageDelivery::Resume => state == AgentState::Interrupted,
                 })
         };
-        let response = if let Some(index) = eligible {
+        let lifecycle = if self.shutting_down {
+            None
+        } else {
+            worker.lifecycle.pop_front()
+        };
+        let response = if let Some(hook) = lifecycle {
+            BoundaryReply::Hook(hook)
+        } else if let Some(index) = eligible {
             let request = worker.queue.remove(index).expect("queue index exists");
             worker.in_flight = Some(request.clone());
             BoundaryReply::Work(request)
@@ -372,6 +405,8 @@ impl SessionManager {
         let mut cursor = self.db.cursor().await?;
         let snapshot = cursor.require_agent_session(session, agent).await?;
         let context = cursor.load_context_window(agent).await?;
+        let definition = cursor.get_agent_definition(snapshot.definition_id).await?;
+        let session_snapshot = cursor.get_session(session).await?;
         cursor.rollback().await?;
 
         let id = format!(
@@ -390,11 +425,18 @@ impl SessionManager {
         if delivery == MessageDelivery::Resume && snapshot.state != AgentState::Interrupted {
             return Err(RuntimeError::InvalidResume);
         }
-        let model = context.iter().rev().find_map(|event| match &event.kind {
-            EventType::Model(model) => Some(model),
-            _ => None,
-        });
-        if !model.is_some_and(|model| self.providers.provider(model.provider).is_some()) {
+        // Creation hooks may still be queued when the first request arrives.
+        // Validate its provider without making startup initialization implicit.
+        let model = context
+            .iter()
+            .rev()
+            .find_map(|event| match &event.kind {
+                EventType::Model(model) => Some(model),
+                _ => None,
+            })
+            .or(definition.model_config.as_ref())
+            .unwrap_or(&session_snapshot.model_config);
+        if self.providers.provider(model.provider).is_none() {
             return Err(RuntimeError::MissingProvider);
         }
         if self
@@ -405,19 +447,7 @@ impl SessionManager {
             return Err(RuntimeError::Overloaded);
         }
 
-        if !self.workers.contains_key(&agent) {
-            let became_busy = !self.is_busy(session);
-            self.spawn_worker(agent, session, VecDeque::new()).await?;
-            if became_busy {
-                self.publication
-                    .lock()
-                    .await
-                    .publish(StreamMessage::SessionBusy {
-                        session_id: session,
-                        busy: true,
-                    });
-            }
-        }
+        self.ensure_worker(agent, session).await?;
         self.workers
             .get_mut(&agent)
             .expect("worker exists")
@@ -431,11 +461,74 @@ impl SessionManager {
         Ok(RequestAccepted { request_id: id })
     }
 
+    async fn schedule_agent_create(&mut self, agent: AgentId) -> Result<(), RuntimeError> {
+        if self.shutting_down {
+            return Err(RuntimeError::Unavailable);
+        }
+
+        let mut cursor = self.db.cursor().await?;
+        let snapshot = cursor.get_agent(agent).await?;
+        cursor.rollback().await?;
+
+        self.ensure_worker(agent, snapshot.session_id).await?;
+        self.workers
+            .get_mut(&agent)
+            .expect("worker exists")
+            .lifecycle
+            .push_back(LifecycleHook::AgentCreate);
+        Ok(())
+    }
+
+    async fn schedule_session_update(&mut self, session: &Session) -> Result<(), RuntimeError> {
+        if self.shutting_down {
+            return Err(RuntimeError::Unavailable);
+        }
+
+        let mut cursor = self.db.cursor().await?;
+        let agents = cursor.list_agents(session.id).await?;
+        cursor.rollback().await?;
+
+        for agent in agents {
+            self.ensure_worker(agent.id, session.id).await?;
+            let worker = self.workers.get_mut(&agent.id).expect("worker exists");
+            let _ = worker.controls.session_updated(session.clone());
+            worker
+                .lifecycle
+                .push_back(LifecycleHook::SessionUpdate(session.clone()));
+        }
+        Ok(())
+    }
+
+    async fn ensure_worker(
+        &mut self,
+        agent: AgentId,
+        session: SessionId,
+    ) -> Result<(), RuntimeError> {
+        if self.workers.contains_key(&agent) {
+            return Ok(());
+        }
+
+        let became_busy = !self.is_busy(session);
+        self.spawn_worker(agent, session, VecDeque::new(), VecDeque::new())
+            .await?;
+        if became_busy {
+            self.publication
+                .lock()
+                .await
+                .publish(StreamMessage::SessionBusy {
+                    session_id: session,
+                    busy: true,
+                });
+        }
+        Ok(())
+    }
+
     async fn spawn_worker(
         &mut self,
         agent: AgentId,
         session: SessionId,
         queue: VecDeque<QueuedRequest>,
+        lifecycle: VecDeque<LifecycleHook>,
     ) -> Result<(), RuntimeError> {
         let state =
             AgentManagerState::load(self.db.clone(), self.publication.clone(), agent).await?;
@@ -466,6 +559,7 @@ impl SessionManager {
                 task_id: task.id(),
                 controls,
                 queue,
+                lifecycle,
                 in_flight: None,
                 stopping: false,
             },
@@ -503,9 +597,9 @@ impl SessionManager {
         }
 
         self.publication.discard_pending(agent).await;
-        if !self.shutting_down && !worker.queue.is_empty() {
+        if !self.shutting_down && (!worker.queue.is_empty() || !worker.lifecycle.is_empty()) {
             if self
-                .spawn_worker(agent, worker.session, worker.queue)
+                .spawn_worker(agent, worker.session, worker.queue, worker.lifecycle)
                 .await
                 .is_ok()
             {

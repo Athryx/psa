@@ -1,6 +1,7 @@
 use crate::{
-    Agent, AgentId, AgentRequest, ApiError, CreateAgent, CreateSession, EventsPage, EventsQuery,
-    ForkSession, ForkedSession, ListSessions, RequestAccepted, Session, SessionId, StreamMessage,
+    Agent, AgentDefinition, AgentDefinitionId, AgentId, AgentRequest, ApiError, CreateAgent,
+    CreateAgentDefinition, CreateSession, EventsPage, EventsQuery, ForkSession, ForkedSession,
+    ListSessions, RequestAccepted, Session, SessionId, StreamMessage, UpdateAgentDefinition,
     UpdateSession, routes,
 };
 use eventsource_stream::Eventsource;
@@ -94,6 +95,35 @@ impl Client {
 
     pub async fn get_probe(&self, id: crate::ProbeId) -> Result<crate::Probe, ClientError> {
         self.get(&routes::probe_path(id), &()).await
+    }
+
+    pub async fn create_agent_definition(
+        &self,
+        request: &CreateAgentDefinition,
+    ) -> Result<AgentDefinition, ClientError> {
+        self.send(Method::POST, routes::AGENT_DEFINITIONS, request)
+            .await
+    }
+
+    pub async fn list_agent_definitions(&self) -> Result<Vec<AgentDefinition>, ClientError> {
+        self.get(routes::AGENT_DEFINITIONS, &()).await
+    }
+
+    pub async fn get_agent_definition(
+        &self,
+        id: AgentDefinitionId,
+    ) -> Result<AgentDefinition, ClientError> {
+        self.get(&routes::agent_definition_path(id), &()).await
+    }
+
+    /// Creates a new immutable version; the original definition is unchanged.
+    pub async fn update_agent_definition(
+        &self,
+        id: AgentDefinitionId,
+        request: &UpdateAgentDefinition,
+    ) -> Result<AgentDefinition, ClientError> {
+        self.send(Method::PUT, &routes::agent_definition_path(id), request)
+            .await
     }
 
     pub async fn create_session(&self, request: &CreateSession) -> Result<Session, ClientError> {

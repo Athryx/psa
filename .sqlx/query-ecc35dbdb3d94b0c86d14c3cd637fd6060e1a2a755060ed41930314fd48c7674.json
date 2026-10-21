@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO sessions (first_position, next_position, name, working_directory, probe_id, model_config, created_at_us, updated_at_us) VALUES (1,1,?,?,?,?,?,?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "ecc35dbdb3d94b0c86d14c3cd637fd6060e1a2a755060ed41930314fd48c7674"
+}

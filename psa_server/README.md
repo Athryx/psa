@@ -64,7 +64,8 @@ lifecycle state and cumulative usage. Requests are accepted into bounded queues,
 not necessarily persisted or executed at the time HTTP 202 is returned.
 
 ```rust,no_run
-use psa_api::{Client, CreateSession, CreateAgent, AgentRequest, MessageDelivery};
+use psa_api::{Client, CreateSession, CreateAgent, CreateAgentDefinition, AgentRequest,
+    HookId, HookIds, MessageDelivery};
 use llm_api::{api::{ContentBlock, TextBlock}, providers::{Effort, Model, ModelConfig, ProviderType}};
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let client = Client::new("http://127.0.0.1:8080")?;
@@ -72,12 +73,27 @@ let probe = client.list_probes().await?.into_iter().next().ok_or("connect a prob
 let session = client.create_session(&CreateSession {
     probe_id: probe.metadata.id,
     name: "Example".into(), working_directory: "/work/project".into(),
+    model_config: ModelConfig { provider: ProviderType::Openrouter,
+        model: Model::new("your-provider/model")?, effort: Effort::Medium },
+}).await?;
+let definition = client.create_agent_definition(&CreateAgentDefinition {
+    name: "Assistant".into(),
+    selectable: true,
+    tools: vec![psa_api::ToolId::Noop],
+    hooks: HookIds {
+        agent_create: vec![
+            HookId::DefaultStartup, HookId::ToolDefinitions, HookId::Cwd, HookId::Skills,
+        ],
+        session_update: vec![HookId::SessionModelUpdate],
+        after_request: vec![HookId::StopWithoutTools],
+        ..Default::default()
+    },
+    ..Default::default()
 }).await?;
 let agent = client.create_agent(session.id, &CreateAgent {
+    interactive: false,
+    definition_id: definition.id,
     name: "Main".into(),
-    model: ModelConfig { provider: ProviderType::Openrouter,
-        model: Model::new("your-provider/model")?, effort: Effort::Medium },
-    tools: vec![psa_api::ToolId::Noop],
 }).await?;
 client.submit_request(session.id, agent.id, &AgentRequest::Message {
     delivery: MessageDelivery::Queue,
@@ -87,8 +103,9 @@ client.submit_request(session.id, agent.id, &AgentRequest::Message {
 # }
 ```
 
-Routes are defined in `psa_api::routes`: create/list/get/update/fork sessions,
-create/list/get agents, submit requests, and query session or agent events. Event
+Routes are defined in `psa_api::routes`: create/list/get/update agent definitions,
+create/list/get/update/fork sessions, create/list/get agents, submit requests,
+and query session or agent events. Event
 GETs return paged JSON or SSE with `stream=true`. `after` is an exclusive agent
 EventId on an agent route, or shared session position on a session route;
 `through` is inclusive. `limit` accepts 1–10,000. JSON pages expose `head`,
@@ -106,13 +123,78 @@ The client intentionally leaves reconnect policy to callers: after EOF or
 `ResyncRequired`, open another stream using that durable ID. Headers are supported
 by using `Client::with_http_client` with a configured reqwest client.
 
-One global session-manager task supervises lazy per-agent workers. Workers get
-fresh context on restart, run `before_request` (currently no-op), infer/persist,
-run `after_request` (`StopWithoutTools`), and resolve every committed tool call.
-The hook emits Idle for responses without tool calls; the loop follows persisted
-state. Compaction, probe execution, and custom agent definitions remain future
-work. Tools/hooks receive the same `Cancellation` wrapper and choose their own
-cancellation grace periods. Orphaned tool calls are repaired with interrupted,
+### Definitions and hook bindings
+
+This development schema requires a fresh database; existing databases and clients
+using the former per-agent model/tools creation fields are not migrated.
+
+`POST /agent-definitions` creates a definition; `GET /agent-definitions` lists
+all immutable versions and `GET /agent-definitions/{definition_id}` fetches one.
+`PUT /agent-definitions/{definition_id}` takes a full replacement, returning HTTP
+201 with a new ID, incremented `version`, and `previous_version_id` pointing to
+the source. `Client::update_agent_definition` wraps that operation. Omitted
+optional/defaulted fields are cleared, not merged. Existing agents and forks
+remain pinned to their original definition ID; edits do not reconfigure them.
+
+Agent creation accepts `interactive`, defaulting to `false` when omitted from
+JSON. It is creation-time metadata available to tools and hooks, not a runtime
+behavior switch. Agent responses expose it, and forks inherit the source flag.
+
+Sessions require `model_config`, which can be changed with `UpdateSession`.
+A definition's optional `model_config` overrides the session model. Definitions
+also store `description`, `selectable`, `skills`, `permitted_subagents`, and
+`extra_system_prompt`. Skills locations are consumed only when `SkillsHook` is
+explicitly configured. The other metadata remains literal: it does not
+automatically select agents, enforce subagent permissions, or inject extra system
+prompts. Unknown extra JSON fields are rejected, not treated as configuration.
+
+Each definition explicitly binds ordered `HookId` lists at `agent_create`,
+`session_update`, `before_request`, and `after_request`. All lists default empty;
+no startup, synchronization, or stop hook is installed implicitly. Built-ins:
+
+- `DefaultStartup`: normally bound to `agent_create`; saves `NewContext`, the
+  resolved `Model`, and a `System` message with the base assistant identity for a
+  new root agent. It does not emit tool definitions. It skips forked agents
+  entirely so inherited context and its model are not reset; an explicit session
+  update can synchronize an inherited model afterward.
+- `ToolDefinitions`: separately emits tool-definition events from the worker's
+  tool instances, then separate `<tools>` and `<rules>` system messages for any
+  tool-provided directions. Empty sections are omitted. Normally bound after
+  `DefaultStartup` on `agent_create`; it also skips forks to preserve inherited
+  tool definitions and prompt sections.
+- `Cwd`: emits a `System` message containing `<cwd>\nSESSION_CWD\n</cwd>`, with the
+  session working directory XML-escaped. It does not skip forks. Bind it to
+  `agent_create` and optionally `session_update` to reflect directory changes.
+- `Skills`: reads only explicit `AgentDefinition.skills` locations on the session
+  probe. Relative locations resolve against the session's `working_directory`;
+  locations can be Markdown (`.md`) files or directories containing `SKILL.md`.
+  It emits a pi-style, XML-escaped catalogue containing skill names, descriptions,
+  and paths, not skill bodies. Skills with `disable-model-invocation: true` are
+  omitted; the first duplicate name wins. Missing or malformed skills produce
+  warning `Log` events and are skipped. An empty catalogue emits no system
+  message. A nonempty skills list requires a connected probe; a disconnected
+  probe is an error rather than a missing-skill warning. Bind it after `Cwd` on
+  `agent_create`; without this hook, skills locations are not consumed.
+- `SessionModelUpdate`: normally bound to `session_update`; saves a changed
+  session model unless the definition has its own model override. It does not
+  emit `NewContext` or clear inherited history.
+- `StopWithoutTools`: normally bound to `after_request`; saves Idle for responses
+  without tool calls.
+- `Noop`: does nothing.
+
+One global session-manager task supervises lazy per-agent workers. Creation
+callbacks still run for newly forked agents, but not on worker reload or server
+recovery. Session-update callbacks run for every agent in an updated session,
+starting idle workers as needed. Hooks run at worker boundaries, serialized with
+inference, tools, and other hooks. Updates queued during worker retirement are
+carried to its replacement. These notifications are in-memory, not a durable
+retry queue. Creation returns before asynchronous startup hooks finish.
+
+Workers replay their transcript on restart, run the configured `before_request`
+hooks, infer/persist, run configured `after_request` hooks, and resolve every
+committed tool call. The loop follows persisted state. Compaction and built-in
+probe-executing tools remain future work. Tools/hooks receive the same
+`Cancellation` wrapper and choose their own cancellation grace periods. Orphaned tool calls are repaired with interrupted,
 unknown-outcome results, never automatically retried. All model-facing harness
 strings are built in `src/prompts.rs`.
 Incomplete tool calls with terminal error results are rendered as ordinary
@@ -122,9 +204,11 @@ than forwarding an unfinished native tool call to the provider.
 ## Tools, hooks, and session operations
 
 Tools and hooks borrow `agents::agent_context::AgentContext` for each invocation.
-It exposes `agent()`, `session()`, `projection()`, the iteration's `probe()`, and
-`sessions()`. Trace methods mirror the database queries with the current agent
-ID filled in: `load_events`, `load_all_events`, `load_context_window`,
+It exposes `agent()`, `session()`, the pinned `definition()`, worker-local
+`tools()`, `projection()`, the iteration's `probe()`, and `sessions()`.
+`probe()` returns a `Result`: lifecycle hooks run even with an offline probe, and accessing it then returns `ProbeError::Disconnected`. Each session-update
+hook sees the snapshot for that update. Trace methods mirror the database queries
+with the current agent ID filled in: `load_events`, `load_all_events`, `load_context_window`,
 `load_events_since_last_inference`, `load_last_inference_result`, and
 `load_agent_envelopes`.
 
@@ -133,11 +217,24 @@ keeping its projection/status/usage synchronized. Repeated status changes to the
 same status are omitted, including duplicates within one batch. Started saves
 finish even if their tool/hook times out, before the worker continues.
 
+`Tool::system_prompt()` returns `ToolSystemPrompt { tools: Option<String>,
+rules: Vec<String> }`. Its default is `None` and an empty list. The optional
+`tools` text is rendered as `- <tool name>: <directions>` inside `<tools>`; rules
+become Markdown list items in `<rules>`. Tool order and rule order are preserved;
+empty entries are ignored and identical trimmed rules keep their first occurrence.
+Markdown is retained and multiline list items are indented. Both sections are
+saved as separate `MessageType::System` events after the tool schemas.
+
 Hooks implement `Hook` and return `Result<(), HookError>`. Tools implement `Tool`
-and return `ToolOutput { content, error }`; the flag is model-facing, not an agent
-control signal. The worker persists each tool response separately. To interrupt,
+and return `ToolOutput { content, error }`. Both have synchronous, IO-free
+`new(&Agent, &Session)` constructors. `HookKind` and `ToolKind` are runtime
+instances, distinct from wire `HookId` and `ToolId`; a worker constructs its own
+instances from the pinned definition when loaded. Instances live for that worker,
+not globally or durably, and are reconstructed on reload. Hook invocation uses
+`&mut self`, allowing worker-local hook state. The output flag is model-facing,
+not an agent control signal. The worker persists each tool response separately. To interrupt,
 a tool/hook explicitly saves an `Interrupted` status event. Both interfaces retain
-cooperative cancellation and bounded cleanup. Session definitions are invocation
+cooperative cancellation and bounded cleanup. Session settings are invocation
 snapshots; mailbox updates are applied after the invocation.
 
 The worker resolves a fresh probe handle before each inference iteration and
@@ -145,10 +242,11 @@ interrupts without inference if the probe is missing. A mid-iteration disconnect
 is reported through probe-operation errors; tools/hooks decide whether to change
 status. Operations are never automatically retried.
 
-`agents::sessions::Sessions` is the shared async facade for session create/query/
-update/fork, agent create/query, request submission, steering, resume, interrupt,
-and busy queries. `Runtime::handle` and `AgentContext::sessions()` expose it.
-It returns server-native `Session`, `Agent`, and `ForkedSession` values, including
+`agents::sessions::Sessions` is the shared async facade for definition create/
+query/version updates, session create/query/update/fork, agent create/query,
+request submission, steering, resume, interrupt, and busy queries. `Runtime::handle` and `AgentContext::sessions()` expose it.
+Definitions use `psa_api::AgentDefinition` directly. Session/agent operations
+return server-native `Session`, `Agent`, and `ForkedSession` values, including
 internal event/position metadata; HTTP handlers convert these to wire types and
 query busy status separately. Request queues and worker lifecycles
 remain owned by the session-manager actor. The event-replayed transcript type is
@@ -206,8 +304,22 @@ let session = cursor.create_session(NewSession {
     probe_id: probe.metadata.id,
     name: "Example".into(),
     working_directory: "/work/project".into(),
+    model_config: ModelConfig {
+        model: Model::new("example-model")?,
+        provider: ProviderType::Openrouter,
+        effort: Effort::High,
+    },
 }).await?;
-let agent = cursor.create_agent(session.id, NewAgent { name: "Main".into() }).await?;
+let definition = cursor.create_agent_definition(psa_api::CreateAgentDefinition {
+    name: "Manual replay example".into(),
+    ..Default::default()
+}).await?;
+let agent = cursor.create_agent(session.id, NewAgent {
+    interactive: false,
+    definition_id: definition.id,
+    name: "Main".into(),
+}).await?;
+// Direct cursor operations do not execute lifecycle hooks; seed events explicitly.
 
 cursor.add_events(agent.id, &[
     NewEvent::new(EventType::Model(ModelConfig {
@@ -338,4 +450,5 @@ application-data directory.
 
 See [the probe README](../psa_probe/README.md) for static builds, authentication,
 probe discovery, and server-side remote operations. Sessions now require a
-registered `probe_id`; forks inherit it. Agent-loop execution does not use probes yet.
+registered `probe_id`; forks inherit it. Workers resolve the session's probe
+before inference and expose it to tools/hooks through `AgentContext::probe()`.

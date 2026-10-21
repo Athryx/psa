@@ -148,6 +148,14 @@ impl IntoResponse for HttpError {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok\n" }))
+        .route(
+            routes::AGENT_DEFINITIONS,
+            post(create_agent_definition).get(list_agent_definitions),
+        )
+        .route(
+            routes::AGENT_DEFINITION,
+            get(get_agent_definition).put(update_agent_definition),
+        )
         .route(routes::SESSIONS, post(create_session).get(list_sessions))
         .route(routes::SESSION, get(get_session).patch(update_session))
         .route(routes::FORK, post(fork_session))
@@ -158,6 +166,48 @@ pub fn router(state: AppState) -> Router {
         .route(routes::AGENT_EVENTS, get(agent_events))
         .merge(crate::probes::router())
         .with_state(state)
+}
+
+async fn create_agent_definition(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<api::CreateAgentDefinition>,
+) -> Result<impl IntoResponse, HttpError> {
+    state.require_accepting()?;
+
+    let definition = state.runtime.create_agent_definition(request).await?;
+    Ok((StatusCode::CREATED, Json(definition)))
+}
+
+async fn list_agent_definitions(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<api::AgentDefinition>>, HttpError> {
+    Ok(Json(state.runtime.list_agent_definitions().await?))
+}
+
+async fn get_agent_definition(
+    State(state): State<AppState>,
+    ApiPath(id): ApiPath<u64>,
+) -> Result<Json<api::AgentDefinition>, HttpError> {
+    Ok(Json(
+        state
+            .runtime
+            .get_agent_definition(api::AgentDefinitionId(id))
+            .await?,
+    ))
+}
+
+async fn update_agent_definition(
+    State(state): State<AppState>,
+    ApiPath(id): ApiPath<u64>,
+    ApiJson(request): ApiJson<api::UpdateAgentDefinition>,
+) -> Result<impl IntoResponse, HttpError> {
+    state.require_accepting()?;
+
+    let definition = state
+        .runtime
+        .update_agent_definition(api::AgentDefinitionId(id), request)
+        .await?;
+    Ok((StatusCode::CREATED, Json(definition)))
 }
 
 async fn create_session(
@@ -212,8 +262,9 @@ async fn fork_session(
     state.require_accepting()?;
 
     let fork = state.runtime.fork_session(SessionId(id), request).await?;
+    let busy = state.runtime.is_busy(fork.session.id).await?;
     let view = api::ForkedSession {
-        session: fork.session.into_api(false),
+        session: fork.session.into_api(busy),
         agents: fork
             .agents
             .into_iter()
@@ -570,6 +621,7 @@ mod tests {
                 probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
                 name: "test".into(),
                 working_directory: "/work".into(),
+                model_config: crate::test_support::model_config(),
             })
             .await
             .unwrap();
@@ -577,7 +629,9 @@ mod tests {
             .create_agent(
                 session.id,
                 NewAgent {
+                    interactive: false,
                     name: "test".into(),
+                    definition_id: api::AgentDefinitionId(1),
                 },
             )
             .await

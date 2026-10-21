@@ -3,6 +3,94 @@ use crate::sessions::NewSession;
 use std::time::Duration;
 
 #[tokio::test]
+async fn persisted_model_updates_live_request_projection_and_survives_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::open(dir.path().join("model.sqlite3"))
+        .await
+        .unwrap();
+    crate::test_support::register_probe(&db).await;
+    let mut cursor = db.cursor().await.unwrap();
+    let session = cursor
+        .create_session(NewSession {
+            model_config: crate::test_support::model_config(),
+            probe_id: crate::test_support::probe_metadata().id,
+            name: "model test".into(),
+            working_directory: "/work".into(),
+        })
+        .await
+        .unwrap();
+    let agent = cursor
+        .create_agent(
+            session.id,
+            super::super::NewAgent {
+                interactive: false,
+                definition_id: psa_api::AgentDefinitionId(1),
+                name: "agent".into(),
+            },
+        )
+        .await
+        .unwrap();
+    cursor.commit().await.unwrap();
+
+    let publication = Publication::default();
+    let mut state = AgentManagerState::load(db.clone(), publication.clone(), agent.id)
+        .await
+        .unwrap();
+    assert!(state.context().model_config().is_none());
+    let mut model = session.model_config.clone();
+    model.model = llm_api::providers::Model::new("saved-model").unwrap();
+    state
+        .persist_events(&[
+            NewEvent::new(EventType::NewContext),
+            NewEvent::new(EventType::Model(model.clone())),
+        ])
+        .await
+        .unwrap();
+    assert_eq!(state.context().model_config(), Some(&model));
+    assert_eq!(
+        state
+            .context()
+            .prepare_request(Default::default())
+            .unwrap()
+            .history
+            .config,
+        model
+    );
+
+    model.model = llm_api::providers::Model::new("updated-model").unwrap();
+    state
+        .persist_events(&[NewEvent::new(EventType::Model(model.clone()))])
+        .await
+        .unwrap();
+    assert_eq!(state.context().model_config(), Some(&model));
+    assert_eq!(
+        state
+            .context()
+            .prepare_request(Default::default())
+            .unwrap()
+            .history
+            .config,
+        model
+    );
+    drop(state);
+
+    let restored = AgentManagerState::load(db.clone(), publication, agent.id)
+        .await
+        .unwrap();
+    assert_eq!(restored.context().model_config(), Some(&model));
+    assert_eq!(
+        restored
+            .context()
+            .prepare_request(Default::default())
+            .unwrap()
+            .history
+            .config,
+        model
+    );
+    db.close().await;
+}
+
+#[tokio::test]
 async fn repeated_status_changes_are_omitted_using_prior_transitions_in_the_batch() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::open(dir.path().join("test.sqlite3"))
@@ -12,6 +100,7 @@ async fn repeated_status_changes_are_omitted_using_prior_transitions_in_the_batc
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            model_config: crate::test_support::model_config(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             name: "test".into(),
             working_directory: "/work".into(),
@@ -22,6 +111,8 @@ async fn repeated_status_changes_are_omitted_using_prior_transitions_in_the_batc
         .create_agent(
             session.id,
             super::super::NewAgent {
+                interactive: false,
+                definition_id: psa_api::AgentDefinitionId(1),
                 name: "test".into(),
             },
         )
@@ -126,6 +217,7 @@ async fn cancelled_persistence_finishes_before_the_next_append() {
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            model_config: crate::test_support::model_config(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             name: "test".into(),
             working_directory: "/work".into(),
@@ -136,6 +228,8 @@ async fn cancelled_persistence_finishes_before_the_next_append() {
         .create_agent(
             session.id,
             super::super::NewAgent {
+                interactive: false,
+                definition_id: psa_api::AgentDefinitionId(1),
                 name: "test".into(),
             },
         )
@@ -241,6 +335,7 @@ async fn committed_calls_get_not_run_results_when_interrupted_before_execution()
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            model_config: crate::test_support::model_config(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             name: "test".into(),
             working_directory: "/work".into(),
@@ -251,6 +346,8 @@ async fn committed_calls_get_not_run_results_when_interrupted_before_execution()
         .create_agent(
             session.id,
             super::super::NewAgent {
+                interactive: false,
+                definition_id: psa_api::AgentDefinitionId(1),
                 name: "test".into(),
             },
         )

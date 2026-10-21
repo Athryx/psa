@@ -5,6 +5,24 @@ CREATE TABLE probes (
     last_connected_at INTEGER NOT NULL
 );
 
+CREATE TABLE agent_definitions (
+    id INTEGER PRIMARY KEY,
+    previous_version_id INTEGER REFERENCES agent_definitions(id),
+    version INTEGER NOT NULL CHECK (version >= 1),
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    selectable BOOLEAN NOT NULL,
+    tools TEXT NOT NULL CHECK (json_valid(tools)),
+    agent_create_hooks TEXT NOT NULL CHECK (json_valid(agent_create_hooks)),
+    session_update_hooks TEXT NOT NULL CHECK (json_valid(session_update_hooks)),
+    before_request_hooks TEXT NOT NULL CHECK (json_valid(before_request_hooks)),
+    after_request_hooks TEXT NOT NULL CHECK (json_valid(after_request_hooks)),
+    model_config TEXT CHECK (model_config IS NULL OR json_valid(model_config)),
+    skills TEXT NOT NULL CHECK (json_valid(skills)),
+    permitted_subagents TEXT NOT NULL CHECK (json_valid(permitted_subagents)),
+    extra_system_prompt TEXT NOT NULL
+);
+
 CREATE TABLE sessions (
     id INTEGER PRIMARY KEY,
     parent_session_id INTEGER REFERENCES sessions(id),
@@ -13,6 +31,7 @@ CREATE TABLE sessions (
     name TEXT NOT NULL,
     working_directory TEXT NOT NULL,
     probe_id TEXT NOT NULL REFERENCES probes(id),
+    model_config TEXT NOT NULL CHECK (json_valid(model_config)),
     created_at_us INTEGER NOT NULL,
     updated_at_us INTEGER NOT NULL,
     CHECK (parent_session_id IS NOT NULL OR first_position = 1)
@@ -22,6 +41,7 @@ CREATE INDEX sessions_parent ON sessions(parent_session_id);
 CREATE TABLE agents (
     id INTEGER PRIMARY KEY,
     session_id INTEGER NOT NULL REFERENCES sessions(id),
+    definition_id INTEGER NOT NULL REFERENCES agent_definitions(id),
     parent_agent_id INTEGER REFERENCES agents(id),
     first_event_seq INTEGER NOT NULL CHECK (first_event_seq >= 1),
     next_event_seq INTEGER NOT NULL CHECK (next_event_seq >= first_event_seq),

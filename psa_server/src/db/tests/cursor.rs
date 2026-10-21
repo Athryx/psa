@@ -14,6 +14,7 @@ async fn commit_persists_multiple_operations_together() {
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            model_config: crate::test_support::model_config(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             name: "atomic setup".into(),
             working_directory: "/work".into(),
@@ -24,6 +25,8 @@ async fn commit_persists_multiple_operations_together() {
         .create_agent(
             session.id,
             NewAgent {
+                interactive: false,
+                definition_id: psa_api::AgentDefinitionId(1),
                 name: "main".into(),
             },
         )
@@ -108,6 +111,8 @@ async fn explicit_rollback_and_drop_discard_all_cursor_changes() {
             .create_agent(
                 session.id,
                 NewAgent {
+                    interactive: false,
+                    definition_id: psa_api::AgentDefinitionId(1),
                     name: "uncommitted".into(),
                 },
             )

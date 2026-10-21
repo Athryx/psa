@@ -5,7 +5,7 @@ use time::OffsetDateTime;
 
 pub use psa_api::SessionId;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub id: SessionId,
     pub parent_id: Option<SessionId>,
@@ -14,6 +14,7 @@ pub struct Session {
     pub name: String,
     pub working_directory: PathBuf,
     pub probe_id: psa_api::ProbeId,
+    pub model_config: llm_api::providers::ModelConfig,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -26,6 +27,7 @@ impl Session {
             name: self.name,
             working_directory: self.working_directory,
             probe_id: self.probe_id,
+            model_config: self.model_config,
             busy,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -38,10 +40,12 @@ pub struct NewSession {
     pub name: String,
     pub working_directory: PathBuf,
     pub probe_id: psa_api::ProbeId,
+    pub model_config: llm_api::providers::ModelConfig,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct SessionUpdate {
+    pub model_config: Option<llm_api::providers::ModelConfig>,
     pub name: Option<String>,
     pub working_directory: Option<PathBuf>,
 }

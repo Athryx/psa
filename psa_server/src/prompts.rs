@@ -1,5 +1,26 @@
 //! All harness-authored text sent to the model lives here, including tool errors.
 use llm_api::api::{ContentBlock, TextBlock};
+use std::path::Path;
+
+pub mod skills;
+pub mod tools;
+
+pub fn default_system_prompt() -> &'static str {
+    "You are an expert coding assistant operating inside psa, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files."
+}
+
+pub fn cwd_system_prompt(cwd: &Path) -> String {
+    format!("<cwd>\n{}\n</cwd>", escape_xml(&cwd.to_string_lossy()))
+}
+
+pub(crate) fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
 
 pub fn text(content: impl Into<String>) -> Vec<ContentBlock> {
     vec![ContentBlock::Text(TextBlock {

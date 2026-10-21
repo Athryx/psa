@@ -12,6 +12,71 @@ pub struct SessionId(pub u64);
 #[serde(transparent)]
 pub struct AgentId(pub u64);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AgentDefinitionId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HookId {
+    Noop,
+    StopWithoutTools,
+    DefaultStartup,
+    ExtraSystemPrompt,
+    ToolDefinitions,
+    Cwd,
+    Skills,
+    SessionModelUpdate,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HookIds {
+    pub agent_create: Vec<HookId>,
+    pub session_update: Vec<HookId>,
+    pub before_request: Vec<HookId>,
+    pub after_request: Vec<HookId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentDefinition {
+    pub id: AgentDefinitionId,
+    pub previous_version_id: Option<AgentDefinitionId>,
+    pub version: u64,
+    pub name: String,
+    pub description: String,
+    pub selectable: bool,
+    pub tools: Vec<ToolId>,
+    pub hooks: HookIds,
+    pub model_config: Option<ModelConfig>,
+    pub skills: Vec<PathBuf>,
+    pub permitted_subagents: Vec<AgentDefinitionId>,
+    pub extra_system_prompt: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateAgentDefinition {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub selectable: bool,
+    #[serde(default)]
+    pub tools: Vec<ToolId>,
+    #[serde(default)]
+    pub hooks: HookIds,
+    pub model_config: Option<ModelConfig>,
+    #[serde(default)]
+    pub skills: Vec<PathBuf>,
+    #[serde(default)]
+    pub permitted_subagents: Vec<AgentDefinitionId>,
+    #[serde(default)]
+    pub extra_system_prompt: String,
+}
+
+/// A complete replacement that creates a new immutable definition version.
+pub type UpdateAgentDefinition = CreateAgentDefinition;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentState {
     Idle,
@@ -56,6 +121,7 @@ pub struct Session {
     pub name: String,
     pub working_directory: PathBuf,
     pub probe_id: crate::ProbeId,
+    pub model_config: ModelConfig,
     pub busy: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -66,9 +132,11 @@ pub struct Session {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agent {
     pub id: AgentId,
+    pub definition_id: AgentDefinitionId,
     pub session_id: SessionId,
     pub parent_id: Option<AgentId>,
     pub name: String,
+    pub interactive: bool,
     pub state: AgentState,
     pub usage: AgentUsage,
     pub next_event_id: EventId,
@@ -84,6 +152,7 @@ pub struct CreateSession {
     pub name: String,
     pub working_directory: PathBuf,
     pub probe_id: crate::ProbeId,
+    pub model_config: ModelConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -91,6 +160,7 @@ pub struct CreateSession {
 pub struct UpdateSession {
     pub name: Option<String>,
     pub working_directory: Option<PathBuf>,
+    pub model_config: Option<ModelConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -119,10 +189,11 @@ pub struct ForkedSession {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateAgent {
+    pub definition_id: AgentDefinitionId,
     pub name: String,
-    pub model: ModelConfig,
+    /// Metadata for tools and hooks; does not change runtime behavior.
     #[serde(default)]
-    pub tools: Vec<ToolId>,
+    pub interactive: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

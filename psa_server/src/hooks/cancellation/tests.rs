@@ -12,6 +12,7 @@ fn session() -> Session {
         next_position: 1,
         name: "test".into(),
         working_directory: "/work".into(),
+        model_config: crate::test_support::model_config(),
         created_at: time::OffsetDateTime::UNIX_EPOCH,
         updated_at: time::OffsetDateTime::UNIX_EPOCH,
     }

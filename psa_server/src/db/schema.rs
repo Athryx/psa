@@ -41,6 +41,7 @@ pub(super) struct SessionRow {
     pub name: String,
     pub working_directory: String,
     pub probe_id: String,
+    pub model_config: String,
     pub created_at_us: i64,
     pub updated_at_us: i64,
 }
@@ -59,6 +60,7 @@ impl TryFrom<SessionRow> for Session {
             next_position: decode_integer(row.next_position)?,
             name: row.name,
             working_directory: PathBuf::from(row.working_directory),
+            model_config: serde_json::from_str(&row.model_config)?,
             probe_id: psa_api::ProbeId(
                 psa_api::probes::Uuid::parse_str(&row.probe_id)
                     .map_err(|e| DbError::Corrupt(e.to_string()))?,
@@ -72,11 +74,13 @@ impl TryFrom<SessionRow> for Session {
 pub(super) struct AgentRow {
     pub id: i64,
     pub session_id: i64,
+    pub definition_id: i64,
     pub parent_agent_id: Option<i64>,
     pub first_event_seq: i64,
     pub next_event_seq: i64,
     pub created_position: i64,
     pub name: String,
+    pub interactive: bool,
     pub state: String,
     pub usage: String,
     pub created_at_us: i64,
@@ -89,6 +93,7 @@ impl TryFrom<AgentRow> for Agent {
         Ok(Self {
             id: AgentId(decode_integer(row.id)?),
             session_id: SessionId(decode_integer(row.session_id)?),
+            definition_id: psa_api::AgentDefinitionId(decode_integer(row.definition_id)?),
             parent_id: row
                 .parent_agent_id
                 .map(decode_integer)
@@ -98,6 +103,7 @@ impl TryFrom<AgentRow> for Agent {
             next_event_id: EventId(decode_integer(row.next_event_seq)?),
             created_position: decode_integer(row.created_position)?,
             name: row.name,
+            interactive: row.interactive,
             state: parse_agent_state(&row.state)?,
             usage: serde_json::from_str(&row.usage)?,
             created_at: decode_time(row.created_at_us)?,

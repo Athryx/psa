@@ -181,6 +181,12 @@ async fn registration_auth_sessions_and_reconnect() {
                 name: "remote".into(),
                 working_directory: "/not/on/server".into(),
                 probe_id: harness.id,
+                model_config: serde_json::from_value(serde_json::json!({
+                    "model": { "api_name": "test-model" },
+                    "provider": "Openrouter",
+                    "effort": "Medium"
+                }))
+                .unwrap(),
             })
             .await
             .unwrap();
@@ -202,7 +208,8 @@ async fn registration_auth_sessions_and_reconnect() {
                 .create_session(&psa_api::CreateSession {
                     name: "bad".into(),
                     working_directory: "/tmp".into(),
-                    probe_id: ProbeId(Uuid::new_v4())
+                    probe_id: ProbeId(Uuid::new_v4()),
+                    model_config: session.model_config.clone(),
                 })
                 .await
                 .is_err()
@@ -215,6 +222,130 @@ async fn registration_auth_sessions_and_reconnect() {
         ));
         harness.wait_active().await;
         assert_eq!(harness.client.list_probes().await.unwrap().len(), 1);
+        harness.stop().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn startup_reads_remote_skill_metadata_in_configured_order() {
+    use psa_api::events::{EventType, MessageType};
+
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let harness = Harness::start().await;
+        let handle = harness.handle().await;
+        let cwd = harness.dir.path().join("remote<&>");
+        handle.create_dir(cwd.join("skills/review")).await.unwrap();
+        for (path, contents) in [
+            (
+                "skills/review/SKILL.md",
+                "---\nname: 'review<&>'\ndescription: 'Review <code> & tests'\n---\nSECRET DIRECTORY SKILL BODY\n",
+            ),
+            (
+                "skills/direct.md",
+                "---\nname: direct\ndescription: A direct file\n---\nSECRET DIRECT SKILL BODY\n",
+            ),
+            (
+                "skills/hidden.md",
+                "---\nname: hidden-skill\ndescription: hidden description\ndisable-model-invocation: true\n---\nSECRET HIDDEN SKILL BODY\n",
+            ),
+        ] {
+            let call = handle.write_file(cwd.join(path), false).await.unwrap();
+            call.sender.write(0, contents.as_bytes()).await.unwrap();
+            call.sender.close_stdin().await.unwrap();
+            collect(call).await;
+        }
+        let definition = harness
+            .client
+            .create_agent_definition(&psa_api::CreateAgentDefinition {
+                name: "remote skills".into(),
+                tools: vec![psa_api::ToolId::Noop],
+                hooks: psa_api::HookIds {
+                    agent_create: vec![
+                        psa_api::HookId::DefaultStartup,
+                        psa_api::HookId::ToolDefinitions,
+                        psa_api::HookId::Cwd,
+                        psa_api::HookId::Skills,
+                    ],
+                    ..Default::default()
+                },
+                skills: vec![
+                    "skills/review".into(),
+                    "skills/direct.md".into(),
+                    "skills/hidden.md".into(),
+                    "skills/missing".into(),
+                ],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let session = harness
+            .client
+            .create_session(&psa_api::CreateSession {
+                name: "skills".into(),
+                working_directory: cwd.clone(),
+                probe_id: harness.id,
+                model_config: serde_json::from_value(serde_json::json!({
+                    "model": { "api_name": "test-model" },
+                    "provider": "Openrouter",
+                    "effort": "Medium"
+                }))
+                .unwrap(),
+            })
+            .await
+            .unwrap();
+        let agent = harness
+            .client
+            .create_agent(
+                session.id,
+                &psa_api::CreateAgent {
+                    interactive: false,
+                    name: "remote reader".into(),
+                    definition_id: definition.id,
+                },
+            )
+            .await
+            .unwrap();
+        while harness.client.get_session(session.id).await.unwrap().busy {
+            tokio::task::yield_now().await;
+        }
+        let page = harness
+            .client
+            .events(session.id, Some(agent.id), &psa_api::EventsQuery::default())
+            .await
+            .unwrap();
+        let events: Vec<_> = page.events.iter().map(|event| &event.event.kind).collect();
+        assert_eq!(events.len(), 7, "unexpected startup events: {events:#?}");
+        assert!(matches!(events[0], EventType::NewContext));
+        assert!(matches!(events[1], EventType::Model(_)));
+        assert!(matches!(events[2], EventType::Message(message) if message.message_type == MessageType::System));
+        assert!(matches!(events[3], EventType::ToolDefinition(_)));
+        let EventType::Message(cwd_message) = events[4] else {
+            panic!("cwd must follow tool definitions");
+        };
+        assert_eq!(cwd_message.message_type, MessageType::System);
+        let escaped_cwd = cwd.to_str().unwrap().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        assert_eq!(
+            serde_json::to_value(&cwd_message.content).unwrap(),
+            serde_json::to_value(psa_server::prompts::text(format!("<cwd>\n{escaped_cwd}\n</cwd>"))).unwrap()
+        );
+        assert!(events[5..].iter().any(|event| matches!(event, EventType::Log(log) if !log.error && log.message.contains("missing"))));
+        let catalogue = events[5..].iter().find_map(|event| match event {
+            EventType::Message(message) if message.message_type == MessageType::System => Some(message),
+            _ => None,
+        }).expect("skills must emit a system catalogue after cwd");
+        let content = serde_json::to_value(&catalogue.content).unwrap();
+        let text: String = content.as_array().unwrap().iter().filter_map(|block| block["Text"]["text"].as_str()).collect();
+        assert!(text.contains("<skills>"));
+        assert!(text.contains("<available_skills>"));
+        assert!(text.contains("review&lt;&amp;&gt;"));
+        assert!(text.contains("Review &lt;code&gt; &amp; tests"));
+        assert!(text.contains(&format!("{escaped_cwd}/skills/review/SKILL.md")));
+        assert!(text.contains(&format!("{escaped_cwd}/skills/direct.md")));
+        assert!(text.find("review&lt;&amp;&gt;").unwrap() < text.find("<name>direct</name>").unwrap());
+        assert!(!text.contains("hidden-skill"));
+        assert!(!text.contains("SECRET"), "catalogue must not load skill bodies into context");
         harness.stop().await;
     })
     .await

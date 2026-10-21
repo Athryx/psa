@@ -5,7 +5,7 @@ use super::{
     agent_context::AgentContext,
     agent_projection::AgentProjection,
     publication::{Publication, status_event},
-    session_manager::{BoundaryReply, ManagerClient},
+    session_manager::{BoundaryReply, LifecycleHook, ManagerClient},
     sessions::Sessions,
 };
 use crate::{
@@ -13,8 +13,8 @@ use crate::{
     hooks::{
         Hooks,
         cancellation::wait_for_interrupt,
-        run_hook,
-        tools::{self, failed_tool_result},
+        run_hooks,
+        tools::{self, ToolKind, failed_tool_result},
     },
     probes::{ProbeHandle, ProbeRegistry},
     prompts,
@@ -28,7 +28,7 @@ use llm_api::api::{
     RequestConfig,
 };
 use psa_api::events::*;
-use std::{panic::AssertUnwindSafe, time::Instant};
+use std::{panic::AssertUnwindSafe, sync::Arc, time::Instant};
 use tokio::task::JoinHandle;
 
 type PendingPersistence = JoinHandle<Result<(AddEventResult, AgentProjection), AgentError>>;
@@ -48,6 +48,8 @@ pub struct AgentManagerState {
     agent: Agent,
     context: AgentProjection,
     session: Session,
+    definition: psa_api::AgentDefinition,
+    tools: Arc<[ToolKind]>,
     publication: Publication,
     pending_persistence: Option<PendingPersistence>,
 }
@@ -69,6 +71,14 @@ impl AgentManagerState {
         &self.session
     }
 
+    pub fn definition(&self) -> &psa_api::AgentDefinition {
+        &self.definition
+    }
+
+    pub fn tools(&self) -> &[ToolKind] {
+        &self.tools
+    }
+
     pub(crate) fn update_session(&mut self, session: Session) {
         self.session = session;
     }
@@ -81,14 +91,22 @@ impl AgentManagerState {
         let mut cursor = db.cursor().await?;
         let agent = cursor.get_agent(id).await?;
         let session = cursor.get_session(agent.session_id).await?;
+        let definition = cursor.get_agent_definition(agent.definition_id).await?;
         let context = AgentProjection::replay(&cursor.load_all_events(id).await?)?;
         cursor.rollback().await?;
 
+        let tools = definition
+            .tools
+            .iter()
+            .map(|id| ToolKind::new(*id, &agent, &session))
+            .collect();
         Ok(Self {
             db,
             publication,
             agent,
             session,
+            definition,
+            tools,
             context,
             pending_persistence: None,
         })
@@ -187,9 +205,11 @@ impl AgentManagerState {
         controls: &mut UnboundedMailbox<AgentManagerMessage>,
     ) -> Result<(), AgentError> {
         let mut interrupted = false;
+        let tools = self.tools.clone();
         for call in self.outstanding_calls() {
             interrupted |= drain_controls(self, controls);
             let output = tools::execute(
+                &tools,
                 &call,
                 &mut AgentContext::new(self, probe, sessions),
                 &mut interrupted,
@@ -468,7 +488,22 @@ pub(crate) async fn run_worker(
     sessions: Sessions,
 ) -> Result<(), AgentError> {
     let outcome = AssertUnwindSafe(async {
-        let mut hooks = Hooks::default();
+        let mut hooks = Hooks::new(&state.definition.hooks, &state.agent, &state.session);
+        #[cfg(test)]
+        {
+            use super::session_manager::lifecycle_tests::RecordLifecycle;
+            use crate::hooks::HookKind;
+            hooks
+                .agent_create
+                .push(HookKind::RecordLifecycle(RecordLifecycle {
+                    name: "create",
+                }));
+            hooks
+                .session_update
+                .push(HookKind::RecordLifecycle(RecordLifecycle {
+                    name: "update",
+                }));
+        }
         let mut invocation = 0u64;
 
         loop {
@@ -482,6 +517,30 @@ pub(crate) async fn run_worker(
                 .map_err(|_| AgentError::SupervisorUnavailable)?
             {
                 BoundaryReply::Stop => return Ok(()),
+                BoundaryReply::Hook(invocation) => {
+                    let hook = match invocation {
+                        LifecycleHook::AgentCreate => &mut hooks.agent_create,
+                        LifecycleHook::SessionUpdate(session) => {
+                            state.update_session(session);
+                            &mut hooks.session_update
+                        }
+                    };
+                    let probe = probes.handle(state.session.probe_id).await.ok();
+                    if run_hooks(
+                        hook,
+                        &mut AgentContext::with_optional_probe(
+                            &mut state,
+                            probe.as_ref(),
+                            &sessions,
+                        ),
+                        &mut controls,
+                    )
+                    .await?
+                    {
+                        state.interrupt().await?;
+                    }
+                    continue;
+                }
                 BoundaryReply::Work(request) => {
                     state
                         .persist_events(&[
@@ -521,7 +580,7 @@ pub(crate) async fn run_worker(
                 continue;
             };
 
-            if run_hook(
+            if run_hooks(
                 &mut hooks.before_request,
                 &mut AgentContext::new(&mut state, &probe, &sessions),
                 &mut controls,
@@ -547,7 +606,7 @@ pub(crate) async fn run_worker(
                 .infer(&providers, &mut controls, &invocation_id)
                 .await?;
 
-            if run_hook(
+            if run_hooks(
                 &mut hooks.after_request,
                 &mut AgentContext::new(&mut state, &probe, &sessions),
                 &mut controls,

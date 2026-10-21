@@ -9,18 +9,19 @@ use crate::{
     probes::ProbeHandle,
     sessions::Session,
 };
-use psa_api::{EventEnvelope, events::*};
+use psa_api::{EventEnvelope, events::*, probe_transport::ProbeError};
 
 #[cfg(test)]
 mod tests;
 
-/// Borrows the current worker state and this iteration's probe connection.
+/// Borrows the current worker state and an optional probe connection.
+/// Lifecycle hooks also run when the session's probe is offline.
 /// Trace queries are scoped to this agent, including inherited fork history.
 /// Session/agent changes made through `Sessions` follow the normal manager API;
 /// the definitions here remain the worker's current snapshots.
 pub struct AgentContext<'a> {
     state: &'a mut AgentManagerState,
-    probe: &'a ProbeHandle,
+    probe: Option<&'a ProbeHandle>,
     sessions: &'a Sessions,
 }
 
@@ -28,6 +29,14 @@ impl<'a> AgentContext<'a> {
     pub(crate) fn new(
         state: &'a mut AgentManagerState,
         probe: &'a ProbeHandle,
+        sessions: &'a Sessions,
+    ) -> Self {
+        Self::with_optional_probe(state, Some(probe), sessions)
+    }
+
+    pub(crate) fn with_optional_probe(
+        state: &'a mut AgentManagerState,
+        probe: Option<&'a ProbeHandle>,
         sessions: &'a Sessions,
     ) -> Self {
         Self {
@@ -49,12 +58,21 @@ impl<'a> AgentContext<'a> {
         self.state.update_session(session);
     }
 
+    pub fn definition(&self) -> &psa_api::AgentDefinition {
+        self.state.definition()
+    }
+
+    pub fn tools(&self) -> &[crate::hooks::tools::ToolKind] {
+        self.state.tools()
+    }
+
     pub fn projection(&self) -> &AgentProjection {
         self.state.context()
     }
 
-    pub fn probe(&self) -> &ProbeHandle {
-        self.probe
+    /// The invocation's connection, or `Disconnected` for offline lifecycle hooks.
+    pub fn probe(&self) -> Result<&ProbeHandle, ProbeError> {
+        self.probe.ok_or(ProbeError::Disconnected)
     }
 
     pub fn sessions(&self) -> &Sessions {

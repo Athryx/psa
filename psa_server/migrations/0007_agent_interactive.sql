@@ -1,0 +1,1 @@
+ALTER TABLE agents ADD COLUMN interactive BOOLEAN NOT NULL DEFAULT FALSE CHECK(interactive IN(0,1));

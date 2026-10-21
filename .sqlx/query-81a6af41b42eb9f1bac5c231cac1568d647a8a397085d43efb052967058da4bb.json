@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, session_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, state, usage, created_at_us, updated_at_us FROM agents WHERE session_id = ? ORDER BY id",
+  "query": "SELECT id, session_id, definition_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, interactive, state, usage, created_at_us, updated_at_us FROM agents WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -26,8 +26,19 @@
         }
       },
       {
-        "name": "parent_agent_id",
+        "name": "definition_id",
         "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "agents",
+            "name": "definition_id"
+          }
+        }
+      },
+      {
+        "name": "parent_agent_id",
+        "ordinal": 3,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -38,7 +49,7 @@
       },
       {
         "name": "first_event_seq",
-        "ordinal": 3,
+        "ordinal": 4,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -49,7 +60,7 @@
       },
       {
         "name": "next_event_seq",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -60,7 +71,7 @@
       },
       {
         "name": "created_position",
-        "ordinal": 5,
+        "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -71,7 +82,7 @@
       },
       {
         "name": "name",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -81,8 +92,19 @@
         }
       },
       {
+        "name": "interactive",
+        "ordinal": 8,
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "agents",
+            "name": "interactive"
+          }
+        }
+      },
+      {
         "name": "state",
-        "ordinal": 7,
+        "ordinal": 9,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -93,7 +115,7 @@
       },
       {
         "name": "usage",
-        "ordinal": 8,
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +126,7 @@
       },
       {
         "name": "created_at_us",
-        "ordinal": 9,
+        "ordinal": 11,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -115,7 +137,7 @@
       },
       {
         "name": "updated_at_us",
-        "ordinal": 10,
+        "ordinal": 12,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -131,7 +153,9 @@
     "nullable": [
       false,
       false,
+      false,
       true,
+      false,
       false,
       false,
       false,
@@ -142,5 +166,5 @@
       false
     ]
   },
-  "hash": "967269ec31242c6fc4d60b9635bbd5393c766d86efac4b9e880b80a8431909a9"
+  "hash": "81a6af41b42eb9f1bac5c231cac1568d647a8a397085d43efb052967058da4bb"
 }

@@ -5,6 +5,10 @@ Clients manage sessions and agents through an async Rust client or HTTP/SSE API;
 probes connect outward over authenticated WebSockets to provide file and process
 operations across machines or sandboxes.
 
+Agent creation accepts an `interactive` boolean (JSON default: `false`). It is
+metadata available to tools and hooks, not a runtime behavior switch; agent
+responses expose it and forks inherit it.
+
 **Current limitations:** the client HTTP API has no authentication layer. Keep it
 on loopback or behind a trusted authenticated transport. Probe operations are
 available to server-side Rust integrations, but agent tools do not use them yet.
@@ -222,10 +226,27 @@ resume or replay operations; a disconnected mutation may have an unknown outcome
 
 ## Clients and further documentation
 
-Use `psa_api::Client` for sessions, agents, probe discovery, and JSON/SSE event
-queries. Every session requires a registered probe ID; its working directory is
-a path on that probe. There is no remote-operation HTTP API yet; use
-`psa_server::probes::ProbeRegistry` handles inside server-side integrations.
+Use `psa_api::Client` for agent definitions, sessions, agents, probe discovery,
+and JSON/SSE event queries. Every session requires a registered probe ID and
+`model_config`; its working directory is a path on that probe. Create an agent
+with a `definition_id` and name. Definitions are immutable versions: updating
+one creates a new ID without changing existing agents. Their optional model
+configuration overrides the session model.
+
+Hook bindings default empty. For ordinary execution, explicitly bind
+`[DefaultStartup, ToolDefinitions, Cwd, Skills]` to `agent_create` in that order,
+`SessionModelUpdate` to `session_update`, and `StopWithoutTools` to `after_request`;
+see the server client example below. `DefaultStartup` initializes root context,
+model, and base assistant identity; `ToolDefinitions` separately snapshots tools.
+Both skip forks to preserve inherited context. `Cwd` emits the XML-escaped session
+working directory, including on forks, and can also bind to `session_update`.
+`Skills` reads explicitly listed skill locations on the session probe and emits
+an XML-escaped catalogue of names, descriptions, and paths, not skill bodies.
+Skills paths are consumed only when `SkillsHook` is configured. `selectable`,
+`permitted_subagents`, and `extra_system_prompt` remain literal metadata, not
+automatic selection, permission enforcement, or prompt injection. There is no
+remote-operation HTTP API yet; use `psa_server::probes::ProbeRegistry` handles
+inside server-side integrations.
 
 - [Server setup, client examples, storage, and SQLx workflow](psa_server/README.md)
 - [Probe operations, archive handling, and connection lifecycle](psa_probe/README.md)

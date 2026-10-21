@@ -1,0 +1,184 @@
+use super::{fixture, model};
+use crate::{
+    agents::NewAgent,
+    db::DbError,
+    sessions::{ForkPoint, SessionFork, SessionUpdate},
+};
+use psa_api::{AgentDefinitionId, CreateAgentDefinition, HookId, HookIds, ToolId};
+
+#[tokio::test]
+async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
+    let (_dir, db, session, _) = fixture().await;
+    let mut cursor = db.cursor().await.unwrap();
+    let request = CreateAgentDefinition {
+        name: " \n literal name \t".into(),
+        description: "description\n\n".into(),
+        selectable: false,
+        tools: vec![ToolId::Noop, ToolId::Noop],
+        hooks: HookIds {
+            agent_create: vec![HookId::Noop, HookId::DefaultStartup, HookId::Noop],
+            session_update: vec![HookId::SessionModelUpdate],
+            before_request: vec![HookId::Noop, HookId::Noop],
+            after_request: vec![HookId::StopWithoutTools, HookId::Noop],
+        },
+        model_config: Some(model()),
+        skills: vec![
+            "relative/../skill".into(),
+            "/missing/skill".into(),
+            "relative/../skill".into(),
+        ],
+        permitted_subagents: vec![AgentDefinitionId(999999), AgentDefinitionId(999999)],
+        extra_system_prompt: " \n literal prompt \n ".into(),
+    };
+    let first = cursor
+        .create_agent_definition(request.clone())
+        .await
+        .unwrap();
+    let mut expected = serde_json::to_value(&request).unwrap();
+    let object = expected.as_object_mut().unwrap();
+    object.insert("id".into(), serde_json::json!(first.id));
+    object.insert("version".into(), serde_json::json!(1));
+    object.insert("previous_version_id".into(), serde_json::Value::Null);
+    assert_eq!(serde_json::to_value(&first).unwrap(), expected);
+    let agent = cursor
+        .create_agent(
+            session.id,
+            NewAgent {
+                interactive: false,
+                name: "pinned".into(),
+                definition_id: first.id,
+            },
+        )
+        .await
+        .unwrap();
+
+    let replacement = CreateAgentDefinition {
+        name: String::new(),
+        ..Default::default()
+    };
+    let next = cursor
+        .update_agent_definition(first.id, replacement)
+        .await
+        .unwrap();
+    assert_ne!(first.id, next.id);
+    assert_eq!(next.previous_version_id, Some(first.id));
+    assert_eq!(next.version, 2);
+    assert!(next.tools.is_empty());
+    assert!(next.hooks.agent_create.is_empty());
+    assert!(next.model_config.is_none());
+    assert!(next.extra_system_prompt.is_empty());
+    assert_eq!(
+        serde_json::to_value(cursor.get_agent_definition(first.id).await.unwrap()).unwrap(),
+        expected
+    );
+    assert_eq!(
+        cursor.get_agent(agent.id).await.unwrap().definition_id,
+        first.id
+    );
+    assert_eq!(cursor.list_agent_definitions().await.unwrap().len(), 3);
+    let missing = AgentDefinitionId(777777);
+    assert!(matches!(
+        cursor.get_agent_definition(missing).await,
+        Err(DbError::NotFound { .. })
+    ));
+    assert!(matches!(
+        cursor
+            .update_agent_definition(missing, Default::default())
+            .await,
+        Err(DbError::NotFound { .. })
+    ));
+    assert!(
+        cursor
+            .create_agent(
+                session.id,
+                NewAgent {
+                    interactive: false,
+                    name: "invalid reference".into(),
+                    definition_id: missing
+                }
+            )
+            .await
+            .is_err()
+    );
+    cursor.commit().await.unwrap();
+    db.close().await;
+}
+
+#[tokio::test]
+async fn fork_preserves_definition_reference_and_session_model_or_explicit_override() {
+    let (_dir, db, session, agent) = fixture().await;
+    let mut cursor = db.cursor().await.unwrap();
+    let updated_definition = cursor
+        .update_agent_definition(
+            agent.definition_id,
+            CreateAgentDefinition {
+                name: "updated".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let fork = cursor
+        .fork_session(
+            session.id,
+            SessionFork {
+                point: ForkPoint::Head,
+                metadata: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(fork.session.model_config, session.model_config);
+    assert_eq!(fork.agents[0].1.definition_id, agent.definition_id);
+    assert_ne!(fork.agents[0].1.definition_id, updated_definition.id);
+
+    let mut changed = model();
+    changed.model = llm_api::providers::Model::new("different-model").unwrap();
+    let overridden = cursor
+        .fork_session(
+            session.id,
+            SessionFork {
+                point: ForkPoint::Head,
+                metadata: SessionUpdate {
+                    model_config: Some(changed.clone()),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(overridden.session.model_config, changed);
+    assert_eq!(
+        cursor.get_session(session.id).await.unwrap().model_config,
+        session.model_config
+    );
+    assert_eq!(
+        cursor
+            .get_agent(overridden.agents[0].1.id)
+            .await
+            .unwrap()
+            .definition_id,
+        agent.definition_id
+    );
+    let updated = cursor
+        .update_session(
+            session.id,
+            SessionUpdate {
+                model_config: Some(changed.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.model_config, changed);
+    assert_eq!(
+        cursor
+            .get_session(fork.session.id)
+            .await
+            .unwrap()
+            .model_config,
+        session.model_config
+    );
+    cursor.commit().await.unwrap();
+    db.close().await;
+}

@@ -135,13 +135,13 @@ async fn migration_backfills_usage_through_each_ancestor_cutoff() {
     let path = dir.path().join("legacy.sqlite3");
     let pool = create_legacy_database(&path).await;
     sqlx::raw_sql(
-        "INSERT INTO sessions VALUES (1,NULL,1,4,'root','/work','00000000-0000-0000-0000-000000000000',0,0);
-         INSERT INTO sessions VALUES (2,1,3,4,'child','/work','00000000-0000-0000-0000-000000000000',0,0);
-         INSERT INTO sessions VALUES (3,2,4,4,'nested','/work','00000000-0000-0000-0000-000000000000',0,0);
-         INSERT INTO agents VALUES (1,1,NULL,1,3,1,'root',0,0);
-         INSERT INTO agents VALUES (2,2,1,2,3,1,'child',0,0);
-         INSERT INTO agents VALUES (3,3,2,3,3,1,'nested',0,0);
-         INSERT INTO agents VALUES (4,1,NULL,1,1,1,'empty',0,0);
+        "INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (1,NULL,1,4,'root','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":{\"api_name\":\"test-model\"},\"provider\":\"Openrouter\",\"effort\":\"High\"}');
+         INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (2,1,3,4,'child','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":{\"api_name\":\"test-model\"},\"provider\":\"Openrouter\",\"effort\":\"High\"}');
+         INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (3,2,4,4,'nested','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":{\"api_name\":\"test-model\"},\"provider\":\"Openrouter\",\"effort\":\"High\"}');
+         INSERT INTO agents (id,session_id,parent_agent_id,first_event_seq,next_event_seq,created_position,name,created_at_us,updated_at_us,definition_id) VALUES (1,1,NULL,1,3,1,'root',0,0,1);
+         INSERT INTO agents (id,session_id,parent_agent_id,first_event_seq,next_event_seq,created_position,name,created_at_us,updated_at_us,definition_id) VALUES (2,2,1,2,3,1,'child',0,0,1);
+         INSERT INTO agents (id,session_id,parent_agent_id,first_event_seq,next_event_seq,created_position,name,created_at_us,updated_at_us,definition_id) VALUES (3,3,2,3,3,1,'nested',0,0,1);
+         INSERT INTO agents (id,session_id,parent_agent_id,first_event_seq,next_event_seq,created_position,name,created_at_us,updated_at_us,definition_id) VALUES (4,1,NULL,1,1,1,'empty',0,0,1);
          INSERT INTO events VALUES (1,1,1,2,0,'inference_end');
          INSERT INTO events VALUES (2,1,2,3,0,'inference_end');
          INSERT INTO events VALUES (3,2,2,3,0,'inference_end');

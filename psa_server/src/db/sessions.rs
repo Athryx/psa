@@ -20,16 +20,18 @@ impl DatabaseCursor {
     pub async fn create_session(&mut self, new: NewSession) -> Result<Session, DbError> {
         self.get_probe(new.probe_id).await?;
         let probe_id = new.probe_id.to_string();
+        let model_config = serde_json::to_string(&new.model_config)?;
         validate_name(&new.name)?;
         let path = encode_path(&new.working_directory)?;
         let now = now_us()?;
 
         let mut savepoint = self.transaction.begin().await?;
         let result = sqlx::query!(
-            "INSERT INTO sessions (first_position, next_position, name, working_directory, probe_id, created_at_us, updated_at_us) VALUES (1,1,?,?,?,?,?)",
+            "INSERT INTO sessions (first_position, next_position, name, working_directory, probe_id, model_config, created_at_us, updated_at_us) VALUES (1,1,?,?,?,?,?,?)",
             new.name,
             path,
             probe_id,
+            model_config,
             now,
             now
         )
@@ -57,7 +59,7 @@ impl DatabaseCursor {
         let parent = parent.map(|id| encode_integer(id.0)).transpose()?;
         let rows = sqlx::query_as!(
             SessionRow,
-            "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, created_at_us, updated_at_us FROM sessions WHERE parent_session_id IS ? ORDER BY id",
+            "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, model_config, created_at_us, updated_at_us FROM sessions WHERE parent_session_id IS ? ORDER BY id",
             parent
         )
         .fetch_all(self.connection())
@@ -79,15 +81,21 @@ impl DatabaseCursor {
             .as_deref()
             .map(encode_path)
             .transpose()?;
+        let model_config = update
+            .model_config
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let key = encode_integer(id.0)?;
         let now = now_us()?;
 
         let mut savepoint = self.transaction.begin().await?;
         get_session(&mut savepoint, id).await?;
         sqlx::query!(
-            "UPDATE sessions SET name = COALESCE(?, name), working_directory = COALESCE(?, working_directory), updated_at_us = ? WHERE id = ?",
+            "UPDATE sessions SET name = COALESCE(?, name), working_directory = COALESCE(?, working_directory), model_config = COALESCE(?, model_config), updated_at_us = ? WHERE id = ?",
             update.name,
             path,
+            model_config,
             now,
             key
         )
@@ -140,19 +148,22 @@ impl DatabaseCursor {
         let path = encode_path(&path)?;
         let parent = encode_integer(source.0)?;
         let probe_id = original.probe_id.to_string();
+        let model_config =
+            serde_json::to_string(&fork.metadata.model_config.unwrap_or(original.model_config))?;
         let first = encode_integer(position)?
             .checked_add(1)
             .ok_or_else(|| DbError::InvalidInput("session position exhausted".into()))?;
         let now = now_us()?;
 
         let result = sqlx::query!(
-            "INSERT INTO sessions (parent_session_id, first_position, next_position, name, working_directory, probe_id, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO sessions (parent_session_id, first_position, next_position, name, working_directory, probe_id, model_config, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?,?,?)",
             parent,
             first,
             first,
             name,
             path,
             probe_id,
+            model_config,
             now,
             now
         )
@@ -181,7 +192,7 @@ pub(super) async fn get_session(
     let key = encode_integer(id.0)?;
     let row = sqlx::query_as!(
         SessionRow,
-        "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, created_at_us, updated_at_us FROM sessions WHERE id = ?",
+        "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, model_config, created_at_us, updated_at_us FROM sessions WHERE id = ?",
         key
     )
     .fetch_optional(conn)
@@ -208,17 +219,20 @@ async fn fork_agent(
         .ok_or_else(|| DbError::InvalidInput("event sequence exhausted".into()))?;
     let session_id = encode_integer(session.0)?;
     let parent = encode_integer(agent.id.0)?;
+    let definition_id = encode_integer(agent.definition_id.0)?;
     let created = encode_integer(agent.created_position)?;
     let now = now_us()?;
 
     let result = sqlx::query!(
-        "INSERT INTO agents (session_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, state, usage, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO agents (session_id, definition_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, interactive, state, usage, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         session_id,
+        definition_id,
         parent,
         first,
         first,
         created,
         agent.name,
+        agent.interactive,
         state,
         usage,
         now,

@@ -167,6 +167,46 @@ async fn bounded_mailbox_preserves_backpressure_and_close_drains_messages() {
 }
 
 #[tokio::test]
+async fn reserved_capacity_supports_sync_send_drop_and_close() {
+    let (handle, mut mailbox) = actors::channel(1);
+    let permit = handle.reserve().await.unwrap();
+    assert!(matches!(mailbox.try_recv(), Err(TryRecvError::Empty)));
+
+    let mut send = Box::pin(handle.send(2));
+    std::future::poll_fn(|context| {
+        assert!(send.as_mut().poll(context).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+
+    permit.send(1);
+    assert_eq!(mailbox.try_recv(), Ok(1));
+    send.await.unwrap();
+    assert_eq!(mailbox.try_recv(), Ok(2));
+
+    let permit = handle.reserve().await.unwrap();
+    let mut reserve = Box::pin(handle.reserve());
+    std::future::poll_fn(|context| {
+        assert!(reserve.as_mut().poll(context).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(permit);
+    let permit = reserve.await.unwrap();
+
+    // Closing rejects new reservations, but an existing permit can still send.
+    mailbox.close();
+    assert!(matches!(handle.reserve().await, Err(MailboxError::Closed)));
+    permit.send(3);
+    assert_eq!(mailbox.recv().await, Some(3));
+    assert!(mailbox.recv().await.is_none());
+
+    let (handle, mailbox) = actors::channel::<u64>(1);
+    drop(mailbox);
+    assert!(matches!(handle.reserve().await, Err(MailboxError::Closed)));
+}
+
+#[tokio::test]
 async fn cancelling_a_caller_does_not_retract_an_enqueued_request() {
     let (handle, mut mailbox) = actors::channel(1);
     let client = CounterClient::new(handle);

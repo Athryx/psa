@@ -1,5 +1,6 @@
 //! SQLite is private to this module; callers exchange domain sessions/agents/events.
 
+mod agent_definitions;
 mod agents;
 mod error;
 mod events;

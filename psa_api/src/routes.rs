@@ -1,4 +1,7 @@
-use crate::{AgentId, SessionId};
+use crate::{AgentDefinitionId, AgentId, SessionId};
+
+pub const AGENT_DEFINITIONS: &str = "/agent-definitions";
+pub const AGENT_DEFINITION: &str = "/agent-definitions/{definition_id}";
 
 pub const SESSIONS: &str = "/sessions";
 pub const SESSION: &str = "/sessions/{session_id}";
@@ -18,6 +21,10 @@ pub fn session_path(route: &str, session: SessionId) -> String {
 
 pub fn agent_path(route: &str, session: SessionId, agent: AgentId) -> String {
     session_path(route, session).replace("{agent_id}", &agent.0.to_string())
+}
+
+pub fn agent_definition_path(id: AgentDefinitionId) -> String {
+    AGENT_DEFINITION.replace("{definition_id}", &id.0.to_string())
 }
 
 pub fn probe_path(id: crate::ProbeId) -> String {
