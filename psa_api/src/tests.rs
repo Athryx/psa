@@ -18,6 +18,7 @@ fn definitions_have_flat_versioned_wire_types_and_default_empty_hooks() {
     assert_eq!(request.name, "assistant");
     assert_eq!(request.hooks, HookIds::default());
     assert!(request.tools.is_empty());
+    assert!(request.bundles.is_empty());
     assert!(request.model_config.is_none());
     assert!(request.skills.is_empty());
     assert!(request.permitted_subagents.is_empty());
@@ -43,6 +44,7 @@ fn definitions_have_flat_versioned_wire_types_and_default_empty_hooks() {
         name: request.name,
         description: "Reusable assistant".into(),
         selectable: true,
+        bundles: vec![BundleId::FileTools],
         tools: vec![ToolId::Noop],
         hooks: hooks.clone(),
         model_config: Some(model_config()),
@@ -54,13 +56,19 @@ fn definitions_have_flat_versioned_wire_types_and_default_empty_hooks() {
     assert_eq!(json["id"], 9);
     assert_eq!(json["previous_version_id"], 4);
     assert_eq!(json["version"], 2);
+    assert_eq!(json["bundles"], serde_json::json!(["FileTools"]));
     assert_eq!(json["hooks"]["agent_create"][0], "DefaultStartup");
     assert_eq!(json["hooks"]["agent_create"][1], "ExtraSystemPrompt");
     assert_eq!(json["hooks"]["agent_create"][2], "ProjectContext");
     assert_eq!(json["skills"][0], "/skills/example");
     assert_eq!(json["permitted_subagents"][0], 3);
     assert!(json.get("config").is_none());
-    let decoded: AgentDefinition = serde_json::from_value(json).unwrap();
+    let decoded: AgentDefinition = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(decoded.bundles, vec![BundleId::FileTools]);
+    let mut legacy = json;
+    legacy.as_object_mut().unwrap().remove("bundles");
+    let legacy: AgentDefinition = serde_json::from_value(legacy).unwrap();
+    assert!(legacy.bundles.is_empty());
     assert_eq!(decoded.hooks, hooks);
     assert_eq!(decoded.model_config, Some(model_config()));
     assert!(
@@ -75,6 +83,33 @@ fn definitions_have_flat_versioned_wire_types_and_default_empty_hooks() {
         }))
         .is_err()
     );
+}
+
+#[test]
+fn bundle_requests_roundtrip_and_replacement_defaults_clear_bundles() {
+    let request = CreateAgentDefinition {
+        name: "files".into(),
+        bundles: vec![BundleId::FileTools],
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["bundles"], serde_json::json!(["FileTools"]));
+    let decoded: CreateAgentDefinition = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(decoded.bundles, request.bundles);
+    let decoded: UpdateAgentDefinition = serde_json::from_value(json).unwrap();
+    assert_eq!(decoded.bundles, request.bundles);
+    let replacement: UpdateAgentDefinition =
+        serde_json::from_value(serde_json::json!({"name": "replacement"})).unwrap();
+    assert!(replacement.bundles.is_empty());
+    assert!(CreateAgentDefinition::default().bundles.is_empty());
+    for bundles in [serde_json::json!(["Unknown"]), serde_json::Value::Null] {
+        assert!(
+            serde_json::from_value::<CreateAgentDefinition>(serde_json::json!({
+                "name": "invalid", "bundles": bundles
+            }))
+            .is_err()
+        );
+    }
 }
 
 #[test]

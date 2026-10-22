@@ -1,7 +1,10 @@
 use super::*;
 use crate::{
     agents::{Agent, agent_context::AgentContext},
-    hooks::{Hook, HookError, cancellation::Cancellation},
+    components::{
+        cancellation::Cancellation,
+        hooks::{Hook, HookError},
+    },
 };
 use psa_api::{ProbeId, events::StatusChange, probes::Uuid};
 use std::{
@@ -558,6 +561,7 @@ async fn update_arriving_after_stop_boundary_survives_worker_retirement() {
         commands,
         received,
         workers: HashMap::new(),
+        components: HashMap::new(),
         tasks: JoinSet::new(),
         next_request_id: 1,
         next_generation: 1,

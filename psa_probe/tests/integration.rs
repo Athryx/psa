@@ -16,6 +16,11 @@ use tokio_tungstenite::{
     tungstenite::{self, client::IntoClientRequest},
 };
 
+#[path = "integration/bash_bundle.rs"]
+mod bash_bundle;
+#[path = "integration/bash_interaction.rs"]
+mod bash_interaction;
+
 struct Harness {
     dir: tempfile::TempDir,
     client: Client,

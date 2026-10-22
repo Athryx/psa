@@ -7,6 +7,7 @@ use super::{
     sessions::Sessions,
 };
 use crate::{
+    components::bundles::InstalledComponents,
     db::{Database, DbError},
     probes::ProbeRegistry,
     providers::ProviderRegistry,
@@ -17,12 +18,17 @@ use psa_api::{
     AgentRequest, MessageDelivery, RequestAccepted, StreamMessage,
     events::{EventType, Log, NewEvent},
 };
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 use tokio::{
-    sync::oneshot,
+    sync::{Mutex, oneshot},
     task::{Id, JoinError, JoinHandle, JoinSet},
 };
 
+#[cfg(test)]
+mod bundle_tests;
 #[cfg(test)]
 pub(crate) mod lifecycle_tests;
 #[cfg(test)]
@@ -83,6 +89,7 @@ impl Runtime {
             commands,
             received,
             workers: HashMap::new(),
+            components: HashMap::new(),
             tasks: JoinSet::new(),
             next_request_id: 1,
             next_generation: 1,
@@ -195,6 +202,7 @@ struct SessionManager {
     commands: ManagerClient,
     received: Mailbox<ManagerCommand>,
     workers: HashMap<AgentId, Worker>,
+    components: HashMap<AgentId, Arc<Mutex<InstalledComponents>>>,
     tasks: JoinSet<WorkerResult>,
     next_request_id: u64,
     next_generation: u64,
@@ -230,6 +238,8 @@ impl SessionManager {
             }
         }
 
+        self.cleanup_components().await;
+
         if let Some(reply) = self.shutdown_reply {
             let _ = reply.send(());
         }
@@ -237,6 +247,31 @@ impl SessionManager {
             Err(RuntimeError::CleanupFailed)
         } else {
             Ok(())
+        }
+    }
+
+    async fn cleanup_components(&mut self) {
+        // Workers have all exited, releasing tool references and hook borrows.
+        // Clean agents concurrently so shutdown is not serial in agent count.
+        let mut cleanup = JoinSet::new();
+        for (agent, components) in self.components.drain() {
+            cleanup.spawn(async move {
+                let result = components.lock().await.cleanup().await;
+                (agent, result)
+            });
+        }
+        while let Some(result) = cleanup.join_next().await {
+            match result {
+                Ok((_, Ok(()))) => {}
+                Ok((agent, Err(error))) => {
+                    self.cleanup_failed = true;
+                    tracing::error!(agent = agent.0, %error, "agent bundle cleanup failed");
+                }
+                Err(error) => {
+                    self.cleanup_failed = true;
+                    tracing::error!(%error, "agent bundle cleanup task failed");
+                }
+            }
         }
     }
 
@@ -530,8 +565,18 @@ impl SessionManager {
         queue: VecDeque<QueuedRequest>,
         lifecycle: VecDeque<LifecycleHook>,
     ) -> Result<(), RuntimeError> {
-        let state =
-            AgentManagerState::load(self.db.clone(), self.publication.clone(), agent).await?;
+        let mut state =
+            AgentManagerState::load_persisted(self.db.clone(), self.publication.clone(), agent)
+                .await?;
+        let components = match self.components.get(&agent) {
+            Some(components) => Arc::clone(components),
+            None => {
+                let components = Arc::new(Mutex::new(state.install_components().await?));
+                self.components.insert(agent, Arc::clone(&components));
+                components
+            }
+        };
+        state.attach_components(components).await;
 
         let generation = self.next_generation;
         self.next_generation += 1;
@@ -640,7 +685,8 @@ impl SessionManager {
 
         recover_agent(&self.db, &self.publication, agent).await?;
         let mut state =
-            AgentManagerState::load(self.db.clone(), self.publication.clone(), agent).await?;
+            AgentManagerState::load_persisted(self.db.clone(), self.publication.clone(), agent)
+                .await?;
         state
             .persist_events(&[NewEvent::new(EventType::Log(Log {
                 error: true,

@@ -1,19 +1,20 @@
-use super::{fixture, model};
+use super::{create_legacy_database, fixture, model};
 use crate::{
     agents::NewAgent,
-    db::DbError,
+    db::{Database, DbError},
     sessions::{ForkPoint, SessionFork, SessionUpdate},
 };
-use psa_api::{AgentDefinitionId, CreateAgentDefinition, HookId, HookIds, ToolId};
+use psa_api::{AgentDefinitionId, BundleId, CreateAgentDefinition, HookId, HookIds, ToolId};
 
 #[tokio::test]
 async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
-    let (_dir, db, session, _) = fixture().await;
+    let (dir, db, session, _) = fixture().await;
     let mut cursor = db.cursor().await.unwrap();
     let request = CreateAgentDefinition {
         name: " \n literal name \t".into(),
         description: "description\n\n".into(),
         selectable: false,
+        bundles: vec![BundleId::FileTools, BundleId::FileTools],
         tools: vec![ToolId::Noop, ToolId::Noop],
         hooks: HookIds {
             agent_create: vec![HookId::Noop, HookId::DefaultStartup, HookId::Noop],
@@ -64,6 +65,7 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
     assert_eq!(next.previous_version_id, Some(first.id));
     assert_eq!(next.version, 2);
     assert!(next.tools.is_empty());
+    assert!(next.bundles.is_empty());
     assert!(next.hooks.agent_create.is_empty());
     assert!(next.model_config.is_none());
     assert!(next.extra_system_prompt.is_empty());
@@ -99,6 +101,79 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
             )
             .await
             .is_err()
+    );
+    cursor.commit().await.unwrap();
+    db.close().await;
+
+    let db = Database::open(dir.path().join("events.sqlite3"))
+        .await
+        .unwrap();
+    let mut cursor = db.cursor().await.unwrap();
+    assert_eq!(
+        cursor.get_agent_definition(first.id).await.unwrap().bundles,
+        request.bundles
+    );
+    assert!(
+        cursor
+            .get_agent_definition(next.id)
+            .await
+            .unwrap()
+            .bundles
+            .is_empty()
+    );
+    let definitions = cursor.list_agent_definitions().await.unwrap();
+    assert_eq!(
+        definitions
+            .iter()
+            .find(|definition| definition.id == first.id)
+            .unwrap()
+            .bundles,
+        request.bundles
+    );
+    cursor.commit().await.unwrap();
+    db.close().await;
+}
+
+#[tokio::test]
+async fn migration_defaults_legacy_definitions_to_empty_bundles_and_checks_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy.sqlite3");
+    let pool = create_legacy_database(&path).await;
+    pool.close().await;
+
+    let db = Database::open(&path).await.unwrap();
+    let mut cursor = db.cursor().await.unwrap();
+    let definition = cursor
+        .get_agent_definition(AgentDefinitionId(1))
+        .await
+        .unwrap();
+    assert!(definition.bundles.is_empty());
+    let stored: String = sqlx::query_scalar("SELECT bundles FROM agent_definitions WHERE id = 1")
+        .fetch_one(cursor.connection())
+        .await
+        .unwrap();
+    assert_eq!(stored, "[]");
+    for value in [Some("not-json"), None] {
+        assert!(
+            sqlx::query("UPDATE agent_definitions SET bundles = ? WHERE id = 1")
+                .bind(value)
+                .execute(cursor.connection())
+                .await
+                .is_err()
+        );
+    }
+    cursor.commit().await.unwrap();
+    db.close().await;
+
+    let db = Database::open(&path).await.unwrap();
+    let mut cursor = db.cursor().await.unwrap();
+    assert!(
+        cursor
+            .get_agent_definition(AgentDefinitionId(1))
+            .await
+            .unwrap()
+            .bundles
+            .is_empty()
     );
     cursor.commit().await.unwrap();
     db.close().await;

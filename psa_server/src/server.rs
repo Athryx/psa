@@ -126,8 +126,10 @@ pub async fn serve_with_probe_registry(
         _ = shutdown => None,
     };
     accepting.store(false, Ordering::Release);
-    probes.shutdown().await;
+    // Bundles may own remote resources; keep probes connected while workers and
+    // retained bundle owners finish their bounded cleanup.
     let cleanup = runtime.shutdown().await;
+    probes.shutdown().await;
     publication.close();
 
     // shutdown http server if it hasn't yet

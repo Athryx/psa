@@ -28,8 +28,11 @@ to introduce new general-purpose capabilities.
 ## Files and required structure
 
 - Each concrete tool goes in its OWN snake_case file under
-  `psa_server/src/hooks/tools/`, e.g. `read_file.rs`. Keep its argument struct,
+  `psa_server/src/components/tools/`, e.g. `read_file.rs`. Keep its argument struct,
   concrete tool struct, inherent implementation, and `impl Tool` together.
+- Agent components live under `psa_server/src/components/`: `bundles/`, `tools/`,
+  and `hooks/` hold their respective implementations. Shared invocation
+  cancellation lives in `components/cancellation.rs`.
 - `tools/mod.rs` owns common infrastructure and dispatch, not concrete tool logic.
 - Use `tools/noop.rs` as the working reference. Follow the existing `ToolId`,
   `ToolKind`, constructors, definition dispatch, and hook snapshot registration;
@@ -89,6 +92,62 @@ decodes arguments with `llm_api::api::parse_tool_arguments`, formats errors thro
 inputs must not execute logic or cause side effects. Serde reports the first
 invalid field, including nested field/array paths; do not replace these errors
 with a generic success or dump the input payload into the response.
+
+## Related tools and shared state: use a bundle
+
+When two or more tools come together as one feature, define a Rust bundle rather
+than asking callers to list each component separately. Also use a bundle when a
+tool and a hook need shared state. Unrelated standalone tools may still be
+configured individually. Keep each concrete tool in its own file.
+
+- Put the bundle owner/assembly logic in `psa_server/src/components/bundles/<feature>.rs`.
+  Register its `BundleId` in `psa_api` and its `BundleKind` dispatch in the server.
+  `components/bundles/file_tools.rs` is the basic working example; bundle lifecycle tests
+  demonstrate state shared by two constructed tools and a hook.
+- Agent definitions select ordered bundle IDs, e.g.
+  `"bundles": ["FileTools", "Bash"]`. `FileTools` installs `Read`, `Edit`, and
+  `Write`; `Bash` installs `Bash`, `InteractBash`, and `CloseBash`. The Bash tools
+  require their bundle and cannot be independently configured in `tools`.
+  Bundles install in definition order, then explicit tools/hooks are appended.
+  Duplicate bundle IDs, tool IDs, or model-facing tool names fail installation.
+  Hooks preserve their configured stage/order and are not silently deduplicated.
+- Implement `Bundle::install(&mut self, agent, session, &mut Installer)` without
+  filesystem/network IO. Construct shared handles once and pass clones into
+  concrete tool/hook instances. Register them with
+  `installer.add_tool(ToolKind::YourTool(instance))?` and
+  `installer.add_hook(HookStage::SessionUpdate, HookKind::YourHook(instance))`.
+  All four hook stages are supported. Do not merely expand a bundle into ID
+  lists: that would construct its state independently for each component.
+- Keep mutable long-lived shared state in an actor using the workspace `actors`
+  crate when ownership/lifecycle warrants it. Bundle owners are not cloned;
+  components clone only handles. Do not install the same components again in the
+  definition's explicit `tools` list.
+- Implement async `Bundle::cleanup(&mut self) -> Result<(), CleanupError>` for
+  graceful resource shutdown. It should be idempotent. Cleanup callbacks run in
+  reverse installation order after the worker releases its tool/hook references,
+  and bundle owners are dropped afterward. Each callback is bounded by
+  `cleanup_timeout()` (three seconds by default). All owners are attempted even
+  if one fails, panics, or times out; failures are reported rather than discarded.
+  Cleanup must not depend on new session-manager requests during runtime shutdown;
+  shut down the bundle's own resources/actors directly.
+- If installation fails, partially installed components and owners (including
+  the failing owner) follow the same cleanup path. Do not leak tasks/resources
+  when registering a later component fails.
+- Implement synchronous `Drop` cancellation as a fallback for owners with live
+  resources. `Drop` cannot await. It must remain safe if async cleanup was never
+  called, timed out, panicked, or was forcibly interrupted.
+- The session-manager actor retains installed components and bundle owners by
+  AgentId for the current runtime. Idle worker retirement or worker failure does
+  NOT clean up that agent's bundle resources. Later worker generations borrow the
+  same tool/hook instances and shared state. A fork has a different AgentId and
+  gets independent owners. Runtime shutdown stops workers first, then cleans up
+  retained agents concurrently, with each agent's bundle callbacks in reverse
+  installation order. Probes remain connected during resource cleanup.
+- Loading persisted state for recovery does not install bundles. Runtime resources
+  do not survive a server restart; process reconnection/resumption is not promised.
+  Use invocation context for current session/model settings, not only the initial
+  snapshots passed to install. Ownership scopes or runtime APIs beyond the
+  existing retained-agent registry still require a proposal and user approval.
 
 ## Schemas and prompts
 

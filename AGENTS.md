@@ -20,7 +20,9 @@ The following crates are present in the workspace:
 
 Before adding or changing native agent tools, read
 `.agent/skills/making-tools/SKILL.md`. Use typed arguments and the shared execution
-macro and one concrete tool per file. Prefer shared middle truncation unless the
+macro and one concrete tool per file. Tools that come together as a feature must
+use a Rust bundle, with shared state and cleanup owned by that bundle.
+Prefer shared middle truncation unless the
 tool's specified behavior requires another policy. If existing capabilities are
 insufficient, stop and propose the needed additions to the user
 instead of expanding the harness to support the tool.

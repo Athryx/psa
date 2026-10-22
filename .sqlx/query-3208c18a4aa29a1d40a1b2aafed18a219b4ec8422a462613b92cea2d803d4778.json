@@ -1,0 +1,206 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, previous_version_id, version, name, description, selectable, tools, agent_create_hooks, session_update_hooks, before_request_hooks, after_request_hooks, model_config, skills, permitted_subagents, extra_system_prompt, bundles FROM agent_definitions ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "previous_version_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "previous_version_id"
+          }
+        }
+      },
+      {
+        "name": "version",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "description",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "name": "selectable",
+        "ordinal": 5,
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "selectable"
+          }
+        }
+      },
+      {
+        "name": "tools",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "tools"
+          }
+        }
+      },
+      {
+        "name": "agent_create_hooks",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "agent_create_hooks"
+          }
+        }
+      },
+      {
+        "name": "session_update_hooks",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "session_update_hooks"
+          }
+        }
+      },
+      {
+        "name": "before_request_hooks",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "before_request_hooks"
+          }
+        }
+      },
+      {
+        "name": "after_request_hooks",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "after_request_hooks"
+          }
+        }
+      },
+      {
+        "name": "model_config",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "model_config"
+          }
+        }
+      },
+      {
+        "name": "skills",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "skills"
+          }
+        }
+      },
+      {
+        "name": "permitted_subagents",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "permitted_subagents"
+          }
+        }
+      },
+      {
+        "name": "extra_system_prompt",
+        "ordinal": 14,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "extra_system_prompt"
+          }
+        }
+      },
+      {
+        "name": "bundles",
+        "ordinal": 15,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "bundles"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3208c18a4aa29a1d40a1b2aafed18a219b4ec8422a462613b92cea2d803d4778"
+}

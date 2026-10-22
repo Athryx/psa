@@ -15,14 +15,14 @@ pub mod sessions;
 
 /// Server-only convenience for taking a tool definition snapshot.
 pub trait ToolDefinitionExt {
-    fn for_tool(id: crate::hooks::tools::ToolId) -> Self;
+    fn for_tool(id: crate::components::tools::ToolId) -> Self;
 }
 
 impl ToolDefinitionExt for ToolDefinition {
-    fn for_tool(id: crate::hooks::tools::ToolId) -> Self {
+    fn for_tool(id: crate::components::tools::ToolId) -> Self {
         Self {
             id,
-            definition: crate::hooks::tools::tool_definition(id),
+            definition: crate::components::tools::tool_definition(id),
         }
     }
 }
@@ -81,11 +81,15 @@ pub enum AgentError {
     #[error("model request failed: {0}")]
     Model(#[from] llm_api::Error),
     #[error("hook failed: {0}")]
-    Hook(Box<crate::hooks::HookError>),
+    Hook(Box<crate::components::hooks::HookError>),
     #[error("hook cancellation timed out")]
     HookTimeout,
     #[error("event persistence task failed: {0}")]
     PersistenceTask(tokio::task::JoinError),
+    #[error("bundle installation failed: {0}")]
+    BundleInstall(#[from] crate::components::bundles::InstallError),
+    #[error("bundle cleanup failed: {0}")]
+    BundleCleanup(#[from] crate::components::bundles::CleanupErrors),
     #[error("agent worker supervisor is unavailable")]
     SupervisorUnavailable,
 }

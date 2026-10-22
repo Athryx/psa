@@ -5,10 +5,9 @@ use crate::{
         publication::{Publication, status_event},
         session_manager::Runtime,
     },
-    hooks::{
-        Hook, HookError,
+    components::{
         cancellation::Cancellation,
-        run_hook,
+        hooks::{Hook, HookError, run_hook},
         tools::{Edit, Read, Tool, ToolOutput, Write},
     },
     http::AppState,
@@ -426,14 +425,14 @@ impl Tool for TraceTool {
     }
 
     fn tool_definition(&self) -> api::ToolDefinition {
-        crate::hooks::tools::tool_definition(psa_api::ToolId::Noop)
+        crate::components::tools::tool_definition(psa_api::ToolId::Noop)
     }
 
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(1)
     }
 
-    crate::hooks::tools::typed_tool_execute!(TraceToolArgs, execute_typed);
+    crate::components::tools::typed_tool_execute!(TraceToolArgs, execute_typed);
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -507,7 +506,7 @@ impl Tool for ValidationTool {
         Duration::from_secs(1)
     }
 
-    crate::hooks::tools::typed_tool_execute!(ValidationArgs, execute_typed);
+    crate::components::tools::typed_tool_execute!(ValidationArgs, execute_typed);
 }
 
 #[tokio::test]
@@ -610,7 +609,7 @@ async fn tool_trace_and_status_are_saved_separately_from_worker_response() {
     assert_eq!(context.agent().state, AgentState::Interrupted);
     let (_controls, mut controls) = actors::unbounded_channel();
     let mut interrupted = false;
-    let skipped = crate::hooks::tools::execute(
+    let skipped = crate::components::tools::execute(
         &[],
         &api::ToolCall {
             call_id: "unstarted-next".into(),
@@ -758,7 +757,7 @@ async fn extra_system_prompt_hook_persists_verbatim_system_message_and_skips_emp
         cursor.commit().await.unwrap();
 
         let mut state = fixture.load_state(&agent).await;
-        let mut hook = crate::hooks::HookKind::new(
+        let mut hook = crate::components::hooks::HookKind::new(
             psa_api::HookId::ExtraSystemPrompt,
             state.agent(),
             state.session(),
@@ -1051,7 +1050,7 @@ async fn run_project_context(fixture: &Fixture, cwd: &str) -> Vec<Event> {
         .handle(support::probe_metadata().id)
         .await
         .unwrap();
-    let mut hook = crate::hooks::HookKind::new(
+    let mut hook = crate::components::hooks::HookKind::new(
         psa_api::HookId::ProjectContext,
         state.agent(),
         state.session(),
@@ -1236,7 +1235,7 @@ async fn project_context_cancelled_before_discovery_saves_no_partial_prompt() {
         .handle(support::probe_metadata().id)
         .await
         .unwrap();
-    let mut hook = crate::hooks::HookKind::new(
+    let mut hook = crate::components::hooks::HookKind::new(
         psa_api::HookId::ProjectContext,
         state.agent(),
         state.session(),
@@ -1260,7 +1259,7 @@ async fn project_context_cancels_a_pending_remote_operation() {
         .handle(support::probe_metadata().id)
         .await
         .unwrap();
-    let mut hook = crate::hooks::HookKind::new(
+    let mut hook = crate::components::hooks::HookKind::new(
         psa_api::HookId::ProjectContext,
         state.agent(),
         state.session(),
@@ -1340,7 +1339,7 @@ async fn project_context_disconnected_probe_is_fatal_and_saves_no_prompt() {
         server,
     } = fixture;
     probe.disconnect(&probes).await;
-    let mut hook = crate::hooks::HookKind::new(
+    let mut hook = crate::components::hooks::HookKind::new(
         psa_api::HookId::ProjectContext,
         state.agent(),
         state.session(),

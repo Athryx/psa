@@ -62,7 +62,7 @@ impl<'a> AgentContext<'a> {
         self.state.definition()
     }
 
-    pub fn tools(&self) -> &[crate::hooks::tools::ToolKind] {
+    pub fn tools(&self) -> &[crate::components::tools::ToolKind] {
         self.state.tools()
     }
 

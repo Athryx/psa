@@ -2,7 +2,7 @@ use super::{
     DbError,
     schema::{decode_integer, encode_agent_state, encode_integer, parse_agent_state},
 };
-use crate::hooks::tools::ToolId;
+use crate::components::tools::ToolId;
 use llm_api::{
     api::{self, Outcome, Usage},
     providers::{Effort, Model, ModelConfig, ProviderType},
@@ -207,6 +207,9 @@ pub(super) async fn insert_payload(
                 ToolId::Read => "read",
                 ToolId::Edit => "edit",
                 ToolId::Write => "write",
+                ToolId::Bash => "bash",
+                ToolId::InteractBash => "interact_bash",
+                ToolId::CloseBash => "close_bash",
             };
             let def = &value.definition;
             let parameters = serialize_json(&def.parameters)?;
@@ -442,6 +445,9 @@ pub(super) async fn load_payloads(
                 "read" => ToolId::Read,
                 "edit" => ToolId::Edit,
                 "write" => ToolId::Write,
+                "bash" => ToolId::Bash,
+                "interact_bash" => ToolId::InteractBash,
+                "close_bash" => ToolId::CloseBash,
                 s => return Err(invalid(s)),
             },
             definition: api::ToolDefinition {

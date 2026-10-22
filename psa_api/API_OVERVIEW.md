@@ -38,7 +38,7 @@ The async client exposes matching `create_agent_definition`,
 `list_agent_definitions`, `get_agent_definition`, and `update_agent_definition`
 methods.
 
-Definitions contain `name`, `description`, `selectable`, `tools`, `hooks`, an
+Definitions contain `name`, `description`, `selectable`, `bundles`, `tools`, `hooks`, an
 optional `model_config` override, `skills` paths, `permitted_subagents` IDs, and
 `extra_system_prompt`. Hook lists (`agent_create`, `session_update`,
 `before_request`, `after_request`) default to empty. Supported hook IDs are
@@ -92,8 +92,32 @@ and `permitted_subagents` remain literal metadata, not automatic selection or
 permission enforcement. `extra_system_prompt` is injected only by the explicitly
 configured `ExtraSystemPrompt` hook.
 
-Supported tool IDs are `Noop`, `Read`, `Edit`, and `Write`. Add tools explicitly
-to the definition, for example `"tools": ["Read", "Edit", "Write"]`. Native file
+`bundles` is an ordered list of `BundleId` values, defaulting to `[]` in both
+requests and responses. `FileTools` installs `Read`, `Edit`, and `Write` in that
+order. `Bash` installs `Bash`, `InteractBash`, and `CloseBash`. For example:
+
+```json
+{"name": "File assistant", "bundles": ["FileTools"], "hooks": {"agent_create": ["DefaultStartup", "ToolDefinitions"]}}
+```
+
+Bundles are installed in list order before explicitly configured tools and hooks;
+explicit `tools` and `hooks` remain supported. Duplicate bundle IDs, tool IDs, or
+tool names across bundle and explicit installations are rejected at component
+installation, not normalized or silently deduplicated. The session manager keeps
+installed owners/components by agent ID across idle worker retirement and worker
+failures. Forked agents have independent owners. Runtime shutdown stops workers,
+then cleans retained agents concurrently; bundles within each agent clean up in
+reverse installation order with timeouts and error reporting. Probe connections
+remain available during cleanup. Resources are not persisted across server restart. Definition updates are immutable full replacements: omitting
+`bundles` clears the list in the new version without changing the old version or
+agents pinned to it. Migration 0009 gives existing definitions an empty list.
+
+Supported tool IDs are `Noop`, `Read`, `Edit`, `Write`, `Bash`, `InteractBash`, and
+`CloseBash`. The three Bash IDs require the `Bash` bundle; configuring them as
+standalone tools is rejected. See `../docs/BASH_TOOLS.md` for names, waits, logs,
+and environment behavior. Alternatively add independent file tools
+explicitly, for example `"tools": ["Read", "Edit", "Write"]`, without also
+selecting `FileTools`. Native file
 tools operate on the session probe and port Pi's model-facing prompts and
 text/image results; they do not add Pi's UI/programmatic result metadata.
 `Read` uses Pi's line/byte head truncation and default image limits. See

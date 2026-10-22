@@ -2,7 +2,7 @@ use super::{Database, DbError};
 use crate::{
     agents::AgentState,
     agents::{Agent, NewAgent, ToolDefinitionExt},
-    hooks::tools::ToolId,
+    components::tools::ToolId,
     sessions::*,
 };
 use llm_api::{

@@ -1,9 +1,16 @@
 use super::*;
 
 #[tokio::test]
-async fn file_tool_definitions_round_trip_through_persistence_and_reopen() {
+async fn native_tool_definitions_round_trip_through_persistence_and_reopen() {
     let (directory, db, _session, agent) = fixture().await;
-    let ids = [ToolId::Read, ToolId::Edit, ToolId::Write];
+    let ids = [
+        ToolId::Read,
+        ToolId::Edit,
+        ToolId::Write,
+        ToolId::Bash,
+        ToolId::InteractBash,
+        ToolId::CloseBash,
+    ];
     let events: Vec<_> = ids
         .iter()
         .map(|id| NewEvent::new(EventType::ToolDefinition(ToolDefinition::for_tool(*id))))
@@ -26,7 +33,7 @@ async fn file_tool_definitions_round_trip_through_persistence_and_reopen() {
         assert_eq!(snapshot.id, id);
         assert_eq!(
             serde_json::to_value(&snapshot.definition).unwrap(),
-            serde_json::to_value(crate::hooks::tools::tool_definition(id)).unwrap(),
+            serde_json::to_value(crate::components::tools::tool_definition(id)).unwrap(),
         );
     }
     cursor.rollback().await.unwrap();

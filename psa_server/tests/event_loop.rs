@@ -22,8 +22,8 @@ use psa_server::{
         NewAgent, ToolDefinitionExt, agent_manager::AgentManagerState, publication::Publication,
         session_manager::Runtime,
     },
+    components::tools::ToolId,
     db::{Database, DbError},
-    hooks::tools::ToolId,
     probes::ProbeRegistry,
     providers::ProviderRegistry,
     sessions::{ForkPoint, NewSession, SessionFork, SessionUpdate},
@@ -319,6 +319,7 @@ async fn definition_client_routes_preserve_versions_and_explicit_hook_configurat
         name: "custom".into(),
         description: "A versioned HTTP fixture".into(),
         selectable: true,
+        bundles: vec![],
         tools: vec![ToolId::Noop],
         hooks: wire::HookIds {
             agent_create: vec![wire::HookId::Noop],

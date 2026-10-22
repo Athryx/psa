@@ -38,6 +38,15 @@ pub struct HookIds {
     pub after_request: Vec<HookId>,
 }
 
+/// Ordered worker-local tool and hook installations selected by a definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BundleId {
+    /// Installs the Read, Edit, and Write tools.
+    FileTools,
+    /// Installs the Bash, InteractBash, and CloseBash tools with shared sessions.
+    Bash,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDefinition {
     pub id: AgentDefinitionId,
@@ -46,6 +55,8 @@ pub struct AgentDefinition {
     pub name: String,
     pub description: String,
     pub selectable: bool,
+    #[serde(default)]
+    pub bundles: Vec<BundleId>,
     pub tools: Vec<ToolId>,
     pub hooks: HookIds,
     pub model_config: Option<ModelConfig>,
@@ -62,6 +73,8 @@ pub struct CreateAgentDefinition {
     pub description: String,
     #[serde(default)]
     pub selectable: bool,
+    #[serde(default)]
+    pub bundles: Vec<BundleId>,
     #[serde(default)]
     pub tools: Vec<ToolId>,
     #[serde(default)]
@@ -91,6 +104,9 @@ pub enum ToolId {
     Read,
     Edit,
     Write,
+    Bash,
+    InteractBash,
+    CloseBash,
 }
 
 pub type ToolResult = Vec<ContentBlock>;

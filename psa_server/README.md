@@ -1,5 +1,10 @@
 # PSA server
 
+Agent components live under `src/components/`: `bundles/` owns shared resources
+and assembly, `tools/` implements model-facing tools, and `hooks/` implements
+lifecycle callbacks. Shared invocation cancellation lives in
+`src/components/cancellation.rs`.
+
 Start the server from the workspace root:
 
 ```sh
@@ -79,7 +84,8 @@ let session = client.create_session(&CreateSession {
 let definition = client.create_agent_definition(&CreateAgentDefinition {
     name: "Assistant".into(),
     selectable: true,
-    tools: vec![psa_api::ToolId::Noop],
+    bundles: vec![psa_api::BundleId::FileTools],
+    tools: vec![],
     hooks: HookIds {
         agent_create: vec![
             HookId::DefaultStartup, HookId::ToolDefinitions, HookId::Cwd, HookId::Skills,
@@ -148,6 +154,19 @@ explicitly configured. The other metadata remains literal: it does not
 automatically select agents, enforce subagent permissions, or inject extra system
 prompts. Unknown extra JSON fields are rejected, not treated as configuration.
 
+Definitions also persist ordered `bundles`, defaulting to `[]`.
+`BundleId::FileTools` installs `Read`, `Edit`, and `Write`; `BundleId::Bash`
+installs `Bash`, `InteractBash`, and `CloseBash`. The Bash tools require their
+bundle. Bundles install in list order before explicit tools/hooks; independent
+explicit configuration remains supported. Duplicate bundle IDs, tool IDs, or tool
+names are rejected during component installation. The session manager retains
+owners and instances by agent ID across worker retirement/failure. Forked agents
+have independent resources; server restart does not restore runtime resources.
+On shutdown, workers stop before retained agents clean up concurrently, with each
+agent's bundles cleaning up in reverse order under bounded timeouts. Probes stay
+connected until cleanup finishes. See `../docs/BASH_TOOLS.md` for process tools. Migration 0009 defaults existing definitions to
+`[]`; omitting bundles in a full replacement clears only the new version's list.
+
 Each definition explicitly binds ordered `HookId` lists at `agent_create`,
 `session_update`, `before_request`, and `after_request`. All lists default empty;
 no startup, synchronization, or stop hook is installed implicitly. Built-ins:
@@ -204,7 +223,7 @@ than forwarding an unfinished native tool call to the provider.
 ## Tools, hooks, and session operations
 
 Tools and hooks borrow `agents::agent_context::AgentContext` for each invocation.
-It exposes `agent()`, `session()`, the pinned `definition()`, worker-local
+It exposes `agent()`, `session()`, the pinned `definition()`, agent-runtime
 `tools()`, `projection()`, the iteration's `probe()`, and `sessions()`.
 `probe()` returns a `Result`: lifecycle hooks run even with an offline probe, and accessing it then returns `ProbeError::Disconnected`. Each session-update
 hook sees the snapshot for that update. Trace methods mirror the database queries
@@ -231,7 +250,7 @@ and return `ToolOutput { content, error }`. Both have synchronous, IO-free
 instances, distinct from wire `HookId` and `ToolId`; a worker constructs its own
 instances from the pinned definition when loaded. Instances live for that worker,
 not globally or durably, and are reconstructed on reload. Hook invocation uses
-`&mut self`, allowing worker-local hook state. The output flag is model-facing,
+`&mut self`, allowing agent-runtime hook state across worker generations. The output flag is model-facing,
 not an agent control signal. The worker persists each tool response separately. To interrupt,
 a tool/hook explicitly saves an `Interrupted` status event. Both interfaces retain
 cooperative cancellation and bounded cleanup. Session settings are invocation

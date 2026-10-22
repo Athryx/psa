@@ -341,7 +341,7 @@ fn renders_plain_and_empty_message_content() {
 
 #[test]
 fn preserves_tool_result_content_blocks() {
-    let content: crate::hooks::tools::ToolResult = vec![
+    let content: crate::components::tools::ToolResult = vec![
         build_text_block("tool output"),
         api::ContentBlock::Image(api::ImageBlock {
             source: api::MediaSource::Url("https://example.test/output.png".into()),

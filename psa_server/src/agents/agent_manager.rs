@@ -9,13 +9,13 @@ use super::{
     sessions::Sessions,
 };
 use crate::{
-    db::{AddEventResult, Database},
-    hooks::{
-        Hooks,
+    components::{
+        bundles::InstalledComponents,
         cancellation::wait_for_interrupt,
-        run_hooks,
+        hooks::run_hooks,
         tools::{self, ToolKind, failed_tool_result},
     },
+    db::{AddEventResult, Database},
     probes::{ProbeHandle, ProbeRegistry},
     prompts,
     providers::ProviderRegistry,
@@ -29,7 +29,7 @@ use llm_api::api::{
 };
 use psa_api::events::*;
 use std::{panic::AssertUnwindSafe, sync::Arc, time::Instant};
-use tokio::task::JoinHandle;
+use tokio::{sync::Mutex, task::JoinHandle};
 
 type PendingPersistence = JoinHandle<Result<(AddEventResult, AgentProjection), AgentError>>;
 
@@ -50,6 +50,7 @@ pub struct AgentManagerState {
     session: Session,
     definition: psa_api::AgentDefinition,
     tools: Arc<[ToolKind]>,
+    components: Option<Arc<Mutex<InstalledComponents>>>,
     publication: Publication,
     pending_persistence: Option<PendingPersistence>,
 }
@@ -88,6 +89,50 @@ impl AgentManagerState {
         publication: Publication,
         id: AgentId,
     ) -> Result<Self, AgentError> {
+        let mut state = Self::load_persisted(db, publication, id).await?;
+        let components = state.install_components().await?;
+        state
+            .attach_components(Arc::new(Mutex::new(components)))
+            .await;
+        Ok(state)
+    }
+
+    pub(crate) async fn install_components(&self) -> Result<InstalledComponents, AgentError> {
+        let components =
+            InstalledComponents::install(&self.definition, &self.agent, &self.session).await?;
+        #[cfg(test)]
+        let components = {
+            use super::session_manager::lifecycle_tests::RecordLifecycle;
+            use crate::components::hooks::HookKind;
+            let mut components = components;
+            components
+                .hooks
+                .agent_create
+                .push(HookKind::RecordLifecycle(RecordLifecycle {
+                    name: "create",
+                }));
+            components
+                .hooks
+                .session_update
+                .push(HookKind::RecordLifecycle(RecordLifecycle {
+                    name: "update",
+                }));
+            components
+        };
+        Ok(components)
+    }
+
+    pub(crate) async fn attach_components(&mut self, components: Arc<Mutex<InstalledComponents>>) {
+        self.tools = Arc::clone(&components.lock().await.tools);
+        self.components = Some(components);
+    }
+
+    /// Load event state for recovery without starting agent-runtime resources.
+    pub(crate) async fn load_persisted(
+        db: Database,
+        publication: Publication,
+        id: AgentId,
+    ) -> Result<Self, AgentError> {
         let mut cursor = db.cursor().await?;
         let agent = cursor.get_agent(id).await?;
         let session = cursor.get_session(agent.session_id).await?;
@@ -95,18 +140,14 @@ impl AgentManagerState {
         let context = AgentProjection::replay(&cursor.load_all_events(id).await?)?;
         cursor.rollback().await?;
 
-        let tools = definition
-            .tools
-            .iter()
-            .map(|id| ToolKind::new(*id, &agent, &session))
-            .collect();
         Ok(Self {
             db,
             publication,
             agent,
             session,
             definition,
-            tools,
+            tools: Arc::default(),
+            components: None,
             context,
             pending_persistence: None,
         })
@@ -205,7 +246,7 @@ impl AgentManagerState {
         controls: &mut UnboundedMailbox<AgentManagerMessage>,
     ) -> Result<(), AgentError> {
         let mut interrupted = false;
-        let tools = self.tools.clone();
+        let tools = Arc::clone(&self.tools);
         for call in self.outstanding_calls() {
             interrupted |= drain_controls(self, controls);
             let output = tools::execute(
@@ -356,7 +397,7 @@ pub(crate) async fn recover_agent(
     publication: &Publication,
     id: AgentId,
 ) -> Result<(), AgentError> {
-    let mut state = AgentManagerState::load(db.clone(), publication.clone(), id).await?;
+    let mut state = AgentManagerState::load_persisted(db.clone(), publication.clone(), id).await?;
     let events = build_recovery_events(&state.agent, &state.context)?;
     if !events.is_empty() {
         state.persist_events(&events).await?;
@@ -487,23 +528,15 @@ pub(crate) async fn run_worker(
     probes: ProbeRegistry,
     sessions: Sessions,
 ) -> Result<(), AgentError> {
+    let shared = Arc::clone(
+        state
+            .components
+            .as_ref()
+            .expect("worker components attached"),
+    );
+    let mut components = shared.lock().await;
+    let hooks = &mut components.hooks;
     let outcome = AssertUnwindSafe(async {
-        let mut hooks = Hooks::new(&state.definition.hooks, &state.agent, &state.session);
-        #[cfg(test)]
-        {
-            use super::session_manager::lifecycle_tests::RecordLifecycle;
-            use crate::hooks::HookKind;
-            hooks
-                .agent_create
-                .push(HookKind::RecordLifecycle(RecordLifecycle {
-                    name: "create",
-                }));
-            hooks
-                .session_update
-                .push(HookKind::RecordLifecycle(RecordLifecycle {
-                    name: "update",
-                }));
-        }
         let mut invocation = 0u64;
 
         loop {
@@ -625,13 +658,25 @@ pub(crate) async fn run_worker(
     .catch_unwind()
     .await;
 
+    // Retain hooks and owners for the next worker generation. Only runtime
+    // shutdown cleans resources; retirement and recovery release the borrow.
+    drop(components);
+
     // Do not let supervisor recovery race a save detached by a panicking tool.
-    state.finish_persistence().await?;
-    match outcome {
+    let persistence = state.finish_persistence().await;
+    if let Err(error) = &persistence {
+        tracing::error!(agent = state.agent.id.0, %error, "worker persistence cleanup failed");
+    }
+    let result: Result<(), AgentError> = match outcome {
         Ok(result) => result,
         Err(panic) => std::panic::resume_unwind(panic),
-    }
+    };
+    result?;
+    persistence?;
+    Ok(())
 }
 
+#[cfg(test)]
+mod bundle_tests;
 #[cfg(test)]
 mod tests;

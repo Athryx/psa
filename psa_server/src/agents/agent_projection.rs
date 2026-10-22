@@ -1,6 +1,6 @@
 //! Pure transcript projection. Replaying never runs tools or makes requests.
 
-use crate::{agents::AgentState, hooks::tools::ToolId};
+use crate::{agents::AgentState, components::tools::ToolId};
 use llm_api::{
     api::{
         self, AgentHistory, HistoryItem, HistoryItemKind, HistoryItemMetadata, ModelResponse,
