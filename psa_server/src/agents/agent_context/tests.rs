@@ -44,6 +44,14 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::new_with_probe_files(None).await
+    }
+
+    async fn new_with_files(files: fake_probe::FakeFiles) -> Self {
+        Self::new_with_probe_files(Some(files)).await
+    }
+
+    async fn new_with_probe_files(files: Option<fake_probe::FakeFiles>) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let database = crate::db::Database::open(directory.path().join("context.sqlite3"))
             .await
@@ -78,7 +86,10 @@ impl Fixture {
                 .await
                 .unwrap();
         });
-        let probe = fake_probe::FakeProbe::connect(address, &probes).await;
+        let probe = match files {
+            Some(files) => fake_probe::FakeProbe::connect_with_files(address, &probes, files).await,
+            None => fake_probe::FakeProbe::connect(address, &probes).await,
+        };
 
         Self {
             _directory: directory,
@@ -93,12 +104,16 @@ impl Fixture {
     }
 
     async fn create_agent(&self, events: &[NewEvent]) -> Agent {
+        self.create_agent_in("/work", events).await
+    }
+
+    async fn create_agent_in(&self, cwd: &str, events: &[NewEvent]) -> Agent {
         let mut cursor = self.database.cursor().await.unwrap();
         let session = cursor
             .create_session(NewSession {
                 model_config: crate::test_support::model_config(),
                 name: "context test".into(),
-                working_directory: "/work".into(),
+                working_directory: cwd.into(),
                 probe_id: support::probe_metadata().id,
             })
             .await
@@ -418,9 +433,17 @@ impl Tool for TraceTool {
         Duration::from_secs(1)
     }
 
-    async fn execute(
+    crate::hooks::tools::typed_tool_execute!(TraceToolArgs, execute_typed);
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct TraceToolArgs {}
+
+impl TraceTool {
+    async fn execute_typed(
         &self,
-        _arguments: serde_json::Value,
+        _arguments: TraceToolArgs,
         context: &mut AgentContext<'_>,
         _cancellation: Cancellation,
     ) -> ToolOutput {
@@ -435,6 +458,135 @@ impl Tool for TraceTool {
         }
         ToolOutput::error(crate::prompts::text("model-facing tool error"))
     }
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ValidationArgs {
+    entries: Vec<ValidationEntry>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ValidationEntry {
+    count: u64,
+}
+
+struct ValidationTool;
+
+impl ValidationTool {
+    async fn execute_typed(
+        &self,
+        arguments: ValidationArgs,
+        context: &mut AgentContext<'_>,
+        _cancellation: Cancellation,
+    ) -> ToolOutput {
+        assert_eq!(arguments.entries[0].count, 7);
+        context
+            .save_events(&[log("typed tool executed")])
+            .await
+            .unwrap();
+        ToolOutput::success(Vec::new())
+    }
+}
+
+impl Tool for ValidationTool {
+    fn new(_agent: &Agent, _session: &crate::sessions::Session) -> Self {
+        Self
+    }
+
+    fn tool_definition(&self) -> api::ToolDefinition {
+        api::ToolDefinition::for_type::<ValidationArgs>(
+            "validation",
+            "Validate arguments",
+            Some(false),
+        )
+    }
+
+    fn cancellation_timeout(&self) -> Duration {
+        Duration::from_secs(1)
+    }
+
+    crate::hooks::tools::typed_tool_execute!(ValidationArgs, execute_typed);
+}
+
+#[tokio::test]
+async fn typed_execute_rejects_bad_fields_without_side_effects_then_delegates_valid_input() {
+    let fixture = Fixture::new().await;
+    let agent = fixture.create_agent(&[]).await;
+    let mut state = fixture.load_state(&agent).await;
+    let probe = fixture
+        .probes
+        .handle(support::probe_metadata().id)
+        .await
+        .unwrap();
+    let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
+
+    for (arguments, expected) in [
+        (serde_json::json!({}), "entries"),
+        (serde_json::json!({"entries": [{}]}), "count"),
+        (
+            serde_json::json!({"entries": [{"count": "SECRET_ARGUMENT"}]}),
+            "entries[0].count",
+        ),
+        (
+            serde_json::json!({"entries": [], "extra": "SECRET_ARGUMENT"}),
+            "extra",
+        ),
+        (serde_json::json!([]), "JSON object"),
+    ] {
+        let (_sender, cancellation) = Cancellation::channel();
+        let output = ValidationTool
+            .execute(arguments, &mut context, cancellation)
+            .await;
+        assert!(output.error);
+        let [api::ContentBlock::Text(block)] = output.content.as_slice() else {
+            panic!("expected a text argument error");
+        };
+        assert!(block.text.contains(expected), "{}", block.text);
+        assert!(!block.text.contains("SECRET_ARGUMENT"));
+        assert!(context.load_all_events().await.unwrap().is_empty());
+    }
+
+    let (_sender, cancellation) = Cancellation::channel();
+    let output = ValidationTool
+        .execute(
+            serde_json::json!({"entries": [{"count": 7}]}),
+            &mut context,
+            cancellation,
+        )
+        .await;
+    assert!(!output.error);
+    let saved = context.load_all_events().await.unwrap();
+    assert_eq!(saved.len(), 1);
+    assert!(matches!(&saved[0].kind, EventType::Log(log) if log.message == "typed tool executed"));
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn typed_execute_checks_cancellation_before_argument_validation() {
+    let fixture = Fixture::new().await;
+    let agent = fixture.create_agent(&[]).await;
+    let mut state = fixture.load_state(&agent).await;
+    let probe = fixture
+        .probes
+        .handle(support::probe_metadata().id)
+        .await
+        .unwrap();
+    let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
+    let (sender, cancellation) = Cancellation::channel();
+    sender.send(()).unwrap();
+
+    let output = ValidationTool
+        .execute(serde_json::json!([]), &mut context, cancellation)
+        .await;
+    assert!(output.error);
+    assert_eq!(
+        serde_json::to_value(output.content).unwrap(),
+        serde_json::to_value(crate::prompts::tool_interrupted()).unwrap()
+    );
+    assert!(context.load_all_events().await.unwrap().is_empty());
+    fixture.close().await;
 }
 
 #[tokio::test]
@@ -636,6 +788,323 @@ async fn extra_system_prompt_hook_persists_verbatim_system_message_and_skips_emp
     }
 
     fixture.close().await;
+}
+
+async fn run_project_context(fixture: &Fixture, cwd: &str) -> Vec<Event> {
+    let agent = fixture.create_agent_in(cwd, &[]).await;
+    let mut state = fixture.load_state(&agent).await;
+    let probe = fixture
+        .probes
+        .handle(support::probe_metadata().id)
+        .await
+        .unwrap();
+    let mut hook = crate::hooks::HookKind::new(
+        psa_api::HookId::ProjectContext,
+        state.agent(),
+        state.session(),
+    );
+    let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
+    let (_controls, mut controls) = actors::unbounded_channel();
+    assert!(
+        !run_hook(&mut hook, &mut context, &mut controls)
+            .await
+            .unwrap()
+    );
+    context.load_all_events().await.unwrap()
+}
+
+fn project_context_prompt(files: &[(&str, &str)]) -> String {
+    let mut prompt =
+        "<project_context>\nProject-specific instructions and guidelines:\n\n".to_owned();
+    for (index, (path, content)) in files.iter().enumerate() {
+        if index > 0 {
+            prompt.push_str("\n\n");
+        }
+        prompt.push_str(&format!(
+            "<project_instructions path=\"{path}\">\n{content}\n</project_instructions>"
+        ));
+    }
+    prompt.push_str("\n</project_context>");
+    prompt
+}
+
+fn assert_project_context_message(events: &[Event], files: &[(&str, &str)]) {
+    let messages: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventType::Message(message) => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].message_type, MessageType::System);
+    let [api::ContentBlock::Text(block)] = messages[0].content.as_slice() else {
+        panic!("expected one project context text block");
+    };
+    assert_eq!(block.text, project_context_prompt(files));
+}
+
+#[tokio::test]
+async fn project_context_orders_ancestors_and_preserves_bom_stripped_content_verbatim() {
+    let root = "  root instructions\n<literal> & text\n";
+    let work = "\r\nwork instructions\r\n";
+    let nested = "\u{feff}second BOM stays";
+    let fixture = Fixture::new_with_files(
+        fake_probe::FakeFiles::default()
+            .file("/work/nested/AGENTS.md", format!("\u{feff}{nested}"))
+            .file("/work/CLAUDE.MD", work)
+            .file("/AGENTS.md", format!("\u{feff}{root}"))
+            .file("/work/other/AGENTS.md", "not an ancestor"),
+    )
+    .await;
+    let events = run_project_context(&fixture, "/work/nested").await;
+    assert_eq!(events.len(), 1);
+    assert_project_context_message(
+        &events,
+        &[
+            ("/AGENTS.md", root),
+            ("/work/CLAUDE.MD", work),
+            ("/work/nested/AGENTS.md", nested),
+        ],
+    );
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn project_context_uses_exact_candidate_priority_in_each_directory() {
+    let candidates = [
+        "AGENTS.override.md",
+        "AGENTS.md",
+        "AGENTS.MD",
+        "CLAUDE.md",
+        "CLAUDE.MD",
+    ];
+    for first in 0..candidates.len() {
+        let mut files = fake_probe::FakeFiles::default();
+        for name in candidates[first..].iter().rev() {
+            files = files.file(&format!("/work/{name}"), *name);
+        }
+        let fixture = Fixture::new_with_files(files).await;
+        let events = run_project_context(&fixture, "/work").await;
+        assert_eq!(events.len(), 1);
+        assert_project_context_message(
+            &events,
+            &[(&format!("/work/{}", candidates[first]), candidates[first])],
+        );
+        fixture.close().await;
+    }
+}
+
+#[tokio::test]
+async fn project_context_empty_files_shadow_lower_priority_candidates() {
+    for content in ["", "\u{feff}"] {
+        let fixture = Fixture::new_with_files(
+            fake_probe::FakeFiles::default()
+                .file("/work/AGENTS.override.md", content)
+                .file("/work/AGENTS.md", "must not appear"),
+        )
+        .await;
+        let events = run_project_context(&fixture, "/work").await;
+        assert_eq!(events.len(), 1);
+        assert_project_context_message(&events, &[("/work/AGENTS.override.md", "")]);
+        fixture.close().await;
+    }
+}
+
+#[tokio::test]
+async fn project_context_no_discovered_files_emits_no_message_or_warning() {
+    let fixture = Fixture::new_with_files(
+        fake_probe::FakeFiles::default()
+            .file("/work/agents.md", "wrong case")
+            .file("/work/README.md", "not instructions")
+            .directory("/work/AGENTS.md"),
+    )
+    .await;
+    assert!(run_project_context(&fixture, "/work").await.is_empty());
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn project_context_remote_failures_warn_and_fall_back_to_readable_symlink() {
+    let fixture = Fixture::new_with_files(
+        fake_probe::FakeFiles::default()
+            .list_error("/")
+            .unreadable("/work/AGENTS.override.md")
+            .symlink("/work/AGENTS.md", "linked instructions"),
+    )
+    .await;
+    let events = run_project_context(&fixture, "/work").await;
+    assert_project_context_message(&events, &[("/work/AGENTS.md", "linked instructions")]);
+    let warnings: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventType::Log(log) => Some(log),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(warnings.len(), 2);
+    assert!(warnings.iter().all(|log| !log.message.is_empty()));
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn project_context_invalid_utf8_and_oversized_files_warn_and_fall_back() {
+    let fixture = Fixture::new_with_files(
+        fake_probe::FakeFiles::default()
+            .file("/work/AGENTS.override.md", vec![b'x'; 1024 * 1024 + 1])
+            .file("/work/AGENTS.md", vec![0xff, 0xfe])
+            .file("/work/AGENTS.MD", "valid fallback"),
+    )
+    .await;
+    let events = run_project_context(&fixture, "/work").await;
+    assert_project_context_message(&events, &[("/work/AGENTS.MD", "valid fallback")]);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, EventType::Log(_)))
+            .count(),
+        2
+    );
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn project_context_cancelled_before_discovery_saves_no_partial_prompt() {
+    let fixture = Fixture::new_with_files(
+        fake_probe::FakeFiles::default()
+            .file("/AGENTS.md", "root")
+            .file("/work/AGENTS.md", "work"),
+    )
+    .await;
+    let agent = fixture.create_agent(&[]).await;
+    let mut state = fixture.load_state(&agent).await;
+    let probe = fixture
+        .probes
+        .handle(support::probe_metadata().id)
+        .await
+        .unwrap();
+    let mut hook = crate::hooks::HookKind::new(
+        psa_api::HookId::ProjectContext,
+        state.agent(),
+        state.session(),
+    );
+    let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
+    let (sender, cancellation) = Cancellation::channel();
+    sender.send(()).unwrap();
+    hook.run(&mut context, cancellation).await.unwrap();
+    assert!(context.load_all_events().await.unwrap().is_empty());
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn project_context_cancels_a_pending_remote_operation() {
+    // The connection-only fake never answers directory requests.
+    let fixture = Fixture::new().await;
+    let agent = fixture.create_agent(&[]).await;
+    let mut state = fixture.load_state(&agent).await;
+    let probe = fixture
+        .probes
+        .handle(support::probe_metadata().id)
+        .await
+        .unwrap();
+    let mut hook = crate::hooks::HookKind::new(
+        psa_api::HookId::ProjectContext,
+        state.agent(),
+        state.session(),
+    );
+    let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
+    let (sender, cancellation) = Cancellation::channel();
+    {
+        let run = hook.run(&mut context, cancellation);
+        tokio::pin!(run);
+        tokio::select! {
+            biased;
+            result = &mut run => panic!("discovery unexpectedly completed: {result:?}"),
+            _ = tokio::task::yield_now() => {}
+        }
+        sender.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), run)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    assert!(context.load_all_events().await.unwrap().is_empty());
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn project_context_accepts_limit_sized_files_and_caps_total_content() {
+    let content = "x".repeat(1024 * 1024);
+    let paths = [
+        "/AGENTS.md",
+        "/a/AGENTS.md",
+        "/a/b/AGENTS.md",
+        "/a/b/c/AGENTS.md",
+        "/a/b/c/d/AGENTS.md",
+    ];
+    let mut files = fake_probe::FakeFiles::default();
+    for path in paths {
+        files = files.file(path, content.as_bytes().to_vec());
+    }
+    let fixture = Fixture::new_with_files(files).await;
+    let events = run_project_context(&fixture, "/a/b/c/d").await;
+    let expected: Vec<_> = paths[..4]
+        .iter()
+        .map(|path| (*path, content.as_str()))
+        .collect();
+    assert_project_context_message(&events, &expected);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, EventType::Log(_)))
+            .count(),
+        1
+    );
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn project_context_disconnected_probe_is_fatal_and_saves_no_prompt() {
+    let fixture = Fixture::new_with_files(
+        fake_probe::FakeFiles::default().file("/work/AGENTS.md", "must not be saved"),
+    )
+    .await;
+    let agent = fixture.create_agent(&[]).await;
+    let mut state = fixture.load_state(&agent).await;
+    let probe_handle = fixture
+        .probes
+        .handle(support::probe_metadata().id)
+        .await
+        .unwrap();
+    let Fixture {
+        _directory,
+        database,
+        publication: _,
+        runtime,
+        probes,
+        probe,
+        stop,
+        server,
+    } = fixture;
+    probe.disconnect(&probes).await;
+    let mut hook = crate::hooks::HookKind::new(
+        psa_api::HookId::ProjectContext,
+        state.agent(),
+        state.session(),
+    );
+    let mut context = AgentContext::new(&mut state, &probe_handle, &runtime.handle);
+    let (_sender, cancellation) = Cancellation::channel();
+    assert!(hook.run(&mut context, cancellation).await.is_err());
+    assert!(context.load_all_events().await.unwrap().is_empty());
+    runtime.shutdown().await.unwrap();
+    probes.shutdown().await;
+    let _ = stop.send(());
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap();
+    database.close().await;
+    drop(_directory);
 }
 
 #[tokio::test]

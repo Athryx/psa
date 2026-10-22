@@ -12,6 +12,45 @@ use llm_api::api::{self, HistoryItemKind, ToolDefinition};
 use psa_api::events::ToolResult as ToolResultEvent;
 use std::time::Duration;
 
+mod noop;
+
+pub use noop::Noop;
+
+#[cfg(test)]
+mod tests;
+
+/// Implements the untyped tool boundary for an inherent typed execution method.
+///
+/// The method receives deserialized arguments, the invocation context, and its
+/// cancellation token. Cancellation takes precedence over argument validation.
+macro_rules! typed_tool_execute {
+    ($arguments:ty, $execute_typed:ident) => {
+        async fn execute(
+            &self,
+            arguments: serde_json::Value,
+            context: &mut crate::agents::agent_context::AgentContext<'_>,
+            mut cancellation: crate::hooks::cancellation::Cancellation,
+        ) -> crate::hooks::tools::ToolOutput {
+            if cancellation.is_cancelled() {
+                return crate::hooks::tools::ToolOutput::error(crate::prompts::tool_interrupted());
+            }
+
+            let arguments = match llm_api::api::parse_tool_arguments::<$arguments>(arguments) {
+                Ok(arguments) => arguments,
+                Err(error) => {
+                    return crate::hooks::tools::ToolOutput::error(
+                        crate::prompts::tool_argument_error(&error.to_string()),
+                    );
+                }
+            };
+
+            self.$execute_typed(arguments, context, cancellation).await
+        }
+    };
+}
+
+pub(crate) use typed_tool_execute;
+
 /// Tool output content, independent of call IDs and event metadata.
 pub use psa_api::{ToolId, ToolResult};
 
@@ -76,8 +115,14 @@ pub(crate) async fn execute(
         return ToolOutput::error(prompts::tool_unknown());
     };
 
-    let Ok(arguments) = serde_json::from_str(&call.arguments) else {
-        return ToolOutput::error(prompts::tool_invalid_arguments());
+    let arguments = match serde_json::from_str(&call.arguments) {
+        Ok(arguments) => arguments,
+        Err(error) => {
+            return ToolOutput::error(prompts::tool_argument_json_error(
+                error.line(),
+                error.column(),
+            ));
+        }
     };
 
     // Keep control-message updates separate from the invocation's session snapshot.
@@ -171,53 +216,6 @@ impl Tool for ToolKind {
         match self {
             Self::Noop(tool) => tool.execute(arguments, context, cancellation).await,
         }
-    }
-}
-
-pub struct Noop;
-
-impl Noop {
-    fn definition() -> ToolDefinition {
-        ToolDefinition {
-            name: "noop".into(),
-            description: prompts::noop_description(),
-            parameters: serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false}),
-            strict: Some(true),
-        }
-    }
-}
-
-impl Tool for Noop {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        Self::definition()
-    }
-
-    async fn execute(
-        &self,
-        arguments: serde_json::Value,
-        _context: &mut AgentContext<'_>,
-        mut cancellation: Cancellation,
-    ) -> ToolOutput {
-        if cancellation.is_cancelled() {
-            return ToolOutput::error(prompts::tool_interrupted());
-        }
-
-        if !arguments
-            .as_object()
-            .is_some_and(|object| object.is_empty())
-        {
-            return ToolOutput::error(prompts::tool_invalid_arguments());
-        }
-
-        ToolOutput::success(Vec::new())
-    }
-
-    fn cancellation_timeout(&self) -> Duration {
-        Duration::from_secs(1)
     }
 }
 

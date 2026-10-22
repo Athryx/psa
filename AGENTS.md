@@ -16,6 +16,14 @@ The following crates are present in the workspace:
 - `psa_probe`: standalone Linux probe providing remote file, directory, and process operations over an authenticated WebSocket.
 - `actors`: provides async mailboxes and handles for actor-style message passing, with the `#[mailbox]` macro supplied by `actors_macros`.
 
+# Tool authoring
+
+Before adding or changing native agent tools, read
+`.agent/skills/making-tools/SKILL.md`. Use typed arguments and the shared execution
+macro, one concrete tool per file, and shared middle truncation. If existing
+capabilities are insufficient, stop and propose the needed additions to the user
+instead of expanding the harness to support the tool.
+
 # Architecture
 
 - Prefer actor-style designs where they make ownership, concurrency, and lifecycle management clearer, especially for long-lived tasks that own mutable state.

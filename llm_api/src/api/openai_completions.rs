@@ -176,7 +176,8 @@ fn serialize_tools(tools: &[super::ToolDefinition]) -> Result<Value, Error> {
         let mut function = json!({
             "name": tool.name,
             "description": tool.description,
-            "parameters": tool.parameters,
+            "parameters": tool.parameters.to_openai_parameters(tool.strict)
+                .map_err(|message| Error::InvalidToolDefinition { name: tool.name.clone(), message })?,
         });
         if let Some(strict) = tool.strict {
             function["strict"] = json!(strict);
@@ -1507,7 +1508,8 @@ mod tests {
         history.tools.push(ToolDefinition {
             name: "current_tool".into(),
             description: "current definition, independent of historical names".into(),
-            parameters: json!({"type":"object","properties":{},"additionalProperties":false}),
+            parameters: json!({"type":"object","properties":{},"additionalProperties":false})
+                .into(),
             strict: Some(true),
         });
         history
@@ -1658,12 +1660,42 @@ mod tests {
     }
 
     #[test]
+    fn typed_tool_schema_is_serialized_without_semantic_changes() {
+        #[derive(schemars::JsonSchema)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct Input {
+            /// Omitted and null are both accepted, without requiring the key.
+            maybe: Option<String>,
+        }
+        let mut history = AgentHistory::new(model());
+        history.tools.push(ToolDefinition::for_type::<Input>(
+            "typed",
+            "Typed tool",
+            Some(false),
+        ));
+        let original = serde_json::to_value(&history.tools).unwrap();
+        let schema = history.tools[0].parameters.as_value().clone();
+        let body = request_body(&history, &RequestConfig::default()).unwrap();
+        assert_eq!(body["tools"][0]["function"]["parameters"], schema);
+        assert_eq!(body["tools"][0]["function"]["strict"], false);
+        assert!(schema.get("required").is_none());
+        history.tools[0].strict = Some(true);
+        assert!(matches!(
+            request_body(&history, &RequestConfig::default()),
+            Err(Error::InvalidToolDefinition { .. })
+        ));
+        history.tools[0].strict = Some(false);
+        assert_eq!(serde_json::to_value(&history.tools).unwrap(), original);
+    }
+
+    #[test]
     fn validates_schema_shapes_and_tool_choices_before_http() {
         let mut history = AgentHistory::new(model());
         history.tools.push(ToolDefinition {
             name: "test".into(),
             description: String::new(),
-            parameters: json!({"type":42}),
+            parameters: json!({"type":42}).into(),
             strict: None,
         });
         assert!(matches!(
@@ -1671,7 +1703,7 @@ mod tests {
             Err(Error::InvalidToolDefinition { .. })
         ));
         history.tools[0].parameters =
-            json!({"type":"object","properties":{"x":{"type":"string"}},"required":["x"]});
+            json!({"type":"object","properties":{"x":{"type":"string"}},"required":["x"]}).into();
         for (choice, expected) in [
             (ToolChoice::Auto, "auto"),
             (ToolChoice::None, "none"),

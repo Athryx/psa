@@ -8,8 +8,8 @@ use super::ToolDefinition;
 use crate::Error;
 
 /// Both adapters use the same function-name grammar and schema shape checks.
-/// Provider/model-specific schema dialect and strict-mode rules remain the
-/// server's responsibility.
+/// Both raw and generated schemas receive the same conservative strict checks.
+/// Provider-specific capabilities may still be rejected by the server.
 pub(super) fn validate_tool(tool: &ToolDefinition) -> Result<(), Error> {
     let validate = || -> Result<(), String> {
         if tool.name.is_empty()
@@ -22,11 +22,9 @@ pub(super) fn validate_tool(tool: &ToolDefinition) -> Result<(), Error> {
             return Err("function names must be 1-64 ASCII letters, digits, '_' or '-'".into());
         }
 
-        if !tool.parameters.is_object() {
-            return Err("parameters must be a JSON Schema object".into());
-        }
-
-        validate_schema(&tool.parameters)
+        tool.parameters
+            .to_openai_parameters(tool.strict)
+            .map(|_| ())
     };
 
     validate().map_err(|message| Error::InvalidToolDefinition {
@@ -38,7 +36,7 @@ pub(super) fn validate_tool(tool: &ToolDefinition) -> Result<(), Error> {
 /// Check locally knowable schema errors without inventing a restricted dialect.
 /// References, combinators and provider-specific keywords are passed through;
 /// the selected provider/model validates dialect and strict-mode restrictions.
-fn validate_schema(schema: &Value) -> Result<(), String> {
+pub(super) fn validate_schema(schema: &Value) -> Result<(), String> {
     if schema.is_boolean() {
         return Ok(());
     }
@@ -208,7 +206,7 @@ mod tests {
         ToolDefinition {
             name: name.into(),
             description: String::new(),
-            parameters,
+            parameters: parameters.into(),
             strict: None,
         }
     }

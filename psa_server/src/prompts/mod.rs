@@ -1,9 +1,49 @@
-//! All harness-authored text sent to the model lives here, including tool errors.
+//! Shared harness prompts and model-facing formatting utilities.
+//! Tool-specific prompt text belongs in the corresponding tool's own file.
 use llm_api::api::{ContentBlock, TextBlock};
-use std::path::Path;
+use std::{borrow::Cow, path::Path};
 
 pub mod skills;
 pub mod tools;
+
+#[cfg(test)]
+mod tests;
+
+/// Bounds model-facing text by bytes, retaining its beginning and end.
+///
+/// The budget includes the truncation marker. UTF-8 characters are never split;
+/// very small budgets use a shortened ASCII marker. Unchanged text is borrowed.
+pub fn truncate_middle(text: &str, max_bytes: usize) -> Cow<'_, str> {
+    if text.len() <= max_bytes {
+        return Cow::Borrowed(text);
+    }
+
+    const MARKER: &str = "\n[... middle truncated ...]\n";
+    let marker = if max_bytes >= MARKER.len() {
+        MARKER
+    } else {
+        "..."
+    };
+    if max_bytes < marker.len() {
+        return Cow::Borrowed(&marker[..max_bytes]);
+    }
+
+    let retained = max_bytes - marker.len();
+    let mut prefix_end = retained.div_ceil(2);
+    while !text.is_char_boundary(prefix_end) {
+        prefix_end -= 1;
+    }
+    let mut suffix_start = text.len() - retained / 2;
+    while !text.is_char_boundary(suffix_start) {
+        suffix_start += 1;
+    }
+
+    Cow::Owned(format!(
+        "{}{marker}{}",
+        &text[..prefix_end],
+        &text[suffix_start..]
+    ))
+}
 
 pub fn default_system_prompt() -> &'static str {
     "You are an expert coding assistant operating inside psa, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files."
@@ -43,6 +83,19 @@ pub fn tool_not_run() -> Vec<ContentBlock> {
 }
 pub fn tool_invalid_arguments() -> Vec<ContentBlock> {
     text("Tool arguments are invalid for this tool.")
+}
+pub fn tool_argument_error(detail: &str) -> Vec<ContentBlock> {
+    let detail = detail
+        .strip_prefix("invalid tool arguments ")
+        .unwrap_or(detail);
+    let message =
+        format!("Invalid tool arguments: {detail}. Correct the indicated field and retry.");
+    text(truncate_middle(&message, 2048).into_owned())
+}
+pub fn tool_argument_json_error(line: usize, column: usize) -> Vec<ContentBlock> {
+    text(format!(
+        "Invalid tool arguments: expected a JSON object; malformed JSON at line {line}, column {column}. Correct the JSON and retry."
+    ))
 }
 pub fn tool_unknown() -> Vec<ContentBlock> {
     text("The requested tool is not available.")

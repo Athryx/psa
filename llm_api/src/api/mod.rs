@@ -43,6 +43,7 @@ pub mod openai_completions;
 pub mod openai_responses;
 pub mod provider;
 mod schema;
+mod tool_schema;
 mod transport;
 pub mod types;
 
@@ -58,6 +59,7 @@ pub use agent_history::{AgentHistory, validate_request};
 pub use openai_completions::{OpenAiCompletions, OpenAiCompletionsConfig, OpenAiCompletionsStream};
 pub use openai_responses::{OpenAiResponses, OpenAiResponsesStream};
 pub use provider::{Provider, ProviderStream};
+pub use tool_schema::{ToolArgumentError, ToolSchema, parse_tool_arguments};
 pub use types::*;
 
 /// Per-request settings. The model comes from `AgentHistory::config`.

@@ -3,6 +3,7 @@ pub mod cwd;
 pub mod default_startup;
 pub mod extra_system_prompt;
 pub mod noop;
+pub mod project_context;
 pub mod session_model_update;
 pub mod skills;
 pub mod stop_without_tools;
@@ -16,6 +17,7 @@ pub use cwd::CwdHook;
 pub use default_startup::DefaultStartupHook;
 pub use extra_system_prompt::ExtraSystemPromptHook;
 pub use noop::NoopHook;
+pub use project_context::ProjectContextHook;
 pub use session_model_update::SessionModelUpdateHook;
 pub use skills::SkillsHook;
 pub use stop_without_tools::StopWithoutTools;
@@ -67,6 +69,7 @@ pub enum HookKind {
     StopWithoutTools(StopWithoutTools),
     DefaultStartup(DefaultStartupHook),
     ExtraSystemPrompt(ExtraSystemPromptHook),
+    ProjectContext(ProjectContextHook),
     ToolDefinitions(ToolDefinitionsHook),
     Cwd(CwdHook),
     Skills(SkillsHook),
@@ -86,6 +89,7 @@ impl HookKind {
             HookId::ExtraSystemPrompt => {
                 Self::ExtraSystemPrompt(ExtraSystemPromptHook::new(agent, session))
             }
+            HookId::ProjectContext => Self::ProjectContext(ProjectContextHook::new(agent, session)),
             HookId::ToolDefinitions => {
                 Self::ToolDefinitions(ToolDefinitionsHook::new(agent, session))
             }
@@ -109,6 +113,7 @@ impl Hook for HookKind {
             Self::StopWithoutTools(hook) => hook.cancellation_timeout(),
             Self::DefaultStartup(hook) => hook.cancellation_timeout(),
             Self::ExtraSystemPrompt(hook) => hook.cancellation_timeout(),
+            Self::ProjectContext(hook) => hook.cancellation_timeout(),
             Self::ToolDefinitions(hook) => hook.cancellation_timeout(),
             Self::Cwd(hook) => hook.cancellation_timeout(),
             Self::Skills(hook) => hook.cancellation_timeout(),
@@ -128,6 +133,7 @@ impl Hook for HookKind {
             Self::StopWithoutTools(hook) => hook.run(context, cancellation).await,
             Self::DefaultStartup(hook) => hook.run(context, cancellation).await,
             Self::ExtraSystemPrompt(hook) => hook.run(context, cancellation).await,
+            Self::ProjectContext(hook) => hook.run(context, cancellation).await,
             Self::ToolDefinitions(hook) => hook.run(context, cancellation).await,
             Self::Cwd(hook) => hook.run(context, cancellation).await,
             Self::Skills(hook) => hook.run(context, cancellation).await,

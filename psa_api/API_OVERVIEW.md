@@ -43,8 +43,9 @@ optional `model_config` override, `skills` paths, `permitted_subagents` IDs, and
 `extra_system_prompt`. Hook lists (`agent_create`, `session_update`,
 `before_request`, `after_request`) default to empty. Supported hook IDs are
 `Noop`, `StopWithoutTools`, `DefaultStartup`, `ToolDefinitions`, `Cwd`, `Skills`,
-`ExtraSystemPrompt`, and `SessionModelUpdate`. For ordinary execution, explicitly configure
-`agent_create: [DefaultStartup, ExtraSystemPrompt, ToolDefinitions, Cwd, Skills]` in that order,
+`ExtraSystemPrompt`, `ProjectContext`, and `SessionModelUpdate`. For ordinary
+execution, explicitly configure
+`agent_create: [DefaultStartup, ExtraSystemPrompt, ToolDefinitions, Cwd, ProjectContext, Skills]` in that order,
 `session_update: [SessionModelUpdate]`, and `after_request: [StopWithoutTools]`.
 No hooks are installed implicitly.
 
@@ -59,6 +60,26 @@ does not skip forks and can also be bound to `session_update`.
 as a separate `System` message, unless empty. Like `Cwd`, it does not skip forks;
 configure it only at stages where another copy of the prompt is wanted.
 
+`ProjectContext` discovers instruction files on the session's probe, from the
+filesystem root through the lexically normalized absolute `working_directory`.
+In each directory the first readable candidate wins, in this order:
+`AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD`.
+Directories and other non-file entries are skipped; symlinks are read through.
+An empty file still wins. Files are combined in ancestor-first order into one
+`System` message with Pi-style `<project_context>` and
+`<project_instructions path="...">` wrappers. Text is preserved verbatim except
+for stripping a leading UTF-8 BOM. No files means no system message.
+
+The hook rereads files on each configured invocation, including forks; it has no
+implicit installation, caching, descendant discovery, global Pi agent-directory
+loading, or Git-worktree special handling. Configure it on `agent_create` after
+`DefaultStartup`; optionally also on `session_update` to append refreshed context.
+Repeated invocations append rather than replace previous instructions. Remote
+file/listing failures, invalid UTF-8, and size limits emit warning `Log` events;
+disconnection and protocol failures propagate. Files are limited to 1 MiB each
+and 4 MiB combined, with oversized files skipped. Cancellation drops the active
+remote operation without emitting a partial prompt.
+
 Only the configured `SkillsHook` consumes `AgentDefinition.skills`. It reads
 explicit locations on the session probe, resolving relative paths against the
 session `working_directory`; locations accept `.md` files or directories with
@@ -66,7 +87,7 @@ session `working_directory`; locations accept `.md` files or directories with
 descriptions, and paths, never skill bodies. `disable-model-invocation: true`
 skips a skill; the first duplicate name wins. Missing/malformed skills emit
 warning `Log` events and are skipped. An empty catalogue emits no system message;
-a nonempty skills list with a disconnected probe errors. `selectable`,
+a nonempty skills list with a disconnected probe errors. `selectable`
 and `permitted_subagents` remain literal metadata, not automatic selection or
 permission enforcement. `extra_system_prompt` is injected only by the explicitly
 configured `ExtraSystemPrompt` hook.

@@ -14,10 +14,27 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     /// JSON Schema describing the tool's argument object.
-    pub parameters: Value,
+    pub parameters: super::ToolSchema,
     /// Whether to require strict schema adherence. None uses provider defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
+}
+
+impl ToolDefinition {
+    /// Describe deserialized arguments with an explicit strict-mode policy.
+    /// `None` uses provider defaults; `Some(false)` preserves non-strict behavior.
+    pub fn for_type<T: schemars::JsonSchema>(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        strict: Option<bool>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters: super::ToolSchema::for_type::<T>(),
+            strict,
+        }
+    }
 }
 
 /// One API response, independent of the model-facing conversation history.

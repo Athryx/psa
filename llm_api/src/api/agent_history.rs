@@ -449,7 +449,7 @@ mod tests {
         history.tools.push(ToolDefinition {
             name: "read".into(),
             description: "read a file".into(),
-            parameters: serde_json::json!({"type":"object"}),
+            parameters: serde_json::json!({"type":"object"}).into(),
             strict: None,
         });
         validate_request(&history, config.provider, &request).unwrap();
@@ -459,7 +459,7 @@ mod tests {
             Err(Error::DuplicateToolName { .. })
         ));
         history.tools.pop();
-        history.tools[0].parameters = serde_json::json!(42);
+        history.tools[0].parameters = serde_json::json!(42).into();
         assert!(matches!(
             validate_request(&history, config.provider, &request),
             Err(Error::InvalidToolDefinition { .. })

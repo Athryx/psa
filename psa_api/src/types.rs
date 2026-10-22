@@ -22,6 +22,7 @@ pub enum HookId {
     StopWithoutTools,
     DefaultStartup,
     ExtraSystemPrompt,
+    ProjectContext,
     ToolDefinitions,
     Cwd,
     Skills,

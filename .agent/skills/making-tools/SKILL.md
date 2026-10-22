@@ -1,0 +1,211 @@
+---
+name: making-tools
+description: Add or update native PSA agent tools using typed Serde arguments, llm_api schemas, existing AgentContext capabilities, shared prompt formatting, and the typed execution macro.
+---
+
+# Making PSA tools
+
+Use this skill whenever adding or changing a native agent tool in this repository.
+Paths below are relative to the repository root.
+
+## Capability boundary: stop instead of expanding the harness
+
+Before implementing a tool, inspect the APIs below and determine whether they can
+express its behavior. If they cannot, STOP and tell the user:
+
+1. Which requested behavior is blocked.
+2. Which existing capability is insufficient and why.
+3. The smallest proposed API/protocol/runtime additions needed.
+
+Do not add new probe operations, server endpoints, database behavior, agent/runtime
+features, or AgentContext capabilities just to make the tool work. Do not bypass
+these boundaries using direct database access, server-local filesystem/process
+operations, private worker state, or a new transport. Wait for the user to approve
+those additions as separate work. Tool registration, argument types, tool-specific
+logic, prompt text, and tests are ordinary tool-authoring changes, not permission
+to introduce new general-purpose capabilities.
+
+## Files and required structure
+
+- Each concrete tool goes in its OWN snake_case file under
+  `psa_server/src/hooks/tools/`, e.g. `read_file.rs`. Keep its argument struct,
+  concrete tool struct, inherent implementation, and `impl Tool` together.
+- `tools/mod.rs` owns common infrastructure and dispatch, not concrete tool logic.
+- Use `tools/noop.rs` as the working reference. Follow the existing `ToolId`,
+  `ToolKind`, constructors, definition dispatch, and hook snapshot registration;
+  do not create a second registry or execution path.
+- Every production concrete tool MUST use a typed argument struct and
+  `typed_tool_execute!`. Do not handwrite JSON field extraction or a separate
+  JSON-valued implementation of `Tool::execute`.
+
+The pattern is:
+
+```rust
+use llm_api::api::ToolDefinition;
+use schemars::JsonSchema;
+use serde::Deserialize;
+use super::{Tool, ToolOutput, ToolSystemPrompt, typed_tool_execute};
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ExampleArgs {
+    /// Absolute path, or a path relative to the session working directory.
+    path: String,
+}
+
+pub struct Example;
+
+impl Example {
+    // Implement only the real execution behavior in an inherent async method:
+    // async fn execute_typed(
+    //     &self,
+    //     arguments: ExampleArgs,
+    //     context: &mut AgentContext<'_>,
+    //     cancellation: Cancellation,
+    // ) -> ToolOutput
+}
+
+// In impl Tool for Example:
+// - new constructs agent-local state, without IO.
+// - tool_definition directly returns ToolDefinition::for_type::<ExampleArgs>(
+//       "example", "Tool-specific description kept in this file.", Some(false),
+//   ). Use the argument type as the single source of the schema.
+// - system_prompt directly returns ToolSystemPrompt { tools, rules }, with
+//   tool-specific directions and rule strings kept in this file.
+// - cancellation_timeout directly returns the bounded cancellation grace period.
+// - generate the JSON-to-typed bridge with:
+//     typed_tool_execute!(ExampleArgs, execute_typed);
+```
+
+`tool_definition`, `system_prompt` (including directions/rules), and
+`cancellation_timeout` may be implemented directly in `impl Tool`. Do not add
+inherent helper methods solely to forward these trait methods. Only the actual
+typed execution method needs to be inherent so the macro can delegate to it.
+Extract other helpers only when they clarify meaningful logic or remove duplication.
+
+The macro implements ONLY the trait's `execute` method. It checks cancellation,
+decodes arguments with `llm_api::api::parse_tool_arguments`, formats errors through
+`prompts::tool_argument_error`, and delegates to the inherent typed method. Invalid
+inputs must not execute logic or cause side effects. Serde reports the first
+invalid field, including nested field/array paths; do not replace these errors
+with a generic success or dump the input payload into the response.
+
+## Schemas and prompts
+
+- Derive `Deserialize` and `schemars::JsonSchema` on arguments and nested
+  types. Use the direct `schemars` dependency in `psa_server`; no crate-path
+  override attribute or `llm_api` reexport is needed.
+- Prefer closed argument objects (`#[serde(deny_unknown_fields)]`). Describe fields
+  clearly with doc comments; descriptions become schema annotations. Keep schema
+  and Serde names/defaults/optionality consistent. Custom deserializers require
+  explicit matching schema annotations and tests. Schema-only annotations do not
+  enforce runtime domain constraints; validate those in the typed method before
+  side effects, using existing capabilities.
+- `ToolDefinition::for_type::<Args>(name, description, strict)` takes an explicit
+  `Option<bool>` policy. Prefer `Some(false)` for non-strict mode; `None` uses
+  provider defaults. Missing fields and explicit null are distinct. Do not convert
+  optional/defaulted fields into required nullable fields just to satisfy a
+  provider. Pass `Some(true)` only for a schema that passes the
+  shared strict checks, including closed nested objects and all properties
+  required. Verify strict support rather than stripping constraints.
+- Use `ToolSchema::from(serde_json::Value)` only as a deliberate raw-schema escape
+  hatch, not the normal tool-authoring pattern. Provider serialization and schema
+  validation belong to `llm_api`, not individual tools.
+- Keep tool-specific descriptions, directions, rules, errors, and response-formatting
+  strings directly in the tool's own file. They do NOT have to go in
+  `psa_server/src/prompts/`. Inline strings in trait methods are fine; use local
+  helpers only when they clarify formatting or avoid meaningful duplication.
+  Field doc comments are the schema's local field documentation. Reserve the
+  shared `prompts` module for genuinely shared harness text and utilities such as
+  `text`, argument-error formatting, and `truncate_middle`.
+- `ToolSystemPrompt.tools` is optional tool-specific usage guidance;
+  `ToolSystemPrompt.rules` contains shared rules. The definitions hook renders
+  these as tools/rules system messages and deduplicates rules. Explain argument
+  names, units, path resolution, side effects, and truncation behavior consistently
+  with the generated schema. Do not hardcode a second schema in prompt strings.
+
+## API available to tools
+
+Inspect the actual definitions before use; these are capabilities, not permission
+to reach around their ownership or lifecycle rules.
+
+### `AgentContext` (`psa_server/src/agents/agent_context.rs`)
+
+- `agent()`, `session()`, `definition()`: the invocation's snapshots. Session
+  metadata includes the working directory, model, and probe identity. Definitions
+  are pinned versions, not mutable global configuration.
+- `tools()`: available tool instances; `projection()`: current agent projection.
+- `probe() -> Result<&ProbeHandle, ProbeError>`: the invocation's remote connection;
+  it can be unavailable. Do not silently fall back to the server's filesystem.
+- `sessions() -> &Sessions`: async session/agent facade described below.
+- `save_events(&[NewEvent]).await`: persists and publishes auxiliary events and
+  updates the projection. The worker separately persists returned `ToolOutput` as
+  the tool result; do NOT duplicate that response as an auxiliary event.
+- Async trace queries: `load_events(range)`, `load_all_events()`,
+  `load_context_window()`, `load_events_since_last_inference()`,
+  `load_last_inference_result()`, and `load_agent_envelopes(range)`. These are
+  scoped to the agent, including inherited fork history. Use them rather than SQL.
+
+### `Sessions` (`psa_server/src/agents/sessions.rs`)
+
+Existing async operations cover agent-definition create/get/list/update;
+session create/get/list/update/fork; agent create/get/list; busy queries; and
+submit/steer/resume/interrupt requests. Use these facade methods for persistence,
+publication, and runtime coordination rather than manipulating their internals.
+
+### `ProbeHandle` (`psa_server/src/probes.rs`)
+
+Existing remote operations are `read_file`, `write_file`, `list_dir`, `create_dir`,
+`upload_dir`, `download_dir`, and `spawn`. `list_dir` returns collected directory
+entries; file/archive/process operations return streaming calls. Paths must be
+absolute UTF-8 paths on the PROBE. Resolve relative tool paths against
+`context.session().working_directory`, never the server process working directory.
+
+`psa_api::probes::Command` builds process requests (program, arguments, cwd,
+environment, and stdio). Streaming `Call` exposes `sender.write(0, bytes)`,
+`sender.close_stdin()`, `next_event()`, `signal()`, `kill()`, `wait()`, and
+`into_output()`. Data events identify streams (stdout=1, stderr=2). Respect flow
+control: consume output concurrently with large stdin writes, and drain both
+output streams. `into_output()` collects all output and is unsuitable for
+unbounded output. Dropping a live call requests remote cancellation.
+
+### Cancellation and output
+
+- All IO must be async. Keep mutable long-lived state owned by the appropriate
+  actor/task; tools only use capabilities exposed to them.
+- Use `Cancellation::is_cancelled()` and/or select on `cancelled()` during long
+  operations. The macro's initial check does not replace cooperative cancellation
+  within the actual logic. Do not detach uncancellable work. The grace timeout
+  is for cancellation cleanup, not a normal operation deadline.
+- Return `ToolOutput::success(content)` or `ToolOutput::error(content)`.
+  `prompts::text(...)` creates text content blocks. Ordinary validation, missing
+  paths, process failures, and probe errors should become useful model-facing
+  errors without leaking credentials or the complete argument payload.
+- `ToolOutput.error` does not change agent execution status. Use existing context
+  events/facades for an intentional status/session change; do not mutate runtime
+  state directly.
+
+## Required middle truncation
+
+Use `prompts::truncate_middle(text, max_bytes)` for bounded model-facing text.
+It retains BOTH the beginning and end, inserts a visible middle-truncation
+marker, respects UTF-8 boundaries, and counts the marker within the byte budget.
+It returns `Cow<str>` (borrowed when unchanged). Tiny budgets use a shorter marker.
+
+Do not invent tool-local truncation helpers, use prefix-only truncation, or call
+`.truncate()` on arbitrary UTF-8 text. Choose and document an output budget.
+Bound reads/stream buffers WHILE collecting output: truncating after collecting
+unbounded data is not a memory limit. For a bounded streaming preview, retain
+bounded head and tail buffers, then use the common formatter for final text;
+report any omitted output through prompt formatting. Apply limits to errors too.
+The typed argument error formatter already uses the shared middle truncation.
+
+## Tests and finishing
+
+Test the generated schema AND execution behavior: valid typed delegation;
+missing, extra, wrong-type, and nested/array arguments; no side effects on invalid
+input; cancellation; probe failures; and byte-bounded Unicode output that retains
+its beginning and end. Use the existing probe/context fixtures rather than new
+harness features. Add regression tests for provider serialization when changing
+schema behavior. Run `cargo fmt --all` and relevant tests. Workspace builds need
+prepared probe assets as documented in `psa_probe/README.md`.

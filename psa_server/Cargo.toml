@@ -9,6 +9,7 @@ psa_api = { path = "../psa_api" }
 llm_api = { path = "../llm_api" }
 time = "0.3.55"
 serde_json = "1"
+schemars = "1"
 serde_yaml_ng = "0.10"
 serde = { version = "1", features = ["derive"] }
 sqlx = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate"] }

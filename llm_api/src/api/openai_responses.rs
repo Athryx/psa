@@ -138,7 +138,13 @@ fn build_request_body(history: &AgentHistory, config: &RequestConfig) -> Result<
     }
 
     if !history.tools.is_empty() {
-        body["tools"] = Value::Array(history.tools.iter().map(serialize_tool).collect());
+        body["tools"] = Value::Array(
+            history
+                .tools
+                .iter()
+                .map(serialize_tool)
+                .collect::<Result<_, _>>()?,
+        );
     }
 
     Ok(body)
@@ -152,19 +158,26 @@ fn build_request_items(history: &AgentHistory) -> Result<Vec<Value>, Error> {
         .collect()
 }
 
-fn serialize_tool(tool: &ToolDefinition) -> Value {
+fn serialize_tool(tool: &ToolDefinition) -> Result<Value, Error> {
+    let parameters = tool
+        .parameters
+        .to_openai_parameters(tool.strict)
+        .map_err(|message| Error::InvalidToolDefinition {
+            name: tool.name.clone(),
+            message,
+        })?;
     let mut value = json!({
         "type": "function",
         "name": tool.name,
         "description": tool.description,
-        "parameters": tool.parameters,
+        "parameters": parameters,
     });
 
     if let Some(strict) = tool.strict {
         value["strict"] = json!(strict);
     }
 
-    value
+    Ok(value)
 }
 
 fn parse_replay_item_metadata(item: &HistoryItem) -> Result<Value, Error> {
@@ -1510,7 +1523,8 @@ mod tests {
         history.tools.push(ToolDefinition {
             name: "read".into(),
             description: "read file".into(),
-            parameters: json!({"type":"object","properties":{}}),
+            parameters: json!({"type":"object","properties":{},"additionalProperties":false})
+                .into(),
             strict: Some(true),
         });
         history.items.push(message(Role::User, "new input"));
@@ -2088,6 +2102,36 @@ mod tests {
     }
 
     #[test]
+    fn typed_tool_schema_is_serialized_without_semantic_changes() {
+        #[derive(schemars::JsonSchema)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct Input {
+            /// Omitted and null are both accepted, without requiring the key.
+            maybe: Option<String>,
+        }
+        let mut history = AgentHistory::new(model());
+        history.tools.push(ToolDefinition::for_type::<Input>(
+            "typed",
+            "Typed tool",
+            Some(false),
+        ));
+        let original = serde_json::to_value(&history.tools).unwrap();
+        let schema = history.tools[0].parameters.as_value().clone();
+        let body = build_request_body(&history, &RequestConfig::default()).unwrap();
+        assert_eq!(body["tools"][0]["parameters"], schema);
+        assert_eq!(body["tools"][0]["strict"], false);
+        assert!(schema.get("required").is_none());
+        history.tools[0].strict = Some(true);
+        assert!(matches!(
+            build_request_body(&history, &RequestConfig::default()),
+            Err(Error::InvalidToolDefinition { .. })
+        ));
+        history.tools[0].strict = Some(false);
+        assert_eq!(serde_json::to_value(&history.tools).unwrap(), original);
+    }
+
+    #[test]
     fn unsupported_effort_and_invalid_schemas_fail_before_http() {
         let mut history = AgentHistory::new(model());
         history.config.effort = Effort::Max;
@@ -2103,7 +2147,7 @@ mod tests {
         history.tools.push(ToolDefinition {
             name: "invalid".into(),
             description: String::new(),
-            parameters: json!({"type":"not-a-json-schema-type"}),
+            parameters: json!({"type":"not-a-json-schema-type"}).into(),
             strict: None,
         });
         assert!(matches!(

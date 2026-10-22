@@ -27,7 +27,11 @@ fn definitions_have_flat_versioned_wire_types_and_default_empty_hooks() {
         HookIds::default()
     );
     let hooks = HookIds {
-        agent_create: vec![HookId::DefaultStartup, HookId::ExtraSystemPrompt],
+        agent_create: vec![
+            HookId::DefaultStartup,
+            HookId::ExtraSystemPrompt,
+            HookId::ProjectContext,
+        ],
         session_update: vec![HookId::SessionModelUpdate],
         before_request: vec![HookId::Noop],
         after_request: vec![HookId::StopWithoutTools],
@@ -52,6 +56,7 @@ fn definitions_have_flat_versioned_wire_types_and_default_empty_hooks() {
     assert_eq!(json["version"], 2);
     assert_eq!(json["hooks"]["agent_create"][0], "DefaultStartup");
     assert_eq!(json["hooks"]["agent_create"][1], "ExtraSystemPrompt");
+    assert_eq!(json["hooks"]["agent_create"][2], "ProjectContext");
     assert_eq!(json["skills"][0], "/skills/example");
     assert_eq!(json["permitted_subagents"][0], 3);
     assert!(json.get("config").is_none());
