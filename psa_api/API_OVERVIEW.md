@@ -92,6 +92,13 @@ and `permitted_subagents` remain literal metadata, not automatic selection or
 permission enforcement. `extra_system_prompt` is injected only by the explicitly
 configured `ExtraSystemPrompt` hook.
 
+Supported tool IDs are `Noop`, `Read`, `Edit`, and `Write`. Add tools explicitly
+to the definition, for example `"tools": ["Read", "Edit", "Write"]`. Native file
+tools operate on the session probe and port Pi's model-facing prompts and
+text/image results; they do not add Pi's UI/programmatic result metadata.
+`Read` uses Pi's line/byte head truncation and default image limits. See
+`../docs/FILE_TOOLS.md` for behavior, safety bounds, and compatibility limitations.
+
 Creating an agent takes `definition_id`, `name`, and optional `interactive`
 (default `false` when omitted from JSON). For example:
 

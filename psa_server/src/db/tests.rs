@@ -15,6 +15,7 @@ use std::time::Duration;
 
 mod cursor;
 mod definitions;
+mod file_tools;
 mod interactive;
 mod usage;
 

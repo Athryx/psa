@@ -88,6 +88,9 @@ pub enum AgentState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolId {
     Noop,
+    Read,
+    Edit,
+    Write,
 }
 
 pub type ToolResult = Vec<ContentBlock>;

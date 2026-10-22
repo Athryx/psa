@@ -94,6 +94,34 @@ fn hook_construction_preserves_configured_order_and_empty_lists() {
 }
 
 #[test]
+fn file_tool_instances_have_stable_ids_definitions_and_prompt_guidance() {
+    let (agent, session) = snapshots();
+    for (id, name) in [
+        (ToolId::Read, "read"),
+        (ToolId::Edit, "edit"),
+        (ToolId::Write, "write"),
+    ] {
+        let tool = ToolKind::new(id, &agent, &session);
+        assert_eq!(tool.id(), id);
+        let definition = tool.tool_definition();
+        assert_eq!(definition.name, name);
+        assert_eq!(definition.strict, Some(false));
+        assert!(
+            definition
+                .parameters
+                .to_openai_parameters(definition.strict)
+                .is_ok()
+        );
+        assert_eq!(
+            serde_json::to_value(&definition).unwrap(),
+            serde_json::to_value(tool_definition(id)).unwrap()
+        );
+        assert!(tool.system_prompt().tools.is_some());
+        assert!(!tool.system_prompt().rules.is_empty());
+    }
+}
+
+#[test]
 fn tool_instances_supply_the_fixture_definition_and_identity() {
     let (agent, session) = snapshots();
     let tool = ToolKind::new(ToolId::Noop, &agent, &session);

@@ -185,27 +185,35 @@ unbounded output. Dropping a live call requests remote cancellation.
   events/facades for an intentional status/session change; do not mutate runtime
   state directly.
 
-## Required middle truncation
+## Truncation policy
 
-Use `prompts::truncate_middle(text, max_bytes)` for bounded model-facing text.
+When no behavior is specified, prefer middle truncation using
+`prompts::truncate_middle(text, max_bytes)` for bounded model-facing text.
 It retains BOTH the beginning and end, inserts a visible middle-truncation
 marker, respects UTF-8 boundaries, and counts the marker within the byte budget.
 It returns `Cow<str>` (borrowed when unchanged). Tiny budgets use a shorter marker.
 
-Do not invent tool-local truncation helpers, use prefix-only truncation, or call
-`.truncate()` on arbitrary UTF-8 text. Choose and document an output budget.
-Bound reads/stream buffers WHILE collecting output: truncating after collecting
-unbounded data is not a memory limit. For a bounded streaming preview, retain
-bounded head and tail buffers, then use the common formatter for final text;
-report any omitted output through prompt formatting. Apply limits to errors too.
+Explicit tool requirements take precedence over that default. When replicating
+Pi tools, follow Pi's behavior, including `read`'s head truncation at 2,000 lines
+or 50 KiB and its exact continuation notices. Do not substitute middle truncation
+when compatibility requires another policy. Keep compatibility-specific
+formatting in the tool's file; reuse the common middle helper when middle
+truncation is appropriate rather than inventing another version.
+
+Choose and document an output budget, and never split UTF-8 characters with
+arbitrary byte slicing or `.truncate()`. Bound reads/stream buffers WHILE
+collecting output: truncating after collecting unbounded data is not a memory
+limit. For a middle-truncated streaming preview, retain bounded head and tail
+buffers. For a Pi-compatible read, retain the bounded selected prefix while
+counting the remaining input for continuation notices. Apply bounds to errors too.
 The typed argument error formatter already uses the shared middle truncation.
 
 ## Tests and finishing
 
 Test the generated schema AND execution behavior: valid typed delegation;
 missing, extra, wrong-type, and nested/array arguments; no side effects on invalid
-input; cancellation; probe failures; and byte-bounded Unicode output that retains
-its beginning and end. Use the existing probe/context fixtures rather than new
-harness features. Add regression tests for provider serialization when changing
+input; cancellation; probe failures; and byte-bounded Unicode output following
+its specified truncation policy (retaining both ends for middle truncation).
+Use the existing probe/context fixtures rather than new harness features. Add regression tests for provider serialization when changing
 schema behavior. Run `cargo fmt --all` and relevant tests. Workspace builds need
 prepared probe assets as documented in `psa_probe/README.md`.

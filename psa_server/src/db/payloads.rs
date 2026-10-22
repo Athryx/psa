@@ -204,6 +204,9 @@ pub(super) async fn insert_payload(
         EventType::ToolDefinition(value) => {
             let tool_id = match value.id {
                 ToolId::Noop => "noop",
+                ToolId::Read => "read",
+                ToolId::Edit => "edit",
+                ToolId::Write => "write",
             };
             let def = &value.definition;
             let parameters = serialize_json(&def.parameters)?;
@@ -436,6 +439,9 @@ pub(super) async fn load_payloads(
         |r| EventType::ToolDefinition(ToolDefinition {
             id: match r.tool_id.as_str() {
                 "noop" => ToolId::Noop,
+                "read" => ToolId::Read,
+                "edit" => ToolId::Edit,
+                "write" => ToolId::Write,
                 s => return Err(invalid(s)),
             },
             definition: api::ToolDefinition {

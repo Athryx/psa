@@ -9,7 +9,7 @@ use crate::{
         Hook, HookError,
         cancellation::Cancellation,
         run_hook,
-        tools::{Tool, ToolOutput},
+        tools::{Edit, Read, Tool, ToolOutput, Write},
     },
     http::AppState,
     probes::ProbeRegistry,
@@ -787,6 +787,259 @@ async fn extra_system_prompt_hook_persists_verbatim_system_message_and_skips_emp
         }
     }
 
+    fixture.close().await;
+}
+
+async fn run_native_file_tool(
+    tool: &impl Tool,
+    arguments: serde_json::Value,
+    context: &mut AgentContext<'_>,
+) -> ToolOutput {
+    let (_sender, cancellation) = Cancellation::channel();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        tool.execute(arguments, context, cancellation),
+    )
+    .await
+    .expect("native file tool did not complete")
+}
+
+fn native_tool_text(output: &ToolOutput) -> &str {
+    let [api::ContentBlock::Text(block)] = output.content.as_slice() else {
+        panic!("expected one text result");
+    };
+    &block.text
+}
+
+#[tokio::test]
+async fn native_write_read_and_disjoint_edit_use_the_remote_filesystem() {
+    let fixture = Fixture::new_with_files(fake_probe::FakeFiles::default()).await;
+    let agent = fixture.create_agent(&[]).await;
+    let mut state = fixture.load_state(&agent).await;
+    let probe = fixture
+        .probes
+        .handle(support::probe_metadata().id)
+        .await
+        .unwrap();
+    let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
+    let write = Write::new(context.agent(), context.session());
+    let read = Read::new(context.agent(), context.session());
+    let edit = Edit::new(context.agent(), context.session());
+    let path = "@nested/文件.txt";
+    let original = "first\n世界\nthird\nfourth";
+
+    let output = run_native_file_tool(
+        &write,
+        serde_json::json!({"path": path, "content": original}),
+        &mut context,
+    )
+    .await;
+    assert!(!output.error, "{}", native_tool_text(&output));
+    assert_eq!(
+        native_tool_text(&output),
+        "Successfully wrote to @nested/文件.txt"
+    );
+    let entries = probe.list_dir("/work/nested").await.unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.name == "文件.txt" && entry.size == original.len() as u64)
+    );
+    assert!(
+        probe
+            .list_dir("/work")
+            .await
+            .unwrap()
+            .iter()
+            .any(|entry| entry.name == "nested" && entry.kind == "directory")
+    );
+
+    let output = run_native_file_tool(&read, serde_json::json!({"path": path}), &mut context).await;
+    assert!(!output.error, "{}", native_tool_text(&output));
+    assert_eq!(native_tool_text(&output), original);
+    let output = run_native_file_tool(
+        &read,
+        serde_json::json!({"path": path, "offset": 2, "limit": 2}),
+        &mut context,
+    )
+    .await;
+    assert!(!output.error, "{}", native_tool_text(&output));
+    assert_eq!(
+        native_tool_text(&output),
+        "世界\nthird\n\n[1 more lines in file. Use offset=4 to continue.]"
+    );
+
+    let output = run_native_file_tool(
+        &edit,
+        serde_json::json!({"path": path, "edits": [
+            {"oldText": "first", "newText": "FIRST"},
+            {"oldText": "fourth", "newText": "last"}
+        ]}),
+        &mut context,
+    )
+    .await;
+    assert!(!output.error, "{}", native_tool_text(&output));
+    assert_eq!(
+        native_tool_text(&output),
+        "Successfully replaced 2 block(s) in @nested/文件.txt."
+    );
+    let output = run_native_file_tool(
+        &read,
+        serde_json::json!({"path": "/work/nested/文件.txt"}),
+        &mut context,
+    )
+    .await;
+    assert!(!output.error, "{}", native_tool_text(&output));
+    assert_eq!(native_tool_text(&output), "FIRST\n世界\nthird\nlast");
+
+    let output = run_native_file_tool(
+        &edit,
+        serde_json::json!({"path": path, "edits": [
+            {"oldText": "FIRST", "newText": "must not be applied"},
+            {"oldText": "does not exist", "newText": "invalid"}
+        ]}),
+        &mut context,
+    )
+    .await;
+    assert!(output.error);
+    let output = run_native_file_tool(&read, serde_json::json!({"path": path}), &mut context).await;
+    assert!(!output.error, "{}", native_tool_text(&output));
+    assert_eq!(native_tool_text(&output), "FIRST\n世界\nthird\nlast");
+    assert!(context.load_all_events().await.unwrap().is_empty());
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn native_file_tools_resolve_each_sessions_cwd_and_overwrite_large_streams() {
+    let fixture = Fixture::new_with_files(fake_probe::FakeFiles::default()).await;
+    let probe = fixture
+        .probes
+        .handle(support::probe_metadata().id)
+        .await
+        .unwrap();
+    let first = fixture.create_agent_in("/first", &[]).await;
+    let second = fixture.create_agent_in("/second", &[]).await;
+    for (agent, content) in [(&first, "first contents"), (&second, "second contents")] {
+        let mut state = fixture.load_state(agent).await;
+        let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
+        let write = Write::new(context.agent(), context.session());
+        let large = "界\n".repeat(100_000);
+        let output = run_native_file_tool(
+            &write,
+            serde_json::json!({"path": "same.txt", "content": large}),
+            &mut context,
+        )
+        .await;
+        assert!(!output.error, "{}", native_tool_text(&output));
+        let output = run_native_file_tool(
+            &write,
+            serde_json::json!({"path": "same.txt", "content": content}),
+            &mut context,
+        )
+        .await;
+        assert!(!output.error, "{}", native_tool_text(&output));
+    }
+    let mut state = fixture.load_state(&first).await;
+    let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
+    for (path, expected) in [
+        ("/first/same.txt", "first contents"),
+        ("/second/same.txt", "second contents"),
+    ] {
+        let output =
+            run_native_file_tool(&Read, serde_json::json!({"path": path}), &mut context).await;
+        assert!(!output.error, "{}", native_tool_text(&output));
+        assert_eq!(native_tool_text(&output), expected);
+    }
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn native_file_tools_reject_invalid_or_cancelled_writes_without_mutation() {
+    let fixture = Fixture::new_with_files(
+        fake_probe::FakeFiles::default().file("/work/keep.txt", "original"),
+    )
+    .await;
+    let agent = fixture.create_agent(&[]).await;
+    let mut state = fixture.load_state(&agent).await;
+    let probe = fixture
+        .probes
+        .handle(support::probe_metadata().id)
+        .await
+        .unwrap();
+    let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
+    for arguments in [
+        serde_json::json!({"path": "keep.txt"}),
+        serde_json::json!({"path": "keep.txt", "content": 3}),
+        serde_json::json!({"path": "keep.txt", "content": null}),
+    ] {
+        assert!(
+            run_native_file_tool(&Write, arguments, &mut context)
+                .await
+                .error
+        );
+    }
+    let (sender, cancellation) = Cancellation::channel();
+    sender.send(()).unwrap();
+    let output = Write
+        .execute(
+            serde_json::json!({"path": "keep.txt", "content": "changed"}),
+            &mut context,
+            cancellation,
+        )
+        .await;
+    assert!(output.error);
+    assert_eq!(
+        serde_json::to_value(output.content).unwrap(),
+        serde_json::to_value(crate::prompts::tool_interrupted()).unwrap()
+    );
+    let output =
+        run_native_file_tool(&Read, serde_json::json!({"path": "keep.txt"}), &mut context).await;
+    assert!(!output.error, "{}", native_tool_text(&output));
+    assert_eq!(native_tool_text(&output), "original");
+    let output = run_native_file_tool(
+        &Write,
+        serde_json::json!({"path": "keep.txt/child", "content": "text"}),
+        &mut context,
+    )
+    .await;
+    assert!(output.error);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn native_write_cancels_a_pending_remote_directory_creation() {
+    let fixture = Fixture::new().await;
+    let agent = fixture.create_agent(&[]).await;
+    let mut state = fixture.load_state(&agent).await;
+    let probe = fixture
+        .probes
+        .handle(support::probe_metadata().id)
+        .await
+        .unwrap();
+    let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
+    let (sender, cancellation) = Cancellation::channel();
+    let output = {
+        let run = Write.execute(
+            serde_json::json!({"path": "file.txt", "content": "text"}),
+            &mut context,
+            cancellation,
+        );
+        tokio::pin!(run);
+        tokio::select! {
+            biased;
+            _ = &mut run => panic!("inert probe unexpectedly completed write"),
+            _ = tokio::task::yield_now() => {}
+        }
+        sender.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), run)
+            .await
+            .unwrap()
+    };
+    assert!(output.error);
+    assert_eq!(
+        serde_json::to_value(output.content).unwrap(),
+        serde_json::to_value(crate::prompts::tool_interrupted()).unwrap()
+    );
     fixture.close().await;
 }
 

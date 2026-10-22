@@ -12,9 +12,16 @@ use llm_api::api::{self, HistoryItemKind, ToolDefinition};
 use psa_api::events::ToolResult as ToolResultEvent;
 use std::time::Duration;
 
+mod edit;
+mod file_ops;
 mod noop;
+mod read;
+mod write;
 
+pub use edit::Edit;
 pub use noop::Noop;
+pub use read::Read;
+pub use write::Write;
 
 #[cfg(test)]
 mod tests;
@@ -88,6 +95,9 @@ impl ToolOutput {
 pub fn tool_definition(id: ToolId) -> ToolDefinition {
     match id {
         ToolId::Noop => Noop::definition(),
+        ToolId::Read => Read.tool_definition(),
+        ToolId::Edit => Edit.tool_definition(),
+        ToolId::Write => Write.tool_definition(),
     }
 }
 
@@ -164,24 +174,36 @@ pub(crate) fn failed_tool_result(call_id: String, content: ToolResult) -> ToolRe
 
 pub enum ToolKind {
     Noop(Noop),
+    Read(Read),
+    Edit(Edit),
+    Write(Write),
 }
 
 impl ToolKind {
     pub fn new(id: ToolId, agent: &Agent, session: &Session) -> Self {
         match id {
             ToolId::Noop => Self::Noop(Noop::new(agent, session)),
+            ToolId::Read => Self::Read(Read::new(agent, session)),
+            ToolId::Edit => Self::Edit(Edit::new(agent, session)),
+            ToolId::Write => Self::Write(Write::new(agent, session)),
         }
     }
 
     pub fn id(&self) -> ToolId {
         match self {
             Self::Noop(_) => ToolId::Noop,
+            Self::Read(_) => ToolId::Read,
+            Self::Edit(_) => ToolId::Edit,
+            Self::Write(_) => ToolId::Write,
         }
     }
 
     pub fn tool_definition(&self) -> ToolDefinition {
         match self {
             Self::Noop(tool) => tool.tool_definition(),
+            Self::Read(tool) => tool.tool_definition(),
+            Self::Edit(tool) => tool.tool_definition(),
+            Self::Write(tool) => tool.tool_definition(),
         }
     }
 }
@@ -198,12 +220,18 @@ impl Tool for ToolKind {
     fn system_prompt(&self) -> ToolSystemPrompt {
         match self {
             Self::Noop(tool) => tool.system_prompt(),
+            Self::Read(tool) => tool.system_prompt(),
+            Self::Edit(tool) => tool.system_prompt(),
+            Self::Write(tool) => tool.system_prompt(),
         }
     }
 
     fn cancellation_timeout(&self) -> Duration {
         match self {
             Self::Noop(tool) => tool.cancellation_timeout(),
+            Self::Read(tool) => tool.cancellation_timeout(),
+            Self::Edit(tool) => tool.cancellation_timeout(),
+            Self::Write(tool) => tool.cancellation_timeout(),
         }
     }
 
@@ -215,6 +243,9 @@ impl Tool for ToolKind {
     ) -> ToolOutput {
         match self {
             Self::Noop(tool) => tool.execute(arguments, context, cancellation).await,
+            Self::Read(tool) => tool.execute(arguments, context, cancellation).await,
+            Self::Edit(tool) => tool.execute(arguments, context, cancellation).await,
+            Self::Write(tool) => tool.execute(arguments, context, cancellation).await,
         }
     }
 }

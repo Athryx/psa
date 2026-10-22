@@ -1,0 +1,1582 @@
+[
+  {
+    "name": "basic / lf",
+    "content": "one\ntwo\nthree",
+    "edits": [
+      {
+        "oldText": "two",
+        "newText": "TWO"
+      }
+    ],
+    "result": "one\nTWO\nthree",
+    "error": null
+  },
+  {
+    "name": "basic / bom",
+    "content": "﻿one\ntwo\nthree",
+    "edits": [
+      {
+        "oldText": "two",
+        "newText": "TWO"
+      }
+    ],
+    "result": "﻿one\nTWO\nthree",
+    "error": null
+  },
+  {
+    "name": "basic / crlf",
+    "content": "one\r\ntwo\r\nthree",
+    "edits": [
+      {
+        "oldText": "two",
+        "newText": "TWO"
+      }
+    ],
+    "result": "one\r\nTWO\r\nthree",
+    "error": null
+  },
+  {
+    "name": "basic / cr",
+    "content": "one\rtwo\rthree",
+    "edits": [
+      {
+        "oldText": "two",
+        "newText": "TWO"
+      }
+    ],
+    "result": "one\nTWO\nthree",
+    "error": null
+  },
+  {
+    "name": "basic / mixed",
+    "content": "one\r\ntwo\nthree",
+    "edits": [
+      {
+        "oldText": "two",
+        "newText": "TWO"
+      }
+    ],
+    "result": "one\r\nTWO\r\nthree",
+    "error": null
+  },
+  {
+    "name": "original coordinates / lf",
+    "content": "red green blue",
+    "edits": [
+      {
+        "oldText": "red",
+        "newText": "blue"
+      },
+      {
+        "oldText": "blue",
+        "newText": "red"
+      }
+    ],
+    "result": "blue green red",
+    "error": null
+  },
+  {
+    "name": "original coordinates / bom",
+    "content": "﻿red green blue",
+    "edits": [
+      {
+        "oldText": "red",
+        "newText": "blue"
+      },
+      {
+        "oldText": "blue",
+        "newText": "red"
+      }
+    ],
+    "result": "﻿blue green red",
+    "error": null
+  },
+  {
+    "name": "original coordinates / crlf",
+    "content": "red green blue",
+    "edits": [
+      {
+        "oldText": "red",
+        "newText": "blue"
+      },
+      {
+        "oldText": "blue",
+        "newText": "red"
+      }
+    ],
+    "result": "blue green red",
+    "error": null
+  },
+  {
+    "name": "original coordinates / cr",
+    "content": "red green blue",
+    "edits": [
+      {
+        "oldText": "red",
+        "newText": "blue"
+      },
+      {
+        "oldText": "blue",
+        "newText": "red"
+      }
+    ],
+    "result": "blue green red",
+    "error": null
+  },
+  {
+    "name": "original coordinates / mixed",
+    "content": "red green blue",
+    "edits": [
+      {
+        "oldText": "red",
+        "newText": "blue"
+      },
+      {
+        "oldText": "blue",
+        "newText": "red"
+      }
+    ],
+    "result": "blue green red",
+    "error": null
+  },
+  {
+    "name": "fuzzy unicode / lf",
+    "content": "untouched “stay”  \nquote “hello”   \nlast\t",
+    "edits": [
+      {
+        "oldText": "quote \"hello\"",
+        "newText": "changed"
+      }
+    ],
+    "result": "untouched “stay”  \nchanged\nlast\t",
+    "error": null
+  },
+  {
+    "name": "fuzzy unicode / bom",
+    "content": "﻿untouched “stay”  \nquote “hello”   \nlast\t",
+    "edits": [
+      {
+        "oldText": "quote \"hello\"",
+        "newText": "changed"
+      }
+    ],
+    "result": "﻿untouched “stay”  \nchanged\nlast\t",
+    "error": null
+  },
+  {
+    "name": "fuzzy unicode / crlf",
+    "content": "untouched “stay”  \r\nquote “hello”   \r\nlast\t",
+    "edits": [
+      {
+        "oldText": "quote \"hello\"",
+        "newText": "changed"
+      }
+    ],
+    "result": "untouched “stay”  \r\nchanged\r\nlast\t",
+    "error": null
+  },
+  {
+    "name": "fuzzy unicode / cr",
+    "content": "untouched “stay”  \rquote “hello”   \rlast\t",
+    "edits": [
+      {
+        "oldText": "quote \"hello\"",
+        "newText": "changed"
+      }
+    ],
+    "result": "untouched “stay”  \nchanged\nlast\t",
+    "error": null
+  },
+  {
+    "name": "fuzzy unicode / mixed",
+    "content": "untouched “stay”  \r\nquote “hello”   \nlast\t",
+    "edits": [
+      {
+        "oldText": "quote \"hello\"",
+        "newText": "changed"
+      }
+    ],
+    "result": "untouched “stay”  \r\nchanged\r\nlast\t",
+    "error": null
+  },
+  {
+    "name": "unicode compatibility / lf",
+    "content": "untouched K\nＡ ﬁ café\nfin",
+    "edits": [
+      {
+        "oldText": "A fi café",
+        "newText": "OK"
+      }
+    ],
+    "result": "untouched K\nOK\nfin",
+    "error": null
+  },
+  {
+    "name": "unicode compatibility / bom",
+    "content": "﻿untouched K\nＡ ﬁ café\nfin",
+    "edits": [
+      {
+        "oldText": "A fi café",
+        "newText": "OK"
+      }
+    ],
+    "result": "﻿untouched K\nOK\nfin",
+    "error": null
+  },
+  {
+    "name": "unicode compatibility / crlf",
+    "content": "untouched K\r\nＡ ﬁ café\r\nfin",
+    "edits": [
+      {
+        "oldText": "A fi café",
+        "newText": "OK"
+      }
+    ],
+    "result": "untouched K\r\nOK\r\nfin",
+    "error": null
+  },
+  {
+    "name": "unicode compatibility / cr",
+    "content": "untouched K\rＡ ﬁ café\rfin",
+    "edits": [
+      {
+        "oldText": "A fi café",
+        "newText": "OK"
+      }
+    ],
+    "result": "untouched K\nOK\nfin",
+    "error": null
+  },
+  {
+    "name": "unicode compatibility / mixed",
+    "content": "untouched K\r\nＡ ﬁ café\nfin",
+    "edits": [
+      {
+        "oldText": "A fi café",
+        "newText": "OK"
+      }
+    ],
+    "result": "untouched K\r\nOK\r\nfin",
+    "error": null
+  },
+  {
+    "name": "overlap / lf",
+    "content": "abcdef",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "x"
+      },
+      {
+        "oldText": "cde",
+        "newText": "y"
+      }
+    ],
+    "result": null,
+    "error": "edits[0] and edits[1] overlap in file. Merge them into one edit or target disjoint regions."
+  },
+  {
+    "name": "overlap / bom",
+    "content": "﻿abcdef",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "x"
+      },
+      {
+        "oldText": "cde",
+        "newText": "y"
+      }
+    ],
+    "result": null,
+    "error": "edits[0] and edits[1] overlap in file. Merge them into one edit or target disjoint regions."
+  },
+  {
+    "name": "overlap / crlf",
+    "content": "abcdef",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "x"
+      },
+      {
+        "oldText": "cde",
+        "newText": "y"
+      }
+    ],
+    "result": null,
+    "error": "edits[0] and edits[1] overlap in file. Merge them into one edit or target disjoint regions."
+  },
+  {
+    "name": "overlap / cr",
+    "content": "abcdef",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "x"
+      },
+      {
+        "oldText": "cde",
+        "newText": "y"
+      }
+    ],
+    "result": null,
+    "error": "edits[0] and edits[1] overlap in file. Merge them into one edit or target disjoint regions."
+  },
+  {
+    "name": "overlap / mixed",
+    "content": "abcdef",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "x"
+      },
+      {
+        "oldText": "cde",
+        "newText": "y"
+      }
+    ],
+    "result": null,
+    "error": "edits[0] and edits[1] overlap in file. Merge them into one edit or target disjoint regions."
+  },
+  {
+    "name": "nested / lf",
+    "content": "abc def",
+    "edits": [
+      {
+        "oldText": "abc def",
+        "newText": "x"
+      },
+      {
+        "oldText": "def",
+        "newText": "y"
+      }
+    ],
+    "result": null,
+    "error": "edits[0] and edits[1] overlap in file. Merge them into one edit or target disjoint regions."
+  },
+  {
+    "name": "nested / bom",
+    "content": "﻿abc def",
+    "edits": [
+      {
+        "oldText": "abc def",
+        "newText": "x"
+      },
+      {
+        "oldText": "def",
+        "newText": "y"
+      }
+    ],
+    "result": null,
+    "error": "edits[0] and edits[1] overlap in file. Merge them into one edit or target disjoint regions."
+  },
+  {
+    "name": "nested / crlf",
+    "content": "abc def",
+    "edits": [
+      {
+        "oldText": "abc def",
+        "newText": "x"
+      },
+      {
+        "oldText": "def",
+        "newText": "y"
+      }
+    ],
+    "result": null,
+    "error": "edits[0] and edits[1] overlap in file. Merge them into one edit or target disjoint regions."
+  },
+  {
+    "name": "nested / cr",
+    "content": "abc def",
+    "edits": [
+      {
+        "oldText": "abc def",
+        "newText": "x"
+      },
+      {
+        "oldText": "def",
+        "newText": "y"
+      }
+    ],
+    "result": null,
+    "error": "edits[0] and edits[1] overlap in file. Merge them into one edit or target disjoint regions."
+  },
+  {
+    "name": "nested / mixed",
+    "content": "abc def",
+    "edits": [
+      {
+        "oldText": "abc def",
+        "newText": "x"
+      },
+      {
+        "oldText": "def",
+        "newText": "y"
+      }
+    ],
+    "result": null,
+    "error": "edits[0] and edits[1] overlap in file. Merge them into one edit or target disjoint regions."
+  },
+  {
+    "name": "adjacent / lf",
+    "content": "abcdef",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "X"
+      },
+      {
+        "oldText": "def",
+        "newText": "Y"
+      }
+    ],
+    "result": "XY",
+    "error": null
+  },
+  {
+    "name": "adjacent / bom",
+    "content": "﻿abcdef",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "X"
+      },
+      {
+        "oldText": "def",
+        "newText": "Y"
+      }
+    ],
+    "result": "﻿XY",
+    "error": null
+  },
+  {
+    "name": "adjacent / crlf",
+    "content": "abcdef",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "X"
+      },
+      {
+        "oldText": "def",
+        "newText": "Y"
+      }
+    ],
+    "result": "XY",
+    "error": null
+  },
+  {
+    "name": "adjacent / cr",
+    "content": "abcdef",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "X"
+      },
+      {
+        "oldText": "def",
+        "newText": "Y"
+      }
+    ],
+    "result": "XY",
+    "error": null
+  },
+  {
+    "name": "adjacent / mixed",
+    "content": "abcdef",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "X"
+      },
+      {
+        "oldText": "def",
+        "newText": "Y"
+      }
+    ],
+    "result": "XY",
+    "error": null
+  },
+  {
+    "name": "duplicate / lf",
+    "content": "foo foo",
+    "edits": [
+      {
+        "oldText": "foo",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Found 2 occurrences of the text in file. The text must be unique. Please provide more context to make it unique."
+  },
+  {
+    "name": "duplicate / bom",
+    "content": "﻿foo foo",
+    "edits": [
+      {
+        "oldText": "foo",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Found 2 occurrences of the text in file. The text must be unique. Please provide more context to make it unique."
+  },
+  {
+    "name": "duplicate / crlf",
+    "content": "foo foo",
+    "edits": [
+      {
+        "oldText": "foo",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Found 2 occurrences of the text in file. The text must be unique. Please provide more context to make it unique."
+  },
+  {
+    "name": "duplicate / cr",
+    "content": "foo foo",
+    "edits": [
+      {
+        "oldText": "foo",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Found 2 occurrences of the text in file. The text must be unique. Please provide more context to make it unique."
+  },
+  {
+    "name": "duplicate / mixed",
+    "content": "foo foo",
+    "edits": [
+      {
+        "oldText": "foo",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Found 2 occurrences of the text in file. The text must be unique. Please provide more context to make it unique."
+  },
+  {
+    "name": "fuzzy duplicate / lf",
+    "content": "“foo” \"foo\"",
+    "edits": [
+      {
+        "oldText": "\"foo\"",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Found 2 occurrences of the text in file. The text must be unique. Please provide more context to make it unique."
+  },
+  {
+    "name": "fuzzy duplicate / bom",
+    "content": "﻿“foo” \"foo\"",
+    "edits": [
+      {
+        "oldText": "\"foo\"",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Found 2 occurrences of the text in file. The text must be unique. Please provide more context to make it unique."
+  },
+  {
+    "name": "fuzzy duplicate / crlf",
+    "content": "“foo” \"foo\"",
+    "edits": [
+      {
+        "oldText": "\"foo\"",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Found 2 occurrences of the text in file. The text must be unique. Please provide more context to make it unique."
+  },
+  {
+    "name": "fuzzy duplicate / cr",
+    "content": "“foo” \"foo\"",
+    "edits": [
+      {
+        "oldText": "\"foo\"",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Found 2 occurrences of the text in file. The text must be unique. Please provide more context to make it unique."
+  },
+  {
+    "name": "fuzzy duplicate / mixed",
+    "content": "“foo” \"foo\"",
+    "edits": [
+      {
+        "oldText": "\"foo\"",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Found 2 occurrences of the text in file. The text must be unique. Please provide more context to make it unique."
+  },
+  {
+    "name": "whitespace needle / lf",
+    "content": "a  b",
+    "edits": [
+      {
+        "oldText": "  ",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Found 3 occurrences of the text in file. The text must be unique. Please provide more context to make it unique."
+  },
+  {
+    "name": "whitespace needle / bom",
+    "content": "﻿a  b",
+    "edits": [
+      {
+        "oldText": "  ",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Found 3 occurrences of the text in file. The text must be unique. Please provide more context to make it unique."
+  },
+  {
+    "name": "whitespace needle / crlf",
+    "content": "a  b",
+    "edits": [
+      {
+        "oldText": "  ",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Found 3 occurrences of the text in file. The text must be unique. Please provide more context to make it unique."
+  },
+  {
+    "name": "whitespace needle / cr",
+    "content": "a  b",
+    "edits": [
+      {
+        "oldText": "  ",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Found 3 occurrences of the text in file. The text must be unique. Please provide more context to make it unique."
+  },
+  {
+    "name": "whitespace needle / mixed",
+    "content": "a  b",
+    "edits": [
+      {
+        "oldText": "  ",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Found 3 occurrences of the text in file. The text must be unique. Please provide more context to make it unique."
+  },
+  {
+    "name": "empty needle / lf",
+    "content": "abcd",
+    "edits": [
+      {
+        "oldText": "",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "oldText must not be empty in file."
+  },
+  {
+    "name": "empty needle / bom",
+    "content": "﻿abcd",
+    "edits": [
+      {
+        "oldText": "",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "oldText must not be empty in file."
+  },
+  {
+    "name": "empty needle / crlf",
+    "content": "abcd",
+    "edits": [
+      {
+        "oldText": "",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "oldText must not be empty in file."
+  },
+  {
+    "name": "empty needle / cr",
+    "content": "abcd",
+    "edits": [
+      {
+        "oldText": "",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "oldText must not be empty in file."
+  },
+  {
+    "name": "empty needle / mixed",
+    "content": "abcd",
+    "edits": [
+      {
+        "oldText": "",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "oldText must not be empty in file."
+  },
+  {
+    "name": "missing / lf",
+    "content": "abcd",
+    "edits": [
+      {
+        "oldText": "nothing",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Could not find the exact text in file. The old text must match exactly including all whitespace and newlines."
+  },
+  {
+    "name": "missing / bom",
+    "content": "﻿abcd",
+    "edits": [
+      {
+        "oldText": "nothing",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Could not find the exact text in file. The old text must match exactly including all whitespace and newlines."
+  },
+  {
+    "name": "missing / crlf",
+    "content": "abcd",
+    "edits": [
+      {
+        "oldText": "nothing",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Could not find the exact text in file. The old text must match exactly including all whitespace and newlines."
+  },
+  {
+    "name": "missing / cr",
+    "content": "abcd",
+    "edits": [
+      {
+        "oldText": "nothing",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Could not find the exact text in file. The old text must match exactly including all whitespace and newlines."
+  },
+  {
+    "name": "missing / mixed",
+    "content": "abcd",
+    "edits": [
+      {
+        "oldText": "nothing",
+        "newText": "x"
+      }
+    ],
+    "result": null,
+    "error": "Could not find the exact text in file. The old text must match exactly including all whitespace and newlines."
+  },
+  {
+    "name": "noop / lf",
+    "content": "abc",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "abc"
+      }
+    ],
+    "result": null,
+    "error": "No changes made to file. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected."
+  },
+  {
+    "name": "noop / bom",
+    "content": "﻿abc",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "abc"
+      }
+    ],
+    "result": null,
+    "error": "No changes made to file. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected."
+  },
+  {
+    "name": "noop / crlf",
+    "content": "abc",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "abc"
+      }
+    ],
+    "result": null,
+    "error": "No changes made to file. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected."
+  },
+  {
+    "name": "noop / cr",
+    "content": "abc",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "abc"
+      }
+    ],
+    "result": null,
+    "error": "No changes made to file. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected."
+  },
+  {
+    "name": "noop / mixed",
+    "content": "abc",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "abc"
+      }
+    ],
+    "result": null,
+    "error": "No changes made to file. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected."
+  },
+  {
+    "name": "noop multi / lf",
+    "content": "abc def",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "abc"
+      },
+      {
+        "oldText": "def",
+        "newText": "def"
+      }
+    ],
+    "result": null,
+    "error": "No changes made to file. The replacements produced identical content."
+  },
+  {
+    "name": "noop multi / bom",
+    "content": "﻿abc def",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "abc"
+      },
+      {
+        "oldText": "def",
+        "newText": "def"
+      }
+    ],
+    "result": null,
+    "error": "No changes made to file. The replacements produced identical content."
+  },
+  {
+    "name": "noop multi / crlf",
+    "content": "abc def",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "abc"
+      },
+      {
+        "oldText": "def",
+        "newText": "def"
+      }
+    ],
+    "result": null,
+    "error": "No changes made to file. The replacements produced identical content."
+  },
+  {
+    "name": "noop multi / cr",
+    "content": "abc def",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "abc"
+      },
+      {
+        "oldText": "def",
+        "newText": "def"
+      }
+    ],
+    "result": null,
+    "error": "No changes made to file. The replacements produced identical content."
+  },
+  {
+    "name": "noop multi / mixed",
+    "content": "abc def",
+    "edits": [
+      {
+        "oldText": "abc",
+        "newText": "abc"
+      },
+      {
+        "oldText": "def",
+        "newText": "def"
+      }
+    ],
+    "result": null,
+    "error": "No changes made to file. The replacements produced identical content."
+  },
+  {
+    "name": "emoji / lf",
+    "content": "a🙂b🚀c",
+    "edits": [
+      {
+        "oldText": "🙂",
+        "newText": "x"
+      },
+      {
+        "oldText": "🚀",
+        "newText": "y"
+      }
+    ],
+    "result": "axbyc",
+    "error": null
+  },
+  {
+    "name": "emoji / bom",
+    "content": "﻿a🙂b🚀c",
+    "edits": [
+      {
+        "oldText": "🙂",
+        "newText": "x"
+      },
+      {
+        "oldText": "🚀",
+        "newText": "y"
+      }
+    ],
+    "result": "﻿axbyc",
+    "error": null
+  },
+  {
+    "name": "emoji / crlf",
+    "content": "a🙂b🚀c",
+    "edits": [
+      {
+        "oldText": "🙂",
+        "newText": "x"
+      },
+      {
+        "oldText": "🚀",
+        "newText": "y"
+      }
+    ],
+    "result": "axbyc",
+    "error": null
+  },
+  {
+    "name": "emoji / cr",
+    "content": "a🙂b🚀c",
+    "edits": [
+      {
+        "oldText": "🙂",
+        "newText": "x"
+      },
+      {
+        "oldText": "🚀",
+        "newText": "y"
+      }
+    ],
+    "result": "axbyc",
+    "error": null
+  },
+  {
+    "name": "emoji / mixed",
+    "content": "a🙂b🚀c",
+    "edits": [
+      {
+        "oldText": "🙂",
+        "newText": "x"
+      },
+      {
+        "oldText": "🚀",
+        "newText": "y"
+      }
+    ],
+    "result": "axbyc",
+    "error": null
+  },
+  {
+    "name": "multiline fuzzy / lf",
+    "content": "first “one”  \nsecond   \nthird",
+    "edits": [
+      {
+        "oldText": "first \"one\"\nsecond",
+        "newText": "new\nlines"
+      }
+    ],
+    "result": "new\nlines\nthird",
+    "error": null
+  },
+  {
+    "name": "multiline fuzzy / bom",
+    "content": "﻿first “one”  \nsecond   \nthird",
+    "edits": [
+      {
+        "oldText": "first \"one\"\nsecond",
+        "newText": "new\nlines"
+      }
+    ],
+    "result": "﻿new\nlines\nthird",
+    "error": null
+  },
+  {
+    "name": "multiline fuzzy / crlf",
+    "content": "first “one”  \r\nsecond   \r\nthird",
+    "edits": [
+      {
+        "oldText": "first \"one\"\nsecond",
+        "newText": "new\nlines"
+      }
+    ],
+    "result": "new\r\nlines\r\nthird",
+    "error": null
+  },
+  {
+    "name": "multiline fuzzy / cr",
+    "content": "first “one”  \rsecond   \rthird",
+    "edits": [
+      {
+        "oldText": "first \"one\"\nsecond",
+        "newText": "new\nlines"
+      }
+    ],
+    "result": "new\nlines\nthird",
+    "error": null
+  },
+  {
+    "name": "multiline fuzzy / mixed",
+    "content": "first “one”  \r\nsecond   \nthird",
+    "edits": [
+      {
+        "oldText": "first \"one\"\nsecond",
+        "newText": "new\nlines"
+      }
+    ],
+    "result": "new\r\nlines\r\nthird",
+    "error": null
+  },
+  {
+    "name": "same line fuzzy / lf",
+    "content": "“one” and “two”  \n“stay” ",
+    "edits": [
+      {
+        "oldText": "\"one\"",
+        "newText": "1"
+      },
+      {
+        "oldText": "\"two\"",
+        "newText": "2"
+      }
+    ],
+    "result": "1 and 2\n“stay” ",
+    "error": null
+  },
+  {
+    "name": "same line fuzzy / bom",
+    "content": "﻿“one” and “two”  \n“stay” ",
+    "edits": [
+      {
+        "oldText": "\"one\"",
+        "newText": "1"
+      },
+      {
+        "oldText": "\"two\"",
+        "newText": "2"
+      }
+    ],
+    "result": "﻿1 and 2\n“stay” ",
+    "error": null
+  },
+  {
+    "name": "same line fuzzy / crlf",
+    "content": "“one” and “two”  \r\n“stay” ",
+    "edits": [
+      {
+        "oldText": "\"one\"",
+        "newText": "1"
+      },
+      {
+        "oldText": "\"two\"",
+        "newText": "2"
+      }
+    ],
+    "result": "1 and 2\r\n“stay” ",
+    "error": null
+  },
+  {
+    "name": "same line fuzzy / cr",
+    "content": "“one” and “two”  \r“stay” ",
+    "edits": [
+      {
+        "oldText": "\"one\"",
+        "newText": "1"
+      },
+      {
+        "oldText": "\"two\"",
+        "newText": "2"
+      }
+    ],
+    "result": "1 and 2\n“stay” ",
+    "error": null
+  },
+  {
+    "name": "same line fuzzy / mixed",
+    "content": "“one” and “two”  \r\n“stay” ",
+    "edits": [
+      {
+        "oldText": "\"one\"",
+        "newText": "1"
+      },
+      {
+        "oldText": "\"two\"",
+        "newText": "2"
+      }
+    ],
+    "result": "1 and 2\r\n“stay” ",
+    "error": null
+  },
+  {
+    "name": "ending needle / lf",
+    "content": "first\nsecond\n",
+    "edits": [
+      {
+        "oldText": "second\n",
+        "newText": "new\n"
+      }
+    ],
+    "result": "first\nnew\n",
+    "error": null
+  },
+  {
+    "name": "ending needle / bom",
+    "content": "﻿first\nsecond\n",
+    "edits": [
+      {
+        "oldText": "second\n",
+        "newText": "new\n"
+      }
+    ],
+    "result": "﻿first\nnew\n",
+    "error": null
+  },
+  {
+    "name": "ending needle / crlf",
+    "content": "first\r\nsecond\r\n",
+    "edits": [
+      {
+        "oldText": "second\n",
+        "newText": "new\n"
+      }
+    ],
+    "result": "first\r\nnew\r\n",
+    "error": null
+  },
+  {
+    "name": "ending needle / cr",
+    "content": "first\rsecond\r",
+    "edits": [
+      {
+        "oldText": "second\n",
+        "newText": "new\n"
+      }
+    ],
+    "result": "first\nnew\n",
+    "error": null
+  },
+  {
+    "name": "ending needle / mixed",
+    "content": "first\r\nsecond\n",
+    "edits": [
+      {
+        "oldText": "second\n",
+        "newText": "new\n"
+      }
+    ],
+    "result": "first\r\nnew\r\n",
+    "error": null
+  },
+  {
+    "name": "newline removal / lf",
+    "content": "first\nsecond\nthird",
+    "edits": [
+      {
+        "oldText": "first\nsecond\n",
+        "newText": ""
+      }
+    ],
+    "result": "third",
+    "error": null
+  },
+  {
+    "name": "newline removal / bom",
+    "content": "﻿first\nsecond\nthird",
+    "edits": [
+      {
+        "oldText": "first\nsecond\n",
+        "newText": ""
+      }
+    ],
+    "result": "﻿third",
+    "error": null
+  },
+  {
+    "name": "newline removal / crlf",
+    "content": "first\r\nsecond\r\nthird",
+    "edits": [
+      {
+        "oldText": "first\nsecond\n",
+        "newText": ""
+      }
+    ],
+    "result": "third",
+    "error": null
+  },
+  {
+    "name": "newline removal / cr",
+    "content": "first\rsecond\rthird",
+    "edits": [
+      {
+        "oldText": "first\nsecond\n",
+        "newText": ""
+      }
+    ],
+    "result": "third",
+    "error": null
+  },
+  {
+    "name": "newline removal / mixed",
+    "content": "first\r\nsecond\nthird",
+    "edits": [
+      {
+        "oldText": "first\nsecond\n",
+        "newText": ""
+      }
+    ],
+    "result": "third",
+    "error": null
+  },
+  {
+    "name": "combining / lf",
+    "content": "untouched\ncafé\nkeep",
+    "edits": [
+      {
+        "oldText": "café",
+        "newText": "coffee"
+      }
+    ],
+    "result": "untouched\ncoffee\nkeep",
+    "error": null
+  },
+  {
+    "name": "combining / bom",
+    "content": "﻿untouched\ncafé\nkeep",
+    "edits": [
+      {
+        "oldText": "café",
+        "newText": "coffee"
+      }
+    ],
+    "result": "﻿untouched\ncoffee\nkeep",
+    "error": null
+  },
+  {
+    "name": "combining / crlf",
+    "content": "untouched\r\ncafé\r\nkeep",
+    "edits": [
+      {
+        "oldText": "café",
+        "newText": "coffee"
+      }
+    ],
+    "result": "untouched\r\ncoffee\r\nkeep",
+    "error": null
+  },
+  {
+    "name": "combining / cr",
+    "content": "untouched\rcafé\rkeep",
+    "edits": [
+      {
+        "oldText": "café",
+        "newText": "coffee"
+      }
+    ],
+    "result": "untouched\ncoffee\nkeep",
+    "error": null
+  },
+  {
+    "name": "combining / mixed",
+    "content": "untouched\r\ncafé\nkeep",
+    "edits": [
+      {
+        "oldText": "café",
+        "newText": "coffee"
+      }
+    ],
+    "result": "untouched\r\ncoffee\r\nkeep",
+    "error": null
+  },
+  {
+    "name": "cr needle / lf",
+    "content": "first\nsecond",
+    "edits": [
+      {
+        "oldText": "first\r\nsecond",
+        "newText": "new\r\ntext"
+      }
+    ],
+    "result": "new\ntext",
+    "error": null
+  },
+  {
+    "name": "cr needle / bom",
+    "content": "﻿first\nsecond",
+    "edits": [
+      {
+        "oldText": "first\r\nsecond",
+        "newText": "new\r\ntext"
+      }
+    ],
+    "result": "﻿new\ntext",
+    "error": null
+  },
+  {
+    "name": "cr needle / crlf",
+    "content": "first\r\nsecond",
+    "edits": [
+      {
+        "oldText": "first\r\nsecond",
+        "newText": "new\r\ntext"
+      }
+    ],
+    "result": "new\r\ntext",
+    "error": null
+  },
+  {
+    "name": "cr needle / cr",
+    "content": "first\rsecond",
+    "edits": [
+      {
+        "oldText": "first\r\nsecond",
+        "newText": "new\r\ntext"
+      }
+    ],
+    "result": "new\ntext",
+    "error": null
+  },
+  {
+    "name": "cr needle / mixed",
+    "content": "first\r\nsecond",
+    "edits": [
+      {
+        "oldText": "first\r\nsecond",
+        "newText": "new\r\ntext"
+      }
+    ],
+    "result": "new\r\ntext",
+    "error": null
+  },
+  {
+    "name": "trailing newline / lf",
+    "content": "a\n",
+    "edits": [
+      {
+        "oldText": "a",
+        "newText": "b\n"
+      }
+    ],
+    "result": "b\n\n",
+    "error": null
+  },
+  {
+    "name": "trailing newline / bom",
+    "content": "﻿a\n",
+    "edits": [
+      {
+        "oldText": "a",
+        "newText": "b\n"
+      }
+    ],
+    "result": "﻿b\n\n",
+    "error": null
+  },
+  {
+    "name": "trailing newline / crlf",
+    "content": "a\r\n",
+    "edits": [
+      {
+        "oldText": "a",
+        "newText": "b\n"
+      }
+    ],
+    "result": "b\r\n\r\n",
+    "error": null
+  },
+  {
+    "name": "trailing newline / cr",
+    "content": "a\r",
+    "edits": [
+      {
+        "oldText": "a",
+        "newText": "b\n"
+      }
+    ],
+    "result": "b\n\n",
+    "error": null
+  },
+  {
+    "name": "trailing newline / mixed",
+    "content": "a\r\n",
+    "edits": [
+      {
+        "oldText": "a",
+        "newText": "b\n"
+      }
+    ],
+    "result": "b\r\n\r\n",
+    "error": null
+  },
+  {
+    "name": "fuzzy final newline / lf",
+    "content": "“hello”  \n",
+    "edits": [
+      {
+        "oldText": "\"hello\"\n",
+        "newText": "changed\n"
+      }
+    ],
+    "result": "changed\n",
+    "error": null
+  },
+  {
+    "name": "fuzzy final newline / bom",
+    "content": "﻿“hello”  \n",
+    "edits": [
+      {
+        "oldText": "\"hello\"\n",
+        "newText": "changed\n"
+      }
+    ],
+    "result": "﻿changed\n",
+    "error": null
+  },
+  {
+    "name": "fuzzy final newline / crlf",
+    "content": "“hello”  \r\n",
+    "edits": [
+      {
+        "oldText": "\"hello\"\n",
+        "newText": "changed\n"
+      }
+    ],
+    "result": "changed\r\n",
+    "error": null
+  },
+  {
+    "name": "fuzzy final newline / cr",
+    "content": "“hello”  \r",
+    "edits": [
+      {
+        "oldText": "\"hello\"\n",
+        "newText": "changed\n"
+      }
+    ],
+    "result": "changed\n",
+    "error": null
+  },
+  {
+    "name": "fuzzy final newline / mixed",
+    "content": "“hello”  \r\n",
+    "edits": [
+      {
+        "oldText": "\"hello\"\n",
+        "newText": "changed\n"
+      }
+    ],
+    "result": "changed\r\n",
+    "error": null
+  },
+  {
+    "name": "fuzzy whitespace / lf",
+    "content": "  \n",
+    "edits": [
+      {
+        "oldText": "\t",
+        "newText": "x"
+      }
+    ],
+    "result": "x\n",
+    "error": null
+  },
+  {
+    "name": "fuzzy whitespace / bom",
+    "content": "﻿  \n",
+    "edits": [
+      {
+        "oldText": "\t",
+        "newText": "x"
+      }
+    ],
+    "result": "﻿x\n",
+    "error": null
+  },
+  {
+    "name": "fuzzy whitespace / crlf",
+    "content": "  \r\n",
+    "edits": [
+      {
+        "oldText": "\t",
+        "newText": "x"
+      }
+    ],
+    "result": "x\r\n",
+    "error": null
+  },
+  {
+    "name": "fuzzy whitespace / cr",
+    "content": "  \r",
+    "edits": [
+      {
+        "oldText": "\t",
+        "newText": "x"
+      }
+    ],
+    "result": "x\n",
+    "error": null
+  },
+  {
+    "name": "fuzzy whitespace / mixed",
+    "content": "  \r\n",
+    "edits": [
+      {
+        "oldText": "\t",
+        "newText": "x"
+      }
+    ],
+    "result": "x\r\n",
+    "error": null
+  }
+]
