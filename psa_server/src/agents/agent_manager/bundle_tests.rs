@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    agents::{NewAgent, session_manager::ManagerCommand},
+    agents::{NewAgent, client_queries::ClientQueries, session_manager::ManagerCommand},
     components::bundles::{
         BundleKind,
         testing::{CleanupBehavior, ProbeBundle, ProbeState, install_owned},
@@ -69,7 +69,13 @@ async fn run_test_worker(
 ) -> std::thread::Result<Result<(), AgentError>> {
     let (commands, mut received) = actors::channel::<ManagerCommand>(8);
     let manager = ManagerClient::new(commands);
-    let sessions = Sessions::new(state.db.clone(), state.publication.clone(), manager.clone());
+    let mut client_queries = ClientQueries::start(state.publication.clone());
+    let sessions = Sessions::new(
+        state.db.clone(),
+        state.publication.clone(),
+        manager.clone(),
+        client_queries.handle(),
+    );
     let supervisor = boundaries.map(|boundaries| {
         let mut boundaries = VecDeque::from(boundaries);
         tokio::spawn(async move {
@@ -97,6 +103,7 @@ async fn run_test_worker(
     .catch_unwind()
     .await;
 
+    client_queries.shutdown().await.unwrap();
     probes.shutdown().await;
     if let Some(supervisor) = supervisor {
         supervisor.await.unwrap();

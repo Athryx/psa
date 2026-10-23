@@ -1,0 +1,539 @@
+use super::*;
+use crate::{agents::NewAgent, components::cancellation::Cancellation, sessions::NewSession};
+use psa_api::events::Message;
+use std::time::Duration;
+
+struct Fixture {
+    _directory: tempfile::TempDir,
+    manager: SessionManager,
+    session: SessionId,
+    agent: AgentId,
+}
+
+impl Fixture {
+    async fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let db = Database::open(directory.path().join("signals.sqlite3"))
+            .await
+            .unwrap();
+        crate::test_support::register_probe(&db).await;
+        let mut cursor = db.cursor().await.unwrap();
+        let definition = cursor
+            .create_agent_definition(psa_api::CreateAgentDefinition {
+                name: "signals".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let model = crate::test_support::model_config();
+        let session = cursor
+            .create_session(NewSession {
+                name: "signals".into(),
+                working_directory: "/work".into(),
+                probe_id: crate::test_support::probe_metadata().id,
+                model_config: model.clone(),
+            })
+            .await
+            .unwrap();
+        let agent = cursor
+            .create_agent(
+                session.id,
+                NewAgent {
+                    name: "signals".into(),
+                    definition_id: definition.id,
+                    interactive: false,
+                },
+            )
+            .await
+            .unwrap();
+        cursor.commit().await.unwrap();
+        let publication = Publication::default();
+        let (commands, received) = actors::channel(256);
+        let commands = ManagerClient::new(commands);
+        let client_queries = ClientQueries::start(publication.clone());
+        let sessions = Sessions::new(
+            db.clone(),
+            publication.clone(),
+            commands.clone(),
+            client_queries.handle(),
+        );
+        let manager = SessionManager {
+            db,
+            publication,
+            providers: ProviderRegistry::new(vec![
+                llm_api::api::Provider::new(model.provider, "test-key").unwrap(),
+            ]),
+            probes: ProbeRegistry::start("signals".into()),
+            sessions,
+            client_queries,
+            commands,
+            received,
+            workers: HashMap::new(),
+            components: HashMap::new(),
+            session_resources: HashMap::new(),
+            steering: HashMap::new(),
+            runs: HashMap::new(),
+            lifecycle_events: Vec::new(),
+            tasks: JoinSet::new(),
+            next_request_id: 1,
+            next_generation: 1,
+            shutting_down: false,
+            shutdown_reply: None,
+            cleanup_failed: false,
+        };
+        Self {
+            _directory: directory,
+            manager,
+            session: session.id,
+            agent: agent.id,
+        }
+    }
+
+    // A parked worker lets tests drive actor boundaries without racing inference.
+    fn add_worker(&mut self) {
+        let generation = self.manager.next_generation;
+        self.manager.next_generation += 1;
+        let task = self
+            .manager
+            .tasks
+            .spawn(std::future::pending::<WorkerResult>());
+        let (controls, _received) = actors::unbounded_channel();
+        self.manager.workers.insert(
+            self.agent,
+            Worker {
+                session: self.session,
+                generation,
+                task_id: task.id(),
+                controls: AgentClient::new(controls),
+                queue: VecDeque::new(),
+                lifecycle: VecDeque::new(),
+                in_flight: None,
+                stopping: false,
+            },
+        );
+    }
+
+    async fn submit(&mut self, delivery: MessageDelivery) {
+        self.manager
+            .submit(
+                self.session,
+                self.agent,
+                AgentRequest::Message {
+                    delivery,
+                    content: crate::prompts::text("work"),
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn boundary(&mut self, state: AgentState) -> BoundaryReply {
+        let generation = self.manager.workers[&self.agent].generation;
+        let (reply, response) = oneshot::channel();
+        self.manager
+            .handle_boundary(self.agent, generation, state, reply)
+            .await;
+        response.await.unwrap()
+    }
+
+    async fn save_message(&self, text: &str) {
+        let mut cursor = self.manager.db.cursor().await.unwrap();
+        cursor
+            .add_events(
+                self.agent,
+                &[NewEvent::new(EventType::Message(Message::text(
+                    MessageType::Agent,
+                    text,
+                )))],
+            )
+            .await
+            .unwrap();
+        cursor.commit().await.unwrap();
+    }
+
+    async fn save_inference(&self, outcome: llm_api::api::Outcome) {
+        use psa_api::events::{InferenceResultEnd, InferenceResultStart};
+        let mut cursor = self.manager.db.cursor().await.unwrap();
+        let id = cursor.get_agent(self.agent).await.unwrap().next_event_id.0;
+        cursor
+            .add_events(
+                self.agent,
+                &[
+                    NewEvent::new(EventType::InferenceResultStart(InferenceResultStart {
+                        id,
+                        model_config: crate::test_support::model_config(),
+                        request_config: Default::default(),
+                    })),
+                    NewEvent::new(EventType::InferenceResultEnd(InferenceResultEnd {
+                        id,
+                        outcome,
+                        usage: Default::default(),
+                        request_time: Duration::ZERO,
+                        response_id: None,
+                        provider_metadata: Default::default(),
+                    })),
+                ],
+            )
+            .await
+            .unwrap();
+        cursor.commit().await.unwrap();
+    }
+
+    async fn close(mut self) {
+        self.manager.begin_shutdown().await;
+        self.manager.tasks.abort_all();
+        while self.manager.tasks.join_next().await.is_some() {}
+        self.manager.probes.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn steering_is_level_triggered_notify_only_and_excludes_queue() {
+    let mut fixture = Fixture::new().await;
+    fixture.add_worker();
+    let mut signal = fixture
+        .manager
+        .subscribe_steering(fixture.session, fixture.agent)
+        .await
+        .unwrap();
+    assert_eq!(*signal.borrow_and_update(), Some(false));
+    fixture.submit(MessageDelivery::Queue).await;
+    assert!(!signal.has_changed().unwrap());
+    fixture.submit(MessageDelivery::Steer).await;
+    signal.changed().await.unwrap();
+    assert_eq!(*signal.borrow_and_update(), Some(true));
+    let second = fixture
+        .manager
+        .subscribe_steering(fixture.session, fixture.agent)
+        .await
+        .unwrap();
+    assert_eq!(*second.borrow(), Some(true));
+    assert_eq!(fixture.manager.workers[&fixture.agent].queue.len(), 2);
+    assert!(fixture.manager.runs.is_empty());
+
+    let sessions = fixture.manager.sessions.clone();
+    let (_cancel, mut cancellation) = Cancellation::channel();
+    let wait = sessions.wait_for_steering(fixture.session, fixture.agent, &mut cancellation);
+    let manager = &mut fixture.manager;
+    let serve = async {
+        let command = manager.received.recv().await.unwrap();
+        manager.handle_command(command).await;
+    };
+    let (result, ()) = tokio::join!(wait, serve);
+    result.unwrap();
+    assert_eq!(fixture.manager.workers[&fixture.agent].queue.len(), 2);
+    assert!(matches!(
+        fixture.boundary(AgentState::Running).await,
+        BoundaryReply::Work(_)
+    ));
+    assert_eq!(*signal.borrow(), Some(false));
+    assert_eq!(fixture.manager.workers[&fixture.agent].queue.len(), 1);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn steering_subscriptions_survive_worker_retirement_and_shutdown() {
+    let mut fixture = Fixture::new().await;
+    let signal = fixture
+        .manager
+        .subscribe_steering(fixture.session, fixture.agent)
+        .await
+        .unwrap();
+    fixture.add_worker();
+    assert!(matches!(
+        fixture.boundary(AgentState::Idle).await,
+        BoundaryReply::Stop
+    ));
+    let generation = fixture.manager.workers[&fixture.agent].generation;
+    fixture
+        .manager
+        .handle_exit(fixture.agent, generation, Ok(()))
+        .await;
+    assert!(fixture.manager.lifecycle_events.is_empty());
+    fixture.add_worker();
+    fixture.submit(MessageDelivery::Steer).await;
+    assert_eq!(*signal.borrow(), Some(true));
+    drop(signal);
+    assert_eq!(fixture.manager.steering[&fixture.agent].receiver_count(), 0);
+    let signal = fixture
+        .manager
+        .subscribe_steering(fixture.session, fixture.agent)
+        .await
+        .unwrap();
+    fixture.manager.begin_shutdown().await;
+    assert_eq!(*signal.borrow(), None);
+    assert!(matches!(
+        fixture
+            .manager
+            .subscribe_steering(fixture.session, fixture.agent)
+            .await,
+        Err(RuntimeError::Unavailable)
+    ));
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn steering_wait_cancellation_drops_receiver_and_registration() {
+    let mut fixture = Fixture::new().await;
+    let sessions = fixture.manager.sessions.clone();
+    let (cancel, mut cancellation) = Cancellation::channel();
+    let wait = sessions.wait_for_steering(fixture.session, fixture.agent, &mut cancellation);
+    let manager = &mut fixture.manager;
+    let serve = async {
+        let command = manager.received.recv().await.unwrap();
+        manager.handle_command(command).await;
+        cancel.send(()).unwrap();
+    };
+    let (result, ()) = tokio::join!(wait, serve);
+    assert!(matches!(result, Err(RuntimeError::Cancelled)));
+    assert_eq!(fixture.manager.steering[&fixture.agent].receiver_count(), 0);
+
+    let (_cancel, mut cancellation) = Cancellation::channel();
+    let wait = sessions.wait_for_steering(fixture.session, fixture.agent, &mut cancellation);
+    tokio::pin!(wait);
+    tokio::select! {
+        result = &mut wait => panic!("unexpected result: {result:?}"),
+        command = fixture.manager.received.recv() => {
+            // Drop an unregistered RPC reply: no receiver is retained.
+            drop(command.unwrap());
+        }
+    }
+    assert!(matches!(wait.await, Err(RuntimeError::Unavailable)));
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn steering_and_event_reads_validate_agent_session() {
+    let mut fixture = Fixture::new().await;
+    let wrong = SessionId(fixture.session.0 + 1);
+    assert!(matches!(
+        fixture
+            .manager
+            .subscribe_steering(wrong, fixture.agent)
+            .await,
+        Err(RuntimeError::Database(DbError::NotFound { .. }))
+    ));
+    assert!(fixture.manager.steering.is_empty());
+    assert!(matches!(
+        fixture
+            .manager
+            .sessions
+            .load_agent_events(wrong, fixture.agent, EventRange::default())
+            .await,
+        Err(RuntimeError::Database(DbError::NotFound { .. }))
+    ));
+    fixture.save_message("persisted").await;
+    let events = fixture
+        .manager
+        .sessions
+        .load_agent_events(fixture.session, fixture.agent, EventRange::default())
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn logical_runs_keep_running_steering_but_restart_at_idle_or_interrupted_boundaries() {
+    let mut fixture = Fixture::new().await;
+    fixture.add_worker();
+    fixture.save_message("old output").await;
+    fixture.submit(MessageDelivery::Queue).await;
+    assert!(matches!(
+        fixture.boundary(AgentState::Idle).await,
+        BoundaryReply::Work(_)
+    ));
+    let first = fixture.manager.runs[&fixture.agent].id.clone();
+    assert!(
+        matches!(&fixture.manager.lifecycle_events[..], [AgentLifecycleEvent::Started { run_id, .. }] if run_id == &first)
+    );
+    fixture.submit(MessageDelivery::Steer).await;
+    assert!(matches!(
+        fixture.boundary(AgentState::Running).await,
+        BoundaryReply::Work(_)
+    ));
+    assert_eq!(fixture.manager.runs[&fixture.agent].id, first);
+    assert_eq!(fixture.manager.lifecycle_events.len(), 1);
+    fixture.save_message("current output").await;
+    fixture.submit(MessageDelivery::Queue).await;
+    assert!(matches!(
+        fixture.boundary(AgentState::Idle).await,
+        BoundaryReply::Work(_)
+    ));
+    let second = fixture.manager.runs[&fixture.agent].id.clone();
+    assert_ne!(first, second);
+    assert!(
+        matches!(&fixture.manager.lifecycle_events[1], AgentLifecycleEvent::Finished { run_id, outcome: AgentRunOutcome::Completed, final_text: Some(text), .. } if run_id == &first && text == "current output")
+    );
+    let mut cursor = fixture.manager.db.cursor().await.unwrap();
+    cursor
+        .add_events(
+            fixture.agent,
+            &[NewEvent::new(EventType::StatusChange(
+                psa_api::events::StatusChange {
+                    new_status: AgentState::Interrupted,
+                    reason: None,
+                },
+            ))],
+        )
+        .await
+        .unwrap();
+    cursor.commit().await.unwrap();
+    fixture.submit(MessageDelivery::Resume).await;
+    assert!(matches!(
+        fixture.boundary(AgentState::Interrupted).await,
+        BoundaryReply::Work(_)
+    ));
+    assert!(
+        matches!(&fixture.manager.lifecycle_events[3], AgentLifecycleEvent::Finished { run_id, outcome: AgentRunOutcome::Interrupted, final_text: None, .. } if run_id == &second)
+    );
+    assert_ne!(fixture.manager.runs[&fixture.agent].id, second);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn latest_current_run_provider_failure_is_safe_and_distinct_from_interruption() {
+    use llm_api::api::{Outcome, StopReason};
+    let failure = || {
+        Outcome::Failed(llm_api::Error::Provider {
+            code: None,
+            message: "secret provider credential must not escape".into(),
+            metadata: Default::default(),
+        })
+    };
+    for (outcome, expected) in [
+        (
+            failure(),
+            AgentRunOutcome::Failed {
+                message: "Agent execution failed; see server logs for details.".into(),
+            },
+        ),
+        (Outcome::Cancelled, AgentRunOutcome::Interrupted),
+        (
+            Outcome::Incomplete {
+                reason: StopReason::TokenLimit,
+            },
+            AgentRunOutcome::Interrupted,
+        ),
+        (
+            Outcome::Completed {
+                reason: StopReason::EndTurn,
+            },
+            AgentRunOutcome::Interrupted,
+        ),
+    ] {
+        let mut fixture = Fixture::new().await;
+        fixture.add_worker();
+        fixture.save_inference(failure()).await;
+        fixture.submit(MessageDelivery::Steer).await;
+        assert!(matches!(
+            fixture.boundary(AgentState::Idle).await,
+            BoundaryReply::Work(_)
+        ));
+        // The newest terminal outcome, not an earlier failure in this run or
+        // inherited from before the baseline, determines provider failure.
+        fixture.save_inference(failure()).await;
+        fixture.save_inference(outcome).await;
+        assert!(matches!(
+            fixture.boundary(AgentState::Interrupted).await,
+            BoundaryReply::Stop
+        ));
+        assert!(
+            matches!(&fixture.manager.lifecycle_events[1], AgentLifecycleEvent::Finished {
+            outcome, ..
+        } if outcome == &expected)
+        );
+        assert_eq!(fixture.manager.lifecycle_events.len(), 2);
+        fixture.close().await;
+    }
+}
+
+#[tokio::test]
+async fn empty_latest_agent_message_clears_earlier_run_text() {
+    let mut fixture = Fixture::new().await;
+    fixture.add_worker();
+    fixture
+        .save_inference(llm_api::api::Outcome::Failed(llm_api::Error::Transport {
+            message: "failure from a prior run must not affect this run".into(),
+        }))
+        .await;
+    fixture.submit(MessageDelivery::Steer).await;
+    assert!(matches!(
+        fixture.boundary(AgentState::Idle).await,
+        BoundaryReply::Work(_)
+    ));
+    fixture.save_message("earlier intermediate output").await;
+    fixture.save_message("").await;
+    assert!(matches!(
+        fixture.boundary(AgentState::Idle).await,
+        BoundaryReply::Stop
+    ));
+    assert!(matches!(
+        &fixture.manager.lifecycle_events[1],
+        AgentLifecycleEvent::Finished {
+            outcome: AgentRunOutcome::Completed,
+            final_text: None,
+            ..
+        }
+    ));
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn worker_error_or_panic_reports_one_safe_failure_per_active_run() {
+    for panic in [false, true] {
+        let mut fixture = Fixture::new().await;
+        fixture.add_worker();
+        fixture.submit(MessageDelivery::Steer).await;
+        assert!(matches!(
+            fixture.boundary(AgentState::Idle).await,
+            BoundaryReply::Work(_)
+        ));
+        fixture
+            .save_inference(llm_api::api::Outcome::Cancelled)
+            .await;
+        let generation = fixture.manager.workers[&fixture.agent].generation;
+        if panic {
+            let task = fixture.manager.tasks.spawn(async {
+                panic!("test credential must not appear in lifecycle notifications");
+            });
+            fixture
+                .manager
+                .workers
+                .get_mut(&fixture.agent)
+                .unwrap()
+                .task_id = task.id();
+            let joined = tokio::time::timeout(
+                Duration::from_secs(2),
+                fixture.manager.tasks.join_next_with_id(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            fixture.manager.handle_join(joined).await;
+        } else {
+            fixture
+                .manager
+                .handle_exit(
+                    fixture.agent,
+                    generation,
+                    Err(AgentError::SupervisorUnavailable),
+                )
+                .await;
+        }
+        fixture
+            .manager
+            .handle_exit(
+                fixture.agent,
+                generation,
+                Err(AgentError::SupervisorUnavailable),
+            )
+            .await;
+        assert!(fixture.manager.runs.is_empty());
+        assert_eq!(fixture.manager.lifecycle_events.len(), 2);
+        assert!(
+            matches!(&fixture.manager.lifecycle_events[1], AgentLifecycleEvent::Finished { outcome: AgentRunOutcome::Failed { message }, .. } if message == "Agent execution failed; see server logs for details.")
+        );
+        fixture.close().await;
+    }
+}

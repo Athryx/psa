@@ -3,11 +3,13 @@
 use super::{
     AgentError, AgentId, AgentState,
     agent_manager::{AgentClient, AgentManagerState, recover_agent, run_worker},
+    client_queries::ClientQueries,
+    lifecycle::{AgentLifecycleEvent, AgentRunOutcome},
     publication::Publication,
     sessions::Sessions,
 };
 use crate::{
-    components::bundles::InstalledComponents,
+    components::bundles::{InstalledComponents, session::SessionBundleResources},
     db::{Database, DbError},
     probes::ProbeRegistry,
     providers::ProviderRegistry,
@@ -16,14 +18,14 @@ use crate::{
 use actors::Mailbox;
 use psa_api::{
     AgentRequest, MessageDelivery, RequestAccepted, StreamMessage,
-    events::{EventType, Log, NewEvent},
+    events::{EventId, EventRange, EventType, Log, MessageType, NewEvent},
 };
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
 };
 use tokio::{
-    sync::{Mutex, oneshot},
+    sync::{Mutex, oneshot, watch},
     task::{Id, JoinError, JoinHandle, JoinSet},
 };
 
@@ -31,6 +33,8 @@ use tokio::{
 mod bundle_tests;
 #[cfg(test)]
 pub(crate) mod lifecycle_tests;
+#[cfg(test)]
+mod signals_tests;
 #[cfg(test)]
 mod tests;
 
@@ -44,6 +48,8 @@ pub enum RuntimeError {
     Agent(#[from] AgentError),
     #[error("agent runtime is shutting down or unavailable")]
     Unavailable,
+    #[error("operation cancelled")]
+    Cancelled,
     #[error("provider is not configured")]
     MissingProvider,
     #[error("agent request queue is full")]
@@ -79,17 +85,29 @@ impl Runtime {
 
         let (commands, received) = actors::channel(256);
         let commands = ManagerClient::new(commands);
-        let handle = Sessions::new(db.clone(), publication.clone(), commands.clone());
+        let client_queries = ClientQueries::start(publication.clone());
+        let handle = Sessions::new(
+            db.clone(),
+            publication.clone(),
+            commands.clone(),
+            client_queries.handle(),
+        );
         let manager = SessionManager {
             db,
             publication,
             providers,
             probes,
             sessions: handle.clone(),
+            client_queries,
             commands,
             received,
             workers: HashMap::new(),
             components: HashMap::new(),
+            session_resources: HashMap::new(),
+            steering: HashMap::new(),
+            runs: HashMap::new(),
+            #[cfg(test)]
+            lifecycle_events: Vec::new(),
             tasks: JoinSet::new(),
             next_request_id: 1,
             next_generation: 1,
@@ -135,6 +153,13 @@ pub(crate) enum ManagerCommand {
         session: SessionId,
         #[reply]
         reply: oneshot::Sender<bool>,
+    },
+    /// Atomically validate and subscribe to level-triggered queued steering.
+    SubscribeSteering {
+        session: SessionId,
+        agent: AgentId,
+        #[reply]
+        reply: oneshot::Sender<Result<watch::Receiver<Option<bool>>, RuntimeError>>,
     },
     /// Validate and enqueue an agent request, starting its worker if needed.
     Submit {
@@ -193,16 +218,34 @@ struct Worker {
 
 type WorkerResult = (AgentId, u64, Result<(), AgentError>);
 
+struct ActiveRun {
+    session: SessionId,
+    id: String,
+    baseline: EventId,
+}
+
+#[derive(Default)]
+struct RunSummary {
+    final_text: Option<String>,
+    inference_outcome: Option<AgentRunOutcome>,
+}
+
 struct SessionManager {
     db: Database,
     publication: Publication,
     providers: ProviderRegistry,
     probes: ProbeRegistry,
     sessions: Sessions,
+    client_queries: ClientQueries,
     commands: ManagerClient,
     received: Mailbox<ManagerCommand>,
     workers: HashMap<AgentId, Worker>,
     components: HashMap<AgentId, Arc<Mutex<InstalledComponents>>>,
+    session_resources: HashMap<SessionId, SessionBundleResources>,
+    steering: HashMap<AgentId, watch::Sender<Option<bool>>>,
+    runs: HashMap<AgentId, ActiveRun>,
+    #[cfg(test)]
+    lifecycle_events: Vec<AgentLifecycleEvent>,
     tasks: JoinSet<WorkerResult>,
     next_request_id: u64,
     next_generation: u64,
@@ -228,6 +271,8 @@ impl SessionManager {
                 command = self.received.recv() => {
                     if let Some(command) = command {
                         self.handle_command(command).await;
+                    } else {
+                        self.begin_shutdown().await;
                     }
                 }
                 joined = self.tasks.join_next_with_id(), if !self.tasks.is_empty() => {
@@ -238,6 +283,8 @@ impl SessionManager {
             }
         }
 
+        // Also close on any normal run exit without an explicit Shutdown.
+        self.close_client_queries().await;
         self.cleanup_components().await;
 
         if let Some(reply) = self.shutdown_reply {
@@ -247,6 +294,58 @@ impl SessionManager {
             Err(RuntimeError::CleanupFailed)
         } else {
             Ok(())
+        }
+    }
+
+    async fn begin_shutdown(&mut self) {
+        self.shutting_down = true;
+        for worker in self.workers.values_mut() {
+            worker.queue.clear();
+            worker.lifecycle.clear();
+            let _ = worker.controls.interrupt();
+        }
+
+        for signal in self.steering.values() {
+            signal.send_replace(None);
+        }
+        // Interrupt every worker before awaiting the registry. Closing it now
+        // releases outstanding queries before waiting for worker cleanup, and
+        // rejects queries from any cleanup hooks that run afterward.
+        self.close_client_queries().await;
+        self.cleanup_session_resources().await;
+    }
+
+    async fn close_client_queries(&mut self) {
+        if let Err(error) = self.client_queries.shutdown().await {
+            self.cleanup_failed = true;
+            tracing::error!(%error, "client query registry shutdown failed");
+        }
+    }
+
+    async fn cleanup_session_resources(&mut self) {
+        let mut cleanup = JoinSet::new();
+        for (session, mut resources) in self.session_resources.drain() {
+            cleanup.spawn(async move {
+                let result =
+                    tokio::time::timeout(std::time::Duration::from_secs(3), resources.cleanup())
+                        .await
+                        .map_err(|_| "session bundle cleanup timed out".to_owned())
+                        .and_then(|result| result.map_err(|error| error.to_string()));
+                (session, result)
+            });
+        }
+        while let Some(result) = cleanup.join_next().await {
+            match result {
+                Ok((_, Ok(()))) => {}
+                Ok((session, Err(error))) => {
+                    self.cleanup_failed = true;
+                    tracing::error!(session = session.0, %error, "session bundle cleanup failed");
+                }
+                Err(error) => {
+                    self.cleanup_failed = true;
+                    tracing::error!(%error, "session bundle cleanup task failed");
+                }
+            }
         }
     }
 
@@ -294,10 +393,199 @@ impl SessionManager {
         }
     }
 
+    async fn subscribe_steering(
+        &mut self,
+        session: SessionId,
+        agent: AgentId,
+    ) -> Result<watch::Receiver<Option<bool>>, RuntimeError> {
+        if self.shutting_down {
+            return Err(RuntimeError::Unavailable);
+        }
+        let mut cursor = self.db.cursor().await?;
+        cursor.require_agent_session(session, agent).await?;
+        cursor.rollback().await?;
+
+        // Queue inspection and subscription happen in one actor turn. Channels
+        // outlive worker generations; dropping a waiter drops only its receiver.
+        let queued = self.workers.get(&agent).is_some_and(|worker| {
+            worker
+                .queue
+                .iter()
+                .any(|request| request.delivery == MessageDelivery::Steer)
+        });
+        let signal = self
+            .steering
+            .entry(agent)
+            .or_insert_with(|| watch::channel(Some(queued)).0);
+        signal.send_if_modified(|value| {
+            if *value == Some(queued) {
+                return false;
+            }
+            *value = Some(queued);
+            true
+        });
+        Ok(signal.subscribe())
+    }
+
+    fn refresh_steering(&self, agent: AgentId) {
+        if let Some(signal) = self.steering.get(&agent) {
+            let queued = self.workers.get(&agent).is_some_and(|worker| {
+                worker
+                    .queue
+                    .iter()
+                    .any(|request| request.delivery == MessageDelivery::Steer)
+            });
+            let next = if self.shutting_down {
+                None
+            } else {
+                Some(queued)
+            };
+            signal.send_if_modified(|value| {
+                if *value == next {
+                    return false;
+                }
+                *value = next;
+                true
+            });
+        }
+    }
+
+    fn notify_lifecycle(&mut self, session: SessionId, event: AgentLifecycleEvent) {
+        #[cfg(test)]
+        self.lifecycle_events.push(event.clone());
+        if let Some(resources) = self.session_resources.get(&session) {
+            resources.notify(event);
+        }
+    }
+
+    async fn start_run(&mut self, agent: AgentId, session: SessionId) -> Result<(), RuntimeError> {
+        if self.runs.contains_key(&agent) {
+            return Ok(());
+        }
+        let mut cursor = self.db.cursor().await?;
+        let snapshot = cursor.require_agent_session(session, agent).await?;
+        cursor.rollback().await?;
+        let run_id = psa_api::probes::Uuid::new_v4().to_string();
+        self.runs.insert(
+            agent,
+            ActiveRun {
+                session,
+                id: run_id.clone(),
+                baseline: EventId(snapshot.next_event_id.0.saturating_sub(1)),
+            },
+        );
+        // Publish before replying Work/Continue: no child tool can run first.
+        self.notify_lifecycle(
+            session,
+            AgentLifecycleEvent::Started {
+                session_id: session,
+                agent_id: agent,
+                run_id,
+            },
+        );
+        Ok(())
+    }
+
+    async fn finish_run(&mut self, agent: AgentId, outcome: AgentRunOutcome) {
+        let Some(run) = self.runs.remove(&agent) else {
+            return;
+        };
+        let summary = match self.load_run_summary(agent, &run).await {
+            Ok(summary) => summary,
+            Err(error) => {
+                tracing::error!(agent = agent.0, %error, "failed to read agent run summary");
+                RunSummary::default()
+            }
+        };
+        // Provider failures are persisted as an Interrupted agent state rather
+        // than worker errors. Never expose their error bodies to subscribers,
+        // and never let transcript outcomes mask an explicit worker failure.
+        let outcome = if matches!(outcome, AgentRunOutcome::Failed { .. }) {
+            outcome
+        } else {
+            summary.inference_outcome.unwrap_or(outcome)
+        };
+        self.notify_lifecycle(
+            run.session,
+            AgentLifecycleEvent::Finished {
+                session_id: run.session,
+                agent_id: agent,
+                run_id: run.id,
+                outcome,
+                final_text: summary.final_text,
+            },
+        );
+    }
+
+    async fn load_run_summary(
+        &self,
+        agent: AgentId,
+        run: &ActiveRun,
+    ) -> Result<RunSummary, RuntimeError> {
+        let mut cursor = self.db.cursor().await?;
+        let mut after = run.baseline;
+        let mut summary = RunSummary::default();
+        loop {
+            let events = cursor
+                .load_events(
+                    agent,
+                    EventRange {
+                        after,
+                        through: None,
+                        limit: 1000,
+                    },
+                )
+                .await?;
+            if events.is_empty() {
+                break;
+            }
+            for event in events {
+                after = event.id;
+                match event.kind {
+                    EventType::Message(message) if message.message_type == MessageType::Agent => {
+                        let text: String = message
+                            .content
+                            .into_iter()
+                            .filter_map(|block| match block {
+                                llm_api::api::ContentBlock::Text(text) => Some(text.text),
+                                _ => None,
+                            })
+                            .collect();
+                        summary.final_text = (!text.is_empty()).then_some(text);
+                    }
+                    EventType::InferenceResultEnd(result) => {
+                        summary.inference_outcome = match result.outcome {
+                            llm_api::api::Outcome::Failed(_) => Some(AgentRunOutcome::Failed {
+                                message: "Agent execution failed; see server logs for details."
+                                    .into(),
+                            }),
+                            llm_api::api::Outcome::Cancelled
+                            | llm_api::api::Outcome::Incomplete { .. } => {
+                                Some(AgentRunOutcome::Interrupted)
+                            }
+                            _ => None,
+                        };
+                    }
+                    _ => {}
+                }
+            }
+        }
+        cursor.rollback().await?;
+        Ok(summary)
+    }
+
     async fn handle_command(&mut self, command: ManagerCommand) {
         match command {
             ManagerCommand::IsBusy { session, reply } => {
                 let _ = reply.send(self.is_busy(session));
+            }
+            ManagerCommand::SubscribeSteering {
+                session,
+                agent,
+                reply,
+            } => {
+                let result = self.subscribe_steering(session, agent).await;
+                let _ = reply.send(result);
             }
             ManagerCommand::Submit {
                 session,
@@ -346,13 +634,8 @@ impl SessionManager {
                 }
             }
             ManagerCommand::Shutdown { reply } => {
-                self.shutting_down = true;
                 self.shutdown_reply = Some(reply);
-                for worker in self.workers.values_mut() {
-                    worker.queue.clear();
-                    worker.lifecycle.clear();
-                    let _ = worker.controls.interrupt();
-                }
+                self.begin_shutdown().await;
             }
         }
     }
@@ -364,13 +647,22 @@ impl SessionManager {
         state: AgentState,
         reply: oneshot::Sender<BoundaryReply>,
     ) {
-        let Some(worker) = self
+        if !self
             .workers
-            .get_mut(&agent)
-            .filter(|worker| worker.generation == generation)
-        else {
+            .get(&agent)
+            .is_some_and(|worker| worker.generation == generation)
+        {
             return;
-        };
+        }
+        if state != AgentState::Running {
+            let outcome = if state == AgentState::Interrupted {
+                AgentRunOutcome::Interrupted
+            } else {
+                AgentRunOutcome::Completed
+            };
+            self.finish_run(agent, outcome).await;
+        }
+        let worker = self.workers.get_mut(&agent).expect("worker exists");
 
         let mut rejected = Vec::new();
         worker.queue.retain(|request| {
@@ -412,6 +704,16 @@ impl SessionManager {
             worker.stopping = true;
             BoundaryReply::Stop
         };
+        self.refresh_steering(agent);
+        if matches!(&response, BoundaryReply::Work(_))
+            || matches!(&response, BoundaryReply::Continue)
+        {
+            if let Err(error) = self.start_run(agent, session).await {
+                tracing::error!(agent = agent.0, %error, "failed to start logical agent run");
+                self.cleanup_failed = true;
+                return;
+            }
+        }
         let _ = reply.send(response);
 
         for request_id in rejected {
@@ -493,6 +795,7 @@ impl SessionManager {
                 content,
             });
 
+        self.refresh_steering(agent);
         Ok(RequestAccepted { request_id: id })
     }
 
@@ -571,7 +874,23 @@ impl SessionManager {
         let components = match self.components.get(&agent) {
             Some(components) => Arc::clone(components),
             None => {
-                let components = Arc::new(Mutex::new(state.install_components().await?));
+                let resources = if state
+                    .definition()
+                    .bundles
+                    .contains(&psa_api::BundleId::Subagents)
+                {
+                    let resource = self.session_resources.entry(session).or_insert_with(|| {
+                        SessionBundleResources::start(session, self.sessions.clone())
+                    });
+                    Some(resource.handle())
+                } else {
+                    None
+                };
+                let components = Arc::new(Mutex::new(
+                    state
+                        .install_components_with_session(resources.as_ref())
+                        .await?,
+                ));
                 self.components.insert(agent, Arc::clone(&components));
                 components
             }
@@ -628,6 +947,15 @@ impl SessionManager {
         }
 
         let worker = self.workers.remove(&agent).expect("worker exists");
+        if result.is_err() {
+            self.finish_run(
+                agent,
+                AgentRunOutcome::Failed {
+                    message: "Agent execution failed; see server logs for details.".into(),
+                },
+            )
+            .await;
+        }
         if let Err(error) = result {
             if self.shutting_down {
                 self.cleanup_failed = true;
@@ -642,6 +970,8 @@ impl SessionManager {
         }
 
         self.publication.discard_pending(agent).await;
+        // Do not clear the signal during retirement: queued requests move to
+        // the next generation without changing their steering availability.
         if !self.shutting_down && (!worker.queue.is_empty() || !worker.lifecycle.is_empty()) {
             if self
                 .spawn_worker(agent, worker.session, worker.queue, worker.lifecycle)
@@ -653,6 +983,7 @@ impl SessionManager {
             self.cleanup_failed = true;
         }
 
+        self.refresh_steering(agent);
         if !self.is_busy(worker.session) {
             self.publication
                 .lock()

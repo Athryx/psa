@@ -1,4 +1,7 @@
 use super::*;
+
+#[path = "client_query_tests.rs"]
+mod client_query_tests;
 use crate::{
     agents::{
         AgentState, NewAgent,
@@ -34,6 +37,8 @@ struct Fixture {
     _directory: tempfile::TempDir,
     database: crate::db::Database,
     publication: Publication,
+    client: psa_api::Client,
+    base: String,
     runtime: Runtime,
     probes: ProbeRegistry,
     probe: fake_probe::FakeProbe,
@@ -94,6 +99,8 @@ impl Fixture {
             _directory: directory,
             database,
             publication,
+            client: psa_api::Client::new(&format!("http://{address}")).unwrap(),
+            base: format!("http://{address}"),
             runtime,
             probes,
             probe,
@@ -1332,6 +1339,8 @@ async fn project_context_disconnected_probe_is_fatal_and_saves_no_prompt() {
         _directory,
         database,
         publication: _,
+        client: _,
+        base: _,
         runtime,
         probes,
         probe,

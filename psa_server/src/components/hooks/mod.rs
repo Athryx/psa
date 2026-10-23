@@ -1,11 +1,13 @@
 pub mod cwd;
 pub mod default_startup;
 pub mod extra_system_prompt;
+pub mod goal;
 pub mod noop;
 pub mod project_context;
 pub mod session_model_update;
 pub mod skills;
 pub mod stop_without_tools;
+pub mod subagent_identity;
 pub mod tool_definitions;
 
 #[cfg(test)]
@@ -14,11 +16,13 @@ mod tests;
 pub use cwd::CwdHook;
 pub use default_startup::DefaultStartupHook;
 pub use extra_system_prompt::ExtraSystemPromptHook;
+pub use goal::GoalHook;
 pub use noop::NoopHook;
 pub use project_context::ProjectContextHook;
 pub use session_model_update::SessionModelUpdateHook;
 pub use skills::SkillsHook;
 pub use stop_without_tools::StopWithoutTools;
+pub use subagent_identity::SubagentIdentity;
 pub use tool_definitions::ToolDefinitionsHook;
 
 use super::cancellation::{Cancellation, run_cancellable};
@@ -46,6 +50,8 @@ pub enum HookError {
     Probe(#[from] ProbeError),
     #[error(transparent)]
     Sessions(#[from] RuntimeError),
+    #[error(transparent)]
+    ClientQuery(#[from] crate::agents::client_queries::ClientQueryError),
 }
 
 pub trait Hook: Send {
@@ -72,6 +78,8 @@ pub enum HookKind {
     Cwd(CwdHook),
     Skills(SkillsHook),
     SessionModelUpdate(SessionModelUpdateHook),
+    Goal(GoalHook),
+    SubagentIdentity(SubagentIdentity),
     #[cfg(test)]
     RecordLifecycle(crate::agents::session_manager::lifecycle_tests::RecordLifecycle),
     #[cfg(test)]
@@ -118,6 +126,8 @@ impl Hook for HookKind {
             Self::Cwd(hook) => hook.cancellation_timeout(),
             Self::Skills(hook) => hook.cancellation_timeout(),
             Self::SessionModelUpdate(hook) => hook.cancellation_timeout(),
+            Self::Goal(hook) => hook.cancellation_timeout(),
+            Self::SubagentIdentity(hook) => hook.cancellation_timeout(),
             #[cfg(test)]
             Self::RecordLifecycle(hook) => hook.cancellation_timeout(),
             #[cfg(test)]
@@ -140,6 +150,8 @@ impl Hook for HookKind {
             Self::Cwd(hook) => hook.run(context, cancellation).await,
             Self::Skills(hook) => hook.run(context, cancellation).await,
             Self::SessionModelUpdate(hook) => hook.run(context, cancellation).await,
+            Self::Goal(hook) => hook.run(context, cancellation).await,
+            Self::SubagentIdentity(hook) => hook.run(context, cancellation).await,
             #[cfg(test)]
             Self::RecordLifecycle(hook) => hook.run(context, cancellation).await,
             #[cfg(test)]

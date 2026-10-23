@@ -3,7 +3,10 @@
 Agent components live under `src/components/`: `bundles/` owns shared resources
 and assembly, `tools/` implements model-facing tools, and `hooks/` implements
 lifecycle callbacks. Shared invocation cancellation lives in
-`src/components/cancellation.rs`.
+`src/components/cancellation.rs`. Tools and hooks can request typed client input
+through `AgentContext::query_client`; see `../docs/CLIENT_QUERIES.md` for the
+runtime-owned query registry, SSE snapshots, and response endpoint. Native Goal
+and Subagents bundles are documented in `../docs/GOALS_AND_SUBAGENTS.md`.
 
 Start the server from the workspace root:
 
@@ -144,32 +147,39 @@ remain pinned to their original definition ID; edits do not reconfigure them.
 
 Agent creation accepts `interactive`, defaulting to `false` when omitted from
 JSON. It is creation-time metadata available to tools and hooks, not a runtime
-behavior switch. Agent responses expose it, and forks inherit the source flag.
+behavior switch. The opt-in Goal bundle uses it to enable goal tools and policy.
+Agent responses expose it, and forks inherit the source flag.
 
 Sessions require `model_config`, which can be changed with `UpdateSession`.
 A definition's optional `model_config` overrides the session model. Definitions
 also store `description`, `selectable`, `skills`, `permitted_subagents`, and
 `extra_system_prompt`. Skills locations are consumed only when `SkillsHook` is
-explicitly configured. The other metadata remains literal: it does not
-automatically select agents, enforce subagent permissions, or inject extra system
-prompts. Unknown extra JSON fields are rejected, not treated as configuration.
+explicitly configured. Metadata does not automatically select agents or inject
+extra system prompts. The opt-in Subagents tool checks `permitted_subagents` when
+creating children; the trusted-client administration API remains unrestricted. Unknown extra JSON fields are rejected, not treated as configuration.
 
 Definitions also persist ordered `bundles`, defaulting to `[]`.
 `BundleId::FileTools` installs `Read`, `Edit`, and `Write`; `BundleId::Bash`
-installs `Bash`, `InteractBash`, and `CloseBash`. The Bash tools require their
-bundle. Bundles install in list order before explicit tools/hooks; independent
+installs `Bash`, `InteractBash`, and `CloseBash`. `Goal` installs interactive
+`SetGoal`/`SetGoalStatus` plus stopping policy. `Subagents` installs group creation,
+messaging, waiting, and listing backed by session-shared actor resources. These
+tool groups require their bundle. See `../docs/GOALS_AND_SUBAGENTS.md` for setup,
+fixed limits, append-only goal semantics, and checkpoint/recovery limitations. Bundles install in list order before explicit tools/hooks; independent
 explicit configuration remains supported. Duplicate bundle IDs, tool IDs, or tool
 names are rejected during component installation. The session manager retains
 owners and instances by agent ID across worker retirement/failure. Forked agents
 have independent resources; server restart does not restore runtime resources.
-On shutdown, workers stop before retained agents clean up concurrently, with each
-agent's bundles cleaning up in reverse order under bounded timeouts. Probes stay
+Shared session resources do not share tool instances or mutable hooks across
+agents. Shutdown interrupts all workers, closes query/session coordination
+services, then joins workers and cleans per-agent bundles in reverse order under
+bounded timeouts. Probes stay
 connected until cleanup finishes. See `../docs/BASH_TOOLS.md` for process tools. Migration 0009 defaults existing definitions to
 `[]`; omitting bundles in a full replacement clears only the new version's list.
 
 Each definition explicitly binds ordered `HookId` lists at `agent_create`,
 `session_update`, `before_request`, and `after_request`. All lists default empty;
-no startup, synchronization, or stop hook is installed implicitly. Built-ins:
+no global hooks are installed by default, though explicitly selected bundles
+supply their own hooks. Built-ins:
 
 - `DefaultStartup`: normally bound to `agent_create`; saves `NewContext`, the
   resolved `Model`, and a `System` message with the base assistant identity for a

@@ -10,6 +10,12 @@ async fn native_tool_definitions_round_trip_through_persistence_and_reopen() {
         ToolId::Bash,
         ToolId::InteractBash,
         ToolId::CloseBash,
+        ToolId::SetGoal,
+        ToolId::SetGoalStatus,
+        ToolId::CreateAgent,
+        ToolId::SendMessage,
+        ToolId::WaitMessage,
+        ToolId::ListAgents,
     ];
     let events: Vec<_> = ids
         .iter()

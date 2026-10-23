@@ -127,6 +127,54 @@ async fn bash_tools_are_installed_together_and_require_their_bundle() {
 }
 
 #[tokio::test]
+async fn goal_installation_is_interactive_and_feature_tools_require_bundles() {
+    let (mut agent, session) = snapshots();
+    let mut definition = definition();
+    definition.bundles = vec![BundleId::Goal];
+    let mut hidden = InstalledComponents::install(&definition, &agent, &session)
+        .await
+        .unwrap();
+    assert!(hidden.tools.is_empty());
+    assert!(hidden.hooks.after_request.is_empty());
+    hidden.cleanup().await.unwrap();
+
+    agent.interactive = true;
+    let mut installed = InstalledComponents::install(&definition, &agent, &session)
+        .await
+        .unwrap();
+    assert_eq!(
+        installed.tools.iter().map(ToolKind::id).collect::<Vec<_>>(),
+        [ToolId::SetGoal, ToolId::SetGoalStatus]
+    );
+    assert_eq!(installed.hooks.after_request.len(), 1);
+    installed.cleanup().await.unwrap();
+
+    definition.bundles.clear();
+    for tool in [
+        ToolId::SetGoal,
+        ToolId::SetGoalStatus,
+        ToolId::CreateAgent,
+        ToolId::SendMessage,
+        ToolId::WaitMessage,
+        ToolId::ListAgents,
+    ] {
+        definition.tools = vec![tool];
+        let error = InstalledComponents::install(&definition, &agent, &session)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.message.contains("requires bundle"));
+    }
+    definition.tools.clear();
+    definition.bundles = vec![BundleId::Subagents];
+    let error = InstalledComponents::install(&definition, &agent, &session)
+        .await
+        .err()
+        .unwrap();
+    assert!(error.message.contains("session bundle resources"));
+}
+
+#[tokio::test]
 async fn duplicate_bundle_and_tool_ids_are_errors() {
     let (agent, session) = snapshots();
     let mut definition = definition();

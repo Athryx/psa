@@ -1,7 +1,10 @@
 //! Trusted-client HTTP/SSE API. Transcript mutations share the publication gate.
 
 use crate::{
-    agents::{publication::Publication, session_manager::RuntimeError, sessions::Sessions},
+    agents::{
+        client_queries::ClientQueryError, publication::Publication, session_manager::RuntimeError,
+        sessions::Sessions,
+    },
     db::{Database, DbError},
 };
 use axum::{
@@ -95,6 +98,8 @@ pub enum HttpError {
     Runtime(#[from] RuntimeError),
     #[error(transparent)]
     Agent(#[from] crate::agents::AgentError),
+    #[error(transparent)]
+    ClientQuery(#[from] ClientQueryError),
     #[error("{0}")]
     Invalid(String),
 }
@@ -102,6 +107,23 @@ pub enum HttpError {
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
+            Self::ClientQuery(
+                ClientQueryError::InvalidRequest(_) | ClientQueryError::InvalidResponse(_),
+            ) => (StatusCode::BAD_REQUEST, "invalid_input", self.to_string()),
+            Self::ClientQuery(ClientQueryError::NotFound) => {
+                (StatusCode::NOT_FOUND, "not_found", self.to_string())
+            }
+            Self::ClientQuery(ClientQueryError::AlreadyResolved) => {
+                (StatusCode::CONFLICT, "already_resolved", self.to_string())
+            }
+            Self::ClientQuery(ClientQueryError::Cancelled) => {
+                (StatusCode::GONE, "cancelled", self.to_string())
+            }
+            Self::ClientQuery(ClientQueryError::Unavailable | ClientQueryError::Overloaded) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                self.to_string(),
+            ),
             Self::Database(DbError::ProbeNotFound(_))
             | Self::Database(DbError::NotFound { .. })
             | Self::Runtime(RuntimeError::Database(
@@ -112,6 +134,9 @@ impl IntoResponse for HttpError {
             | Self::Runtime(RuntimeError::Invalid(_))
             | Self::Runtime(RuntimeError::Database(DbError::InvalidInput(_))) => {
                 (StatusCode::BAD_REQUEST, "invalid_input", self.to_string())
+            }
+            Self::Runtime(RuntimeError::Cancelled) => {
+                (StatusCode::GONE, "cancelled", self.to_string())
             }
             Self::Runtime(RuntimeError::InvalidResume) => {
                 (StatusCode::CONFLICT, "invalid_state", self.to_string())
@@ -162,6 +187,7 @@ pub fn router(state: AppState) -> Router {
         .route(routes::AGENTS, post(create_agent).get(list_agents))
         .route(routes::AGENT, get(get_agent))
         .route(routes::REQUESTS, post(submit_request))
+        .route(routes::CLIENT_QUERY_RESPONSE, post(respond_to_client_query))
         .route(routes::SESSION_EVENTS, get(session_events))
         .route(routes::AGENT_EVENTS, get(agent_events))
         .merge(crate::probes::router())
@@ -322,6 +348,23 @@ async fn submit_request(
     Ok((StatusCode::ACCEPTED, Json(accepted)))
 }
 
+async fn respond_to_client_query(
+    State(state): State<AppState>,
+    ApiPath((session, agent, query)): ApiPath<(u64, u64, api::ClientQueryId)>,
+    response: Result<Json<api::ClientQueryResponse>, axum::extract::rejection::JsonRejection>,
+) -> Result<StatusCode, HttpError> {
+    state.require_accepting()?;
+    // Serde rejections can include submitted answer values; keep this boundary private.
+    let Json(response) =
+        response.map_err(|_| HttpError::Invalid("invalid client query response body".into()))?;
+
+    state
+        .runtime
+        .respond_to_client_query(SessionId(session), AgentId(agent), query, response)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn session_events(
     State(state): State<AppState>,
     ApiPath(session): ApiPath<u64>,
@@ -403,6 +446,7 @@ async fn load_page(
     Ok(api::EventsPage {
         events,
         pending: Vec::new(),
+        queries: Vec::new(),
         next_after: if has_more {
             last_cursor
         } else {
@@ -433,7 +477,7 @@ async fn events_response(
         )?;
     }
 
-    // Subscribe, capture a head, and snapshot drafts under the same gate used by
+    // Subscribe, capture a head, and snapshot drafts and queries under the same gate used by
     // every commit and provisional publication. Buffered notifications are newer.
     let publication = state.publication.lock().await;
     let mut received = publication.subscribe();
@@ -443,10 +487,12 @@ async fn events_response(
     } else {
         Vec::new()
     };
+    let queries = publication.queries(session, agent);
     drop(publication);
 
     if !query.stream {
         page.pending = pending;
+        page.queries = queries;
         return Ok(Json(page).into_response());
     }
 
@@ -481,7 +527,7 @@ async fn events_response(
         }
 
         yield encode_sse(
-            api::StreamMessage::Snapshot { cursor: head, pending },
+            api::StreamMessage::Snapshot { cursor: head, pending, queries },
             Some(encode_cursor(session, agent, head)),
         );
         if finite || *shutdown.borrow() {
@@ -561,6 +607,14 @@ fn matches_scope(
             }
             (*session_id, Some(*agent_id))
         }
+        api::StreamMessage::ClientQueryRequested { query } => {
+            (query.session_id, Some(query.agent_id))
+        }
+        api::StreamMessage::ClientQueryRemoved {
+            session_id,
+            agent_id,
+            ..
+        } => (*session_id, Some(*agent_id)),
         api::StreamMessage::AgentUpdated { agent } => (agent.session_id, Some(agent.id)),
         api::StreamMessage::RequestFailed {
             session_id,
@@ -690,6 +744,7 @@ mod tests {
     #[tokio::test]
     async fn facade_errors_preserve_http_status_codes_and_messages() {
         let cases = [
+            (RuntimeError::Cancelled, StatusCode::GONE, "cancelled"),
             (
                 RuntimeError::Invalid("message content must not be empty".into()),
                 StatusCode::BAD_REQUEST,
@@ -746,6 +801,97 @@ mod tests {
             let error: api::ApiError = serde_json::from_slice(&body).unwrap();
             assert_eq!(error.code, code);
             assert_eq!(error.message, message);
+        }
+    }
+
+    #[tokio::test]
+    async fn client_query_errors_preserve_http_status_codes_and_messages() {
+        let cases = [
+            (
+                ClientQueryError::InvalidRequest("invalid query".into()),
+                StatusCode::BAD_REQUEST,
+                "invalid_input",
+            ),
+            (
+                ClientQueryError::InvalidResponse("invalid response".into()),
+                StatusCode::BAD_REQUEST,
+                "invalid_input",
+            ),
+            (
+                ClientQueryError::NotFound,
+                StatusCode::NOT_FOUND,
+                "not_found",
+            ),
+            (
+                ClientQueryError::AlreadyResolved,
+                StatusCode::CONFLICT,
+                "already_resolved",
+            ),
+            (ClientQueryError::Cancelled, StatusCode::GONE, "cancelled"),
+            (
+                ClientQueryError::Unavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+            ),
+            (
+                ClientQueryError::Overloaded,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+            ),
+        ];
+        for (error, status, code) in cases {
+            let message = error.to_string();
+            let response = HttpError::from(error).into_response();
+            assert_eq!(response.status(), status);
+            let body = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let error: api::ApiError = serde_json::from_slice(&body).unwrap();
+            assert_eq!(error.code, code);
+            assert_eq!(error.message, message);
+        }
+    }
+
+    #[test]
+    fn client_query_notifications_are_scoped_independently_of_pending_events() {
+        let query = api::ClientQueryRequest {
+            id: api::ClientQueryId::new(),
+            session_id: SessionId(1),
+            agent_id: AgentId(2),
+            payload: api::ClientQuery::AskQuestion(api::AskQuestionRequest {
+                questions: vec![api::ClientQuestion {
+                    question: "Question?".into(),
+                    choices: vec![],
+                }],
+            }),
+        };
+        let removed = api::StreamMessage::ClientQueryRemoved {
+            session_id: query.session_id,
+            agent_id: query.agent_id,
+            query_id: query.id,
+        };
+        for message in [api::StreamMessage::ClientQueryRequested { query }, removed] {
+            for include_pending in [false, true] {
+                assert!(matches_scope(&message, SessionId(1), None, include_pending));
+                assert!(matches_scope(
+                    &message,
+                    SessionId(1),
+                    Some(AgentId(2)),
+                    include_pending
+                ));
+                assert!(!matches_scope(
+                    &message,
+                    SessionId(9),
+                    None,
+                    include_pending
+                ));
+                assert!(!matches_scope(
+                    &message,
+                    SessionId(1),
+                    Some(AgentId(9)),
+                    include_pending
+                ));
+            }
         }
     }
 

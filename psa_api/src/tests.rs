@@ -230,6 +230,186 @@ fn wire_ids_timestamps_and_message_requests_have_one_representation() {
 }
 
 #[test]
+fn client_query_wire_types_roundtrip_and_default_optional_fields() {
+    let id = ClientQueryId::new();
+    assert_eq!(id.0.get_version_num(), 4);
+    assert_eq!(serde_json::to_value(id).unwrap(), id.to_string());
+    assert_eq!(
+        serde_json::from_value::<ClientQueryId>(serde_json::json!(id.to_string())).unwrap(),
+        id
+    );
+    let payload = serde_json::json!({
+        "type": "ask_question",
+        "payload": {"questions": [{"question": "Choose a direction"}]}
+    });
+    let query: ClientQuery = serde_json::from_value(payload.clone()).unwrap();
+    let ClientQuery::AskQuestion(request) = &query;
+    assert!(request.questions[0].choices.is_empty());
+    assert!(query.validate().is_ok());
+    let request = ClientQueryRequest {
+        id,
+        session_id: SessionId(1),
+        agent_id: AgentId(2),
+        payload: query,
+    };
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["payload"]["type"], "ask_question");
+    assert_eq!(
+        serde_json::from_value::<ClientQueryRequest>(json).unwrap(),
+        request
+    );
+
+    let response: ClientQueryResponse = serde_json::from_value(serde_json::json!({
+        "type": "ask_question",
+        "payload": {"answers": [{"answer": "Another direction"}]}
+    }))
+    .unwrap();
+    let ClientQueryResponse::AskQuestion(answers) = &response;
+    assert!(answers.answers[0].notes.is_none());
+    assert!(request.payload.validate_response(&response).is_ok());
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json["payload"]["answers"][0]["answer"], "Another direction");
+    assert_eq!(
+        serde_json::from_value::<ClientQueryResponse>(json).unwrap(),
+        response
+    );
+
+    let requested = StreamMessage::ClientQueryRequested {
+        query: request.clone(),
+    };
+    let json = serde_json::to_value(&requested).unwrap();
+    assert_eq!(json["type"], "client_query_requested");
+    assert!(
+        matches!(serde_json::from_value::<StreamMessage>(json).unwrap(), StreamMessage::ClientQueryRequested { query } if query == request)
+    );
+    let removed = StreamMessage::ClientQueryRemoved {
+        session_id: request.session_id,
+        agent_id: request.agent_id,
+        query_id: id,
+    };
+    let json = serde_json::to_value(removed).unwrap();
+    assert_eq!(json["type"], "client_query_removed");
+    assert!(
+        matches!(serde_json::from_value::<StreamMessage>(json).unwrap(), StreamMessage::ClientQueryRemoved { query_id, .. } if query_id == id)
+    );
+}
+
+#[test]
+fn client_query_validation_requires_nonblank_input_and_exact_answer_count() {
+    let query = |questions| ClientQuery::AskQuestion(AskQuestionRequest { questions });
+    assert!(query(vec![]).validate().is_err());
+    assert!(
+        query(vec![ClientQuestion {
+            question: " \n\t".into(),
+            choices: vec![]
+        }])
+        .validate()
+        .is_err()
+    );
+    assert!(
+        query(vec![ClientQuestion {
+            question: "Question".into(),
+            choices: vec![" \n".into()]
+        }])
+        .validate()
+        .is_err()
+    );
+    let query = query(vec![
+        ClientQuestion {
+            question: "First?".into(),
+            choices: vec!["Yes".into(), "No".into()],
+        },
+        ClientQuestion {
+            question: "Second?".into(),
+            choices: vec![],
+        },
+    ]);
+    assert!(query.validate().is_ok());
+    let response = |answers: Vec<&str>| {
+        ClientQueryResponse::AskQuestion(AskQuestionResponse {
+            answers: answers
+                .into_iter()
+                .map(|answer| ClientAnswer {
+                    answer: answer.into(),
+                    notes: None,
+                })
+                .collect(),
+        })
+    };
+    for answers in [
+        vec![],
+        vec!["Yes"],
+        vec!["Yes", "No", "Extra"],
+        vec!["Yes", " \n\t"],
+    ] {
+        assert!(query.validate_response(&response(answers)).is_err());
+    }
+    // Choices are suggestions: an Other/freeform response is valid.
+    assert!(
+        query
+            .validate_response(&response(vec!["An unlisted choice", "Freeform answer"]))
+            .is_ok()
+    );
+    let response = ClientQueryResponse::AskQuestion(AskQuestionResponse {
+        answers: vec![
+            ClientAnswer {
+                answer: "Yes".into(),
+                notes: Some("Optional detail".into()),
+            },
+            ClientAnswer {
+                answer: "Second answer".into(),
+                notes: Some(String::new()),
+            },
+        ],
+    });
+    assert!(query.validate_response(&response).is_ok());
+}
+
+#[test]
+fn client_query_wire_types_reject_unknown_fields_and_variants() {
+    let request = serde_json::json!({
+        "type": "ask_question", "payload": {"questions": [{"question": "Question"}]}
+    });
+    for invalid in [
+        serde_json::json!({"type": "unknown", "payload": {}}),
+        serde_json::json!({"type": "ask_question", "payload": {"questions": []}, "extra": true}),
+        serde_json::json!({"type": "ask_question", "payload": {"questions": [], "extra": true}}),
+        serde_json::json!({"type": "ask_question", "payload": {"questions": [{"question": "Q", "extra": true}]}}),
+    ] {
+        assert!(serde_json::from_value::<ClientQuery>(invalid).is_err());
+    }
+    for invalid in [
+        serde_json::json!({"type": "unknown", "payload": {}}),
+        serde_json::json!({"type": "ask_question", "payload": {"answers": []}, "extra": true}),
+        serde_json::json!({"type": "ask_question", "payload": {"answers": [], "extra": true}}),
+        serde_json::json!({"type": "ask_question", "payload": {"answers": [{"answer": "A", "extra": true}]}}),
+    ] {
+        assert!(serde_json::from_value::<ClientQueryResponse>(invalid).is_err());
+    }
+    assert!(serde_json::from_value::<ClientQueryRequest>(serde_json::json!({
+        "id": ClientQueryId::new(), "session_id": 1, "agent_id": 2, "payload": request, "extra": true,
+    })).is_err());
+}
+
+#[test]
+fn legacy_event_snapshots_and_pages_default_queries_to_empty() {
+    let snapshot: StreamMessage = serde_json::from_value(serde_json::json!({
+        "type": "snapshot", "cursor": 5, "pending": []
+    }))
+    .unwrap();
+    assert!(matches!(snapshot, StreamMessage::Snapshot { queries, .. } if queries.is_empty()));
+    let page: EventsPage = serde_json::from_value(serde_json::json!({
+        "events": [], "pending": [], "next_after": 5, "head": 5, "has_more": false
+    }))
+    .unwrap();
+    assert!(page.queries.is_empty());
+    assert_eq!(
+        serde_json::to_value(page).unwrap()["queries"],
+        serde_json::json!([])
+    );
+}
+
+#[test]
 fn paths_and_client_base_urls_are_validated() {
     assert_eq!(
         routes::agent_path(routes::AGENT_EVENTS, SessionId(1), AgentId(2)),
@@ -238,6 +418,11 @@ fn paths_and_client_base_urls_are_validated() {
     assert_eq!(
         routes::agent_definition_path(AgentDefinitionId(42)),
         "/agent-definitions/42"
+    );
+    let query = ClientQueryId(uuid::Uuid::nil());
+    assert_eq!(
+        routes::client_query_response_path(SessionId(1), AgentId(2), query),
+        "/sessions/1/agents/2/queries/00000000-0000-0000-0000-000000000000/response"
     );
     for invalid in [
         "invalid",

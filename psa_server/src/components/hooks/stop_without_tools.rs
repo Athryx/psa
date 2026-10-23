@@ -24,7 +24,16 @@ impl Hook for StopWithoutTools {
         context: &mut AgentContext<'_>,
         mut _cancellation: Cancellation,
     ) -> Result<(), HookError> {
-        // no need to check cancellation, short runtime
+        // Goal mode installs its own stopping policy. Do not override it when
+        // this conventional stopper also appears in explicit hook configuration.
+        if context.agent().interactive
+            && context
+                .definition()
+                .bundles
+                .contains(&psa_api::BundleId::Goal)
+        {
+            return Ok(());
+        }
         if context.agent().state != AgentState::Running {
             return Ok(());
         }

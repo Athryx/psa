@@ -1,8 +1,8 @@
 use crate::{
-    Agent, AgentDefinition, AgentDefinitionId, AgentId, AgentRequest, ApiError, CreateAgent,
-    CreateAgentDefinition, CreateSession, EventsPage, EventsQuery, ForkSession, ForkedSession,
-    ListSessions, RequestAccepted, Session, SessionId, StreamMessage, UpdateAgentDefinition,
-    UpdateSession, routes,
+    Agent, AgentDefinition, AgentDefinitionId, AgentId, AgentRequest, ApiError, ClientQueryId,
+    ClientQueryResponse, CreateAgent, CreateAgentDefinition, CreateSession, EventsPage,
+    EventsQuery, ForkSession, ForkedSession, ListSessions, RequestAccepted, Session, SessionId,
+    StreamMessage, UpdateAgentDefinition, UpdateSession, routes,
 };
 use eventsource_stream::Eventsource;
 use futures_util::{Stream, StreamExt};
@@ -207,6 +207,26 @@ impl Client {
             request,
         )
         .await
+    }
+
+    /// Respond to an outstanding runtime query. Success has no response body.
+    pub async fn respond_to_client_query(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        query: ClientQueryId,
+        response: &ClientQueryResponse,
+    ) -> Result<(), ClientError> {
+        let response = self
+            .request(
+                Method::POST,
+                &routes::client_query_response_path(session, agent, query),
+            )
+            .json(response)
+            .send()
+            .await?;
+        require_success(response).await?;
+        Ok(())
     }
 
     pub async fn events(

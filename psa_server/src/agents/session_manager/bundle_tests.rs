@@ -60,17 +60,28 @@ async fn runtime_shutdown_cleans_retained_owners_and_reports_failures() {
         let probes = ProbeRegistry::start("owner-test".into());
         let (commands, received) = actors::channel(256);
         let commands = ManagerClient::new(commands);
-        let sessions = Sessions::new(db.clone(), publication.clone(), commands.clone());
+        let client_queries = ClientQueries::start(publication.clone());
+        let sessions = Sessions::new(
+            db.clone(),
+            publication.clone(),
+            commands.clone(),
+            client_queries.handle(),
+        );
         let mut manager = SessionManager {
             db: db.clone(),
             publication,
             providers: ProviderRegistry::default(),
             probes: probes.clone(),
             sessions: sessions.clone(),
+            client_queries,
             commands,
             received,
             workers: HashMap::new(),
             components: HashMap::new(),
+            session_resources: HashMap::new(),
+            steering: HashMap::new(),
+            runs: HashMap::new(),
+            lifecycle_events: Vec::new(),
             tasks: JoinSet::new(),
             next_request_id: 1,
             next_generation: 1,

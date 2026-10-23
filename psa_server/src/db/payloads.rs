@@ -210,6 +210,12 @@ pub(super) async fn insert_payload(
                 ToolId::Bash => "bash",
                 ToolId::InteractBash => "interact_bash",
                 ToolId::CloseBash => "close_bash",
+                ToolId::SetGoal => "set_goal",
+                ToolId::SetGoalStatus => "set_goal_status",
+                ToolId::CreateAgent => "create_agent",
+                ToolId::SendMessage => "send_message",
+                ToolId::WaitMessage => "wait_message",
+                ToolId::ListAgents => "list_agents",
             };
             let def = &value.definition;
             let parameters = serialize_json(&def.parameters)?;
@@ -448,6 +454,12 @@ pub(super) async fn load_payloads(
                 "bash" => ToolId::Bash,
                 "interact_bash" => ToolId::InteractBash,
                 "close_bash" => ToolId::CloseBash,
+                "set_goal" => ToolId::SetGoal,
+                "set_goal_status" => ToolId::SetGoalStatus,
+                "create_agent" => ToolId::CreateAgent,
+                "send_message" => ToolId::SendMessage,
+                "wait_message" => ToolId::WaitMessage,
+                "list_agents" => ToolId::ListAgents,
                 s => return Err(invalid(s)),
             },
             definition: api::ToolDefinition {

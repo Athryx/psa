@@ -6,7 +6,7 @@ use crate::{
     sessions::SessionId,
 };
 use psa_api::events::*;
-use psa_api::{EventEnvelope, PendingEvent, StreamMessage};
+use psa_api::{ClientQueryId, ClientQueryRequest, EventEnvelope, PendingEvent, StreamMessage};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{Mutex, MutexGuard, broadcast, watch};
 
@@ -18,6 +18,8 @@ pub struct Publication {
 
 pub struct PublicationState {
     pub(crate) pending: HashMap<String, PendingEvent>,
+    /// Read projection of runtime queries, updated by the query actor under this gate.
+    pub(crate) queries: HashMap<ClientQueryId, ClientQueryRequest>,
     sender: broadcast::Sender<StreamMessage>,
 }
 
@@ -28,6 +30,7 @@ impl Default for Publication {
         Self {
             state: Arc::new(Mutex::new(PublicationState {
                 pending: HashMap::new(),
+                queries: HashMap::new(),
                 sender,
             })),
             shutdown,
@@ -143,6 +146,19 @@ impl PublicationState {
 
     pub fn publish(&self, message: StreamMessage) {
         let _ = self.sender.send(message);
+    }
+
+    pub fn queries(&self, session: SessionId, agent: Option<AgentId>) -> Vec<ClientQueryRequest> {
+        let mut queries: Vec<_> = self
+            .queries
+            .values()
+            .filter(|query| {
+                query.session_id == session && agent.is_none_or(|id| query.agent_id == id)
+            })
+            .cloned()
+            .collect();
+        queries.sort_by_key(|query| query.id);
+        queries
     }
 
     pub fn pending(&self, session: SessionId, agent: Option<AgentId>) -> Vec<PendingEvent> {

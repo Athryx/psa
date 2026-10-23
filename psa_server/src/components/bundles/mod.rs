@@ -7,6 +7,9 @@
 
 pub mod bash;
 mod file_tools;
+pub mod goal;
+pub mod session;
+pub mod subagents;
 #[cfg(test)]
 pub(crate) mod testing;
 #[cfg(test)]
@@ -14,7 +17,9 @@ mod tests;
 
 pub use bash::BashBundle;
 pub use file_tools::FileToolsBundle;
+pub use goal::GoalBundle;
 pub use psa_api::BundleId;
+pub use subagents::SubagentsBundle;
 
 use crate::{
     agents::{Agent, AgentDefinition},
@@ -51,6 +56,8 @@ pub trait Bundle: Send + Sync {
 pub enum BundleKind {
     FileTools(FileToolsBundle),
     Bash(BashBundle),
+    Goal(GoalBundle),
+    Subagents(SubagentsBundle),
     #[cfg(test)]
     Probe(testing::ProbeBundle),
 }
@@ -60,6 +67,17 @@ impl BundleKind {
         match id {
             BundleId::FileTools => Self::FileTools(FileToolsBundle::new()),
             BundleId::Bash => Self::Bash(BashBundle::new()),
+            BundleId::Goal => Self::Goal(GoalBundle::new()),
+            BundleId::Subagents => Self::Subagents(SubagentsBundle::new()),
+        }
+    }
+
+    fn with_session(id: BundleId, resources: Option<&session::SessionBundleHandle>) -> Self {
+        match (id, resources) {
+            (BundleId::Subagents, Some(resources)) => {
+                Self::Subagents(SubagentsBundle::with_session(resources))
+            }
+            _ => Self::new(id),
         }
     }
 
@@ -67,6 +85,8 @@ impl BundleKind {
         match self {
             Self::FileTools(_) => "FileTools".into(),
             Self::Bash(_) => "Bash".into(),
+            Self::Goal(_) => "Goal".into(),
+            Self::Subagents(_) => "Subagents".into(),
             #[cfg(test)]
             Self::Probe(bundle) => bundle.name.clone(),
         }
@@ -83,6 +103,8 @@ impl Bundle for BundleKind {
         match self {
             Self::FileTools(bundle) => bundle.install(agent, session, installer),
             Self::Bash(bundle) => bundle.install(agent, session, installer),
+            Self::Goal(bundle) => bundle.install(agent, session, installer),
+            Self::Subagents(bundle) => bundle.install(agent, session, installer),
             #[cfg(test)]
             Self::Probe(bundle) => bundle.install(agent, session, installer),
         }
@@ -92,6 +114,8 @@ impl Bundle for BundleKind {
         match self {
             Self::FileTools(bundle) => bundle.cleanup().await,
             Self::Bash(bundle) => bundle.cleanup().await,
+            Self::Goal(bundle) => bundle.cleanup().await,
+            Self::Subagents(bundle) => bundle.cleanup().await,
             #[cfg(test)]
             Self::Probe(bundle) => bundle.cleanup().await,
         }
@@ -101,6 +125,8 @@ impl Bundle for BundleKind {
         match self {
             Self::FileTools(bundle) => bundle.cleanup_timeout(),
             Self::Bash(bundle) => bundle.cleanup_timeout(),
+            Self::Goal(bundle) => bundle.cleanup_timeout(),
+            Self::Subagents(bundle) => bundle.cleanup_timeout(),
             #[cfg(test)]
             Self::Probe(bundle) => bundle.cleanup_timeout(),
         }
@@ -165,6 +191,15 @@ impl InstalledComponents {
         agent: &Agent,
         session: &Session,
     ) -> Result<Self, InstallError> {
+        Self::install_with_session(definition, agent, session, None).await
+    }
+
+    pub async fn install_with_session(
+        definition: &AgentDefinition,
+        agent: &Agent,
+        session: &Session,
+        resources: Option<&session::SessionBundleHandle>,
+    ) -> Result<Self, InstallError> {
         let mut installer = Installer::default();
         let mut bundles = Vec::new();
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -174,7 +209,10 @@ impl InstalledComponents {
                     return Err(InstallError::new(format!("duplicate bundle ID: {id:?}")));
                 }
                 // Retain even the failing owner, before it can register anything.
-                bundles.push(BundleKind::new(*id));
+                bundles.push(BundleKind::with_session(*id, resources));
+                if let BundleKind::Subagents(bundle) = bundles.last_mut().unwrap() {
+                    bundle.set_allow_create(!definition.permitted_subagents.is_empty());
+                }
                 bundles
                     .last_mut()
                     .unwrap()

@@ -1,12 +1,15 @@
 use crate::{
-    agents::{
-        Agent, AgentState, agent_context::AgentContext, agent_manager::AgentManagerMessage,
-        agent_projection::AgentProjection,
-    },
-    components::cancellation::{Cancellation, run_cancellable},
+    agents::{Agent, agent_context::AgentContext, agent_projection::AgentProjection},
+    components::cancellation::Cancellation,
     prompts,
     sessions::Session,
 };
+#[cfg(test)]
+use crate::{
+    agents::{AgentState, agent_manager::AgentManagerMessage},
+    components::cancellation::run_cancellable,
+};
+#[cfg(test)]
 use actors::UnboundedMailbox;
 use llm_api::api::{self, HistoryItemKind, ToolDefinition};
 use psa_api::events::ToolResult as ToolResultEvent;
@@ -15,14 +18,18 @@ use std::time::Duration;
 pub(crate) mod bash;
 mod edit;
 mod file_ops;
+pub(crate) mod goal;
 mod noop;
 mod read;
+pub(crate) mod subagents;
 mod write;
 
 pub use bash::{Bash, CloseBash, InteractBash};
 pub use edit::Edit;
+pub use goal::{SetGoal, SetGoalStatus};
 pub use noop::Noop;
 pub use read::Read;
+pub use subagents::{CreateAgent, ListAgents, SendMessage, WaitMessage};
 pub use write::Write;
 
 #[cfg(test)]
@@ -105,9 +112,51 @@ pub fn tool_definition(id: ToolId) -> ToolDefinition {
         ToolId::Bash => Bash::default().tool_definition(),
         ToolId::InteractBash => InteractBash::default().tool_definition(),
         ToolId::CloseBash => CloseBash::default().tool_definition(),
+        ToolId::SetGoal => SetGoal::default().tool_definition(),
+        ToolId::SetGoalStatus => SetGoalStatus::default().tool_definition(),
+        ToolId::CreateAgent => CreateAgent::default().tool_definition(),
+        ToolId::SendMessage => SendMessage::default().tool_definition(),
+        ToolId::WaitMessage => WaitMessage::default().tool_definition(),
+        ToolId::ListAgents => ListAgents::default().tool_definition(),
     }
 }
 
+/// Whether an invocation may overlap adjacent tool calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutionMode {
+    #[default]
+    Parallel,
+    Sequential,
+}
+
+/// Resolve the persisted tool snapshot and decode JSON before any side effects.
+pub(crate) fn prepare_call(
+    tools: &[ToolKind],
+    call: &api::ToolCall,
+    context: &AgentProjection,
+    running: bool,
+) -> Result<(usize, serde_json::Value), ToolOutput> {
+    if !running || is_incomplete_call(context, &call.call_id) {
+        return Err(ToolOutput::error(prompts::tool_not_run()));
+    }
+    let Some(index) = context
+        .tool_definitions()
+        .iter()
+        .find(|snapshot| snapshot.definition.name == call.name)
+        .and_then(|snapshot| tools.iter().position(|tool| tool.id() == snapshot.id))
+    else {
+        return Err(ToolOutput::error(prompts::tool_unknown()));
+    };
+    let arguments = serde_json::from_str(&call.arguments).map_err(|error| {
+        ToolOutput::error(prompts::tool_argument_json_error(
+            error.line(),
+            error.column(),
+        ))
+    })?;
+    Ok((index, arguments))
+}
+
+#[cfg(test)]
 pub(crate) async fn execute(
     tools: &[ToolKind],
     call: &api::ToolCall,
@@ -115,32 +164,16 @@ pub(crate) async fn execute(
     interrupted: &mut bool,
     controls: &mut UnboundedMailbox<AgentManagerMessage>,
 ) -> ToolOutput {
-    if *interrupted
-        || is_incomplete_call(context.projection(), &call.call_id)
-        || context.agent().state != AgentState::Running
-    {
-        return ToolOutput::error(prompts::tool_not_run());
-    }
-
-    let Some(tool) = context
-        .projection()
-        .tool_definitions()
-        .iter()
-        .find(|snapshot| snapshot.definition.name == call.name)
-        .and_then(|snapshot| tools.iter().find(|tool| tool.id() == snapshot.id))
-    else {
-        return ToolOutput::error(prompts::tool_unknown());
+    let (index, arguments) = match prepare_call(
+        tools,
+        call,
+        context.projection(),
+        !*interrupted && context.agent().state == AgentState::Running,
+    ) {
+        Ok(prepared) => prepared,
+        Err(output) => return output,
     };
-
-    let arguments = match serde_json::from_str(&call.arguments) {
-        Ok(arguments) => arguments,
-        Err(error) => {
-            return ToolOutput::error(prompts::tool_argument_json_error(
-                error.line(),
-                error.column(),
-            ));
-        }
-    };
+    let tool = &tools[index];
 
     // Keep control-message updates separate from the invocation's session snapshot.
     let mut session = context.session().clone();
@@ -187,8 +220,16 @@ pub enum ToolKind {
     Bash(Bash),
     InteractBash(InteractBash),
     CloseBash(CloseBash),
+    SetGoal(SetGoal),
+    SetGoalStatus(SetGoalStatus),
+    CreateAgent(CreateAgent),
+    SendMessage(SendMessage),
+    WaitMessage(WaitMessage),
+    ListAgents(ListAgents),
     #[cfg(test)]
     BundleProbe(crate::components::bundles::testing::SharedTool),
+    #[cfg(test)]
+    ExecutionProbe(crate::agents::agent_manager::tool_execution::tests::ExecutionProbe),
 }
 
 impl ToolKind {
@@ -197,6 +238,11 @@ impl ToolKind {
             ToolId::Bash | ToolId::InteractBash | ToolId::CloseBash => {
                 Some(psa_api::BundleId::Bash)
             }
+            ToolId::SetGoal | ToolId::SetGoalStatus => Some(psa_api::BundleId::Goal),
+            ToolId::CreateAgent
+            | ToolId::SendMessage
+            | ToolId::WaitMessage
+            | ToolId::ListAgents => Some(psa_api::BundleId::Subagents),
             _ => None,
         }
     }
@@ -210,6 +256,12 @@ impl ToolKind {
             ToolId::Bash => Self::Bash(Bash::new(agent, session)),
             ToolId::InteractBash => Self::InteractBash(InteractBash::new(agent, session)),
             ToolId::CloseBash => Self::CloseBash(CloseBash::new(agent, session)),
+            ToolId::SetGoal => Self::SetGoal(SetGoal::new(agent, session)),
+            ToolId::SetGoalStatus => Self::SetGoalStatus(SetGoalStatus::new(agent, session)),
+            ToolId::CreateAgent => Self::CreateAgent(CreateAgent::new(agent, session)),
+            ToolId::SendMessage => Self::SendMessage(SendMessage::new(agent, session)),
+            ToolId::WaitMessage => Self::WaitMessage(WaitMessage::new(agent, session)),
+            ToolId::ListAgents => Self::ListAgents(ListAgents::new(agent, session)),
         }
     }
 
@@ -222,8 +274,16 @@ impl ToolKind {
             Self::Bash(_) => ToolId::Bash,
             Self::InteractBash(_) => ToolId::InteractBash,
             Self::CloseBash(_) => ToolId::CloseBash,
+            Self::SetGoal(_) => ToolId::SetGoal,
+            Self::SetGoalStatus(_) => ToolId::SetGoalStatus,
+            Self::CreateAgent(_) => ToolId::CreateAgent,
+            Self::SendMessage(_) => ToolId::SendMessage,
+            Self::WaitMessage(_) => ToolId::WaitMessage,
+            Self::ListAgents(_) => ToolId::ListAgents,
             #[cfg(test)]
             Self::BundleProbe(tool) => tool.id,
+            #[cfg(test)]
+            Self::ExecutionProbe(tool) => tool.id,
         }
     }
 
@@ -236,8 +296,16 @@ impl ToolKind {
             Self::Bash(tool) => tool.tool_definition(),
             Self::InteractBash(tool) => tool.tool_definition(),
             Self::CloseBash(tool) => tool.tool_definition(),
+            Self::SetGoal(tool) => tool.tool_definition(),
+            Self::SetGoalStatus(tool) => tool.tool_definition(),
+            Self::CreateAgent(tool) => tool.tool_definition(),
+            Self::SendMessage(tool) => tool.tool_definition(),
+            Self::WaitMessage(tool) => tool.tool_definition(),
+            Self::ListAgents(tool) => tool.tool_definition(),
             #[cfg(test)]
             Self::BundleProbe(tool) => tool.tool_definition(),
+            #[cfg(test)]
+            Self::ExecutionProbe(tool) => tool.tool_definition(),
         }
     }
 }
@@ -260,8 +328,38 @@ impl Tool for ToolKind {
             Self::Bash(tool) => tool.system_prompt(),
             Self::InteractBash(tool) => tool.system_prompt(),
             Self::CloseBash(tool) => tool.system_prompt(),
+            Self::SetGoal(tool) => tool.system_prompt(),
+            Self::SetGoalStatus(tool) => tool.system_prompt(),
+            Self::CreateAgent(tool) => tool.system_prompt(),
+            Self::SendMessage(tool) => tool.system_prompt(),
+            Self::WaitMessage(tool) => tool.system_prompt(),
+            Self::ListAgents(tool) => tool.system_prompt(),
             #[cfg(test)]
             Self::BundleProbe(tool) => tool.system_prompt(),
+            #[cfg(test)]
+            Self::ExecutionProbe(tool) => tool.system_prompt(),
+        }
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        match self {
+            Self::Noop(tool) => tool.execution_mode(),
+            Self::Read(tool) => tool.execution_mode(),
+            Self::Edit(tool) => tool.execution_mode(),
+            Self::Write(tool) => tool.execution_mode(),
+            Self::Bash(tool) => tool.execution_mode(),
+            Self::InteractBash(tool) => tool.execution_mode(),
+            Self::CloseBash(tool) => tool.execution_mode(),
+            Self::SetGoal(tool) => tool.execution_mode(),
+            Self::SetGoalStatus(tool) => tool.execution_mode(),
+            Self::CreateAgent(tool) => tool.execution_mode(),
+            Self::SendMessage(tool) => tool.execution_mode(),
+            Self::WaitMessage(tool) => tool.execution_mode(),
+            Self::ListAgents(tool) => tool.execution_mode(),
+            #[cfg(test)]
+            Self::BundleProbe(tool) => tool.execution_mode(),
+            #[cfg(test)]
+            Self::ExecutionProbe(tool) => tool.execution_mode(),
         }
     }
 
@@ -274,8 +372,16 @@ impl Tool for ToolKind {
             Self::Bash(tool) => tool.cancellation_timeout(),
             Self::InteractBash(tool) => tool.cancellation_timeout(),
             Self::CloseBash(tool) => tool.cancellation_timeout(),
+            Self::SetGoal(tool) => tool.cancellation_timeout(),
+            Self::SetGoalStatus(tool) => tool.cancellation_timeout(),
+            Self::CreateAgent(tool) => tool.cancellation_timeout(),
+            Self::SendMessage(tool) => tool.cancellation_timeout(),
+            Self::WaitMessage(tool) => tool.cancellation_timeout(),
+            Self::ListAgents(tool) => tool.cancellation_timeout(),
             #[cfg(test)]
             Self::BundleProbe(tool) => tool.cancellation_timeout(),
+            #[cfg(test)]
+            Self::ExecutionProbe(tool) => tool.cancellation_timeout(),
         }
     }
 
@@ -293,8 +399,16 @@ impl Tool for ToolKind {
             Self::Bash(tool) => tool.execute(arguments, context, cancellation).await,
             Self::InteractBash(tool) => tool.execute(arguments, context, cancellation).await,
             Self::CloseBash(tool) => tool.execute(arguments, context, cancellation).await,
+            Self::SetGoal(tool) => tool.execute(arguments, context, cancellation).await,
+            Self::SetGoalStatus(tool) => tool.execute(arguments, context, cancellation).await,
+            Self::CreateAgent(tool) => tool.execute(arguments, context, cancellation).await,
+            Self::SendMessage(tool) => tool.execute(arguments, context, cancellation).await,
+            Self::WaitMessage(tool) => tool.execute(arguments, context, cancellation).await,
+            Self::ListAgents(tool) => tool.execute(arguments, context, cancellation).await,
             #[cfg(test)]
             Self::BundleProbe(tool) => tool.execute(arguments, context, cancellation).await,
+            #[cfg(test)]
+            Self::ExecutionProbe(tool) => tool.execute(arguments, context, cancellation).await,
         }
     }
 }
@@ -312,6 +426,10 @@ pub trait Tool: Send + Sync {
     /// Additional system-prompt guidance, independent of the API tool schema.
     fn system_prompt(&self) -> ToolSystemPrompt {
         ToolSystemPrompt::default()
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Parallel
     }
 
     fn cancellation_timeout(&self) -> Duration;

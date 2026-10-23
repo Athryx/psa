@@ -9,10 +9,11 @@ use super::{
     Agent, AgentError, NewAgent,
     agent_manager::build_recovery_events,
     agent_projection::AgentProjection,
+    client_queries::{ClientQueriesHandle, ClientQueryError},
     publication::Publication,
     session_manager::{ManagerClient, ManagerCommand, RuntimeError},
 };
-use crate::{db::Database, sessions};
+use crate::{components::cancellation::Cancellation, db::Database, sessions};
 use psa_api::{self as api, AgentId, SessionId};
 
 #[derive(Clone)]
@@ -20,6 +21,7 @@ pub struct Sessions {
     database: Database,
     publication: Publication,
     pub(crate) commands: ManagerClient,
+    queries: ClientQueriesHandle,
 }
 
 impl Sessions {
@@ -27,12 +29,28 @@ impl Sessions {
         database: Database,
         publication: Publication,
         commands: ManagerClient,
+        queries: ClientQueriesHandle,
     ) -> Self {
         Self {
             database,
             publication,
             commands,
+            queries,
         }
+    }
+
+    pub(crate) fn client_queries(&self) -> &ClientQueriesHandle {
+        &self.queries
+    }
+
+    pub async fn respond_to_client_query(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        id: api::ClientQueryId,
+        response: api::ClientQueryResponse,
+    ) -> Result<(), ClientQueryError> {
+        self.queries.respond(session, agent, id, response).await
     }
 
     pub async fn create_agent_definition(
@@ -263,6 +281,54 @@ impl Sessions {
         Ok(agent)
     }
 
+    /// Read an agent's transcript, including inherited history, without mutation.
+    pub async fn load_agent_events(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        range: api::events::EventRange,
+    ) -> Result<Vec<api::events::Event>, RuntimeError> {
+        let mut cursor = self.database.cursor().await?;
+        cursor.require_agent_session(session, agent).await?;
+        let events = cursor.load_events(agent, range).await?;
+        cursor.rollback().await?;
+        Ok(events)
+    }
+
+    /// Wait until steering is queued without consuming it or changing agent state.
+    /// Returns `Cancelled` on invocation cancellation, `Unavailable` on shutdown.
+    pub async fn wait_for_steering(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        cancellation: &mut Cancellation,
+    ) -> Result<(), RuntimeError> {
+        let mut signal = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(RuntimeError::Cancelled),
+            result = self.commands.subscribe_steering(session, agent) => {
+                result.map_err(|_| RuntimeError::Unavailable)??
+            }
+        };
+        loop {
+            if cancellation.is_cancelled() {
+                return Err(RuntimeError::Cancelled);
+            }
+            match *signal.borrow_and_update() {
+                Some(true) => return Ok(()),
+                None => return Err(RuntimeError::Unavailable),
+                Some(false) => {}
+            }
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(RuntimeError::Cancelled),
+                result = signal.changed() => {
+                    result.map_err(|_| RuntimeError::Unavailable)?;
+                }
+            }
+        }
+    }
+
     pub async fn is_busy(&self, session: SessionId) -> Result<bool, RuntimeError> {
         self.commands
             .is_busy(session)
@@ -342,6 +408,7 @@ mod tests {
     struct Fixture {
         _directory: tempfile::TempDir,
         sessions: Sessions,
+        _queries: crate::agents::client_queries::ClientQueries,
         received: actors::Mailbox<ManagerCommand>,
     }
 
@@ -353,13 +420,17 @@ mod tests {
                 .unwrap();
             crate::test_support::register_probe(&database).await;
             let (commands, received) = actors::channel(256);
+            let publication = Publication::default();
+            let queries = crate::agents::client_queries::ClientQueries::start(publication.clone());
             Self {
                 _directory: directory,
                 sessions: Sessions::new(
                     database,
-                    Publication::default(),
+                    publication,
                     ManagerClient::new(commands),
+                    queries.handle(),
                 ),
+                _queries: queries,
                 received,
             }
         }

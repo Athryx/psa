@@ -9,6 +9,8 @@ pub use psa_api::{AgentDefinition, AgentDefinitionId, AgentId, AgentState, Agent
 pub mod agent_context;
 pub mod agent_manager;
 pub mod agent_projection;
+pub mod client_queries;
+pub mod lifecycle;
 pub mod publication;
 pub mod session_manager;
 pub mod sessions;

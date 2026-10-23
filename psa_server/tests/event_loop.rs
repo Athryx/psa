@@ -1,5 +1,7 @@
 //! Real HTTP/client/SSE tests against an in-process fake inference endpoint.
 
+#[path = "event_loop/components.rs"]
+mod component_features;
 #[path = "support/fake_probe.rs"]
 mod fake_probe;
 mod support;
@@ -48,6 +50,7 @@ fn model() -> ModelConfig {
 enum Script {
     Text,
     Tools,
+    Calls(&'static [(&'static str, &'static str, &'static str)]),
     Wait,
 }
 
@@ -71,13 +74,18 @@ async fn inference(State(mut fake): State<Fake>, Json(body): Json<Value>) -> Res
             {"index":0,"id":"call-ok","type":"function","function":{"name":"noop","arguments":"{}"}},
             {"index":1,"id":"call-bad","type":"function","function":{"name":"noop","arguments":"{bad json"}}
         ]}),
+        Script::Calls(calls) => {
+            json!({"role":"assistant", "tool_calls": calls.iter().enumerate().map(|(index, (id, name, arguments))| {
+            json!({"index":index,"id":id,"type":"function","function":{"name":name,"arguments":arguments}})
+        }).collect::<Vec<_>>() })
+        }
         _ => json!({"role":"assistant", "content":"hello"}),
     };
     let first = format!(
         "data: {}\n\n",
         json!({"id":"fake-response","choices":[{"index":0,"delta":delta,"finish_reason":null}]})
     );
-    let finish = if matches!(script, Script::Tools) {
+    let finish = if matches!(script, Script::Tools | Script::Calls(_)) {
         "tool_calls"
     } else {
         "stop"
@@ -945,8 +953,21 @@ async fn http_tools_hooks_usage_streaming_and_reconnect() {
         })
         .collect();
     assert_eq!(results.len(), 2);
-    assert!(!results[0].error);
-    assert!(results[1].error);
+    // Parallel invocations persist in completion order, not declaration order.
+    assert!(
+        !results
+            .iter()
+            .find(|result| result.call_id == "call-ok")
+            .unwrap()
+            .error
+    );
+    assert!(
+        results
+            .iter()
+            .find(|result| result.call_id == "call-bad")
+            .unwrap()
+            .error
+    );
     let mut reconnected = harness
         .client
         .stream_events(

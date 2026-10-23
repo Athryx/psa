@@ -547,10 +547,12 @@ async fn update_arriving_after_stop_boundary_survives_worker_retirement() {
     // processing the worker's join. No scheduler sleeps are needed.
     let (commands, received) = actors::channel(256);
     let commands = ManagerClient::new(commands);
+    let client_queries = ClientQueries::start(fixture.publication.clone());
     let sessions = Sessions::new(
         fixture.db.clone(),
         fixture.publication.clone(),
         commands.clone(),
+        client_queries.handle(),
     );
     let mut manager = SessionManager {
         db: fixture.db.clone(),
@@ -558,10 +560,15 @@ async fn update_arriving_after_stop_boundary_survives_worker_retirement() {
         providers: ProviderRegistry::default(),
         probes: fixture.probes.clone(),
         sessions: sessions.clone(),
+        client_queries,
         commands,
         received,
         workers: HashMap::new(),
         components: HashMap::new(),
+        session_resources: HashMap::new(),
+        steering: HashMap::new(),
+        runs: HashMap::new(),
+        lifecycle_events: Vec::new(),
         tasks: JoinSet::new(),
         next_request_id: 1,
         next_generation: 1,

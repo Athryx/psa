@@ -37,6 +37,10 @@ to introduce new general-purpose capabilities.
 - Use `tools/noop.rs` as the working reference. Follow the existing `ToolId`,
   `ToolKind`, constructors, definition dispatch, and hook snapshot registration;
   do not create a second registry or execution path.
+- Adjacent tools run concurrently by default (`ExecutionMode::Parallel`). Override
+  `execution_mode()` with `Sequential` when an operation must be a barrier before
+  and after its invocation; Goal setters are the working example. Do not depend
+  on declaration-order results or on another parallel invocation's side effects.
 - Every production concrete tool MUST use a typed argument struct and
   `typed_tool_execute!`. Do not handwrite JSON field extraction or a separate
   JSON-valued implementation of `Tool::execute`.
@@ -108,6 +112,8 @@ configured individually. Keep each concrete tool in its own file.
   `"bundles": ["FileTools", "Bash"]`. `FileTools` installs `Read`, `Edit`, and
   `Write`; `Bash` installs `Bash`, `InteractBash`, and `CloseBash`. The Bash tools
   require their bundle and cannot be independently configured in `tools`.
+  `Goal` adds interactive goal tools/hooks; `Subagents` adds group tools using
+  session-shared resources. Their component tool IDs also require their bundle.
   Bundles install in definition order, then explicit tools/hooks are appended.
   Duplicate bundle IDs, tool IDs, or model-facing tool names fail installation.
   Hooks preserve their configured stage/order and are not silently deduplicated.
@@ -143,11 +149,19 @@ configured individually. Keep each concrete tool in its own file.
   gets independent owners. Runtime shutdown stops workers first, then cleans up
   retained agents concurrently, with each agent's bundle callbacks in reverse
   installation order. Probes remain connected during resource cleanup.
+- Session-shared resource owners live separately in `components/bundles/session.rs`.
+  The manager lazily creates them and passes a `SessionBundleHandle` to each
+  agent's independent component installation. Share actor handles, NOT an entire
+  `InstalledComponents` or mutable hook set across agents. The Subagents bundle is
+  the working example. Logical run lifecycle notifications feed its coordinator;
+  worker retirement alone does not mean an agent completed. Shutdown closes these
+  services after signalling all worker interrupts so waiting invocations can exit.
 - Loading persisted state for recovery does not install bundles. Runtime resources
   do not survive a server restart; process reconnection/resumption is not promised.
   Use invocation context for current session/model settings, not only the initial
   snapshots passed to install. Ownership scopes or runtime APIs beyond the
-  existing retained-agent registry still require a proposal and user approval.
+  existing agent/session ownership and coordination APIs still require a proposal
+  and user approval.
 
 ## Schemas and prompts
 
@@ -197,6 +211,21 @@ to reach around their ownership or lifecycle rules.
 - `probe() -> Result<&ProbeHandle, ProbeError>`: the invocation's remote connection;
   it can be unavailable. Do not silently fall back to the server's filesystem.
 - `sessions() -> &Sessions`: async session/agent facade described below.
+- `query_client(query, &mut cancellation).await`: sends a typed `psa_api::ClientQuery`
+  scoped to the invocation's session/agent and waits for `ClientQueryResponse`.
+  The runtime owns pending requests; clients receive them through existing SSE
+  streams and respond through the query-response endpoint. No connected client,
+  probe, or `interactive` flag is required. Requests wait until answered,
+  cancelled, or runtime shutdown; wrap/drop the future for a caller-defined
+  timeout. Dropping the future removes its pending request, including during
+  registration. Errors use `agents::client_queries::ClientQueryError`; map them
+  intentionally to tool/hook results. Query plumbing does not write transcript
+  events or automatically change agent status. See `docs/CLIENT_QUERIES.md`.
+- Parallel invocations have stable agent/session/definition/projection snapshots.
+  `save_events` uses an actor mailbox to the worker's single persistence owner and
+  refreshes the saving invocation's agent/projection; it does not refresh peers.
+  Hooks retain their direct worker context. A dropped save waiter cannot retract
+  an already enqueued commit; do not bypass this path with direct database writes.
 - `save_events(&[NewEvent]).await`: persists and publishes auxiliary events and
   updates the projection. The worker separately persists returned `ToolOutput` as
   the tool result; do NOT duplicate that response as an auxiliary event.
@@ -209,7 +238,11 @@ to reach around their ownership or lifecycle rules.
 
 Existing async operations cover agent-definition create/get/list/update;
 session create/get/list/update/fork; agent create/get/list; busy queries; and
-submit/steer/resume/interrupt requests. Use these facade methods for persistence,
+submit/steer/resume/interrupt requests. `wait_for_steering(session, agent,
+&mut cancellation)` is a cancellation-safe, non-consuming, level-triggered wait
+for queued steering; it returns `Cancelled` on cancellation and `Unavailable` on
+shutdown. `load_agent_events(session, agent, range)` validates session ownership
+before scoped cross-agent trace reads. Use these facade methods for persistence,
 publication, and runtime coordination rather than manipulating their internals.
 
 ### `ProbeHandle` (`psa_server/src/probes.rs`)

@@ -47,7 +47,7 @@ optional `model_config` override, `skills` paths, `permitted_subagents` IDs, and
 execution, explicitly configure
 `agent_create: [DefaultStartup, ExtraSystemPrompt, ToolDefinitions, Cwd, ProjectContext, Skills]` in that order,
 `session_update: [SessionModelUpdate]`, and `after_request: [StopWithoutTools]`.
-No hooks are installed implicitly.
+No global hooks are installed by default; explicit bundles may supply their own hooks.
 
 `DefaultStartup` emits `NewContext`, the resolved `Model`, and a base assistant
 identity `System` message for root agents, without tools. `ToolDefinitions`
@@ -87,14 +87,18 @@ session `working_directory`; locations accept `.md` files or directories with
 descriptions, and paths, never skill bodies. `disable-model-invocation: true`
 skips a skill; the first duplicate name wins. Missing/malformed skills emit
 warning `Log` events and are skipped. An empty catalogue emits no system message;
-a nonempty skills list with a disconnected probe errors. `selectable`
-and `permitted_subagents` remain literal metadata, not automatic selection or
-permission enforcement. `extra_system_prompt` is injected only by the explicitly
+a nonempty skills list with a disconnected probe errors. `selectable` remains
+selection metadata. `permitted_subagents` is preserved literally and is enforced
+by the Subagents tool when creating children, not as a global trusted-client API
+permission boundary. `extra_system_prompt` is injected only by the explicitly
 configured `ExtraSystemPrompt` hook.
 
 `bundles` is an ordered list of `BundleId` values, defaulting to `[]` in both
 requests and responses. `FileTools` installs `Read`, `Edit`, and `Write` in that
-order. `Bash` installs `Bash`, `InteractBash`, and `CloseBash`. For example:
+order. `Bash` installs `Bash`, `InteractBash`, and `CloseBash`. `Goal` installs
+interactive goal tools and stopping policy; `Subagents` installs group tools with
+session-shared coordination resources. See `../docs/GOALS_AND_SUBAGENTS.md` for
+configuration, fixed limits, and persistence/fork behavior. For example:
 
 ```json
 {"name": "File assistant", "bundles": ["FileTools"], "hooks": {"agent_create": ["DefaultStartup", "ToolDefinitions"]}}
@@ -105,16 +109,19 @@ explicit `tools` and `hooks` remain supported. Duplicate bundle IDs, tool IDs, o
 tool names across bundle and explicit installations are rejected at component
 installation, not normalized or silently deduplicated. The session manager keeps
 installed owners/components by agent ID across idle worker retirement and worker
-failures. Forked agents have independent owners. Runtime shutdown stops workers,
-then cleans retained agents concurrently; bundles within each agent clean up in
-reverse installation order with timeouts and error reporting. Probe connections
+failures. Forked agents have independent owners. Installed tool/hook instances
+stay agent-local; Subagents shares only its coordinator resources within a
+session. Shutdown interrupts workers and closes query/session-shared services,
+then waits for workers and cleans retained agent bundles in reverse installation
+order with timeouts and error reporting. Probe connections
 remain available during cleanup. Resources are not persisted across server restart. Definition updates are immutable full replacements: omitting
 `bundles` clears the list in the new version without changing the old version or
 agents pinned to it. Migration 0009 gives existing definitions an empty list.
 
-Supported tool IDs are `Noop`, `Read`, `Edit`, `Write`, `Bash`, `InteractBash`, and
-`CloseBash`. The three Bash IDs require the `Bash` bundle; configuring them as
-standalone tools is rejected. See `../docs/BASH_TOOLS.md` for names, waits, logs,
+Supported tool IDs are `Noop`, `Read`, `Edit`, `Write`, `Bash`, `InteractBash`,
+`CloseBash`, `SetGoal`, `SetGoalStatus`, `CreateAgent`, `SendMessage`, `WaitMessage`,
+and `ListAgents`. Bash, Goal, and Subagents IDs require their corresponding
+bundles; configuring them as standalone tools is rejected. See `../docs/BASH_TOOLS.md` for names, waits, logs,
 and environment behavior. Alternatively add independent file tools
 explicitly, for example `"tools": ["Read", "Edit", "Write"]`, without also
 selecting `FileTools`. Native file
@@ -131,8 +138,9 @@ Creating an agent takes `definition_id`, `name`, and optional `interactive`
 ```
 
 Agent responses include the exact definition ID and `interactive` flag. The flag
-is creation-time metadata available to tools and hooks; it does not change runtime
-behavior. Forked agents inherit it. Creating a session requires `model_config`;
+is creation-time metadata available to tools and hooks, not an automatic UI or
+permission mode. The explicitly selected Goal bundle uses it to enable goal tools
+and its stopping policy. Forked agents inherit it. Creating a session requires `model_config`;
 session responses include it and session updates can replace it.
 
 TODO: other stuff from client like configs, mcp, etc
@@ -149,6 +157,66 @@ scoped `Last-Event-ID` resume cursors and provisional-to-persistent promotion.
 Session views include runtime `busy`; agent views include state and cumulative
 token usage. See `../psa_server/README.md` for startup, `auth.toml`, client examples,
 queue/shutdown semantics, and the trusted-client-only security boundary.
+
+## Client queries
+
+Client queries are ephemeral runtime requests for input, not transcript events.
+They do not require `interactive: true`, a UI, or a currently connected client.
+Outstanding queries are included as `queries: [ClientQueryRequest, ...]` in both
+JSON event pages and SSE `snapshot` messages on the existing session/agent event
+endpoints, regardless of `include_pending`. Older pages/snapshots without this
+field deserialize with an empty list. Replace local query state for the stream's
+scope when receiving a snapshot; upsert by query ID on
+`client_query_requested { query }` and remove on
+`client_query_removed { session_id, agent_id, query_id }`. Query notifications do
+not advance the durable event cursor. Reconnecting to the event stream recovers
+outstanding requests even when no client was present when they were created.
+
+`ClientQueryRequest` contains UUID `id`, `session_id`, `agent_id`, and `payload`:
+
+```json
+{
+  "id": "ebbc9c2e-cb57-4c33-aa7b-e3c70f68ae26",
+  "session_id": 1,
+  "agent_id": 2,
+  "payload": {
+    "type": "ask_question",
+    "payload": {"questions": [{"question": "Which direction?", "choices": ["Left", "Right"]}]}
+  }
+}
+```
+
+Post a `ClientQueryResponse` to
+`/sessions/{session_id}/agents/{agent_id}/queries/{query_id}/response`:
+
+```json
+{"type": "ask_question", "payload": {"answers": [{"answer": "Straight ahead", "notes": "An optional explanation"}]}}
+```
+
+Success returns HTTP 204 with no body. The async client exposes
+`respond_to_client_query(session, agent, query_id, &response)`; the route builder
+is `routes::client_query_response_path`. Requests need at least one question;
+question text and any supplied choices must not be blank. Answers must match
+questions positionally and exactly in count, and each answer must be nonblank.
+Choices are suggestions: arbitrary freeform/Other answers are valid. `choices`
+defaults to `[]`, and `notes` defaults to `None`. Unknown fields are rejected.
+Validation errors omit question/answer text.
+
+Errors use the usual `ApiError`: invalid input/response is 400 `invalid_input`,
+unknown or incorrectly scoped query is 404 `not_found`, already answered is 409
+`already_resolved`, cancelled is 410 `cancelled`, and unavailable/overloaded is
+503 `unavailable`. Queries are runtime-only and are not restored after a server
+restart or copied by session forks. There is no separate query stream or native
+AskQuestion tool implied by this API.
+
+First valid response wins; invalid responses leave the query pending. Cancelling
+or dropping the calling future removes the pending query and notifies clients.
+Disconnecting a client does not cancel it. No connected client or `interactive`
+flag is required, and there is no automatic answer deadline. Runtime shutdown
+closes the query service and wakes outstanding callers. The registry accepts up
+to 1,024 pending queries and remembers only the last 1,024 resolved/cancelled IDs;
+after eviction, later responses receive 404 instead of 409/410. See
+`../docs/CLIENT_QUERIES.md` for server-side usage and lifecycle details.
 
 ## Probes
 

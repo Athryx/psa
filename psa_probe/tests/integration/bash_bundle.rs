@@ -157,7 +157,7 @@ async fn bash_bundle_retains_full_output_and_cleans_up_live_processes() {
                 probe.clone(),
                 Command::new("bash", &cwd).args([
                     "-c",
-                    "printf '%s' \"$$\" > \"$1\"; sleep 30",
+                    "printf '%s' \"$$\" > \"$1\"; printf ready; sleep 30",
                     "bash-test",
                     pid_path.to_str().unwrap(),
                 ]),
@@ -168,6 +168,22 @@ async fn bash_bundle_retains_full_output_and_cleans_up_live_processes() {
             .await
             .unwrap();
         assert!(live.running);
+        // A short collection window does not guarantee that the remote shell
+        // has written its PID yet; wait for its explicit readiness signal.
+        let mut readiness = live.output_text().to_owned();
+        while !readiness.contains("ready") {
+            let interval = bash
+                .interact(
+                    "shutdown".into(),
+                    None,
+                    Duration::from_millis(100),
+                    cancellation(&mut cancellations),
+                )
+                .await
+                .unwrap();
+            assert!(interval.running, "process exited before readiness");
+            readiness.push_str(interval.output_text());
+        }
         let (pid, _, _) = collect(probe.read_file(&pid_path).await.unwrap()).await;
         let pid = String::from_utf8(pid).unwrap();
         bundle.cleanup().await.unwrap();

@@ -1,4 +1,5 @@
 use crate::events::{Event, EventId, EventType};
+use crate::{ClientQueryId, ClientQueryRequest};
 use llm_api::{api::ContentBlock, providers::ModelConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -38,13 +39,17 @@ pub struct HookIds {
     pub after_request: Vec<HookId>,
 }
 
-/// Ordered worker-local tool and hook installations selected by a definition.
+/// Ordered tool and hook installations selected by a definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BundleId {
     /// Installs the Read, Edit, and Write tools.
     FileTools,
     /// Installs the Bash, InteractBash, and CloseBash tools with shared sessions.
     Bash,
+    /// Installs interactive goal tools and a goal-aware stopping policy.
+    Goal,
+    /// Installs agent-group tools backed by session-shared coordination.
+    Subagents,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +112,12 @@ pub enum ToolId {
     Bash,
     InteractBash,
     CloseBash,
+    SetGoal,
+    SetGoalStatus,
+    CreateAgent,
+    SendMessage,
+    WaitMessage,
+    ListAgents,
 }
 
 pub type ToolResult = Vec<ContentBlock>;
@@ -288,6 +299,8 @@ pub struct PendingEvent {
 pub struct EventsPage {
     pub events: Vec<EventEnvelope>,
     pub pending: Vec<PendingEvent>,
+    #[serde(default)]
+    pub queries: Vec<ClientQueryRequest>,
     pub next_after: u64,
     pub head: u64,
     pub has_more: bool,
@@ -299,6 +312,16 @@ pub enum StreamMessage {
     Snapshot {
         cursor: u64,
         pending: Vec<PendingEvent>,
+        #[serde(default)]
+        queries: Vec<ClientQueryRequest>,
+    },
+    ClientQueryRequested {
+        query: ClientQueryRequest,
+    },
+    ClientQueryRemoved {
+        session_id: SessionId,
+        agent_id: AgentId,
+        query_id: ClientQueryId,
     },
     Upsert {
         pending: PendingEvent,

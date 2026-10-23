@@ -1,4 +1,4 @@
-use crate::{AgentDefinitionId, AgentId, SessionId};
+use crate::{AgentDefinitionId, AgentId, ClientQueryId, SessionId};
 
 pub const AGENT_DEFINITIONS: &str = "/agent-definitions";
 pub const AGENT_DEFINITION: &str = "/agent-definitions/{definition_id}";
@@ -9,6 +9,8 @@ pub const FORK: &str = "/sessions/{session_id}/fork";
 pub const AGENTS: &str = "/sessions/{session_id}/agents";
 pub const AGENT: &str = "/sessions/{session_id}/agents/{agent_id}";
 pub const REQUESTS: &str = "/sessions/{session_id}/agents/{agent_id}/requests";
+pub const CLIENT_QUERY_RESPONSE: &str =
+    "/sessions/{session_id}/agents/{agent_id}/queries/{query_id}/response";
 pub const SESSION_EVENTS: &str = "/sessions/{session_id}/events";
 pub const AGENT_EVENTS: &str = "/sessions/{session_id}/agents/{agent_id}/events";
 pub const PROBES: &str = "/probes";
@@ -25,6 +27,14 @@ pub fn agent_path(route: &str, session: SessionId, agent: AgentId) -> String {
 
 pub fn agent_definition_path(id: AgentDefinitionId) -> String {
     AGENT_DEFINITION.replace("{definition_id}", &id.0.to_string())
+}
+
+pub fn client_query_response_path(
+    session: SessionId,
+    agent: AgentId,
+    query: ClientQueryId,
+) -> String {
+    agent_path(CLIENT_QUERY_RESPONSE, session, agent).replace("{query_id}", &query.to_string())
 }
 
 pub fn probe_path(id: crate::ProbeId) -> String {

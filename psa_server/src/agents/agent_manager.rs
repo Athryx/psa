@@ -31,6 +31,8 @@ use psa_api::events::*;
 use std::{panic::AssertUnwindSafe, sync::Arc, time::Instant};
 use tokio::{sync::Mutex, task::JoinHandle};
 
+pub(crate) mod tool_execution;
+
 type PendingPersistence = JoinHandle<Result<(AddEventResult, AgentProjection), AgentError>>;
 
 pub use psa_api::{AgentState, MessageDelivery};
@@ -53,6 +55,8 @@ pub struct AgentManagerState {
     components: Option<Arc<Mutex<InstalledComponents>>>,
     publication: Publication,
     pending_persistence: Option<PendingPersistence>,
+    invocation_save_handle: actors::UnboundedMailboxHandle<tool_execution::SaveRequest>,
+    invocation_saves: UnboundedMailbox<tool_execution::SaveRequest>,
 }
 
 impl AgentManagerState {
@@ -98,8 +102,20 @@ impl AgentManagerState {
     }
 
     pub(crate) async fn install_components(&self) -> Result<InstalledComponents, AgentError> {
-        let components =
-            InstalledComponents::install(&self.definition, &self.agent, &self.session).await?;
+        self.install_components_with_session(None).await
+    }
+
+    pub(crate) async fn install_components_with_session(
+        &self,
+        resources: Option<&crate::components::bundles::session::SessionBundleHandle>,
+    ) -> Result<InstalledComponents, AgentError> {
+        let components = InstalledComponents::install_with_session(
+            &self.definition,
+            &self.agent,
+            &self.session,
+            resources,
+        )
+        .await?;
         #[cfg(test)]
         let components = {
             use super::session_manager::lifecycle_tests::RecordLifecycle;
@@ -139,6 +155,7 @@ impl AgentManagerState {
         let definition = cursor.get_agent_definition(agent.definition_id).await?;
         let context = AgentProjection::replay(&cursor.load_all_events(id).await?)?;
         cursor.rollback().await?;
+        let (invocation_save_handle, invocation_saves) = actors::unbounded_channel();
 
         Ok(Self {
             db,
@@ -150,6 +167,8 @@ impl AgentManagerState {
             components: None,
             context,
             pending_persistence: None,
+            invocation_save_handle,
+            invocation_saves,
         })
     }
 
@@ -164,9 +183,16 @@ impl AgentManagerState {
     ) -> Result<Vec<Event>, AgentError> {
         self.finish_persistence().await?;
 
+        self.start_persistence(events, promotions);
+        self.finish_persistence().await
+    }
+
+    /// Start an append without borrowing the worker while the commit runs.
+    fn start_persistence(&mut self, events: &[NewEvent], promotions: &[(usize, String)]) {
+        assert!(self.pending_persistence.is_none());
         let (events, promotions) = build_persistence_batch(events, promotions, self.agent.state);
         if events.is_empty() {
-            return Ok(Vec::new());
+            return;
         }
 
         // A tool/hook may be dropped after its cancellation grace period. Keep
@@ -181,7 +207,6 @@ impl AgentManagerState {
                 .append(&db, agent, &events, &promotions, &context)
                 .await
         }));
-        self.finish_persistence().await
     }
 
     pub(crate) async fn finish_persistence(&mut self) -> Result<Vec<Event>, AgentError> {
@@ -191,8 +216,14 @@ impl AgentManagerState {
 
         let result = pending.await;
         self.pending_persistence = None;
-        let (result, context) = result.map_err(AgentError::PersistenceTask)??;
+        self.apply_persistence(result.map_err(AgentError::PersistenceTask)?)
+    }
 
+    fn apply_persistence(
+        &mut self,
+        result: Result<(AddEventResult, AgentProjection), AgentError>,
+    ) -> Result<Vec<Event>, AgentError> {
+        let (result, context) = result?;
         self.context = context;
         if let Some(state) = result.new_state {
             self.agent.state = state;
@@ -239,35 +270,7 @@ impl AgentManagerState {
         calls
     }
 
-    async fn resolve_tools(
-        &mut self,
-        probe: &ProbeHandle,
-        sessions: &Sessions,
-        controls: &mut UnboundedMailbox<AgentManagerMessage>,
-    ) -> Result<(), AgentError> {
-        let mut interrupted = false;
-        let tools = Arc::clone(&self.tools);
-        for call in self.outstanding_calls() {
-            interrupted |= drain_controls(self, controls);
-            let output = tools::execute(
-                &tools,
-                &call,
-                &mut AgentContext::new(self, probe, sessions),
-                &mut interrupted,
-                controls,
-            )
-            .await;
-            self.save_tool_output(call.call_id, output).await?;
-        }
-
-        if interrupted && self.agent.state == AgentState::Running {
-            self.persist_events(&[status_event(AgentState::Interrupted)])
-                .await?;
-        }
-
-        Ok(())
-    }
-
+    #[cfg(test)]
     pub(crate) async fn save_tool_output(
         &mut self,
         call_id: String,
@@ -663,7 +666,11 @@ pub(crate) async fn run_worker(
     drop(components);
 
     // Do not let supervisor recovery race a save detached by a panicking tool.
-    let persistence = state.finish_persistence().await;
+    let persistence = async {
+        state.finish_persistence().await?;
+        state.drain_invocation_saves().await
+    }
+    .await;
     if let Err(error) = &persistence {
         tracing::error!(agent = state.agent.id.0, %error, "worker persistence cleanup failed");
     }

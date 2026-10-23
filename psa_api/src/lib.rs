@@ -1,11 +1,13 @@
 //! Shared wire types and a small asynchronous client for trusted PSA clients.
 
 pub mod client;
+pub mod client_queries;
 pub mod events;
 pub mod routes;
 mod types;
 
 pub use client::{Client, ClientError, EventStream, StreamEvent};
+pub use client_queries::*;
 pub use types::*;
 
 #[cfg(test)]
