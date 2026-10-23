@@ -112,7 +112,7 @@ configured individually. Keep each concrete tool in its own file.
   `"bundles": ["FileTools", "Bash"]`. `FileTools` installs `Read`, `Edit`, and
   `Write`; `Bash` installs `Bash`, `InteractBash`, and `CloseBash`. The Bash tools
   require their bundle and cannot be independently configured in `tools`.
-  `Goal` adds interactive goal tools/hooks; `Subagents` adds group tools using
+  `Goal` adds interactive goal tools/hooks; `Subagents` adds session-wide tools using
   session-shared resources. Their component tool IDs also require their bundle.
   Bundles install in definition order, then explicit tools/hooks are appended.
   Duplicate bundle IDs, tool IDs, or model-facing tool names fail installation.
@@ -153,7 +153,9 @@ configured individually. Keep each concrete tool in its own file.
   The manager lazily creates them and passes a `SessionBundleHandle` to each
   agent's independent component installation. Share actor handles, NOT an entire
   `InstalledComponents` or mutable hook set across agents. The Subagents bundle is
-  the working example. Logical run lifecycle notifications feed its coordinator;
+  the working example. Typed logical run lifecycle callbacks feed its progress actor
+  and completion hook; core agent metadata owns parentage, and ordinary typed
+  steering owns message delivery. Do not duplicate hierarchy/status in bundles;
   worker retirement alone does not mean an agent completed. Shutdown closes these
   services after signalling all worker interrupts so waiting invocations can exit.
 - Loading persisted state for recovery does not install bundles. Runtime resources
@@ -237,7 +239,8 @@ to reach around their ownership or lifecycle rules.
 ### `Sessions` (`psa_server/src/agents/sessions.rs`)
 
 Existing async operations cover agent-definition create/get/list/update;
-session create/get/list/update/fork; agent create/get/list; busy queries; and
+session create/get/list/update/fork; agent create/get/list (including immutable
+`subagent_parent_id`); typed `send_subagent_message`; busy queries; and
 submit/steer/resume/interrupt requests. `wait_for_steering(session, agent,
 &mut cancellation)` is a cancellation-safe, non-consuming, level-triggered wait
 for queued steering; it returns `Cancelled` on cancellation and `Unavailable` on

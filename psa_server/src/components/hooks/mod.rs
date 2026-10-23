@@ -7,6 +7,7 @@ pub mod project_context;
 pub mod session_model_update;
 pub mod skills;
 pub mod stop_without_tools;
+pub(crate) mod subagent_completion;
 pub mod subagent_identity;
 pub mod tool_definitions;
 

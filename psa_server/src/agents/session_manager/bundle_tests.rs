@@ -45,6 +45,7 @@ async fn runtime_shutdown_cleans_retained_owners_and_reports_failures() {
                     .create_agent(
                         session.id,
                         NewAgent {
+                            subagent_parent_id: None,
                             definition_id: definition.id,
                             name: name.into(),
                             interactive: false,

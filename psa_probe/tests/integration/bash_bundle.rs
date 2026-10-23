@@ -39,6 +39,7 @@ pub(super) async fn install_bundle(harness: &Harness) -> (BashBundle, BashHandle
         .create_agent(
             session.id,
             NewAgent {
+                subagent_parent_id: None,
                 definition_id: definition.id,
                 name: "bash integration".into(),
                 interactive: false,

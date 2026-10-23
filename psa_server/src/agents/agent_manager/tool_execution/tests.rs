@@ -213,6 +213,7 @@ impl Fixture {
             .create_agent(
                 session.id,
                 NewAgent {
+                    subagent_parent_id: None,
                     interactive: false,
                     definition_id: psa_api::AgentDefinitionId(1),
                     name: "test".into(),

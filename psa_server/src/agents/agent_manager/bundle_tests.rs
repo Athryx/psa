@@ -32,6 +32,7 @@ async fn create_agent_record(
         .create_agent(
             session.id,
             NewAgent {
+                subagent_parent_id: None,
                 definition_id: definition.id,
                 name: "bundle agent".into(),
                 interactive: false,

@@ -133,6 +133,7 @@ fn session_models_are_required_and_agents_reference_definitions() {
     .unwrap();
     assert_eq!(update.model_config, Some(model_config()));
     let agent = CreateAgent {
+        subagent_parent_id: None,
         interactive: false,
         definition_id: AgentDefinitionId(7),
         name: "agent".into(),
@@ -140,7 +141,7 @@ fn session_models_are_required_and_agents_reference_definitions() {
     let mut json = serde_json::to_value(agent).unwrap();
     assert_eq!(
         json,
-        serde_json::json!({"definition_id": 7, "name": "agent", "interactive": false})
+        serde_json::json!({"definition_id": 7, "name": "agent", "interactive": false, "subagent_parent_id": null})
     );
     assert!(serde_json::from_value::<CreateAgent>(json.clone()).is_ok());
     json["model"] = serde_json::to_value(model_config()).unwrap();
@@ -158,6 +159,7 @@ fn agent_interactive_wire_field_defaults_false_and_round_trips_bools() {
 
     for interactive in [false, true] {
         let request = CreateAgent {
+            subagent_parent_id: None,
             definition_id: AgentDefinitionId(7),
             name: "agent".into(),
             interactive,
@@ -172,6 +174,7 @@ fn agent_interactive_wire_field_defaults_false_and_round_trips_bools() {
             session_id: SessionId(2),
             definition_id: request.definition_id,
             parent_id: None,
+            subagent_parent_id: None,
             name: request.name,
             interactive,
             state: AgentState::Idle,
@@ -433,4 +436,36 @@ fn paths_and_client_base_urls_are_validated() {
         assert!(Client::new(invalid).is_err());
     }
     assert!(Client::new("http://localhost:8080/prefix/").is_ok());
+}
+
+#[test]
+fn core_subagent_ancestry_and_attributed_requests_round_trip() {
+    let legacy: CreateAgent = serde_json::from_value(serde_json::json!({
+        "definition_id": 1, "name": "root"
+    }))
+    .unwrap();
+    assert_eq!(legacy.subagent_parent_id, None);
+    let child: CreateAgent = serde_json::from_value(serde_json::json!({
+        "definition_id": 1, "name": "worker", "subagent_parent_id": 9
+    }))
+    .unwrap();
+    assert_eq!(child.subagent_parent_id, Some(AgentId(9)));
+    let request = AgentRequest::SubagentMessage {
+        source: Some(AgentMessageSource {
+            agent_id: Some(AgentId(9)),
+            name: Some("parent".into()),
+        }),
+        content: vec![llm_api::api::ContentBlock::Text(llm_api::api::TextBlock {
+            text: "task".into(),
+            annotations: vec![],
+        })],
+    };
+    let encoded = serde_json::to_value(&request).unwrap();
+    assert_eq!(encoded["SubagentMessage"]["source"]["agent_id"], 9);
+    let AgentRequest::SubagentMessage { source, .. } =
+        serde_json::from_value::<AgentRequest>(encoded).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(source.unwrap().name.as_deref(), Some("parent"));
 }

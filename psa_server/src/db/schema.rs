@@ -76,6 +76,7 @@ pub(super) struct AgentRow {
     pub session_id: i64,
     pub definition_id: i64,
     pub parent_agent_id: Option<i64>,
+    pub subagent_parent_id: Option<i64>,
     pub first_event_seq: i64,
     pub next_event_seq: i64,
     pub created_position: i64,
@@ -96,6 +97,11 @@ impl TryFrom<AgentRow> for Agent {
             definition_id: psa_api::AgentDefinitionId(decode_integer(row.definition_id)?),
             parent_id: row
                 .parent_agent_id
+                .map(decode_integer)
+                .transpose()?
+                .map(AgentId),
+            subagent_parent_id: row
+                .subagent_parent_id
                 .map(decode_integer)
                 .transpose()?
                 .map(AgentId),

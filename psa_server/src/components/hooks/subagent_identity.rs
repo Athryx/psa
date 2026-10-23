@@ -1,8 +1,8 @@
-//! Invocation identity is coordinator metadata, not Agent.parent_id fork lineage.
+//! Identity uses core agent ancestry, independently of fork lineage.
 use super::{Hook, HookError};
 use crate::{
     agents::{Agent, agent_context::AgentContext, session_manager::RuntimeError},
-    components::{bundles::subagents::SubagentCoordinator, cancellation::Cancellation},
+    components::cancellation::Cancellation,
     sessions::Session,
 };
 use psa_api::events::{EventType, Message, MessageType, NewEvent};
@@ -10,15 +10,31 @@ use std::time::Duration;
 
 #[derive(Default)]
 pub struct SubagentIdentity {
-    handle: Option<SubagentCoordinator>,
     emitted_identity: Option<String>,
 }
 impl SubagentIdentity {
-    pub fn with_handle(handle: SubagentCoordinator) -> Self {
-        Self {
-            handle: Some(handle),
-            emitted_identity: None,
+    async fn build_identity(context: &AgentContext<'_>) -> Result<String, String> {
+        let agent = context.agent();
+        let mut permitted = Vec::new();
+        for id in &context.definition().permitted_subagents {
+            permitted.push(
+                context
+                    .sessions()
+                    .get_agent_definition(*id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .name,
+            );
         }
+        Ok(format!(
+            "<agent_identity>\nName: {}. Agent ID: {}. Session ID: {}. Subagent parent ID: {:?}. Template: {}.\nPermitted child templates (explicit agent_template required): {}\nAgents communicate within this session. Children run asynchronously; their final answers/errors are sent to their parent. send_message steers an existing agent. wait_message waits for steering, which the runtime injects into context.\n</agent_identity>",
+            agent.name,
+            agent.id.0,
+            context.session().id.0,
+            agent.subagent_parent_id.map(|id| id.0),
+            context.definition().name,
+            serde_json::to_string(&permitted).unwrap()
+        ))
     }
 }
 impl Hook for SubagentIdentity {
@@ -33,21 +49,11 @@ impl Hook for SubagentIdentity {
         context: &mut AgentContext<'_>,
         mut cancellation: Cancellation,
     ) -> Result<(), HookError> {
-        let handle = self.handle.as_ref().ok_or_else(|| {
-            RuntimeError::Invalid("Subagent identity requires session bundle resources".into())
-        })?;
-
         let identity = tokio::select! {
             biased;
             _ = cancellation.cancelled() => return Ok(()),
-            result = handle.identity(context) => result.map_err(RuntimeError::Invalid)?,
+            result = Self::build_identity(context) => result.map_err(RuntimeError::Invalid)?,
         };
-
-        tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => return Ok(()),
-            result = handle.checkpoint(context) => result.map_err(RuntimeError::Invalid)?,
-        }
 
         if self.emitted_identity.as_ref() == Some(&identity) {
             return Ok(());

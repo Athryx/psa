@@ -18,6 +18,7 @@ fn snapshots() -> (Agent, Session) {
         session_id: SessionId(1),
         definition_id: AgentDefinitionId(1),
         parent_id: None,
+        subagent_parent_id: None,
         first_event_id: EventId(1),
         next_event_id: EventId(1),
         created_position: 1,

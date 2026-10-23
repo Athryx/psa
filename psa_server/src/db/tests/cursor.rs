@@ -25,6 +25,7 @@ async fn commit_persists_multiple_operations_together() {
         .create_agent(
             session.id,
             NewAgent {
+                subagent_parent_id: None,
                 interactive: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "main".into(),
@@ -111,6 +112,7 @@ async fn explicit_rollback_and_drop_discard_all_cursor_changes() {
             .create_agent(
                 session.id,
                 NewAgent {
+                    subagent_parent_id: None,
                     interactive: false,
                     definition_id: psa_api::AgentDefinitionId(1),
                     name: "uncommitted".into(),

@@ -128,6 +128,7 @@ impl Fixture {
             .create_agent(
                 session.id,
                 NewAgent {
+                    subagent_parent_id: None,
                     interactive: false,
                     definition_id: psa_api::AgentDefinitionId(1),
                     name: "agent".into(),
@@ -236,6 +237,7 @@ async fn trace_queries_match_database_and_bind_inherited_fork_history() {
         .create_agent(
             parent.session_id,
             NewAgent {
+                subagent_parent_id: None,
                 interactive: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "other".into(),
@@ -754,6 +756,7 @@ async fn extra_system_prompt_hook_persists_verbatim_system_message_and_skips_emp
             .create_agent(
                 seed.session_id,
                 NewAgent {
+                    subagent_parent_id: None,
                     interactive: false,
                     definition_id: definition.id,
                     name: "extra prompt".into(),

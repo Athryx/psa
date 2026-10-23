@@ -241,6 +241,7 @@ impl Sessions {
             .create_agent(
                 session,
                 NewAgent {
+                    subagent_parent_id: request.subagent_parent_id,
                     name: request.name,
                     definition_id: request.definition_id,
                     interactive: request.interactive,
@@ -342,7 +343,8 @@ impl Sessions {
         agent: AgentId,
         request: api::AgentRequest,
     ) -> Result<api::RequestAccepted, RuntimeError> {
-        if matches!(&request, api::AgentRequest::Message { content, .. } if content.is_empty()) {
+        if matches!(&request, api::AgentRequest::Message { content, .. } | api::AgentRequest::SubagentMessage { content, .. } if content.is_empty())
+        {
             return Err(RuntimeError::Invalid(
                 "message content must not be empty".into(),
             ));
@@ -369,6 +371,34 @@ impl Sessions {
             },
         )
         .await
+    }
+
+    pub async fn send_subagent_message(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        source: Option<api::AgentMessageSource>,
+        content: Vec<llm_api::api::ContentBlock>,
+    ) -> Result<api::RequestAccepted, RuntimeError> {
+        self.submit(
+            session,
+            agent,
+            api::AgentRequest::SubagentMessage { source, content },
+        )
+        .await
+    }
+
+    /// Background hooks use this conditional submission rather than a racy state check.
+    pub(crate) async fn steer_if_not_interrupted(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        request: api::AgentRequest,
+    ) -> Result<api::RequestAccepted, RuntimeError> {
+        self.commands
+            .submit_if_not_interrupted(session, agent, request)
+            .await
+            .map_err(|_| RuntimeError::Unavailable)?
     }
 
     pub async fn resume(
@@ -450,6 +480,7 @@ mod tests {
 
     fn create_agent_request() -> api::CreateAgent {
         api::CreateAgent {
+            subagent_parent_id: None,
             interactive: false,
             name: "agent".into(),
             definition_id: api::AgentDefinitionId(1),

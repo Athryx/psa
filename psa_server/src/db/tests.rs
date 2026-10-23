@@ -17,6 +17,7 @@ mod cursor;
 mod definitions;
 mod file_tools;
 mod interactive;
+mod subagents;
 mod usage;
 
 async fn fixture() -> (tempfile::TempDir, Database, Session, Agent) {
@@ -39,6 +40,7 @@ async fn fixture() -> (tempfile::TempDir, Database, Session, Agent) {
         .create_agent(
             session.id,
             NewAgent {
+                subagent_parent_id: None,
                 interactive: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "main".into(),
@@ -191,6 +193,7 @@ async fn round_trips_all_payloads_and_reopens_database() {
     .into_iter()
     {
         kinds.push(EventType::Message(Message {
+            source: None,
             message_type,
             content: vec![api::ContentBlock::Refusal(api::RefusalBlock {
                 text: "refused".into(),
@@ -202,6 +205,7 @@ async fn round_trips_all_payloads_and_reopens_database() {
         }));
     }
     kinds.push(EventType::Message(Message {
+        source: None,
         message_type: MessageType::Human,
         content: vec![],
         metadata: Default::default(),
@@ -460,6 +464,7 @@ async fn forks_inherit_state_at_the_selected_event_boundary() {
         .create_agent(
             session.id,
             NewAgent {
+                subagent_parent_id: None,
                 interactive: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "empty".into(),
@@ -600,6 +605,7 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
         .create_agent(
             session.id,
             NewAgent {
+                subagent_parent_id: None,
                 interactive: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "worker".into(),
@@ -611,6 +617,7 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
         .create_agent(
             session.id,
             NewAgent {
+                subagent_parent_id: None,
                 interactive: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "empty".into(),
@@ -628,6 +635,7 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
         .create_agent(
             session.id,
             NewAgent {
+                subagent_parent_id: None,
                 interactive: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "too late".into(),
@@ -813,6 +821,7 @@ async fn concurrent_writers_reserve_unique_positions_and_sequences() {
         .create_agent(
             session.id,
             NewAgent {
+                subagent_parent_id: None,
                 interactive: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "other".into(),

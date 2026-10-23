@@ -40,8 +40,7 @@ when the definition permits at least one child template. Definitions without
 permitted children still get messaging, waiting, and listing tools.
 
 Use explicit `agent_template` names corresponding to pinned permitted definition
-IDs. Missing/null templates fail with a missing-default error: this port does
-not configure an implicit default or silently choose the first permitted entry.
+IDs. Missing/null templates fail: no implicit default is configured.
 Templates map to PSA definitions, not Pi-local template files. Define the intended
 model, tools, skills, extra prompt, and hooks on each pinned definition. Ordinary
 PSA model/session configuration rules apply; no credentials are copied to probes.
@@ -74,50 +73,43 @@ present, so it can remain in explicit hook configuration without overriding the
 goal hook. There are no Pi footer widgets, slash-command control endpoints, or
 request-history filtering in this port.
 
-## Subagent tools
+## Subagent tools and core ancestry
 
-- `create_agent(name, task, agent_template?)`: starts a fresh, noninteractive child
-  in the same session using an explicitly permitted definition. It is NOT a
-  session fork. Names are session-unique, ASCII letters/digits/underscore/hyphen,
-  with length 1 through 80. Fork ancestry (`Agent.parent_id`) is not repurposed
-  for coordination parentage.
-- `send_message(agent_name, message)`: sends attributed steering within the
-  caller's group. Idle agents resume in their existing conversations. Self-send
-  and blank messages are rejected.
-- `wait_message(timeout?)`: defaults to 120 seconds, with a positive maximum of
-  600. Waits for acknowledged group delivery, steering availability, timeout, or
-  invocation cancellation. An already-ready group acknowledgement contains
-  message IDs/senders; otherwise available steering immediately returns
-  `steering_available` without pretending its contents were consumed. Bodies
-  arrive through steering, once. Already-consumed steering and late
-  acknowledgements do not wake a future wait.
-- `list_agents(all?)`: lists direct children by default, or all members of the
-  caller's group with `all: true`, including idle members and parent relationships.
+Agent ancestry is persisted as `Agent.subagent_parent_id` and exposed through
+agent create/get/list responses and snapshot events, including without the bundle.
+The parent must be in the same session. `Agent.parent_id` remains fork lineage.
+Session forks remap ancestry to copied agent IDs. Existing checkpoint logs are
+not imported; preexisting agents default to no subagent parent.
 
-The shared actor owns membership, name reservations, parent/group relations,
-message acknowledgements, waiters, and active run tracking. Separate roots in a
-session have separate communication groups. Default policy limits active child
-workers to eight and creation depth to four. Waiting workers consume capacity;
-full capacity is rejected rather than queued. These initial limits are fixed,
-not a new server/template configuration surface.
+- `create_agent(name, task, agent_template?)` starts a fresh noninteractive child
+  using an explicitly permitted definition. Missing/null templates are rejected.
+  Creation establishes parentage atomically and rejects duplicate session names.
+- `send_message(agent_name, message)` sends typed, attributed steering to any
+  other agent in the session. Blank messages, self-send, and ambiguous names fail.
+- `wait_message(timeout?)` waits for core steering availability without consuming
+  it, returning `steering_available` or `timeout`. The default is 120 seconds,
+  with a positive maximum of 600. There are no message acknowledgements.
+- `list_agents(all?)` lists direct children, or every session agent with `all=true`.
 
-Logical run lifecycle notifications are independent of worker task generations.
-Steering an already-running agent belongs to its current run; new work on an
-idle agent starts a fresh run ID. Completion/failure/interruption updates group
-status and reports to the parent, with stale/duplicate completion suppression.
-An ordinary completed parent does not destroy independently running children;
-interrupted/failed ownership scopes interrupt active descendants. Automatic child
-reports do not resume an interrupted/failed parent, preventing interruption
-feedback loops; an explicit message can still start new work. Waiting refuses
-when nobody else in the group can make progress, while allowing sibling parallel
-create/send operations to establish progress.
+The session is the canonical interaction boundary; there are no agent groups,
+fixed child concurrency/depth limits, or automatic interrupt cascades. A small
+bundle actor tracks active runs, wait registrations, and pending create/send
+operations. It rejects waits when no session run can progress outside a wait,
+after briefly deferring and allowing pending operations to establish progress.
+It observes runs without the bundle too. Timeout/cancellation releases waits.
 
-Coordinator metadata is checkpointed through existing trace events and restored
-using session-scoped read APIs. Fork-inherited checkpoint identities are not
-reused as new-session identities. Checkpoints and agent creation are not one
-transaction: a crash before a checkpoint can leave a durable, reserved agent
-record without recovered coordination membership. Pending/in-flight delivery is
-runtime state, not a durable exactly-once messaging queue.
+`AgentRequest::SubagentMessage` uses the ordinary steering queue. Its optional
+source contains agent ID/name; supplied IDs are checked against the session and
+names are resolved by the server. Transcript messages use `MessageType::Subagent`
+and preserve source metadata. Model projection renders them as attributed
+user-role context. The Rust client exposes `send_subagent_message`.
+
+A session lifecycle callback installed by the bundle sends completion/error/
+interruption reports to a child's parent when the parent has the bundle, even
+if the child does not. Logical run IDs prevent duplicate reports across worker
+generations. Background reports cannot restart interrupted/failed parents;
+explicit messages retain ordinary steering behavior. Reports are middle-truncated
+to 30,000 bytes. Queued requests and report delivery are best effort across crashes.
 
 ## Execution and lifecycle
 
@@ -138,5 +130,5 @@ Session updates affect later invocation batches, not in-flight snapshots.
 it observes queued steering without consuming it. Registration/checking are
 serialized by the manager, so steering cannot be lost between them. Runtime
 shutdown wakes waiters and cleans session resource owners as well as per-agent
-bundle owners. Coordinator-owned asynchronous jobs remain interruptible during
+bundle owners. Bundle-owned asynchronous jobs remain interruptible during
 shutdown and do not block its mailbox on session-manager requests.

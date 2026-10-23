@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT p.event_pk, p.message_type, p.delivery, p.content, p.metadata FROM event_message p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+  "query": "SELECT p.event_pk, p.message_type, p.delivery, p.content, p.metadata, p.source FROM event_message p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,17 @@
             "name": "metadata"
           }
         }
+      },
+      {
+        "name": "source",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "source"
+          }
+        }
       }
     ],
     "parameters": {
@@ -67,8 +78,9 @@
       false,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "f73ad92b88746d6ce25481f61ff8b2c321a2e78588f913e16c84bfe3d4a90239"
+  "hash": "119b392a2a49441701c5c55fafe120da6a9c767062d3edf0928f6da41c96dab7"
 }

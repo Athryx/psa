@@ -216,6 +216,7 @@ mod tests {
                 .create_agent(
                     session.id,
                     NewAgent {
+                        subagent_parent_id: None,
                         interactive: true,
                         definition_id: definition.id,
                         name: "goal agent".into(),

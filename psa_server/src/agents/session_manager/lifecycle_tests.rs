@@ -184,6 +184,7 @@ impl Drop for Fixture {
 
 fn agent_request() -> psa_api::CreateAgent {
     psa_api::CreateAgent {
+        subagent_parent_id: None,
         interactive: false,
         name: "agent".into(),
         definition_id: psa_api::AgentDefinitionId(1),
@@ -258,6 +259,7 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
         .create_agent(
             session.id,
             psa_api::CreateAgent {
+                subagent_parent_id: None,
                 interactive: false,
                 name: "explicit".into(),
                 definition_id: definition.id,

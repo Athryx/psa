@@ -171,13 +171,41 @@ impl DatabaseCursor {
         .await?;
         let child_id = SessionId(decode_integer(result.last_insert_rowid())?);
 
+        let originals = list_agents(&mut savepoint, source).await?;
         let mut agents = Vec::new();
-        for agent in list_agents(&mut savepoint, source).await? {
+        for agent in &originals {
             if agent.created_position <= position {
-                let child = fork_agent(&mut savepoint, &agent, child_id, position).await?;
+                let child = fork_agent(&mut savepoint, agent, child_id, position).await?;
                 agents.push((agent.id, child));
             }
         }
+
+        let copied_agent_ids: std::collections::HashMap<_, _> = agents
+            .iter()
+            .map(|(source, copy)| (*source, copy.id))
+            .collect();
+        for (source, copy) in &mut agents {
+            let original = originals
+                .iter()
+                .find(|agent| agent.id == *source)
+                .expect("fork source exists");
+            copy.subagent_parent_id = original
+                .subagent_parent_id
+                .and_then(|parent| copied_agent_ids.get(&parent).copied());
+            let parent = copy
+                .subagent_parent_id
+                .map(|id| encode_integer(id.0))
+                .transpose()?;
+            let id = encode_integer(copy.id.0)?;
+            sqlx::query!(
+                "UPDATE agents SET subagent_parent_id = ? WHERE id = ?",
+                parent,
+                id
+            )
+            .execute(&mut *savepoint)
+            .await?;
+        }
+
         let session = get_session(&mut savepoint, child_id).await?;
 
         savepoint.commit().await?;

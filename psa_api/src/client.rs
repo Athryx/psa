@@ -209,6 +209,22 @@ impl Client {
         .await
     }
 
+    /// Send attributed context using normal steering delivery.
+    pub async fn send_subagent_message(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        source: Option<crate::AgentMessageSource>,
+        content: Vec<llm_api::api::ContentBlock>,
+    ) -> Result<RequestAccepted, ClientError> {
+        self.submit_request(
+            session,
+            agent,
+            &AgentRequest::SubagentMessage { source, content },
+        )
+        .await
+    }
+
     /// Respond to an outstanding runtime query. Success has no response body.
     pub async fn respond_to_client_query(
         &self,

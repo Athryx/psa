@@ -45,6 +45,7 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
         .create_agent(
             session.id,
             NewAgent {
+                subagent_parent_id: None,
                 interactive: false,
                 name: "pinned".into(),
                 definition_id: first.id,
@@ -94,6 +95,7 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
             .create_agent(
                 session.id,
                 NewAgent {
+                    subagent_parent_id: None,
                     interactive: false,
                     name: "invalid reference".into(),
                     definition_id: missing

@@ -163,7 +163,7 @@ impl AgentProjection {
             }
             EventType::Message(message) => {
                 let role = match message.message_type {
-                    MessageType::Human | MessageType::Harness => Role::User,
+                    MessageType::Human | MessageType::Harness | MessageType::Subagent => Role::User,
                     MessageType::Agent => Role::Assistant,
                     MessageType::System => Role::System,
                 };
@@ -176,7 +176,7 @@ impl AgentProjection {
                 self.append_item(HistoryItem {
                     kind: HistoryItemKind::Message(api::Message {
                         role,
-                        content: message.content.clone(),
+                        content: build_message_content(message),
                     }),
                     metadata: message.metadata.clone(),
                 });
@@ -384,6 +384,26 @@ impl AgentProjection {
 
 fn invalid(message: &str) -> ProjectionError {
     ProjectionError::InvalidTranscript(message.into())
+}
+
+fn build_message_content(message: &psa_api::events::Message) -> Vec<api::ContentBlock> {
+    let mut content = Vec::new();
+    if message.message_type == MessageType::Subagent {
+        let sender = match message.source.as_ref() {
+            Some(source) => match (&source.name, source.agent_id) {
+                (Some(name), Some(id)) => {
+                    format!("{name} (agent {})", id.0)
+                }
+                (Some(name), None) => name.clone(),
+                (None, Some(id)) => format!("agent {}", id.0),
+                (None, None) => "unknown agent".into(),
+            },
+            None => "unknown agent".into(),
+        };
+        content.extend(crate::prompts::text(format!("Message from {sender}:\n")));
+    }
+    content.extend(message.content.clone());
+    content
 }
 
 #[cfg(test)]

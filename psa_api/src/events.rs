@@ -76,6 +76,7 @@ pub enum EventType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageType {
+    Subagent,
     Human,
     Agent,
     Harness,
@@ -84,6 +85,8 @@ pub enum MessageType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::AgentMessageSource>,
     pub message_type: MessageType,
     pub content: Vec<ContentBlock>,
     pub metadata: HistoryItemMetadata,
@@ -92,6 +95,7 @@ pub struct Message {
 impl Message {
     pub fn text(message_type: MessageType, contents: impl Into<String>) -> Self {
         Self {
+            source: None,
             message_type,
             content: vec![ContentBlock::Text(TextBlock {
                 text: contents.into(),

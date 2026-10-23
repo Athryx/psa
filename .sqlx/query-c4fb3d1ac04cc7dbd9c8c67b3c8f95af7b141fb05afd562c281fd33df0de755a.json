@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE agents SET subagent_parent_id = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "c4fb3d1ac04cc7dbd9c8c67b3c8f95af7b141fb05afd562c281fd33df0de755a"
+}

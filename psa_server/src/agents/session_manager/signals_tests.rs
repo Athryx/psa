@@ -12,6 +12,10 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with_bundles(Vec::new()).await
+    }
+
+    async fn with_bundles(bundles: Vec<psa_api::BundleId>) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let db = Database::open(directory.path().join("signals.sqlite3"))
             .await
@@ -21,6 +25,7 @@ impl Fixture {
         let definition = cursor
             .create_agent_definition(psa_api::CreateAgentDefinition {
                 name: "signals".into(),
+                bundles,
                 ..Default::default()
             })
             .await
@@ -39,6 +44,7 @@ impl Fixture {
             .create_agent(
                 session.id,
                 NewAgent {
+                    subagent_parent_id: None,
                     name: "signals".into(),
                     definition_id: definition.id,
                     interactive: false,
@@ -536,4 +542,252 @@ async fn worker_error_or_panic_reports_one_safe_failure_per_active_run() {
         );
         fixture.close().await;
     }
+}
+
+#[tokio::test]
+async fn subagent_steering_resolves_sender_and_shares_level_triggered_waits() {
+    let mut fixture = Fixture::new().await;
+    fixture.add_worker();
+    let mut signal = fixture
+        .manager
+        .subscribe_steering(fixture.session, fixture.agent)
+        .await
+        .unwrap();
+    fixture
+        .manager
+        .submit(
+            fixture.session,
+            fixture.agent,
+            AgentRequest::SubagentMessage {
+                source: Some(psa_api::AgentMessageSource {
+                    agent_id: Some(fixture.agent),
+                    name: Some("wrong name".into()),
+                }),
+                content: crate::prompts::text("hello"),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(*signal.borrow_and_update(), Some(true));
+    let BoundaryReply::Work(request) = fixture.boundary(AgentState::Idle).await else {
+        panic!("expected work")
+    };
+    assert_eq!(request.delivery, MessageDelivery::Steer);
+    assert_eq!(request.message_type, MessageType::Subagent);
+    assert_eq!(request.source.unwrap().name.as_deref(), Some("signals"));
+    assert_eq!(*signal.borrow_and_update(), Some(false));
+    assert!(fixture.manager.workers[&fixture.agent].queue.is_empty());
+}
+
+#[tokio::test]
+async fn subagent_steering_rejects_missing_and_cross_session_senders() {
+    let mut fixture = Fixture::new().await;
+    fixture.add_worker();
+    let mut cursor = fixture.manager.db.cursor().await.unwrap();
+    let fork = cursor
+        .fork_session(
+            fixture.session,
+            crate::sessions::SessionFork {
+                point: crate::sessions::ForkPoint::Head,
+                metadata: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+    cursor.commit().await.unwrap();
+    for source in [AgentId(u32::MAX.into()), fork.agents[0].1.id] {
+        let result = fixture
+            .manager
+            .submit(
+                fixture.session,
+                fixture.agent,
+                AgentRequest::SubagentMessage {
+                    source: Some(psa_api::AgentMessageSource {
+                        agent_id: Some(source),
+                        name: None,
+                    }),
+                    content: crate::prompts::text("hello"),
+                },
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(fixture.manager.workers[&fixture.agent].queue.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn background_reports_cannot_restart_parent_even_if_interrupted_after_acceptance() {
+    let mut fixture = Fixture::new().await;
+    fixture.add_worker();
+    let request = AgentRequest::SubagentMessage {
+        source: None,
+        content: crate::prompts::text("report"),
+    };
+    fixture
+        .manager
+        .submit_request(fixture.session, fixture.agent, request.clone(), false)
+        .await
+        .unwrap();
+    assert!(matches!(
+        fixture.boundary(AgentState::Interrupted).await,
+        BoundaryReply::Stop
+    ));
+    assert!(fixture.manager.workers[&fixture.agent].queue.is_empty());
+
+    let mut cursor = fixture.manager.db.cursor().await.unwrap();
+    cursor
+        .add_events(
+            fixture.agent,
+            &[NewEvent::new(EventType::StatusChange(
+                psa_api::events::StatusChange {
+                    new_status: AgentState::Interrupted,
+                    reason: None,
+                },
+            ))],
+        )
+        .await
+        .unwrap();
+    cursor.commit().await.unwrap();
+    assert!(
+        fixture
+            .manager
+            .submit_request(fixture.session, fixture.agent, request.clone(), false)
+            .await
+            .is_err()
+    );
+    // Explicit messages retain normal steering's ability to resume the parent.
+    fixture
+        .manager
+        .workers
+        .get_mut(&fixture.agent)
+        .unwrap()
+        .stopping = false;
+    fixture
+        .manager
+        .submit(fixture.session, fixture.agent, request)
+        .await
+        .unwrap();
+    assert!(matches!(
+        fixture.boundary(AgentState::Interrupted).await,
+        BoundaryReply::Work(_)
+    ));
+}
+
+#[tokio::test]
+async fn completion_hook_reports_children_without_bundle_and_preserves_outcomes() {
+    use crate::components::hooks::subagent_completion::SubagentCompletion;
+    let mut fixture = Fixture::with_bundles(vec![psa_api::BundleId::Subagents]).await;
+    let mut cursor = fixture.manager.db.cursor().await.unwrap();
+    let definition = cursor
+        .create_agent_definition(psa_api::CreateAgentDefinition {
+            name: "plain child".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let child = cursor
+        .create_agent(
+            fixture.session,
+            NewAgent {
+                subagent_parent_id: Some(fixture.agent),
+                definition_id: definition.id,
+                name: "child".into(),
+                interactive: false,
+            },
+        )
+        .await
+        .unwrap();
+    cursor.commit().await.unwrap();
+    for (outcome, expected) in [
+        (AgentRunOutcome::Completed, "answer"),
+        (AgentRunOutcome::Interrupted, "Agent interrupted"),
+        (
+            AgentRunOutcome::Failed {
+                message: "failure".into(),
+            },
+            "Agent failed: failure",
+        ),
+    ] {
+        let sessions = fixture.manager.sessions.clone();
+        let report = SubagentCompletion.run(
+            &sessions,
+            AgentLifecycleEvent::Finished {
+                session_id: fixture.session,
+                agent_id: child.id,
+                run_id: "run".into(),
+                outcome,
+                final_text: Some("answer".into()),
+            },
+        );
+        let receive = async {
+            let ManagerCommand::SubmitIfNotInterrupted {
+                session,
+                agent,
+                request,
+                reply,
+            } = fixture.manager.received.recv().await.unwrap()
+            else {
+                panic!("expected report")
+            };
+            assert_eq!(session, fixture.session);
+            assert_eq!(agent, fixture.agent);
+            let AgentRequest::SubagentMessage { source, content } = request else {
+                panic!("expected attributed message")
+            };
+            assert_eq!(source.unwrap().agent_id, Some(child.id));
+            assert!(
+                matches!(&content[0], llm_api::api::ContentBlock::Text(text) if text.text == expected)
+            );
+            reply
+                .send(Ok(RequestAccepted {
+                    request_id: "report".into(),
+                }))
+                .unwrap();
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(report, receive);
+        })
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn starting_plain_child_restores_parent_bundle_lifecycle_callbacks() {
+    let mut fixture = Fixture::with_bundles(vec![psa_api::BundleId::Subagents]).await;
+    let mut cursor = fixture.manager.db.cursor().await.unwrap();
+    let definition = cursor
+        .create_agent_definition(psa_api::CreateAgentDefinition {
+            name: "plain child after restart".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let child = cursor
+        .create_agent(
+            fixture.session,
+            NewAgent {
+                subagent_parent_id: Some(fixture.agent),
+                definition_id: definition.id,
+                name: "child".into(),
+                interactive: false,
+            },
+        )
+        .await
+        .unwrap();
+    cursor.commit().await.unwrap();
+    assert!(fixture.manager.session_resources.is_empty());
+    fixture
+        .manager
+        .spawn_worker(child.id, fixture.session, VecDeque::new(), VecDeque::new())
+        .await
+        .unwrap();
+    assert!(
+        fixture
+            .manager
+            .session_resources
+            .contains_key(&fixture.session)
+    );
+    fixture.manager.cleanup_session_resources().await;
+    assert!(!fixture.manager.cleanup_failed);
 }

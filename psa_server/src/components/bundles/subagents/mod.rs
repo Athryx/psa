@@ -63,7 +63,7 @@ impl Bundle for SubagentsBundle {
         )))?;
         installer.add_hook(
             HookStage::BeforeRequest,
-            HookKind::SubagentIdentity(SubagentIdentity::with_handle(handle)),
+            HookKind::SubagentIdentity(SubagentIdentity::default()),
         );
         Ok(())
     }

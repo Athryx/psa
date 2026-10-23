@@ -48,7 +48,7 @@ pub enum BundleId {
     Bash,
     /// Installs interactive goal tools and a goal-aware stopping policy.
     Goal,
-    /// Installs agent-group tools backed by session-shared coordination.
+    /// Installs session-wide agent tools backed by core ancestry and steering.
     Subagents,
 }
 
@@ -165,7 +165,10 @@ pub struct Agent {
     pub id: AgentId,
     pub definition_id: AgentDefinitionId,
     pub session_id: SessionId,
+    /// Fork lineage; independent of subagent ancestry.
     pub parent_id: Option<AgentId>,
+    #[serde(default)]
+    pub subagent_parent_id: Option<AgentId>,
     pub name: String,
     pub interactive: bool,
     pub state: AgentState,
@@ -220,11 +223,22 @@ pub struct ForkedSession {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateAgent {
+    /// Immutable parent in the same session, established before agent startup.
+    #[serde(default)]
+    pub subagent_parent_id: Option<AgentId>,
     pub definition_id: AgentDefinitionId,
     pub name: String,
     /// Metadata for tools and hooks; does not change runtime behavior.
     #[serde(default)]
     pub interactive: bool,
+}
+
+/// Sender attribution for a subagent message. Names are snapshots at submission.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMessageSource {
+    pub agent_id: Option<AgentId>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,6 +252,12 @@ pub enum MessageDelivery {
 #[serde(deny_unknown_fields)]
 pub enum AgentRequest {
     Interrupt,
+    /// An attributed message delivered using ordinary steering semantics.
+    SubagentMessage {
+        content: Vec<ContentBlock>,
+        #[serde(default)]
+        source: Option<AgentMessageSource>,
+    },
     Message {
         delivery: MessageDelivery,
         content: Vec<ContentBlock>,

@@ -1,4 +1,4 @@
-use super::{finish, prepare};
+use super::{format_tool_output, require_coordinator};
 use crate::{
     agents::{Agent, agent_context::AgentContext},
     components::{
@@ -37,7 +37,7 @@ impl WaitMessage {
     pub(crate) fn definition() -> ToolDefinition {
         ToolDefinition::for_type::<WaitMessageArgs>(
             "wait_message",
-            "Wait for a message in your agent group; timeout is seconds, default 120, maximum 600. Refuses when nobody else can make progress.",
+            "Wait for steering in this session; timeout is seconds, default 120, maximum 600. Refuses when nobody else in the session can make progress.",
             Some(false),
         )
     }
@@ -51,12 +51,12 @@ impl WaitMessage {
         if !timeout.is_finite() || timeout <= 0.0 || timeout > 600.0 {
             return ToolOutput::error(prompts::text("timeout must be >0 and <=600 seconds"));
         }
-        let handle = match prepare(&self.handle, context).await {
+        let handle = match require_coordinator(&self.handle, context) {
             Ok(handle) => handle,
             Err(error) => return ToolOutput::error(prompts::text(error)),
         };
         let result = handle.wait(context, timeout, cancellation).await;
-        finish(&handle, context, result).await
+        format_tool_output(result)
     }
 }
 impl Tool for WaitMessage {

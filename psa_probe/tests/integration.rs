@@ -305,6 +305,7 @@ async fn startup_reads_remote_skill_metadata_in_configured_order() {
             .create_agent(
                 session.id,
                 &psa_api::CreateAgent {
+                    subagent_parent_id: None,
                     interactive: false,
                     name: "remote reader".into(),
                     definition_id: definition.id,

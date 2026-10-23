@@ -1,4 +1,4 @@
-use super::{finish, prepare};
+use super::{format_tool_output, require_coordinator};
 use crate::{
     agents::{Agent, agent_context::AgentContext},
     components::{
@@ -10,8 +10,10 @@ use crate::{
     sessions::Session,
 };
 use llm_api::api::ToolDefinition;
+use psa_api::AgentMessageSource;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde_json::json;
 use std::time::Duration;
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -32,7 +34,7 @@ impl SendMessage {
     pub(crate) fn definition() -> ToolDefinition {
         ToolDefinition::for_type::<SendMessageArgs>(
             "send_message",
-            "Send attributed steering context to an agent in your own group. Resumes idle agents in their existing session.",
+            "Send attributed steering context to another agent in this session. Resumes idle agents.",
             Some(false),
         )
     }
@@ -40,21 +42,60 @@ impl SendMessage {
         &self,
         args: SendMessageArgs,
         context: &mut AgentContext<'_>,
-        cancellation: Cancellation,
+        mut cancellation: Cancellation,
     ) -> ToolOutput {
-        let handle = match prepare(&self.handle, context).await {
+        let handle = match require_coordinator(&self.handle, context) {
             Ok(handle) => handle,
             Err(error) => return ToolOutput::error(prompts::text(error)),
         };
-        let result = handle
-            .send(
-                context.agent().id,
-                args.agent_name,
-                args.message,
-                cancellation,
-            )
-            .await;
-        finish(&handle, context, result).await
+        let SendMessageArgs {
+            agent_name: name,
+            message,
+        } = args;
+        if message.trim().is_empty() {
+            return ToolOutput::error(prompts::text("message must be nonempty"));
+        }
+
+        let caller = context.agent().id;
+        let operation = async {
+            let _guard = handle.begin_operation()?;
+            let agents = context
+                .sessions()
+                .list_agents(context.session().id)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut matches = agents.iter().filter(|agent| agent.name == name);
+            let target = matches
+                .next()
+                .ok_or_else(|| format!("Unknown agent in session: {name}"))?;
+            if matches.next().is_some() {
+                return Err(format!("Ambiguous agent name in session: {name}"));
+            }
+            if target.id == caller {
+                return Err("Self-messaging is not supported".into());
+            }
+
+            let accepted = context
+                .sessions()
+                .send_subagent_message(
+                    context.session().id,
+                    target.id,
+                    Some(AgentMessageSource {
+                        agent_id: Some(caller),
+                        name: None,
+                    }),
+                    crate::prompts::text(message),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(json!({"status": "queued", "request_id": accepted.request_id}))
+        };
+        let result = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err("Message send cancelled".into()),
+            result = operation => result,
+        };
+        format_tool_output(result)
     }
 }
 impl Tool for SendMessage {

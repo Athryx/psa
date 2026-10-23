@@ -32,22 +32,10 @@ fn text(result: &wire::ToolResult) -> String {
         .collect()
 }
 
-fn assert_group_wait(result: &wire::events::ToolResult) {
+fn assert_steering_wait(result: &wire::events::ToolResult) {
     assert!(!result.error, "{}", text(&result.content));
     let value: Value = serde_json::from_str(&text(&result.content)).unwrap();
-    assert!(matches!(
-        value["status"].as_str(),
-        Some("received" | "steering_available")
-    ));
-    if value["status"] == "received" {
-        assert!(
-            value["messages"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|message| message["from"] == "worker-one")
-        );
-    }
+    assert_eq!(value["status"], "steering_available");
 }
 
 #[tokio::test]
@@ -83,6 +71,7 @@ async fn goal_continues_after_a_final_answer_and_stops_after_explicit_completion
         .create_agent(
             session.id,
             &CreateAgent {
+                subagent_parent_id: None,
                 interactive: true,
                 name: "main".into(),
                 definition_id: definition.id,
@@ -193,6 +182,7 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
         .create_agent(
             session.id,
             &CreateAgent {
+                subagent_parent_id: None,
                 interactive: true,
                 name: "main".into(),
                 definition_id: definition.id,
@@ -217,6 +207,7 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
         "subagent parentage must not be stored as fork ancestry"
     );
     assert_eq!(child.definition_id, worker.id);
+    assert_eq!(child.subagent_parent_id, Some(parent.id));
     assert_eq!(child.state, AgentState::Idle);
     let page = harness
         .client
@@ -244,9 +235,9 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
         .iter()
         .find(|result| result.call_id == "wait-child")
         .unwrap();
-    assert_group_wait(wait);
+    assert_steering_wait(wait);
     assert!(page.events.iter().any(|event| matches!(&event.event.kind,
-        EventType::Message(message) if text(&message.content).contains("Message from worker-one") && text(&message.content).contains("hello"))));
+        EventType::Message(message) if message.message_type == MessageType::Subagent && message.source.as_ref().and_then(|source| source.agent_id) == Some(child.id) && text(&message.content).contains("hello"))));
     for _ in 0..3 {
         tokio::time::timeout(Duration::from_secs(5), harness.requests.recv())
             .await
@@ -305,14 +296,14 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
             _ => None,
         })
         .unwrap();
-    assert_group_wait(resumed_wait);
+    assert_steering_wait(resumed_wait);
     let child_page = harness
         .client
         .events(session.id, Some(child.id), &Default::default())
         .await
         .unwrap();
     assert!(child_page.events.iter().any(|event| matches!(&event.event.kind,
-        EventType::Message(message) if message.message_type == MessageType::Human && text(&message.content).contains("Run a second task"))));
+        EventType::Message(message) if message.message_type == MessageType::Subagent && message.source.as_ref().and_then(|source| source.agent_id) == Some(parent.id) && text(&message.content).contains("Run a second task"))));
     for _ in 0..3 {
         tokio::time::timeout(Duration::from_secs(5), harness.requests.recv())
             .await
@@ -363,6 +354,7 @@ async fn subagent_creation_checks_permitted_definitions_without_creating_a_child
         .create_agent(
             session.id,
             &CreateAgent {
+                subagent_parent_id: None,
                 interactive: true,
                 name: "main".into(),
                 definition_id: definition.id,
@@ -387,5 +379,92 @@ async fn subagent_creation_checks_permitted_definitions_without_creating_a_child
         .unwrap();
     assert!(page.events.iter().any(|event| matches!(&event.event.kind,
         EventType::ToolResult(result) if result.call_id == "not-allowed" && result.error)));
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn subagent_tools_list_and_message_unrelated_roots_in_the_same_session() {
+    let harness = Harness::start(vec![
+        Script::Calls(&[
+            ("list-session", "list_agents", r#"{"all":true}"#),
+            (
+                "send-peer",
+                "send_message",
+                r#"{"agent_name":"peer","message":"hello peer"}"#,
+            ),
+        ]),
+        Script::Text,
+        Script::Text,
+    ])
+    .await;
+    let definition = harness
+        .client
+        .create_agent_definition(&CreateAgentDefinition {
+            name: "messenger".into(),
+            bundles: vec![BundleId::Subagents],
+            hooks: hooks(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let session = create_session(&harness).await;
+    let parent = harness
+        .client
+        .create_agent(
+            session.id,
+            &CreateAgent {
+                subagent_parent_id: None,
+                definition_id: definition.id,
+                name: "main".into(),
+                interactive: false,
+            },
+        )
+        .await
+        .unwrap();
+    let peer = harness
+        .client
+        .create_agent(
+            session.id,
+            &CreateAgent {
+                subagent_parent_id: None,
+                definition_id: wire::AgentDefinitionId(1),
+                name: "peer".into(),
+                interactive: false,
+            },
+        )
+        .await
+        .unwrap();
+    harness.wait_stopped(session.id).await;
+    harness
+        .client
+        .submit_request(session.id, parent.id, &message(MessageDelivery::Steer))
+        .await
+        .unwrap();
+    harness.wait_stopped(session.id).await;
+    let page = harness
+        .client
+        .events(session.id, Some(parent.id), &Default::default())
+        .await
+        .unwrap();
+    let list = page
+        .events
+        .iter()
+        .find_map(|event| match &event.event.kind {
+            EventType::ToolResult(result) if result.call_id == "list-session" => Some(result),
+            _ => None,
+        })
+        .unwrap();
+    assert!(!list.error, "{}", text(&list.content));
+    let members: Value = serde_json::from_str(&text(&list.content)).unwrap();
+    assert_eq!(members.as_array().unwrap().len(), 2);
+    let page = harness
+        .client
+        .events(session.id, Some(peer.id), &Default::default())
+        .await
+        .unwrap();
+    assert!(page.events.iter().any(|event| matches!(&event.event.kind,
+        EventType::Message(message) if message.message_type == MessageType::Subagent
+            && message.source.as_ref().and_then(|source| source.agent_id) == Some(parent.id)
+            && text(&message.content) == "hello peer")));
     harness.close().await;
 }

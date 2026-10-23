@@ -3,7 +3,10 @@ use super::{
     CleanupError,
     subagents::{CoordinatorRuntime, SubagentCoordinator},
 };
-use crate::agents::{lifecycle::AgentLifecycleEvent, sessions::Sessions};
+use crate::agents::{
+    lifecycle::{AgentLifecycleEvent, SessionLifecycleHook},
+    sessions::Sessions,
+};
 use psa_api::SessionId;
 
 #[derive(Clone)]
@@ -17,12 +20,17 @@ impl SessionBundleHandle {
 }
 
 pub struct SessionBundleResources {
+    lifecycle_hooks: Vec<Box<dyn SessionLifecycleHook>>,
     subagents: CoordinatorRuntime,
 }
 impl SessionBundleResources {
     pub fn start(session: SessionId, sessions: Sessions) -> Self {
+        let subagents = CoordinatorRuntime::start(session, sessions);
+        let lifecycle_hooks: Vec<Box<dyn SessionLifecycleHook>> =
+            vec![Box::new(subagents.handle())];
         Self {
-            subagents: CoordinatorRuntime::start(session, sessions),
+            subagents,
+            lifecycle_hooks,
         }
     }
     pub fn handle(&self) -> SessionBundleHandle {
@@ -31,7 +39,9 @@ impl SessionBundleResources {
         }
     }
     pub(crate) fn notify(&self, event: AgentLifecycleEvent) {
-        self.subagents.notify(event);
+        for hook in &self.lifecycle_hooks {
+            hook.notify(event.clone());
+        }
     }
     pub async fn cleanup(&mut self) -> Result<(), CleanupError> {
         self.subagents.cleanup().await

@@ -210,6 +210,7 @@ impl Harness {
             .create_agent(
                 session.id,
                 &wire::CreateAgent {
+                    subagent_parent_id: None,
                     interactive: false,
                     name: "agent".into(),
                     definition_id: wire::AgentDefinitionId(1),
@@ -266,6 +267,7 @@ async fn interactive_metadata_survives_http_create_get_list_and_fork() {
         .create_agent(
             session.id,
             &wire::CreateAgent {
+                subagent_parent_id: None,
                 name: "interactive".into(),
                 definition_id: wire::AgentDefinitionId(1),
                 interactive: true,
@@ -418,6 +420,7 @@ async fn definition_client_routes_preserve_versions_and_explicit_hook_configurat
         .create_agent(
             session.id,
             &wire::CreateAgent {
+                subagent_parent_id: None,
                 interactive: false,
                 name: "pinned".into(),
                 definition_id: original.id,
@@ -493,6 +496,7 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
             .create_agent(
                 session.id,
                 &wire::CreateAgent {
+                    subagent_parent_id: None,
                     interactive: false,
                     name: name.into(),
                     definition_id: definition.id,
@@ -732,6 +736,7 @@ async fn busy_queries_track_all_workers_and_request_ids_ignore_generations() {
             .create_agent(
                 session.id,
                 &wire::CreateAgent {
+                    subagent_parent_id: None,
                     interactive: false,
                     name: "second".into(),
                     definition_id: wire::AgentDefinitionId(1),
@@ -1153,6 +1158,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
         .create_agent(
             session.id,
             NewAgent {
+                subagent_parent_id: None,
                 interactive: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "agent".into(),
@@ -1328,6 +1334,7 @@ async fn persistence_failure_does_not_mutate_worker_memory() {
         .create_agent(
             session.id,
             NewAgent {
+                subagent_parent_id: None,
                 interactive: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "agent".into(),
@@ -1363,4 +1370,131 @@ async fn persistence_failure_does_not_mutate_worker_memory() {
     cursor.rollback().await.unwrap();
     connection.close().await.unwrap();
     db.close().await;
+}
+
+#[tokio::test]
+async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http_and_sse() {
+    let mut harness = Harness::start(vec![Script::Text]).await;
+    let (session, parent) = harness.create_agent().await;
+    let child = harness
+        .client
+        .create_agent(
+            session.id,
+            &wire::CreateAgent {
+                subagent_parent_id: Some(parent.id),
+                definition_id: parent.definition_id,
+                name: "plain-child".into(),
+                interactive: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(child.subagent_parent_id, Some(parent.id));
+    assert_eq!(child.parent_id, None);
+    harness.wait_stopped(session.id).await;
+    let mut stream = harness
+        .client
+        .stream_events(session.id, Some(child.id), &Default::default(), None)
+        .await
+        .unwrap();
+    while !matches!(
+        stream.next().await.unwrap().unwrap().message,
+        StreamMessage::Snapshot { .. }
+    ) {}
+    harness
+        .client
+        .send_subagent_message(
+            session.id,
+            child.id,
+            Some(wire::AgentMessageSource {
+                agent_id: Some(parent.id),
+                name: Some("untrusted display name".into()),
+            }),
+            psa_server::prompts::text("inspect this"),
+        )
+        .await
+        .unwrap();
+    let request = tokio::time::timeout(Duration::from_secs(5), harness.requests.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let rendered = serde_json::to_string(&request["messages"]).unwrap();
+    assert!(rendered.contains("Message from agent (agent "));
+    assert!(rendered.contains("inspect this"));
+    assert!(!rendered.contains("untrusted display name"));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let StreamMessage::Committed { event, .. } =
+                stream.next().await.unwrap().unwrap().message
+            else {
+                continue;
+            };
+            let EventType::Message(message) = event.event.kind else {
+                continue;
+            };
+            if message.message_type == MessageType::Subagent {
+                assert_eq!(
+                    message.source.unwrap(),
+                    wire::AgentMessageSource {
+                        agent_id: Some(parent.id),
+                        name: Some(parent.name.clone()),
+                    }
+                );
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    drop(stream);
+    harness.wait_stopped(session.id).await;
+    let loaded = harness
+        .client
+        .get_agent(session.id, child.id)
+        .await
+        .unwrap();
+    assert_eq!(loaded.subagent_parent_id, Some(parent.id));
+    assert!(
+        harness
+            .client
+            .list_agents(session.id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|agent| agent.id == child.id && agent.subagent_parent_id == Some(parent.id))
+    );
+    let page = harness
+        .client
+        .events(session.id, Some(child.id), &Default::default())
+        .await
+        .unwrap();
+    assert!(page.events.iter().any(|event| matches!(&event.event.kind, EventType::Message(message) if message.message_type == MessageType::Subagent && message.source.as_ref().and_then(|source| source.agent_id) == Some(parent.id))));
+    let fork = harness
+        .client
+        .fork_session(
+            session.id,
+            &wire::ForkSession {
+                point: wire::ForkPoint::Head,
+                metadata: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let copied_parent = fork
+        .agents
+        .iter()
+        .find(|(id, _)| *id == parent.id)
+        .unwrap()
+        .1
+        .id;
+    let copied_child = &fork
+        .agents
+        .iter()
+        .find(|(id, _)| *id == child.id)
+        .unwrap()
+        .1;
+    assert_eq!(copied_child.subagent_parent_id, Some(copied_parent));
+    assert_eq!(copied_child.parent_id, Some(child.id));
+    harness.wait_stopped(fork.session.id).await;
+    harness.close().await;
 }

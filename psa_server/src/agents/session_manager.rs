@@ -9,7 +9,10 @@ use super::{
     sessions::Sessions,
 };
 use crate::{
-    components::bundles::{InstalledComponents, session::SessionBundleResources},
+    components::bundles::{
+        InstalledComponents,
+        session::{SessionBundleHandle, SessionBundleResources},
+    },
     db::{Database, DbError},
     probes::ProbeRegistry,
     providers::ProviderRegistry,
@@ -132,6 +135,9 @@ pub(crate) struct QueuedRequest {
     pub id: String,
     pub delivery: MessageDelivery,
     pub content: Vec<llm_api::api::ContentBlock>,
+    pub message_type: MessageType,
+    pub source: Option<psa_api::AgentMessageSource>,
+    pub allow_restart: bool,
 }
 
 pub(crate) enum LifecycleHook {
@@ -163,6 +169,14 @@ pub(crate) enum ManagerCommand {
     },
     /// Validate and enqueue an agent request, starting its worker if needed.
     Submit {
+        session: SessionId,
+        agent: AgentId,
+        request: AgentRequest,
+        #[reply]
+        reply: oneshot::Sender<Result<RequestAccepted, RuntimeError>>,
+    },
+    /// Conditional steering for background hooks; never restarts a stopped agent.
+    SubmitIfNotInterrupted {
         session: SessionId,
         agent: AgentId,
         request: AgentRequest,
@@ -579,6 +593,15 @@ impl SessionManager {
             ManagerCommand::IsBusy { session, reply } => {
                 let _ = reply.send(self.is_busy(session));
             }
+            ManagerCommand::SubmitIfNotInterrupted {
+                session,
+                agent,
+                request,
+                reply,
+            } => {
+                let result = self.submit_request(session, agent, request, false).await;
+                let _ = reply.send(result);
+            }
             ManagerCommand::SubscribeSteering {
                 session,
                 agent,
@@ -666,10 +689,16 @@ impl SessionManager {
 
         let mut rejected = Vec::new();
         worker.queue.retain(|request| {
-            let is_valid =
-                request.delivery != MessageDelivery::Resume || state == AgentState::Interrupted;
+            let is_valid = (request.delivery != MessageDelivery::Resume
+                || state == AgentState::Interrupted)
+                && (request.allow_restart || state != AgentState::Interrupted);
             if !is_valid {
-                rejected.push(request.id.clone());
+                let reason = if !request.allow_restart && state == AgentState::Interrupted {
+                    "background message cannot restart an interrupted agent"
+                } else {
+                    "resume requires an interrupted agent"
+                };
+                rejected.push((request.id.clone(), reason));
             }
             is_valid
         });
@@ -716,7 +745,7 @@ impl SessionManager {
         }
         let _ = reply.send(response);
 
-        for request_id in rejected {
+        for (request_id, reason) in rejected {
             self.publication
                 .lock()
                 .await
@@ -724,7 +753,7 @@ impl SessionManager {
                     session_id: session,
                     agent_id: agent,
                     request_id,
-                    message: "resume requires an interrupted agent".into(),
+                    message: reason.into(),
                 });
         }
     }
@@ -735,15 +764,66 @@ impl SessionManager {
         agent: AgentId,
         request: AgentRequest,
     ) -> Result<RequestAccepted, RuntimeError> {
+        self.submit_request(session, agent, request, true).await
+    }
+
+    async fn submit_request(
+        &mut self,
+        session: SessionId,
+        agent: AgentId,
+        request: AgentRequest,
+        allow_restart: bool,
+    ) -> Result<RequestAccepted, RuntimeError> {
         if self.shutting_down {
             return Err(RuntimeError::Unavailable);
         }
 
         let mut cursor = self.db.cursor().await?;
         let snapshot = cursor.require_agent_session(session, agent).await?;
+        if !allow_restart && snapshot.state == AgentState::Interrupted {
+            return Err(RuntimeError::Invalid(
+                "background message cannot restart an interrupted agent".into(),
+            ));
+        }
         let context = cursor.load_context_window(agent).await?;
         let definition = cursor.get_agent_definition(snapshot.definition_id).await?;
         let session_snapshot = cursor.get_session(session).await?;
+
+        let (delivery, content, message_type, source) = match request {
+            AgentRequest::Message { delivery, content } => {
+                (delivery, content, MessageType::Human, None)
+            }
+            AgentRequest::SubagentMessage {
+                content,
+                mut source,
+            } => {
+                if let Some(source) = &mut source
+                    && let Some(id) = source.agent_id
+                {
+                    source.name = Some(cursor.require_agent_session(session, id).await?.name);
+                }
+                (
+                    MessageDelivery::Steer,
+                    content,
+                    MessageType::Subagent,
+                    source,
+                )
+            }
+            AgentRequest::Interrupt => {
+                cursor.rollback().await?;
+                if let Some(worker) = self.workers.get(&agent) {
+                    let _ = worker.controls.interrupt();
+                }
+                return Ok(RequestAccepted {
+                    request_id: psa_api::probes::Uuid::new_v4().to_string(),
+                });
+            }
+        };
+        if content.is_empty() {
+            return Err(RuntimeError::Invalid(
+                "message content must not be empty".into(),
+            ));
+        }
         cursor.rollback().await?;
 
         let id = format!(
@@ -752,16 +832,10 @@ impl SessionManager {
             self.next_request_id
         );
         self.next_request_id += 1;
-        let AgentRequest::Message { delivery, content } = request else {
-            if let Some(worker) = self.workers.get(&agent) {
-                let _ = worker.controls.interrupt();
-            }
-            return Ok(RequestAccepted { request_id: id });
-        };
-
         if delivery == MessageDelivery::Resume && snapshot.state != AgentState::Interrupted {
             return Err(RuntimeError::InvalidResume);
         }
+
         // Creation hooks may still be queued when the first request arrives.
         // Validate its provider without making startup initialization implicit.
         let model = context
@@ -793,6 +867,9 @@ impl SessionManager {
                 id: id.clone(),
                 delivery,
                 content,
+                message_type,
+                source,
+                allow_restart,
             });
 
         self.refresh_steering(agent);
@@ -861,6 +938,54 @@ impl SessionManager {
         Ok(())
     }
 
+    async fn ensure_components(
+        &mut self,
+        state: &AgentManagerState,
+    ) -> Result<Arc<Mutex<InstalledComponents>>, RuntimeError> {
+        let agent = state.agent();
+        if let Some(components) = self.components.get(&agent.id) {
+            return Ok(Arc::clone(components));
+        }
+
+        let mut needs_subagents = state
+            .definition()
+            .bundles
+            .contains(&psa_api::BundleId::Subagents);
+        if let Some(parent) = agent.subagent_parent_id {
+            let parent = self.sessions.get_agent(agent.session_id, parent).await?;
+            let definition = self
+                .sessions
+                .get_agent_definition(parent.definition_id)
+                .await?;
+            needs_subagents |= definition.bundles.contains(&psa_api::BundleId::Subagents);
+        }
+        let resources = needs_subagents.then(|| self.ensure_session_resources(agent.session_id));
+
+        let components = Arc::new(Mutex::new(
+            state
+                .install_components_with_session(resources.as_ref())
+                .await?,
+        ));
+        self.components.insert(agent.id, Arc::clone(&components));
+        Ok(components)
+    }
+
+    fn ensure_session_resources(&mut self, session: SessionId) -> SessionBundleHandle {
+        let resources = self.session_resources.entry(session).or_insert_with(|| {
+            let resources = SessionBundleResources::start(session, self.sessions.clone());
+            // A bundle may be installed after other session agents started.
+            for (agent_id, run) in self.runs.iter().filter(|(_, run)| run.session == session) {
+                resources.notify(AgentLifecycleEvent::Started {
+                    session_id: session,
+                    agent_id: *agent_id,
+                    run_id: run.id.clone(),
+                });
+            }
+            resources
+        });
+        resources.handle()
+    }
+
     async fn spawn_worker(
         &mut self,
         agent: AgentId,
@@ -871,30 +996,7 @@ impl SessionManager {
         let mut state =
             AgentManagerState::load_persisted(self.db.clone(), self.publication.clone(), agent)
                 .await?;
-        let components = match self.components.get(&agent) {
-            Some(components) => Arc::clone(components),
-            None => {
-                let resources = if state
-                    .definition()
-                    .bundles
-                    .contains(&psa_api::BundleId::Subagents)
-                {
-                    let resource = self.session_resources.entry(session).or_insert_with(|| {
-                        SessionBundleResources::start(session, self.sessions.clone())
-                    });
-                    Some(resource.handle())
-                } else {
-                    None
-                };
-                let components = Arc::new(Mutex::new(
-                    state
-                        .install_components_with_session(resources.as_ref())
-                        .await?,
-                ));
-                self.components.insert(agent, Arc::clone(&components));
-                components
-            }
-        };
+        let components = self.ensure_components(&state).await?;
         state.attach_components(components).await;
 
         let generation = self.next_generation;

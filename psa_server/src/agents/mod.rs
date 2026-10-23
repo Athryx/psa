@@ -36,6 +36,7 @@ pub struct Agent {
     pub session_id: SessionId,
     pub definition_id: AgentDefinitionId,
     pub parent_id: Option<AgentId>,
+    pub subagent_parent_id: Option<AgentId>,
     pub first_event_id: EventId,
     pub next_event_id: EventId,
     pub created_position: u64,
@@ -54,6 +55,7 @@ impl From<Agent> for psa_api::Agent {
             session_id: agent.session_id,
             definition_id: agent.definition_id,
             parent_id: agent.parent_id,
+            subagent_parent_id: agent.subagent_parent_id,
             name: agent.name,
             interactive: agent.interactive,
             state: agent.state,
@@ -67,6 +69,7 @@ impl From<Agent> for psa_api::Agent {
 
 #[derive(Debug, Clone)]
 pub struct NewAgent {
+    pub subagent_parent_id: Option<AgentId>,
     pub definition_id: AgentDefinitionId,
     pub name: String,
     pub interactive: bool,

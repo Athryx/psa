@@ -24,3 +24,9 @@ pub(crate) enum AgentLifecycleEvent {
         final_text: Option<String>,
     },
 }
+
+/// Session-scoped bundle callbacks receive ordered logical lifecycle notifications.
+/// Implementations enqueue work; they must not block the supervisor or await RPCs.
+pub(crate) trait SessionLifecycleHook: Send + Sync {
+    fn notify(&self, event: AgentLifecycleEvent);
+}

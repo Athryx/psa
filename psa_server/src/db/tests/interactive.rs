@@ -11,6 +11,7 @@ async fn interactive_round_trips_reloads_and_is_inherited_by_forks() {
             .create_agent(
                 session.id,
                 NewAgent {
+                    subagent_parent_id: None,
                     definition_id: psa_api::AgentDefinitionId(1),
                     name: format!("interactive-{interactive}"),
                     interactive,

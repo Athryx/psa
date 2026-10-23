@@ -100,6 +100,7 @@ let definition = client.create_agent_definition(&CreateAgentDefinition {
     ..Default::default()
 }).await?;
 let agent = client.create_agent(session.id, &CreateAgent {
+    subagent_parent_id: None,
     interactive: false,
     definition_id: definition.id,
     name: "Main".into(),
@@ -161,10 +162,10 @@ creating children; the trusted-client administration API remains unrestricted. U
 Definitions also persist ordered `bundles`, defaulting to `[]`.
 `BundleId::FileTools` installs `Read`, `Edit`, and `Write`; `BundleId::Bash`
 installs `Bash`, `InteractBash`, and `CloseBash`. `Goal` installs interactive
-`SetGoal`/`SetGoalStatus` plus stopping policy. `Subagents` installs group creation,
+`SetGoal`/`SetGoalStatus` plus stopping policy. `Subagents` installs child creation,
 messaging, waiting, and listing backed by session-shared actor resources. These
 tool groups require their bundle. See `../docs/GOALS_AND_SUBAGENTS.md` for setup,
-fixed limits, append-only goal semantics, and checkpoint/recovery limitations. Bundles install in list order before explicit tools/hooks; independent
+core ancestry, append-only goal semantics, and delivery/recovery limitations. Bundles install in list order before explicit tools/hooks; independent
 explicit configuration remains supported. Duplicate bundle IDs, tool IDs, or tool
 names are rejected during component installation. The session manager retains
 owners and instances by agent ID across worker retirement/failure. Forked agents
@@ -344,6 +345,7 @@ let definition = cursor.create_agent_definition(psa_api::CreateAgentDefinition {
     ..Default::default()
 }).await?;
 let agent = cursor.create_agent(session.id, NewAgent {
+    subagent_parent_id: None,
     interactive: false,
     definition_id: definition.id,
     name: "Main".into(),

@@ -683,6 +683,7 @@ mod tests {
             .create_agent(
                 session.id,
                 NewAgent {
+                    subagent_parent_id: None,
                     interactive: false,
                     name: "test".into(),
                     definition_id: api::AgentDefinitionId(1),
