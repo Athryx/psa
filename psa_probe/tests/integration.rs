@@ -47,7 +47,8 @@ impl Harness {
         let server = tokio::spawn(psa_server::server::serve_with_probe_registry(
             listener,
             database,
-            ProviderRegistry::default(),
+            ProviderRegistry::default()
+                .with_catalog_source(psa_server::models::CatalogSource::new(&base).unwrap()),
             registry.clone(),
             async {
                 let _ = stopped.await;

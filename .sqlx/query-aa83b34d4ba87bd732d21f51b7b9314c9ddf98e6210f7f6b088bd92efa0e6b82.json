@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT p.event_pk, p.inference_id, p.model_provider, p.model_name, p.model_effort, p.max_output_tokens, p.tool_choice, p.parallel_tool_calls FROM event_inference_result_start p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+  "query": "SELECT p.event_pk, p.inference_id, p.model_provider, p.model_name, p.model_effort, p.max_output_tokens, p.tool_choice, p.parallel_tool_calls, p.reasoning FROM event_inference_result_start p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
   "describe": {
     "columns": [
       {
@@ -90,6 +90,17 @@
             "name": "parallel_tool_calls"
           }
         }
+      },
+      {
+        "name": "reasoning",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_start",
+            "name": "reasoning"
+          }
+        }
       }
     ],
     "parameters": {
@@ -103,8 +114,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "e28908c81099992d89ccd0e023462616dc695ac570a1d2be21ca4cfe93599964"
+  "hash": "aa83b34d4ba87bd732d21f51b7b9314c9ddf98e6210f7f6b088bd92efa0e6b82"
 }

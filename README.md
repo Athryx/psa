@@ -268,3 +268,7 @@ Tests use temporary databases and loopback listeners, not provider credentials o
 your default data directory. Set `RUST_LOG=psa_server=debug,psa_probe=debug` for more
 runtime logging. See the server README for regenerating `.sqlx/` metadata after
 schema or query changes; always use a disposable database for that workflow.
+
+Model discovery is available through `/providers` and `/models`, including
+persistent pins, authenticated-provider filters, and four-hour Pi catalog sync.
+See [the model API](psa_api/API_OVERVIEW.md#providers-and-models).

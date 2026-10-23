@@ -89,6 +89,46 @@ impl Client {
         Ok(response.json().await?)
     }
 
+    pub async fn list_providers(&self) -> Result<Vec<crate::ProviderInfo>, ClientError> {
+        self.get(routes::PROVIDERS, &()).await
+    }
+
+    pub async fn list_models(
+        &self,
+        query: &crate::ListModels,
+    ) -> Result<Vec<crate::ModelInfo>, ClientError> {
+        self.get(routes::MODELS, query).await
+    }
+
+    pub async fn model_info(
+        &self,
+        config: &llm_api::providers::ModelConfig,
+    ) -> Result<crate::ModelInfo, ClientError> {
+        self.get(
+            routes::MODEL_LOOKUP,
+            &crate::ModelLookup {
+                provider: config.provider,
+                model: config.model.api_name.clone(),
+            },
+        )
+        .await
+    }
+
+    pub async fn set_model_pinned(
+        &self,
+        request: &crate::PinModel,
+    ) -> Result<Option<crate::ModelInfo>, ClientError> {
+        self.send(Method::PUT, routes::MODEL_PIN, request).await
+    }
+
+    pub async fn resync_models(
+        &self,
+        request: &crate::ResyncModels,
+    ) -> Result<Vec<crate::ModelSyncResult>, ClientError> {
+        self.send(Method::POST, routes::MODELS_RESYNC, request)
+            .await
+    }
+
     pub async fn list_probes(&self) -> Result<Vec<crate::Probe>, ClientError> {
         self.get(routes::PROBES, &()).await
     }

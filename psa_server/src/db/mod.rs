@@ -4,6 +4,7 @@ mod agent_definitions;
 mod agents;
 mod error;
 mod events;
+mod models;
 mod payloads;
 mod probes;
 mod queries;

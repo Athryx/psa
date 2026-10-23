@@ -22,6 +22,7 @@ pub struct Sessions {
     publication: Publication,
     pub(crate) commands: ManagerClient,
     queries: ClientQueriesHandle,
+    catalog: Option<crate::models::ModelCatalog>,
 }
 
 impl Sessions {
@@ -36,7 +37,17 @@ impl Sessions {
             publication,
             commands,
             queries,
+            catalog: None,
         }
+    }
+
+    pub(crate) fn with_catalog(mut self, catalog: Option<crate::models::ModelCatalog>) -> Self {
+        self.catalog = catalog;
+        self
+    }
+
+    pub fn model_catalog(&self) -> Option<&crate::models::ModelCatalog> {
+        self.catalog.as_ref()
     }
 
     pub(crate) fn client_queries(&self) -> &ClientQueriesHandle {

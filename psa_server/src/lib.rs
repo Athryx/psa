@@ -5,6 +5,7 @@ pub mod components;
 pub mod config;
 pub mod db;
 pub mod http;
+pub mod models;
 pub mod prompts;
 pub mod providers;
 pub mod server;

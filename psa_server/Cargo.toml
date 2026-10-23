@@ -28,8 +28,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 futures-util = "0.3"
 async-stream = "0.3"
+reqwest = { version = "0.13.5", features = ["json"] }
 
 [dev-dependencies]
-reqwest = { version = "0.13.5", features = ["json"] }
+tokio = { version = "1", features = ["test-util"] }
 tempfile = "3"
 tokio-tungstenite = "0.29"

@@ -102,11 +102,24 @@ pub enum HttpError {
     ClientQuery(#[from] ClientQueryError),
     #[error("{0}")]
     Invalid(String),
+    #[error(transparent)]
+    Catalog(#[from] crate::models::CatalogError),
 }
 
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
+            Self::Catalog(crate::models::CatalogError::NotFound) => {
+                (StatusCode::NOT_FOUND, "not_found", self.to_string())
+            }
+            Self::Catalog(crate::models::CatalogError::Invalid(_)) => {
+                (StatusCode::BAD_REQUEST, "invalid_input", self.to_string())
+            }
+            Self::Catalog(crate::models::CatalogError::Unavailable) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                self.to_string(),
+            ),
             Self::ClientQuery(
                 ClientQueryError::InvalidRequest(_) | ClientQueryError::InvalidResponse(_),
             ) => (StatusCode::BAD_REQUEST, "invalid_input", self.to_string()),
@@ -190,8 +203,65 @@ pub fn router(state: AppState) -> Router {
         .route(routes::CLIENT_QUERY_RESPONSE, post(respond_to_client_query))
         .route(routes::SESSION_EVENTS, get(session_events))
         .route(routes::AGENT_EVENTS, get(agent_events))
+        .route(routes::PROVIDERS, get(list_providers))
+        .route(routes::MODELS, get(list_models))
+        .route(routes::MODEL_LOOKUP, get(lookup_model))
+        .route(routes::MODEL_PIN, axum::routing::put(pin_model))
+        .route(routes::MODELS_RESYNC, post(resync_models))
         .merge(crate::probes::router())
         .with_state(state)
+}
+
+fn require_catalog(state: &AppState) -> Result<&crate::models::ModelCatalog, HttpError> {
+    state
+        .runtime
+        .model_catalog()
+        .ok_or_else(|| crate::models::CatalogError::Unavailable.into())
+}
+
+async fn list_providers(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<api::ProviderInfo>>, HttpError> {
+    Ok(Json(require_catalog(&state)?.providers()))
+}
+
+async fn list_models(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<api::ListModels>,
+) -> Result<Json<Vec<api::ModelInfo>>, HttpError> {
+    Ok(Json(require_catalog(&state)?.list_models(query).await?))
+}
+
+async fn lookup_model(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<api::ModelLookup>,
+) -> Result<Json<api::ModelInfo>, HttpError> {
+    let model = llm_api::providers::Model::new(query.model)
+        .map_err(|error| HttpError::Invalid(error.to_string()))?;
+    Ok(Json(
+        require_catalog(&state)?
+            .lookup(query.provider, &model)
+            .await?
+            .ok_or(crate::models::CatalogError::NotFound)?,
+    ))
+}
+
+async fn pin_model(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<api::PinModel>,
+) -> Result<Json<Option<api::ModelInfo>>, HttpError> {
+    state.require_accepting()?;
+    Ok(Json(require_catalog(&state)?.set_pinned(request).await?))
+}
+
+async fn resync_models(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<api::ResyncModels>,
+) -> Result<Json<Vec<api::ModelSyncResult>>, HttpError> {
+    state.require_accepting()?;
+    Ok(Json(
+        require_catalog(&state)?.resync(request.provider).await?,
+    ))
 }
 
 async fn create_agent_definition(

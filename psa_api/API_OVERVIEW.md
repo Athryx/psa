@@ -233,3 +233,66 @@ to WebSocket. Invalid auth returns 401, incompatible versions/metadata return
 Session creation requires `probe_id`, referencing a registered probe. It is
 returned in session responses, remains fixed, and is inherited on fork. No
 remote-operation HTTP endpoints are exposed yet: use server-side probe handles.
+
+## Providers and models
+
+`GET /providers` returns all providers PSA supports (`Openrouter` and
+`OpenAiCodex`), with `id`, display `name`, and `authed`. Authentication means a
+credential is configured in the running server; it does not verify token validity,
+model entitlement, or account balance. Credentials never appear in responses.
+
+`GET /models` returns a `ModelInfo[]`. Optional `provider`, `authed`, and `pinned`
+query parameters combine with AND. Omitted filters include both values; for
+example `/models?provider=Openrouter&authed=true&pinned=true` lists pinned
+OpenRouter models when OpenRouter credentials are configured. `authed=false`
+selects models whose provider has no configured credentials.
+
+Each entry contains `provider`, `model: { api_name }`, display `name`,
+`input_modalities`, optional `context_window` and `max_output_tokens`, `cost`,
+`reasoning`, `reasoning_options`, live `authed`, persisted `pinned`, and RFC 3339
+`refreshed_at`. Cost values are reference USD per million tokens: `input`,
+`output`, `cache_read`, and `cache_write`; null means unknown, and zero means
+free in the upstream catalog. Optional pricing tiers contain `input_tokens_above`
+and the rates applicable above that threshold. These are not guaranteed charges
+or subscription pricing. `reasoning_options` lists selectable `effort` values
+and their resolved `wire_effort`; null wire effort omits reasoning parameters.
+
+`GET /models/lookup?provider=Openrouter&model=vendor%2Fmodel` returns one entry,
+or 404 when unknown. Model names are query values so slash-containing IDs work.
+`Client::model_info(&ModelConfig)` performs this lookup using provider/model
+identity; the requested reasoning effort does not alter the lookup key.
+
+`PUT /models/pin` accepts:
+
+```json
+{"provider":"Openrouter","model":{"api_name":"vendor/model"},"pinned":true}
+```
+
+It returns the updated entry. Pins are server-wide and survive restarts and
+catalog refreshes. Pinning an unknown model returns 404. Unpinning is idempotent;
+it returns JSON null if that model has disappeared. Models removed upstream no
+longer appear in lists, but their saved pins apply if they reappear later.
+
+`POST /models/resync` accepts `{}` for all providers or
+`{"provider":"Openrouter"}` for one. It bypasses the freshness interval, waits
+for network revalidation, and returns per-provider `{provider, success, error}`
+results. HTTP 200 may contain individual failures; successful providers still
+update. Concurrent scheduled/manual refreshes share each provider's in-flight
+request, and disconnecting a caller does not cancel shared work.
+
+The server fetches Pi's public chat catalogs on missing/stale startup and every
+four hours, using ETags. Successful snapshots replace a provider's catalog
+atomically. A 304 refreshes its timestamp without replacing metadata. Failures
+preserve the last good catalog. No model data is bundled: a new database returns
+an empty list until its first successful sync. Reads and inference never fetch
+remote metadata. The Rust client exposes `list_providers`, `list_models`,
+`model_info`, `set_model_pinned`, and `resync_models`.
+
+`Effort` now accepts `Off` and `Minimal` alongside `Low`, `Medium`, `High`,
+`Xhigh`, and `Max`. Before inference, known model metadata resolves mappings
+(such as Minimal to Low) and rejects unsupported choices with the supported
+settings. There is no silent clamping. The configured effort stays unchanged;
+the resolved setting is stored in `InferenceResultStart.request_config.reasoning`
+as `Omit` or `{"Effort":"Low"}`. Off is encoded as `none` on the provider wire.
+For unknown models, existing inference behavior and protocol effort defaults
+remain available. No token verification, login, or token refresh is added.

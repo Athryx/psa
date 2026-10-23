@@ -650,6 +650,7 @@ async fn validation_fails_before_http() {
     ));
 
     let options = RequestConfig {
+        reasoning: None,
         max_output_tokens: Some(0),
         ..RequestConfig::default()
     };

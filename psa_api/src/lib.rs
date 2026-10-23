@@ -3,11 +3,13 @@
 pub mod client;
 pub mod client_queries;
 pub mod events;
+pub mod models;
 pub mod routes;
 mod types;
 
 pub use client::{Client, ClientError, EventStream, StreamEvent};
 pub use client_queries::*;
+pub use models::*;
 pub use types::*;
 
 #[cfg(test)]

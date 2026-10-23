@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO event_inference_result_start (event_pk,inference_id,model_provider,model_name,model_effort,max_output_tokens,tool_choice,parallel_tool_calls,reasoning) VALUES (?,?,?,?,?,?,?,?,?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "149cbfac3ca7855cea3acd3a5e5908d38888d5fc9de94a29ed76c493a5adf5d7"
+}

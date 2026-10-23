@@ -8,6 +8,14 @@ through `AgentContext::query_client`; see `../docs/CLIENT_QUERIES.md` for the
 runtime-owned query registry, SSE snapshots, and response endpoint. Native Goal
 and Subagents bundles are documented in `../docs/GOALS_AND_SUBAGENTS.md`.
 
+Provider discovery and model metadata are available through `/providers` and
+`/models`. The server stores Pi-derived chat catalogs in SQLite, refreshes them
+in the background every four hours, and supports forced refresh, persistent pins,
+and filtering by configured credentials. See
+[`../psa_api/API_OVERVIEW.md`](../psa_api/API_OVERVIEW.md#providers-and-models)
+for routes, metadata fields, and catalog-aware reasoning behavior. A fresh database
+has no models until its first successful sync; no baseline catalog is bundled.
+
 Start the server from the workspace root:
 
 ```sh

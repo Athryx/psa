@@ -24,8 +24,9 @@ use super::transport::{
 use super::{
     AgentHistory, Annotation, ApiProvider, ContentBlock, ContentDelta, HistoryItem,
     HistoryItemKind, HistoryItemMetadata, ImageDetail, ItemUpdate, MediaSource, Message,
-    ModelResponse, ModelTurnStream, Outcome, ProviderOpaqueData, Reasoning, RefusalBlock,
-    RequestConfig, Role, StopReason, TextBlock, ToolCall, ToolChoice, TurnEvent, validate_request,
+    ModelResponse, ModelTurnStream, Outcome, ProviderOpaqueData, Reasoning, ReasoningOverride,
+    RefusalBlock, RequestConfig, Role, StopReason, TextBlock, ToolCall, ToolChoice, TurnEvent,
+    validate_request,
 };
 
 /// Wire-dialect settings, independent of the client's provider identity.
@@ -124,13 +125,6 @@ fn build_request_body(
 ) -> Result<Value, Error> {
     // Also protect direct generate_unvalidated callers; all checks precede HTTP.
     validate_request(history, provider, config)?;
-    if !adapter_config.openrouter_reasoning_fields
-        && history.config.effort == crate::providers::Effort::Max
-    {
-        return Err(unsupported(
-            "max reasoning effort in standard Chat Completions",
-        ));
-    }
     let mut messages = Vec::new();
 
     append_messages(&history.items, &mut messages, provider, adapter_config)?;
@@ -141,10 +135,21 @@ fn build_request_body(
         "stream": true,
         "stream_options": {"include_usage": true},
     });
-    if adapter_config.openrouter_reasoning_fields {
-        body["reasoning"] = json!({"effort": history.config.effort.as_str()});
-    } else {
-        body["reasoning_effort"] = json!(history.config.effort.as_str());
+    let reasoning = config
+        .reasoning
+        .clone()
+        .unwrap_or(ReasoningOverride::Effort(history.config.effort));
+    if let Some(effort) = reasoning.wire_effort() {
+        if !adapter_config.openrouter_reasoning_fields && effort == "max" {
+            return Err(unsupported(
+                "max reasoning effort in standard Chat Completions",
+            ));
+        }
+        if adapter_config.openrouter_reasoning_fields {
+            body["reasoning"] = json!({"effort": effort});
+        } else {
+            body["reasoning_effort"] = json!(effort);
+        }
     }
     if let Some(limit) = config.max_output_tokens {
         body["max_completion_tokens"] = json!(limit);
@@ -1516,6 +1521,7 @@ mod tests {
             .items
             .extend([result("a"), result("b"), message(Role::User, "new")]);
         let config = RequestConfig {
+            reasoning: None,
             max_output_tokens: Some(99),
             parallel_tool_calls: Some(false),
             tool_choice: Some(ToolChoice::Function {
@@ -2149,5 +2155,47 @@ mod tests {
             ),
             Err(Error::Unsupported { .. })
         ));
+    }
+
+    #[test]
+    fn openrouter_reasoning_uses_resolved_efforts_or_omits_the_parameter() {
+        let history = AgentHistory::new(ModelConfig {
+            provider: ProviderType::Openrouter,
+            model: Model::new("vendor/test").unwrap(),
+            effort: Effort::Minimal,
+        });
+        let dialect = OpenAiCompletionsConfig {
+            openrouter_reasoning_fields: true,
+        };
+        for (effort, wire) in [
+            (Effort::Off, "none"),
+            (Effort::Minimal, "minimal"),
+            (Effort::Low, "low"),
+            (Effort::Medium, "medium"),
+            (Effort::High, "high"),
+            (Effort::Xhigh, "xhigh"),
+            (Effort::Max, "max"),
+        ] {
+            let config = RequestConfig {
+                reasoning: Some(ReasoningOverride::Effort(effort)),
+                ..Default::default()
+            };
+            let body =
+                build_request_body(&history, &config, ProviderType::Openrouter, dialect).unwrap();
+            assert_eq!(body["reasoning"]["effort"], wire);
+            assert_eq!(history.config.effort, Effort::Minimal);
+        }
+        let body = build_request_body(
+            &history,
+            &RequestConfig {
+                reasoning: Some(ReasoningOverride::Omit),
+                ..Default::default()
+            },
+            ProviderType::Openrouter,
+            dialect,
+        )
+        .unwrap();
+        assert!(body.get("reasoning").is_none());
+        assert!(body.get("reasoning_effort").is_none());
     }
 }

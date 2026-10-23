@@ -104,9 +104,6 @@ fn require_provider(expected: ProviderType, actual: ProviderType) -> Result<(), 
 }
 
 fn build_request_body(history: &AgentHistory, config: &RequestConfig) -> Result<Value, Error> {
-    if history.config.effort == crate::providers::Effort::Max {
-        return Err(unsupported("max reasoning effort in the Responses API"));
-    }
     for tool in &history.tools {
         super::schema::validate_tool(tool)?;
     }
@@ -119,8 +116,15 @@ fn build_request_body(history: &AgentHistory, config: &RequestConfig) -> Result<
         "stream": true,
         "store": false,
         "include": ["reasoning.encrypted_content"],
-        "reasoning": {"effort": history.config.effort.as_str()},
     });
+
+    let reasoning = config
+        .reasoning
+        .clone()
+        .unwrap_or(ReasoningOverride::Effort(history.config.effort));
+    if let Some(effort) = reasoning.wire_effort() {
+        body["reasoning"] = json!({"effort": effort});
+    }
 
     if let Some(limit) = config.max_output_tokens {
         body["max_output_tokens"] = json!(limit);
@@ -1529,6 +1533,7 @@ mod tests {
         });
         history.items.push(message(Role::User, "new input"));
         let config = RequestConfig {
+            reasoning: None,
             max_output_tokens: Some(123),
             parallel_tool_calls: Some(false),
             tool_choice: Some(ToolChoice::Function {
@@ -2132,13 +2137,13 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_effort_and_invalid_schemas_fail_before_http() {
+    fn extended_efforts_and_invalid_schemas_are_handled_before_http() {
         let mut history = AgentHistory::new(model());
         history.config.effort = Effort::Max;
-        assert!(matches!(
-            build_request_body(&history, &RequestConfig::default()),
-            Err(Error::Unsupported { .. })
-        ));
+        assert_eq!(
+            build_request_body(&history, &RequestConfig::default()).unwrap()["reasoning"]["effort"],
+            "max"
+        );
         history.config.effort = Effort::Xhigh;
         assert_eq!(
             build_request_body(&history, &RequestConfig::default()).unwrap()["reasoning"]["effort"],
@@ -2340,5 +2345,40 @@ mod tests {
         )
         .unwrap();
         assert_eq!(client.clone().provider_type(), PROVIDER);
+    }
+
+    #[test]
+    fn resolves_all_efforts_without_changing_the_requested_config() {
+        let history = AgentHistory::new(ModelConfig {
+            provider: ProviderType::OpenAiCodex,
+            model: Model::new("test").unwrap(),
+            effort: Effort::Minimal,
+        });
+        for (effort, wire) in [
+            (Effort::Off, "none"),
+            (Effort::Minimal, "minimal"),
+            (Effort::Low, "low"),
+            (Effort::Medium, "medium"),
+            (Effort::High, "high"),
+            (Effort::Xhigh, "xhigh"),
+            (Effort::Max, "max"),
+        ] {
+            let config = RequestConfig {
+                reasoning: Some(ReasoningOverride::Effort(effort)),
+                ..Default::default()
+            };
+            let body = build_request_body(&history, &config).unwrap();
+            assert_eq!(body["reasoning"]["effort"], wire);
+            assert_eq!(history.config.effort, Effort::Minimal);
+        }
+        let body = build_request_body(
+            &history,
+            &RequestConfig {
+                reasoning: Some(ReasoningOverride::Omit),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(body.get("reasoning").is_none());
     }
 }

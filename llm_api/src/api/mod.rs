@@ -66,6 +66,9 @@ pub use types::*;
 /// Unset options use provider/model defaults.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RequestConfig {
+    /// Catalog-resolved wire behavior, independent of the requested ModelConfig.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningOverride>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -73,6 +76,22 @@ pub struct RequestConfig {
     /// Allows multiple tool calls in one response, not concurrent execution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReasoningOverride {
+    Omit,
+    Effort(crate::providers::Effort),
+}
+
+impl ReasoningOverride {
+    pub(crate) fn wire_effort(&self) -> Option<&'static str> {
+        match self {
+            Self::Omit => None,
+            Self::Effort(crate::providers::Effort::Off) => Some("none"),
+            Self::Effort(effort) => Some(effort.as_str()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

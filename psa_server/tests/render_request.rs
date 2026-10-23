@@ -95,6 +95,7 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
         .unwrap();
         let request = state
             .prepare_request(RequestConfig {
+                reasoning: None,
                 max_output_tokens: Some(42),
                 ..Default::default()
             })

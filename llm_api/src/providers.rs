@@ -1,12 +1,21 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderType {
     OpenAiCodex,
     Openrouter,
 }
 
 impl ProviderType {
+    pub const ALL: [Self; 2] = [Self::OpenAiCodex, Self::Openrouter];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAiCodex => "openai_codex",
+            Self::Openrouter => "openrouter",
+        }
+    }
+
     /// API root, without the operation-specific `/responses` or
     /// `/chat/completions` path. Codex uses the ChatGPT subscription endpoint,
     /// not the separately billed OpenAI platform API.
@@ -70,6 +79,8 @@ impl Model {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Effort {
+    Off,
+    Minimal,
     Low,
     Medium,
     High,
@@ -80,6 +91,8 @@ pub enum Effort {
 impl Effort {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",

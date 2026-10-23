@@ -137,6 +137,10 @@ impl Harness {
         let (fake_stop, stopped) = watch::channel(false);
         let app = Router::new()
             .route("/inference", post(inference))
+            .route(
+                "/api/models/providers/{provider}",
+                axum::routing::get(|| async { Json(json!([])) }),
+            )
             .with_state(Fake {
                 scripts: Arc::new(Mutex::new(scripts.into())),
                 requests,
@@ -159,7 +163,10 @@ impl Harness {
             OpenAiCompletionsConfig::default(),
         )
         .unwrap();
-        let providers = ProviderRegistry::new(vec![Provider::Completions(provider)]);
+        let providers = ProviderRegistry::new(vec![Provider::Completions(provider)])
+            .with_catalog_source(
+                psa_server::models::CatalogSource::new(&format!("http://{fake_address}")).unwrap(),
+            );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (stop, stopped) = oneshot::channel();

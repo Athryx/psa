@@ -294,7 +294,7 @@ impl AgentManagerState {
         controls: &mut UnboundedMailbox<AgentManagerMessage>,
         invocation: &str,
     ) -> Result<(), AgentError> {
-        let request = self.context.prepare_request(RequestConfig::default())?;
+        let mut request = self.context.prepare_request(RequestConfig::default())?;
         let provider = providers
             .provider(request.history.config.provider)
             .ok_or_else(|| llm_api::Error::InvalidRequest {
@@ -303,13 +303,19 @@ impl AgentManagerState {
 
         let started = Instant::now();
         let mut response = ModelResponse::default_for_model(request.history.config.clone());
-        let generated = tokio::select! {
-            biased;
-            _ = wait_for_interrupt(&mut self.session, controls) => {
-                response.outcome = Outcome::Cancelled;
-                None
+        let generated = match providers.resolve_reasoning(&request.history.config).await {
+            Err(error) => Some(Err(error)),
+            Ok(reasoning) => {
+                request.config.reasoning = reasoning;
+                tokio::select! {
+                    biased;
+                    _ = wait_for_interrupt(&mut self.session, controls) => {
+                        response.outcome = Outcome::Cancelled;
+                        None
+                    }
+                    generated = provider.generate(&request.history, &request.config) => Some(generated),
+                }
             }
-            generated = provider.generate(&request.history, &request.config) => Some(generated),
         };
         match generated {
             Some(Ok(stream)) => {

@@ -26,6 +26,8 @@ pub enum ServerError {
     Auth(#[from] AuthError),
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
+    #[error(transparent)]
+    Catalog(#[from] crate::models::CatalogError),
 }
 
 pub async fn start(config: ResolvedConfig) -> Result<(), ServerError> {
@@ -93,6 +95,13 @@ pub async fn serve_with_probe_registry(
     probes: crate::probes::ProbeRegistry,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
+    let mut catalog = crate::models::ModelCatalogRuntime::start(
+        database.clone(),
+        &providers,
+        providers.catalog_source(),
+    )
+    .await?;
+    let providers = providers.with_catalog(catalog.handle.clone());
     let publication = Publication::default();
     let runtime = Runtime::start(
         database.clone(),
@@ -128,6 +137,7 @@ pub async fn serve_with_probe_registry(
     accepting.store(false, Ordering::Release);
     // Bundles may own remote resources; keep probes connected while workers and
     // retained bundle owners finish their bounded cleanup.
+    let catalog_cleanup = catalog.shutdown().await;
     let cleanup = runtime.shutdown().await;
     probes.shutdown().await;
     publication.close();
@@ -142,6 +152,7 @@ pub async fn serve_with_probe_registry(
     database.close().await;
     result?;
     cleanup?;
+    catalog_cleanup?;
     Ok(())
 }
 

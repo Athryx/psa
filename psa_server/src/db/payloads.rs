@@ -52,6 +52,8 @@ fn parse_model(provider: &str, model: String, effort: &str) -> Result<ModelConfi
         },
         model: Model::new(model).map_err(|error| DbError::Corrupt(error.to_string()))?,
         effort: match effort {
+            "off" => Effort::Off,
+            "minimal" => Effort::Minimal,
             "low" => Effort::Low,
             "medium" => Effort::Medium,
             "high" => Effort::High,
@@ -304,6 +306,12 @@ pub(super) async fn insert_payload(
                 ProviderType::Openrouter => "openrouter",
             };
             let effort = value.model_config.effort.as_str();
+            let reasoning = value
+                .request_config
+                .reasoning
+                .as_ref()
+                .map(serialize_json)
+                .transpose()?;
             let max_output_tokens = value
                 .request_config
                 .max_output_tokens
@@ -317,7 +325,7 @@ pub(super) async fn insert_payload(
                 .transpose()?;
 
             sqlx::query!(
-                "INSERT INTO event_inference_result_start (event_pk,inference_id,model_provider,model_name,model_effort,max_output_tokens,tool_choice,parallel_tool_calls) VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO event_inference_result_start (event_pk,inference_id,model_provider,model_name,model_effort,max_output_tokens,tool_choice,parallel_tool_calls,reasoning) VALUES (?,?,?,?,?,?,?,?,?)",
                 pk,
                 id,
                 provider,
@@ -325,7 +333,8 @@ pub(super) async fn insert_payload(
                 effort,
                 max_output_tokens,
                 tool_choice,
-                value.request_config.parallel_tool_calls
+                value.request_config.parallel_tool_calls,
+                reasoning
             )
             .execute(&mut *conn)
             .await?;
@@ -512,7 +521,7 @@ pub(super) async fn load_payloads(
         })
     );
     load!(
-        "SELECT p.event_pk, p.inference_id, p.model_provider, p.model_name, p.model_effort, p.max_output_tokens, p.tool_choice, p.parallel_tool_calls FROM event_inference_result_start p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+        "SELECT p.event_pk, p.inference_id, p.model_provider, p.model_name, p.model_effort, p.max_output_tokens, p.tool_choice, p.parallel_tool_calls, p.reasoning FROM event_inference_result_start p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
         |r| EventType::InferenceResultStart(InferenceResultStart {
             id: decode_integer(r.inference_id)?,
             model_config: parse_model(
@@ -526,6 +535,7 @@ pub(super) async fn load_payloads(
                     .ok_or_else(|| DbError::Corrupt("result start has no model effort".into()))?
             )?,
             request_config: api::RequestConfig {
+                reasoning: r.reasoning.as_deref().map(parse_json).transpose()?,
                 max_output_tokens: r.max_output_tokens.map(decode_integer).transpose()?,
                 tool_choice: r.tool_choice.as_deref().map(parse_json).transpose()?,
                 parallel_tool_calls: r.parallel_tool_calls.map(|v| v != 0)

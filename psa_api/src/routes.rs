@@ -1,5 +1,11 @@
 use crate::{AgentDefinitionId, AgentId, ClientQueryId, SessionId};
 
+pub const PROVIDERS: &str = "/providers";
+pub const MODELS: &str = "/models";
+pub const MODEL_LOOKUP: &str = "/models/lookup";
+pub const MODEL_PIN: &str = "/models/pin";
+pub const MODELS_RESYNC: &str = "/models/resync";
+
 pub const AGENT_DEFINITIONS: &str = "/agent-definitions";
 pub const AGENT_DEFINITION: &str = "/agent-definitions/{definition_id}";
 

@@ -89,9 +89,16 @@ async fn migrated_server_serves_health_and_shuts_down_cleanly() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (stop, wait) = tokio::sync::oneshot::channel();
-        let server = tokio::spawn(psa_server::server::serve(listener, database, async {
-            let _ = wait.await;
-        }));
+        let server = tokio::spawn(psa_server::server::serve_with_providers(
+            listener,
+            database,
+            psa_server::providers::ProviderRegistry::default().with_catalog_source(
+                psa_server::models::CatalogSource::new(&format!("http://{address}")).unwrap(),
+            ),
+            async {
+                let _ = wait.await;
+            },
+        ));
         let mut stream = TcpStream::connect(address).await.unwrap();
         stream
             .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")

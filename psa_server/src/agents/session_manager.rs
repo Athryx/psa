@@ -94,7 +94,8 @@ impl Runtime {
             publication.clone(),
             commands.clone(),
             client_queries.handle(),
-        );
+        )
+        .with_catalog(providers.catalog().cloned());
         let manager = SessionManager {
             db,
             publication,

@@ -17,6 +17,7 @@ mod cursor;
 mod definitions;
 mod file_tools;
 mod interactive;
+mod models;
 mod subagents;
 mod usage;
 
@@ -162,6 +163,7 @@ async fn round_trips_all_payloads_and_reopens_database() {
             id: 4,
             model_config: model(),
             request_config: api::RequestConfig {
+                reasoning: None,
                 max_output_tokens: Some(100),
                 tool_choice: Some(api::ToolChoice::Function {
                     name: "noop".into(),

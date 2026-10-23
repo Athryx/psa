@@ -10,11 +10,52 @@ use std::path::Path;
 #[derive(Clone, Default)]
 pub struct ProviderRegistry {
     providers: Vec<Provider>,
+    catalog: Option<crate::models::ModelCatalog>,
+    catalog_source: Option<crate::models::CatalogSource>,
 }
 
 impl ProviderRegistry {
     pub fn new(providers: Vec<Provider>) -> Self {
-        Self { providers }
+        Self {
+            providers,
+            catalog: None,
+            catalog_source: None,
+        }
+    }
+
+    pub fn with_catalog_source(mut self, source: crate::models::CatalogSource) -> Self {
+        self.catalog_source = Some(source);
+        self
+    }
+
+    pub(crate) fn catalog_source(&self) -> crate::models::CatalogSource {
+        self.catalog_source
+            .clone()
+            .unwrap_or_else(crate::models::CatalogSource::pi)
+    }
+
+    pub(crate) fn with_catalog(mut self, catalog: crate::models::ModelCatalog) -> Self {
+        self.catalog = Some(catalog);
+        self
+    }
+
+    pub(crate) fn catalog(&self) -> Option<&crate::models::ModelCatalog> {
+        self.catalog.as_ref()
+    }
+
+    pub(crate) async fn resolve_reasoning(
+        &self,
+        config: &llm_api::providers::ModelConfig,
+    ) -> Result<Option<llm_api::api::ReasoningOverride>, llm_api::Error> {
+        let Some(catalog) = &self.catalog else {
+            return Ok(None);
+        };
+        catalog
+            .resolve_reasoning(config)
+            .await
+            .map_err(|error| llm_api::Error::InvalidRequest {
+                message: error.to_string(),
+            })
     }
 
     pub fn provider(&self, kind: ProviderType) -> Option<Provider> {
@@ -54,7 +95,7 @@ impl ProviderRegistry {
             }
         }
 
-        Ok(Self { providers })
+        Ok(Self::new(providers))
     }
 }
 
