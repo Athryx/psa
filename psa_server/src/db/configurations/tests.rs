@@ -246,6 +246,87 @@ async fn missing_prunes_restoration_and_mutable_skill_identity() {
 }
 
 #[tokio::test]
+async fn single_model_defaults_are_normalized_for_api_and_discovered_registration() {
+    let (directory, db) = database().await;
+    let mut cursor = db.cursor().await.unwrap();
+    let mut api = config("single-api", &[]);
+    api.default = false;
+    let mut multiple = config("multiple-api", &[]);
+    multiple.models = vec![ModelSelection::Global, ModelSelection::Parent];
+    multiple.default = false;
+    let registered = cursor
+        .upsert_agent_configs(vec![api.clone(), multiple])
+        .await
+        .unwrap();
+    assert!(registered[0].config.default);
+    assert!(!registered[1].config.default);
+    assert!(
+        !api.default,
+        "registration must not mutate the caller's input"
+    );
+
+    let mut discovered = config("single-discovered", &[]);
+    discovered.models = vec![ModelSelection::Parent];
+    discovered.default = false;
+    let mut discovered_multiple = config("multiple-discovered", &[]);
+    discovered_multiple.models = vec![ModelSelection::Global, ModelSelection::Parent];
+    discovered_multiple.default = false;
+    cursor
+        .replace_discovered_group(
+            &ConfigGroup::Global,
+            vec![discovered, discovered_multiple],
+            vec![],
+        )
+        .await
+        .unwrap();
+    assert!(
+        cursor
+            .get_agent_config(&id("single-discovered"))
+            .await
+            .unwrap()
+            .config
+            .default
+    );
+    assert!(
+        !cursor
+            .get_agent_config(&id("multiple-discovered"))
+            .await
+            .unwrap()
+            .config
+            .default
+    );
+    cursor.commit().await.unwrap();
+    db.close().await;
+
+    let reopened = Database::open(directory.path().join("registry.sqlite3"))
+        .await
+        .unwrap();
+    let mut cursor = reopened.cursor().await.unwrap();
+    for name in ["single-api", "single-discovered"] {
+        assert!(
+            cursor
+                .get_agent_config(&id(name))
+                .await
+                .unwrap()
+                .config
+                .default
+        );
+    }
+    for name in ["multiple-api", "multiple-discovered"] {
+        assert!(
+            !cursor
+                .get_agent_config(&id(name))
+                .await
+                .unwrap()
+                .config
+                .default
+        );
+    }
+    cursor.rollback().await.unwrap();
+    reopened.close().await;
+}
+
+#[tokio::test]
 async fn atomic_batches_group_precedence_and_discovery_ownership() {
     let (_dir, db) = database().await;
     let mut cursor = db.cursor().await.unwrap();
@@ -387,8 +468,8 @@ async fn unchanged_leaf_reused_and_pinned_creation_does_not_advance_edges() {
     assert_ne!(first.definition.id, second.definition.id);
     assert_eq!(first.references.subagents, second.references.subagents);
     let selected = Some(ModelConfig {
-        model: llm_api::providers::Model::new("test").unwrap(),
-        provider: llm_api::providers::ProviderType::Openrouter,
+        model: llm_api::providers::Model::new(llm_api::providers::ProviderType::Openrouter, "test")
+            .unwrap(),
         effort: llm_api::providers::Effort::Low,
     });
     let pinned = cursor

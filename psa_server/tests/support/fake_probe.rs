@@ -1,9 +1,7 @@
 use futures_util::{SinkExt, StreamExt};
-use psa_api::{
-    probe_transport::{Call, Frame, spawn_connection},
-    probes::{DirectoryEntry, Event, Operation, PROTOCOL_VERSION},
-};
+use psa_api::probes::{DirectoryEntry, Event, Operation, PROTOCOL_VERSION};
 use psa_server::probes::ProbeRegistry;
+use psa_shared::probe_transport::{Call, Frame, spawn_connection};
 use std::{
     collections::BTreeMap,
     future::ready,

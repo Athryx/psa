@@ -3,9 +3,9 @@
 use crate::{probes::ProbeHandle, prompts};
 use psa_api::{
     ProbeId,
-    probe_transport::ProbeError,
     probes::{Command, Event, Stdio},
 };
+use psa_shared::probe_transport::ProbeError;
 use std::{
     collections::HashMap,
     path::{Component, Path, PathBuf},

@@ -30,10 +30,10 @@ async fn catalog(
 ) -> Response {
     fake.requests.fetch_add(1, Ordering::SeqCst);
     let mode = fake.mode.load(Ordering::SeqCst);
-    if mode == 4 {
+    if mode == 4 || (mode == 6 && provider == "openai-codex") {
         fake.gate.notified().await;
     }
-    if mode == 1 || (mode == 5 && provider == "openrouter") {
+    if mode == 1 || (matches!(mode, 5 | 6) && provider == "openrouter") {
         return Response::builder()
             .status(StatusCode::SERVICE_UNAVAILABLE)
             .body(Body::empty())
@@ -57,8 +57,13 @@ async fn catalog(
             .body(Body::empty())
             .unwrap();
     }
+    let context_window = if matches!(mode, 5 | 6) {
+        200000
+    } else {
+        100000
+    };
     let body = json!([{"id":"vendor/model","name":"Test","type":"chat","reasoning":true,
-        "thinkingLevelMap":{"minimal":"low","max":"max","off":null},"contextWindow":100000,"maxTokens":4096,
+        "thinkingLevelMap":{"minimal":"low","max":"max","off":null},"contextWindow":context_window,"maxTokens":4096,
         "cost":{"input":1,"output":4}}]);
     Response::builder()
         .header("etag", "\"test-v1\"")
@@ -108,15 +113,7 @@ impl Fixture {
             ModelCatalogRuntime::start(self.database.clone(), &registry, self.source.clone())
                 .await
                 .unwrap();
-        assert!(
-            runtime
-                .handle
-                .resync(None)
-                .await
-                .unwrap()
-                .iter()
-                .all(|result| result.success)
-        );
+        runtime.handle.resync(None).await.unwrap();
         runtime
     }
 }
@@ -128,8 +125,7 @@ impl Drop for Fixture {
 
 fn config() -> ModelConfig {
     ModelConfig {
-        provider: ProviderType::Openrouter,
-        model: Model::new("vendor/model").unwrap(),
+        model: Model::new(ProviderType::Openrouter, "vendor/model").unwrap(),
         effort: Effort::Minimal,
     }
 }
@@ -178,7 +174,7 @@ async fn discovery_filters_lookup_reasoning_and_etags() {
     assert_eq!(
         runtime
             .handle
-            .model_info(&config())
+            .model_info(&config().model)
             .await
             .unwrap()
             .unwrap()
@@ -200,18 +196,17 @@ async fn discovery_filters_lookup_reasoning_and_etags() {
             .to_string()
             .contains("Supported:")
     );
-    off.model = Model::new("custom/unknown").unwrap();
+    off.model = Model::new(ProviderType::Openrouter, "custom/unknown").unwrap();
     assert_eq!(runtime.handle.resolve_reasoning(&off).await.unwrap(), None);
-    assert!(runtime.handle.model_info(&off).await.unwrap().is_none());
     assert!(
         runtime
             .handle
-            .resync(None)
+            .model_info(&off.model)
             .await
             .unwrap()
-            .iter()
-            .all(|result| result.success)
+            .is_none()
     );
+    runtime.handle.resync(None).await.unwrap();
     assert!(fixture.fake.validators.load(Ordering::SeqCst) >= 2);
     runtime.shutdown().await.unwrap();
 }
@@ -221,7 +216,6 @@ async fn pins_survive_replacements_disappearance_and_restart() {
     let fixture = Fixture::new().await;
     let mut runtime = fixture.synced_runtime().await;
     let pin = PinModel {
-        provider: config().provider,
         model: config().model,
         pinned: true,
     };
@@ -273,11 +267,11 @@ async fn pins_survive_replacements_disappearance_and_restart() {
     fixture.fake.gate.notify_one();
     let restored = runtime.handle.resync(Some(ProviderType::Openrouter));
     // Mode 4 always sends a body, proving pins are independent of catalog JSON.
-    assert!(restored.await.unwrap()[0].success);
+    restored.await.unwrap();
     assert!(
         runtime
             .handle
-            .model_info(&config())
+            .model_info(&config().model)
             .await
             .unwrap()
             .unwrap()
@@ -299,7 +293,7 @@ async fn pins_survive_replacements_disappearance_and_restart() {
     assert!(
         restarted
             .handle
-            .model_info(&config())
+            .model_info(&config().model)
             .await
             .unwrap()
             .unwrap()
@@ -308,14 +302,14 @@ async fn pins_survive_replacements_disappearance_and_restart() {
     assert!(
         !restarted
             .handle
-            .model_info(&config())
+            .model_info(&config().model)
             .await
             .unwrap()
             .unwrap()
             .authed
     );
     let mut unknown = pin.clone();
-    unknown.model = Model::new("missing").unwrap();
+    unknown.model = Model::new(ProviderType::Openrouter, "missing").unwrap();
     assert!(matches!(
         restarted.handle.set_pinned(unknown.clone()).await,
         Err(CatalogError::NotFound)
@@ -345,15 +339,55 @@ async fn pins_survive_replacements_disappearance_and_restart() {
 }
 
 #[tokio::test]
+async fn identical_api_names_have_provider_specific_lookups_and_pins() {
+    let fixture = Fixture::new().await;
+    let mut runtime = fixture.synced_runtime().await;
+    let openrouter = Model::new(ProviderType::Openrouter, "vendor/model").unwrap();
+    let codex = Model::new(ProviderType::OpenAiCodex, "vendor/model").unwrap();
+
+    for model in [&openrouter, &codex] {
+        let info = runtime.handle.model_info(model).await.unwrap().unwrap();
+        assert_eq!(&info.model, model);
+        assert!(!info.pinned);
+    }
+
+    runtime
+        .handle
+        .set_pinned(PinModel {
+            model: openrouter.clone(),
+            pinned: true,
+        })
+        .await
+        .unwrap();
+    let openrouter_info = runtime
+        .handle
+        .model_info(&openrouter)
+        .await
+        .unwrap()
+        .unwrap();
+    let codex_info = runtime.handle.model_info(&codex).await.unwrap().unwrap();
+    assert!(openrouter_info.pinned);
+    assert!(openrouter_info.authed);
+    assert!(!codex_info.pinned);
+    assert!(!codex_info.authed);
+
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn partial_and_invalid_refreshes_keep_last_good_catalog() {
     let fixture = Fixture::new().await;
     let mut runtime = fixture.synced_runtime().await;
     for mode in [1, 2, 5] {
         fixture.fake.mode.store(mode, Ordering::SeqCst);
-        let results = runtime.handle.resync(None).await.unwrap();
+        let error = runtime.handle.resync(None).await.unwrap_err();
+        let CatalogError::SyncFailed(message) = error else {
+            panic!("expected aggregated sync failure, got {error:?}");
+        };
+        assert!(message.contains(ProviderType::Openrouter.name()));
         assert_eq!(
-            results.iter().filter(|result| !result.success).count(),
-            if mode == 5 { 1 } else { 2 }
+            message.contains(ProviderType::OpenAiCodex.name()),
+            mode != 5
         );
         assert_eq!(
             runtime
@@ -364,7 +398,53 @@ async fn partial_and_invalid_refreshes_keep_last_good_catalog() {
                 .len(),
             2
         );
+        for provider in ProviderType::ALL {
+            let model = Model::new(provider, "vendor/model").unwrap();
+            let info = runtime.handle.model_info(&model).await.unwrap().unwrap();
+            let expected_context = if mode == 5 && provider == ProviderType::OpenAiCodex {
+                200000
+            } else {
+                100000
+            };
+            assert_eq!(info.context_window, Some(expected_context));
+        }
     }
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_resync_waits_for_all_requested_providers() {
+    let fixture = Fixture::new().await;
+    let mut runtime = fixture.synced_runtime().await;
+    let before = fixture.fake.requests.load(Ordering::SeqCst);
+    fixture.fake.mode.store(6, Ordering::SeqCst);
+    let handle = runtime.handle.clone();
+    let all = tokio::spawn(async move { handle.resync(None).await });
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while fixture.fake.requests.load(Ordering::SeqCst) < before + 2 {
+            tokio::task::yield_now().await;
+        }
+        // This waiter observes a completed failure while the Codex request stays blocked.
+        let failed = runtime.handle.resync(Some(ProviderType::Openrouter)).await;
+        assert!(matches!(failed, Err(CatalogError::SyncFailed(_))));
+    })
+    .await
+    .unwrap();
+    assert!(
+        !all.is_finished(),
+        "the all-provider waiter returned before Codex finished"
+    );
+
+    fixture.fake.gate.notify_one();
+    let result = tokio::time::timeout(Duration::from_secs(3), all)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(result, Err(CatalogError::SyncFailed(_))));
+    let codex = Model::new(ProviderType::OpenAiCodex, "vendor/model").unwrap();
+    let info = runtime.handle.model_info(&codex).await.unwrap().unwrap();
+    assert_eq!(info.context_window, Some(200000));
     runtime.shutdown().await.unwrap();
 }
 
@@ -385,7 +465,8 @@ async fn concurrent_manual_refreshes_share_work_and_shutdown_cancels_fetches() {
         fixture.fake.gate.notify_one();
     };
     let (first, second, ()) = tokio::join!(first, second, release);
-    assert!(first.unwrap()[0].success && second.unwrap()[0].success);
+    first.unwrap();
+    second.unwrap();
     assert_eq!(fixture.fake.requests.load(Ordering::SeqCst), before + 1);
     let handle = runtime.handle.clone();
     let blocked = tokio::spawn(async move { handle.resync(None).await });
@@ -471,7 +552,7 @@ async fn cold_start_can_list_providers_and_empty_models_while_network_is_blocked
     assert!(
         runtime
             .handle
-            .model_info(&config())
+            .model_info(&config().model)
             .await
             .unwrap()
             .is_none()

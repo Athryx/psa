@@ -2,10 +2,8 @@ use nix::{
     sys::signal::{Signal, killpg},
     unistd::Pid,
 };
-use psa_api::{
-    probe_transport::{Call, CallSender},
-    probes::{CHUNK_SIZE, Command, DirectoryEntry, Event, ExitStatus, Operation, Stdio},
-};
+use psa_api::probes::{CHUNK_SIZE, Command, DirectoryEntry, Event, ExitStatus, Operation, Stdio};
+use psa_shared::probe_transport::{Call, CallSender};
 use std::{
     collections::HashMap,
     io,

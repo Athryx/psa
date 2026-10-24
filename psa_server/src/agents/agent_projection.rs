@@ -130,7 +130,7 @@ impl AgentProjection {
         }
 
         let history = self.build_history()?;
-        api::validate_request(&history, history.config.provider, &config)?;
+        api::validate_request(&history, history.config.model.provider, &config)?;
 
         Ok(PreparedRequest { history, config })
     }
@@ -266,7 +266,11 @@ impl AgentProjection {
                         "result model snapshot differs from the active context model",
                     ));
                 }
-                api::validate_request(&history, history.config.provider, &start.request_config)?;
+                api::validate_request(
+                    &history,
+                    history.config.model.provider,
+                    &start.request_config,
+                )?;
 
                 self.open = Some(OpenInferenceResult {
                     start: start.clone(),

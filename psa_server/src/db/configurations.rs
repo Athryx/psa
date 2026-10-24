@@ -183,8 +183,12 @@ impl DatabaseCursor {
             .await?;
         let result = async {
             for agent in agents {
+                let mut agent = agent.clone();
+                if agent.models.len() == 1 {
+                    agent.default = true;
+                }
                 sqlx::query("INSERT INTO agent_configs(config_key,config_group,payload,discovered) VALUES(?,?,?,?) ON CONFLICT(config_key) DO UPDATE SET payload=excluded.payload,discovered=excluded.discovered")
-                    .bind(key(&agent.config_id)?).bind(key(&agent.config_id.config_group)?).bind(key(agent)?).bind(discovered)
+                    .bind(key(&agent.config_id)?).bind(key(&agent.config_id.config_group)?).bind(key(&agent)?).bind(discovered)
                     .execute(self.connection()).await?;
             }
             for skill in skills {

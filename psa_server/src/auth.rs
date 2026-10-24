@@ -5,7 +5,7 @@ use std::path::Path;
 use tokio::io::AsyncWriteExt;
 
 pub async fn ensure_probe_key(path: &Path) -> Result<String, AuthError> {
-    let _lock = psa_api::local_config::lock(path).await?;
+    let _lock = psa_shared::local_config::lock(path).await?;
     let text = match tokio::fs::read_to_string(path).await {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),

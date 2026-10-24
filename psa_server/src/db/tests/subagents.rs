@@ -39,12 +39,10 @@ async fn ancestry_is_durable_distinct_from_fork_lineage_and_remapped_on_fork() {
         .await
         .unwrap();
     let copy = |id| {
-        &fork
-            .agents
+        fork.agents
             .iter()
-            .find(|(source, _)| *source == id)
+            .find(|agent| agent.parent_id == Some(id))
             .unwrap()
-            .1
     };
     assert_eq!(copy(root.id).subagent_parent_id, None);
     assert_eq!(copy(worker.id).subagent_parent_id, Some(copy(root.id).id));
@@ -93,7 +91,7 @@ async fn child_creation_rejects_missing_cross_session_parents_and_duplicate_name
         )
         .await
         .unwrap();
-    let other = fork.agents[0].1.id;
+    let other = fork.agents[0].id;
     assert!(
         cursor
             .create_agent(session.id, child(other, "cross-session"))

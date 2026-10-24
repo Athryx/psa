@@ -45,12 +45,15 @@ fn invalid(value: &str) -> DbError {
 
 fn parse_model(provider: &str, model: String, effort: &str) -> Result<ModelConfig, DbError> {
     Ok(ModelConfig {
-        provider: match provider {
-            "openai_codex" => ProviderType::OpenAiCodex,
-            "openrouter" => ProviderType::Openrouter,
-            other => return Err(invalid(other)),
-        },
-        model: Model::new(model).map_err(|error| DbError::Corrupt(error.to_string()))?,
+        model: Model::new(
+            match provider {
+                "openai_codex" => ProviderType::OpenAiCodex,
+                "openrouter" => ProviderType::Openrouter,
+                other => return Err(invalid(other)),
+            },
+            model,
+        )
+        .map_err(|error| DbError::Corrupt(error.to_string()))?,
         effort: match effort {
             "off" => Effort::Off,
             "minimal" => Effort::Minimal,
@@ -137,12 +140,9 @@ pub(super) async fn insert_payload(
             .await?;
         }
         EventType::Model(value) => {
-            Model::new(value.model.api_name.clone())
+            Model::new(value.model.provider, value.model.api_name.clone())
                 .map_err(|error| DbError::InvalidInput(error.to_string()))?;
-            let provider = match value.provider {
-                ProviderType::OpenAiCodex => "openai_codex",
-                ProviderType::Openrouter => "openrouter",
-            };
+            let provider = value.model.provider.as_str();
             let effort = value.effort.as_str();
             sqlx::query!(
                 "INSERT INTO event_model (event_pk,provider,model,effort) VALUES (?,?,?,?)",
@@ -299,12 +299,12 @@ pub(super) async fn insert_payload(
         }
         EventType::InferenceResultStart(value) => {
             let id = encode_integer(value.id)?;
-            Model::new(value.model_config.model.api_name.clone())
-                .map_err(|error| DbError::InvalidInput(error.to_string()))?;
-            let provider = match value.model_config.provider {
-                ProviderType::OpenAiCodex => "openai_codex",
-                ProviderType::Openrouter => "openrouter",
-            };
+            Model::new(
+                value.model_config.model.provider,
+                value.model_config.model.api_name.clone(),
+            )
+            .map_err(|error| DbError::InvalidInput(error.to_string()))?;
+            let provider = value.model_config.model.provider.as_str();
             let effort = value.model_config.effort.as_str();
             let reasoning = value
                 .request_config

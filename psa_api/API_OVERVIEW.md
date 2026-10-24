@@ -14,7 +14,7 @@ Http endpoints, with server side events streaming to client. streams in agent ev
 /sessions/{id}/events
 - query events in a range
   - optional flag to include non persisted events
-  - flag to enable sse streaming
+  - `Accept: text/event-stream` for SSE; `Accept: application/json` for JSON
 
 /sessions/{id}/agents/{id}
 - create agent
@@ -25,7 +25,7 @@ Http endpoints, with server side events streaming to client. streams in agent ev
 /sessions/{id}/agents/{id}/events
 - query events in a range
   - optional flag to include non persisted events
-  - flag to enable sse streaming
+  - `Accept: text/event-stream` for SSE; `Accept: application/json` for JSON
 
 ## Agent definitions
 
@@ -130,18 +130,33 @@ text/image results; they do not add Pi's UI/programmatic result metadata.
 `Read` uses Pi's line/byte head truncation and default image limits. See
 `../docs/FILE_TOOLS.md` for behavior, safety bounds, and compatibility limitations.
 
-Creating an agent takes `definition_id`, `name`, and optional `interactive`
-(default `false` when omitted from JSON). For example:
+Creating an agent takes `config_id`, `name`, optional `interactive` (default
+`false`), and optional `model: ModelSelection`. For example:
 
 ```json
-{"definition_id": 1, "name": "Main", "interactive": false}
+{"config_id":{"config_group":{"Custom":"examples"},"name":"worker"},"name":"Main","interactive":false,"model":{"Fixed":{"model":"openrouter/vendor/model","effort":{"Fixed":"High"}}}}
 ```
+
+The model selector must exactly match an allowed entry, including its effort
+policy. Other selectors are `"Global"` and `"Parent"`; fixed effort policies can
+be `"Global"` or `"Parent"` only when configured exactly that way. Omitted/null
+selects the sole entry, or the first when `default` is true. Registration/upsert
+normalizes stored `AgentConfig.default` to true for single-model configurations;
+multiple entries with `default = false` require explicit selection.
+Native `create_agent` uses the same
+typed selector, and its allowed-template identity prompt includes full selectors.
 
 Agent responses include the exact definition ID and `interactive` flag. The flag
 is creation-time metadata available to tools and hooks, not an automatic UI or
 permission mode. The explicitly selected Goal bundle uses it to enable goal tools
-and its stopping policy. Forked agents inherit it. Creating a session requires `model_config`;
-session responses include it and session updates can replace it.
+and its stopping policy. Forked agents inherit it. `CreateSession.model_config`
+is optional: omission or null uses server `session_defaults`, and an explicit
+`ModelConfig` overrides that default. Session responses always include the concrete
+persisted configuration; session updates can replace it explicitly. Reloads,
+updates, and forks do not reapply creation defaults.
+
+`ForkedSession.agents` is a flat `Vec<Agent>`; each returned agent's `parent_id`
+is the source agent ID, rather than a separate source/child tuple.
 
 TODO: other stuff from client like configs, mcp, etc
 TODO: probe api
@@ -150,12 +165,20 @@ TODO: probe api
 
 Exact route templates/builders are in `src/routes.rs`; wire types are in
 `src/types.rs` and `src/events.rs`. `src/client.rs` provides the async `Client`,
-including typed JSON requests and SSE decoding. Event queries use `after`,
-`through`, `limit`, `include_pending`, and `stream` parameters. SSE supports
-scoped `Last-Event-ID` resume cursors and provisional-to-persistent promotion.
+including typed JSON requests and SSE decoding. `EventsQuery` uses `after`,
+`through`, `limit`, and `include_pending`; it has no `stream` field. Event endpoints
+select SSE with `Accept: text/event-stream`, or JSON with
+`Accept: application/json` (JSON is the default). `Client::events()` requests JSON;
+`Client::stream_events()` requests SSE. Only the streaming method accepts a
+`Last-Event-ID` resume cursor. SSE supports provisional-to-persistent promotion.
 
-Session views include runtime `busy`; agent views include state and cumulative
-token usage. See `../psa_server/README.md` for startup, `auth.toml`, client examples,
+Session views include runtime `busy`; `SessionUpdated` publishes a full `Session`
+snapshot for both metadata edits and busy-state changes. There is no separate
+`SessionBusy` message. Metadata writes and the supervisor's published activity
+projection share the publication gate, preventing stale busy values from
+overwriting newer transitions. Apply snapshots in stream order; activity-only
+changes do not advance the persisted `updated_at` timestamp.
+Agent views include state and cumulative token usage. See `../psa_server/README.md` for startup, `auth.toml`, client examples,
 queue/shutdown semantics, and the trusted-client-only security boundary.
 
 ## Client queries
@@ -236,8 +259,34 @@ remote-operation HTTP endpoints are exposed yet: use server-side probe handles.
 
 ## Providers and models
 
+`Model` identifies a model by `provider: ProviderType` and `api_name: String`.
+The API name is provider-specific (for example `vendor/model` on OpenRouter),
+without a harness provider prefix. Rust callers construct it with
+`Model::new(ProviderType::Openrouter, "vendor/model")?`.
+`ModelConfig` adds `effort` to that identity; `provider` is nested inside `model`,
+not a top-level configuration field. For example, a session's `model_config` is:
+
+```json
+{"model":{"provider":"Openrouter","api_name":"vendor/model"},"effort":"Medium"}
+```
+
+Model configuration files instead use a provider/API-name slug string, never a
+structured `Model`. Server creation defaults in `config.toml` are:
+
+```toml
+[session_defaults]
+model = "openai_codex/gpt-5"
+effort = "Medium"
+```
+
+For OpenRouter, use a slug such as `openrouter/vendor/model`. If the whole
+`[session_defaults]` section is absent, the built-in default is OpenAI Codex
+`gpt-5` with `Medium` effort. A present section requires both fields. Resolved
+server configuration exposes this as `ResolvedConfig.session_defaults: ModelConfig`.
+
 `GET /providers` returns all providers PSA supports (`Openrouter` and
-`OpenAiCodex`), with `id`, display `name`, and `authed`. Authentication means a
+`OpenAiCodex`), with `id` and `authed`. Display names are available locally through
+`ProviderType::name()`. Authentication means a
 credential is configured in the running server; it does not verify token validity,
 model entitlement, or account balance. Credentials never appear in responses.
 
@@ -247,7 +296,7 @@ example `/models?provider=Openrouter&authed=true&pinned=true` lists pinned
 OpenRouter models when OpenRouter credentials are configured. `authed=false`
 selects models whose provider has no configured credentials.
 
-Each entry contains `provider`, `model: { api_name }`, display `name`,
+Each entry contains `model: { provider, api_name }`, display `name`,
 `input_modalities`, optional `context_window` and `max_output_tokens`, `cost`,
 `reasoning`, `reasoning_options`, live `authed`, persisted `pinned`, and RFC 3339
 `refreshed_at`. Cost values are reference USD per million tokens: `input`,
@@ -259,26 +308,32 @@ and their resolved `wire_effort`; null wire effort omits reasoning parameters.
 
 `GET /models/lookup?provider=Openrouter&model=vendor%2Fmodel` returns one entry,
 or 404 when unknown. Model names are query values so slash-containing IDs work.
-`Client::model_info(&ModelConfig)` performs this lookup using provider/model
-identity; the requested reasoning effort does not alter the lookup key.
+`Client::model_info(&Model)` performs this lookup using the model's provider
+and API name; reasoning effort is not part of model identity. `ModelLookup`
+keeps flat `provider` and `model` query fields, with `model` holding the API name.
 
 `PUT /models/pin` accepts:
 
 ```json
-{"provider":"Openrouter","model":{"api_name":"vendor/model"},"pinned":true}
+{"model":{"provider":"Openrouter","api_name":"vendor/model"},"pinned":true}
 ```
 
-It returns the updated entry. Pins are server-wide and survive restarts and
+`ModelInfo` and `PinModel` carry the provider only inside `model`, not as a
+separate top-level field. The pin endpoint returns the updated entry.
+Pins are server-wide and survive restarts and
 catalog refreshes. Pinning an unknown model returns 404. Unpinning is idempotent;
 it returns JSON null if that model has disappeared. Models removed upstream no
 longer appear in lists, but their saved pins apply if they reappear later.
 
 `POST /models/resync` accepts `{}` for all providers or
 `{"provider":"Openrouter"}` for one. It bypasses the freshness interval, waits
-for network revalidation, and returns per-provider `{provider, success, error}`
-results. HTTP 200 may contain individual failures; successful providers still
-update. Concurrent scheduled/manual refreshes share each provider's in-flight
-request, and disconnecting a caller does not cancel shared work.
+for every requested provider's network revalidation, and returns HTTP 204 with
+no body only if all succeed. If any refresh fails, it returns HTTP 502 with
+`ApiError.code = "catalog_sync_failed"`; successful provider updates are still
+retained. The Rust client returns `Result<(), ClientError>`, without a provider
+list or individual result entries. Concurrent scheduled/manual refreshes share
+each provider's in-flight request, and disconnecting a caller does not cancel
+shared work.
 
 The server fetches Pi's public chat catalogs on missing/stale startup and every
 four hours, using ETags. Successful snapshots replace a provider's catalog

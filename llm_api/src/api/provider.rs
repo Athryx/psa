@@ -144,8 +144,7 @@ mod tests {
                 ProviderType::Openrouter => ProviderType::OpenAiCodex,
             };
             let history = AgentHistory::new(ModelConfig {
-                provider: other,
-                model: Model::new("test-model").unwrap(),
+                model: Model::new(other, "test-model").unwrap(),
                 effort: Effort::Medium,
             });
 

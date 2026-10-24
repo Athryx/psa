@@ -542,8 +542,11 @@ mod tests {
         }
         let response = reqwest::get(format!("http://{address}")).await.unwrap();
         let output = ModelResponse::default_for_model(crate::providers::ModelConfig {
-            provider: crate::providers::ProviderType::OpenAiCodex,
-            model: crate::providers::Model::new("test-model").unwrap(),
+            model: crate::providers::Model::new(
+                crate::providers::ProviderType::OpenAiCodex,
+                "test-model",
+            )
+            .unwrap(),
             effort: crate::providers::Effort::Medium,
         });
         let mut stream = StreamingResponse::new(response, output, TerminalDecoder);

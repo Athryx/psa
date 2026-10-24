@@ -1,6 +1,5 @@
 use psa_api::{
     Client, ProbeId,
-    probe_transport::{Call, ProbeError},
     probes::{Command, Event, ExitStatus, Uuid},
 };
 use psa_probe::config::StartOptions;
@@ -9,6 +8,7 @@ use psa_server::{
     probes::{ProbeHandle, ProbeRegistry},
     providers::ProviderRegistry,
 };
+use psa_shared::probe_transport::{Call, ProbeError};
 use std::time::Duration;
 use tokio::{net::TcpListener, sync::oneshot};
 use tokio_tungstenite::{
@@ -53,6 +53,7 @@ impl Harness {
                 .with_catalog_source(psa_server::models::CatalogSource::new(&base).unwrap()),
             registry.clone(),
             psa_server::config_registry::ConfigRegistry::new(dir.path().join("global")),
+            psa_server::config::default_model_config(),
             async {
                 let _ = stopped.await;
             },
@@ -190,12 +191,13 @@ async fn registration_auth_sessions_and_reconnect() {
                 name: "remote".into(),
                 working_directory: harness.dir.path().to_owned(),
                 probe_id: harness.id,
-                model_config: serde_json::from_value(serde_json::json!({
-                    "model": { "api_name": "test-model" },
-                    "provider": "Openrouter",
-                    "effort": "Medium"
-                }))
-                .unwrap(),
+                model_config: Some(
+                    serde_json::from_value(serde_json::json!({
+                        "model": { "provider": "Openrouter", "api_name": "test-model" },
+                        "effort": "Medium"
+                    }))
+                    .unwrap(),
+                ),
             })
             .await
             .unwrap();
@@ -218,7 +220,7 @@ async fn registration_auth_sessions_and_reconnect() {
                     name: "bad".into(),
                     working_directory: "/tmp".into(),
                     probe_id: ProbeId(Uuid::new_v4()),
-                    model_config: session.model_config.clone(),
+                    model_config: Some(session.model_config.clone()),
                 })
                 .await
                 .is_err()
@@ -273,12 +275,11 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
                 name: "skills".into(),
                 working_directory: cwd.clone(),
                 probe_id: harness.id,
-                model_config: serde_json::from_value(serde_json::json!({
-                    "model": { "api_name": "test-model" },
-                    "provider": "Openrouter",
+                model_config: Some(serde_json::from_value(serde_json::json!({
+                    "model": { "provider": "Openrouter", "api_name": "test-model" },
                     "effort": "Medium"
                 }))
-                .unwrap(),
+                .unwrap()),
             })
             .await
             .unwrap();

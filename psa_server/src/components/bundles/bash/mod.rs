@@ -44,8 +44,8 @@ pub enum BashError {
     Unavailable,
 }
 
-impl From<psa_api::probe_transport::ProbeError> for BashError {
-    fn from(error: psa_api::probe_transport::ProbeError) -> Self {
+impl From<psa_shared::probe_transport::ProbeError> for BashError {
+    fn from(error: psa_shared::probe_transport::ProbeError) -> Self {
         Self::Probe(error.to_string())
     }
 }

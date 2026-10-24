@@ -77,7 +77,15 @@ impl Runtime {
         providers: ProviderRegistry,
         probes: ProbeRegistry,
     ) -> Result<Self, RuntimeError> {
-        Self::start_with_configuration(db, publication, providers, probes, None).await
+        Self::start_with_configuration(
+            db,
+            publication,
+            providers,
+            probes,
+            None,
+            crate::config::default_model_config(),
+        )
+        .await
     }
 
     pub async fn start_with_configuration(
@@ -86,6 +94,7 @@ impl Runtime {
         providers: ProviderRegistry,
         probes: ProbeRegistry,
         configuration: Option<crate::config_registry::ConfigRegistry>,
+        default_model_config: llm_api::providers::ModelConfig,
     ) -> Result<Self, RuntimeError> {
         let mut cursor = db.cursor().await?;
         let agents = cursor.list_all_agents().await?;
@@ -106,6 +115,7 @@ impl Runtime {
             client_queries.handle(),
         )
         .with_catalog(providers.catalog().cloned())
+        .with_default_model_config(default_model_config)
         .with_configuration(configuration, probes.clone());
         let manager = SessionManager {
             db,
@@ -285,6 +295,16 @@ impl SessionManager {
         self.workers
             .values()
             .any(|worker| worker.session == session)
+    }
+
+    async fn publish_session_activity(&self, session: SessionId, busy: bool) {
+        if let Err(error) = self
+            .publication
+            .update_session_busy(&self.db, session, busy)
+            .await
+        {
+            tracing::error!(session = session.0, %error, "could not publish session activity");
+        }
     }
 
     async fn run(mut self) -> Result<(), RuntimeError> {
@@ -859,7 +879,7 @@ impl SessionManager {
             })
             .or(definition.model_config.as_ref())
             .unwrap_or(&session_snapshot.model_config);
-        if self.providers.provider(model.provider).is_none() {
+        if self.providers.provider(model.model.provider).is_none() {
             return Err(RuntimeError::MissingProvider);
         }
         if self
@@ -939,13 +959,7 @@ impl SessionManager {
         self.spawn_worker(agent, session, VecDeque::new(), VecDeque::new())
             .await?;
         if became_busy {
-            self.publication
-                .lock()
-                .await
-                .publish(StreamMessage::SessionBusy {
-                    session_id: session,
-                    busy: true,
-                });
+            self.publish_session_activity(session, true).await;
         }
         Ok(())
     }
@@ -1099,13 +1113,7 @@ impl SessionManager {
 
         self.refresh_steering(agent);
         if !self.is_busy(worker.session) {
-            self.publication
-                .lock()
-                .await
-                .publish(StreamMessage::SessionBusy {
-                    session_id: worker.session,
-                    busy: false,
-                });
+            self.publish_session_activity(worker.session, false).await;
         }
     }
 

@@ -19,7 +19,7 @@ fn normalizes_prices_limits_names_and_reasoning_without_importing_transport() {
     .unwrap();
     assert_eq!(models.len(), 2);
     let model = &models[0];
-    assert_eq!(model.provider, ProviderType::Openrouter);
+    assert_eq!(model.model.provider, ProviderType::Openrouter);
     assert_eq!(model.context_window, Some(128000));
     assert_eq!(model.max_output_tokens, Some(8192));
     assert_eq!(model.cost.rates.input, Some(2.5));
@@ -117,7 +117,7 @@ async fn live_pi_catalogs_normalize_for_supported_providers() {
             panic!("expected catalog body");
         };
         assert!(!models.is_empty());
-        assert!(models.iter().all(|model| model.provider == provider));
+        assert!(models.iter().all(|model| model.model.provider == provider));
         eprintln!("{provider:?}: {} chat models", models.len());
     }
 }

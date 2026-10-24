@@ -2,11 +2,16 @@
 use crate::{AgentId, SessionId};
 use serde::{Deserialize, Serialize};
 
+/// Unique identifier for a pending runtime client query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct ClientQueryId(pub uuid::Uuid);
+pub struct ClientQueryId(
+    /// UUID used to correlate a query with its response.
+    pub uuid::Uuid,
+);
 
 impl ClientQueryId {
+    /// Generate a random version-4 query identifier.
     pub fn new() -> Self {
         Self(uuid::Uuid::new_v4())
     }
@@ -24,15 +29,21 @@ impl std::fmt::Display for ClientQueryId {
     }
 }
 
+/// Pending client input requested by an agent; not persisted across server restarts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClientQueryRequest {
+    /// Identifier to use when submitting a response.
     pub id: ClientQueryId,
+    /// Session containing the requesting agent.
     pub session_id: SessionId,
+    /// Agent waiting for client input.
     pub agent_id: AgentId,
+    /// Input requested from the client.
     pub payload: ClientQuery,
 }
 
+/// Typed request for interactive input from a client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -41,9 +52,14 @@ pub struct ClientQueryRequest {
     deny_unknown_fields
 )]
 pub enum ClientQuery {
-    AskQuestion(AskQuestionRequest),
+    /// Ask the client to answer one or more questions.
+    AskQuestion(
+        /// Questions and optional suggested choices.
+        AskQuestionRequest,
+    ),
 }
 
+/// Typed client response to a pending query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -52,38 +68,53 @@ pub enum ClientQuery {
     deny_unknown_fields
 )]
 pub enum ClientQueryResponse {
-    AskQuestion(AskQuestionResponse),
+    /// Answers to an ask-question request.
+    AskQuestion(
+        /// Answers in the same order as the requested questions.
+        AskQuestionResponse,
+    ),
 }
 
+/// Nonempty ordered list of questions to present to the client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AskQuestionRequest {
+    /// Questions whose order determines the response answer order.
     pub questions: Vec<ClientQuestion>,
 }
 
+/// A question with optional suggested answers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClientQuestion {
+    /// Nonblank text to present to the client.
     pub question: String,
+    /// Nonblank suggestions; free-form answers are still accepted.
     #[serde(default)]
     pub choices: Vec<String>,
 }
 
+/// Answers corresponding one-to-one with the requested questions, in order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AskQuestionResponse {
+    /// One answer for each question in the request.
     pub answers: Vec<ClientAnswer>,
 }
 
+/// A client's answer to one question.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClientAnswer {
+    /// Nonblank answer text, not limited to the suggested choices.
     pub answer: String,
+    /// Optional supplemental explanation from the client.
     #[serde(default)]
     pub notes: Option<String>,
 }
 
 impl ClientQuery {
+    /// Reject empty question lists, blank questions, or blank suggested choices.
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Self::AskQuestion(request) => {
@@ -107,7 +138,7 @@ impl ClientQuery {
         }
     }
 
-    /// Answers correspond to questions in order; choices are suggestions, not restrictions.
+    /// Require one nonblank answer per question, in order; choices are suggestions, not restrictions.
     pub fn validate_response(&self, response: &ClientQueryResponse) -> Result<(), String> {
         match (self, response) {
             (Self::AskQuestion(request), ClientQueryResponse::AskQuestion(response)) => {

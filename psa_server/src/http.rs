@@ -115,6 +115,11 @@ impl IntoResponse for HttpError {
             Self::Catalog(crate::models::CatalogError::Invalid(_)) => {
                 (StatusCode::BAD_REQUEST, "invalid_input", self.to_string())
             }
+            Self::Catalog(crate::models::CatalogError::SyncFailed(_)) => (
+                StatusCode::BAD_GATEWAY,
+                "catalog_sync_failed",
+                self.to_string(),
+            ),
             Self::Catalog(crate::models::CatalogError::Unavailable) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "unavailable",
@@ -189,13 +194,13 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(|| async { "ok\n" }))
         .route(
             routes::AGENT_CONFIGS,
-            post(upsert_agent_configs).get(list_agent_configs),
+            post(upsert_agent_configs).get(refresh_and_list_agent_configs),
         )
         .route(routes::AGENT_CONFIG_LOOKUP, post(get_agent_config))
         .route(routes::AGENT_SNAPSHOT, get(get_resolved_agent_config))
         .route(
             routes::SKILLS,
-            post(upload_skill).get(list_skills).layer(
+            post(upload_skill).get(refresh_and_list_skills).layer(
                 // A 64 MiB archive encoded as a JSON byte array uses up to
                 // four bytes per element, plus configuration metadata.
                 axum::extract::DefaultBodyLimit::max(256 * 1024 * 1024 + 64 * 1024),
@@ -243,11 +248,11 @@ async fn lookup_model(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<api::ModelLookup>,
 ) -> Result<Json<api::ModelInfo>, HttpError> {
-    let model = llm_api::providers::Model::new(query.model)
+    let model = llm_api::providers::Model::new(query.provider, query.model)
         .map_err(|error| HttpError::Invalid(error.to_string()))?;
     Ok(Json(
         require_catalog(&state)?
-            .lookup(query.provider, &model)
+            .model_info(&model)
             .await?
             .ok_or(crate::models::CatalogError::NotFound)?,
     ))
@@ -264,27 +269,29 @@ async fn pin_model(
 async fn resync_models(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<api::ResyncModels>,
-) -> Result<Json<Vec<api::ModelSyncResult>>, HttpError> {
+) -> Result<StatusCode, HttpError> {
     state.require_accepting()?;
-    Ok(Json(
-        require_catalog(&state)?.resync(request.provider).await?,
-    ))
+    require_catalog(&state)?.resync(request.provider).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn upsert_agent_configs(
     State(state): State<AppState>,
-    ApiJson(configs): ApiJson<Vec<api::AgentConfig>>,
+    ApiJson(configs): ApiJson<Vec<api::AgentConfigInput>>,
 ) -> Result<Json<Vec<api::AgentConfigStatus>>, HttpError> {
     state.require_accepting()?;
     Ok(Json(state.runtime.upsert_agent_configs(configs).await?))
 }
 
-async fn list_agent_configs(
+async fn refresh_and_list_agent_configs(
     State(state): State<AppState>,
-    ApiQuery(query): ApiQuery<api::ListAgentConfigs>,
+    ApiQuery(query): ApiQuery<api::RefreshAndListAgentConfigs>,
 ) -> Result<Json<Vec<api::AgentConfigStatus>>, HttpError> {
     Ok(Json(
-        state.runtime.list_agent_configs(query.session_id).await?,
+        state
+            .runtime
+            .refresh_and_list_agent_configs(query.refresh_session_id)
+            .await?,
     ))
 }
 
@@ -316,11 +323,16 @@ async fn upload_skill(
     Ok((StatusCode::CREATED, Json(skill)))
 }
 
-async fn list_skills(
+async fn refresh_and_list_skills(
     State(state): State<AppState>,
-    ApiQuery(query): ApiQuery<api::ListSkills>,
+    ApiQuery(query): ApiQuery<api::RefreshAndListSkills>,
 ) -> Result<Json<Vec<api::Skill>>, HttpError> {
-    Ok(Json(state.runtime.list_skills(query.session_id).await?))
+    Ok(Json(
+        state
+            .runtime
+            .refresh_and_list_skills(query.refresh_session_id)
+            .await?,
+    ))
 }
 
 async fn create_session(
@@ -378,11 +390,7 @@ async fn fork_session(
     let busy = state.runtime.is_busy(fork.session.id).await?;
     let view = api::ForkedSession {
         session: fork.session.into_api(busy),
-        agents: fork
-            .agents
-            .into_iter()
-            .map(|(parent, agent)| (parent, agent.into()))
-            .collect(),
+        agents: fork.agents.into_iter().map(Into::into).collect(),
     };
     Ok((StatusCode::CREATED, Json(view)))
 }
@@ -553,9 +561,20 @@ async fn events_response(
 ) -> Result<Response, HttpError> {
     state.require_accepting()?;
 
-    if query.stream
-        && let Some(id) = headers.get("last-event-id")
-    {
+    // JSON is the default; SSE requires an explicitly accepted event-stream MIME type.
+    let stream_events = headers
+        .get_all("accept")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
+        });
+
+    if stream_events && let Some(id) = headers.get("last-event-id") {
         query.after = decode_cursor(
             id.to_str()
                 .map_err(|_| HttpError::Invalid("invalid Last-Event-ID".into()))?,
@@ -577,7 +596,7 @@ async fn events_response(
     let queries = publication.queries(session, agent);
     drop(publication);
 
-    if !query.stream {
+    if !stream_events {
         page.pending = pending;
         page.queries = queries;
         return Ok(Json(page).into_response());
@@ -708,7 +727,6 @@ fn matches_scope(
             agent_id,
             ..
         } => (*session_id, Some(*agent_id)),
-        api::StreamMessage::SessionBusy { session_id, .. } => (*session_id, None),
         api::StreamMessage::SessionUpdated { session } => (session.id, None),
         _ => return false,
     };
@@ -757,11 +775,25 @@ mod tests {
             .unwrap();
         let publication = Publication::default();
         let probes = crate::probes::ProbeRegistry::start("test".into());
-        let runtime = Runtime::start(
+        let defaults = api::AgentDefaults {
+            bundles: vec![api::BundleId::FileTools],
+            tools: vec![api::ToolId::Noop],
+            hooks: api::HookIds {
+                agent_create: vec![api::HookId::DefaultStartup],
+                after_request: vec![api::HookId::StopWithoutTools],
+                ..Default::default()
+            },
+        };
+        let runtime = Runtime::start_with_configuration(
             db.clone(),
             publication.clone(),
             ProviderRegistry::default(),
             probes.clone(),
+            Some(
+                crate::config_registry::ConfigRegistry::new(dir.path().join("config"))
+                    .with_agent_defaults(defaults.clone()),
+            ),
+            crate::config::default_model_config(),
         )
         .await
         .unwrap();
@@ -787,7 +819,7 @@ mod tests {
         assert_eq!(upserted.len(), 1);
         assert_eq!(upserted[0].config.config_id, id);
 
-        let listed = client.list_agent_configs(None).await.unwrap();
+        let listed = client.refresh_and_list_agent_configs(None).await.unwrap();
         assert!(listed.iter().any(|config| config.config.config_id == id));
         let found = client.get_agent_config(&id).await.unwrap();
         assert_eq!(found.config.config_id, id);
@@ -796,7 +828,11 @@ mod tests {
         let upserted = client.upsert_agent_configs(&[updated]).await.unwrap();
         assert_eq!(upserted[0].config.description, "updated");
         assert_eq!(
-            client.list_agent_configs(None).await.unwrap().len(),
+            client
+                .refresh_and_list_agent_configs(None)
+                .await
+                .unwrap()
+                .len(),
             listed.len()
         );
         let snapshot = client
@@ -804,9 +840,63 @@ mod tests {
             .await
             .unwrap();
         assert!(snapshot.is_none());
-        assert!(client.list_skills(None).await.unwrap().is_empty());
+        assert!(
+            client
+                .refresh_and_list_skills(None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // The typed input preserves omissions over the client wire, while a
+        // normalized AgentConfig (as above) remains fully explicit.
+        assert!(upserted[0].config.tools.is_empty());
+        let inherited_id = api::ConfigId {
+            config_group: api::ConfigGroup::Custom("http-test".into()),
+            name: "inherited".into(),
+        };
+        let inherited = client
+            .upsert_agent_configs(&[api::AgentConfigInput::new(
+                inherited_id.clone(),
+                vec![api::ModelSelection::Global],
+            )])
+            .await
+            .unwrap();
+        assert_eq!(inherited[0].config.tools, defaults.tools);
+        assert_eq!(inherited[0].config.bundles, defaults.bundles);
+        assert_eq!(inherited[0].config.hooks, defaults.hooks);
 
         let http = reqwest::Client::new();
+        let response = http
+            .post(format!("{base}/agent-configs"))
+            .json(&serde_json::json!([{
+                "config_id": inherited_id,
+                "models": ["Global"],
+                "tools": [],
+                "hooks": {"agent_create": []}
+            }]))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let explicit: Vec<api::AgentConfigStatus> = response.json().await.unwrap();
+        assert!(explicit[0].config.tools.is_empty());
+        assert_eq!(explicit[0].config.bundles, defaults.bundles);
+        assert!(explicit[0].config.hooks.agent_create.is_empty());
+        assert_eq!(
+            explicit[0].config.hooks.after_request,
+            defaults.hooks.after_request
+        );
+        assert_eq!(
+            client
+                .get_agent_config(&inherited_id)
+                .await
+                .unwrap()
+                .config
+                .hooks,
+            explicit[0].config.hooks
+        );
+
         let legacy_creation = http
             .post(format!("{base}/sessions/1/agents"))
             .json(&serde_json::json!({"definition_id": 1, "name": "legacy"}))
@@ -836,7 +926,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lagged_subscriber_is_told_to_resync_instead_of_silently_skipping() {
+    async fn accept_headers_select_transport_and_lagged_subscribers_are_told_to_resync() {
         let dir = tempfile::tempdir().unwrap();
         let db = Database::open(dir.path().join("test.sqlite3"))
             .await
@@ -881,15 +971,117 @@ mod tests {
             accepting: Arc::new(AtomicBool::new(true)),
             probes: crate::probes::ProbeRegistry::start("test".into()),
         };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let app = router(state.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        for legacy in ["true", "false"] {
+            let response = reqwest::Client::new()
+                .get(format!(
+                    "{base}/sessions/{}/events?stream={legacy}",
+                    session.id.0
+                ))
+                .header("accept", "text/event-stream")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        server.abort();
+        let _ = server.await;
+
+        // Last-Event-ID is ignored in JSON mode, including the default Accept behavior.
+        for accept in [None, Some("application/json"), Some("*/*")] {
+            let mut headers = HeaderMap::new();
+            if let Some(accept) = accept {
+                headers.insert("accept", accept.parse().unwrap());
+            }
+            headers.insert("last-event-id", "invalid-cursor".parse().unwrap());
+            let response = events_response(
+                state.clone(),
+                session.id,
+                None,
+                api::EventsQuery::default(),
+                headers,
+            )
+            .await
+            .unwrap();
+            assert!(
+                response.headers()["content-type"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("application/json")
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), 1_000_000)
+                .await
+                .unwrap();
+            serde_json::from_slice::<api::EventsPage>(&bytes).unwrap();
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "accept",
+            "application/json, text/event-stream; charset=utf-8"
+                .parse()
+                .unwrap(),
+        );
+        headers.insert("last-event-id", "invalid-cursor".parse().unwrap());
+        assert!(matches!(
+            events_response(
+                state.clone(),
+                session.id,
+                None,
+                api::EventsQuery::default(),
+                headers.clone(),
+            )
+            .await,
+            Err(HttpError::Invalid(_))
+        ));
+        headers.insert(
+            "last-event-id",
+            encode_cursor(session.id, None, 0).parse().unwrap(),
+        );
+        let mut repeated = HeaderMap::new();
+        repeated.append("accept", "application/json".parse().unwrap());
+        repeated.append(
+            "accept",
+            "text/event-stream; charset=utf-8".parse().unwrap(),
+        );
+        repeated.insert(
+            "last-event-id",
+            encode_cursor(session.id, None, 0).parse().unwrap(),
+        );
+        for accepted in [headers.clone(), repeated] {
+            let finite = events_response(
+                state.clone(),
+                session.id,
+                None,
+                api::EventsQuery {
+                    through: Some(0),
+                    ..Default::default()
+                },
+                accepted,
+            )
+            .await
+            .unwrap();
+            assert!(
+                finite.headers()["content-type"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("text/event-stream")
+            );
+            let bytes = axum::body::to_bytes(finite.into_body(), 1_000_000)
+                .await
+                .unwrap();
+            assert!(std::str::from_utf8(&bytes).unwrap().contains("snapshot"));
+        }
+
         let response = events_response(
             state,
             session.id,
             None,
-            api::EventsQuery {
-                stream: true,
-                ..Default::default()
-            },
-            HeaderMap::new(),
+            api::EventsQuery::default(),
+            headers,
         )
         .await
         .unwrap();
@@ -898,9 +1090,8 @@ mod tests {
             publication
                 .lock()
                 .await
-                .publish(api::StreamMessage::SessionBusy {
-                    session_id: session.id,
-                    busy: true,
+                .publish(api::StreamMessage::SessionUpdated {
+                    session: session.clone().into_api(true),
                 });
         }
         let bytes = axum::body::to_bytes(response.into_body(), 1_000_000)

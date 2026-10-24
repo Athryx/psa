@@ -1,13 +1,36 @@
 use clap::{Args, Parser, Subcommand};
-use serde::Deserialize;
+use llm_api::providers::{Effort, Model, ModelConfig, ProviderType};
+use psa_api::AgentDefaults;
+use serde::{Deserialize, Deserializer};
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
 };
 use tokio::io::AsyncWriteExt;
 
-const DEFAULT_CONFIG: &str =
-    "[server]\nlisten = \"127.0.0.1:8080\"\n\n[database]\npath = \"psa.sqlite3\"\n";
+const DEFAULT_CONFIG: &str = r#"[server]
+listen = "127.0.0.1:8080"
+
+[database]
+path = "psa.sqlite3"
+
+# Used when session creation omits model_config.
+[session_defaults]
+model = "openai_codex/gpt-5"
+effort = "Medium"
+
+# Fallbacks for omitted fields in agent files and API registrations.
+# Explicit empty arrays override these defaults; hook stages inherit separately.
+[agent_defaults]
+tools = []
+bundles = ["FileTools", "Bash", "Subagents"]
+
+[agent_defaults.hooks]
+agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
+session_update = []
+before_request = []
+after_request = ["StopWithoutTools"]
+"#;
 
 #[derive(Debug, Parser)]
 #[command(about = "PSA session and event server", version)]
@@ -36,6 +59,13 @@ pub struct StartOptions {
 struct Config {
     server: ServerConfig,
     database: DatabaseConfig,
+    #[serde(
+        default = "default_model_config",
+        deserialize_with = "deserialize_session_defaults"
+    )]
+    session_defaults: ModelConfig,
+    #[serde(default)]
+    agent_defaults: AgentDefaults,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,6 +86,8 @@ pub struct ResolvedConfig {
     pub config_path: PathBuf,
     pub database_path: PathBuf,
     pub listen: SocketAddr,
+    pub session_defaults: ModelConfig,
+    pub agent_defaults: AgentDefaults,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -121,8 +153,40 @@ impl StartOptions {
             config_path,
             database_path,
             listen: self.listen.unwrap_or(config.server.listen),
+            session_defaults: config.session_defaults,
+            agent_defaults: config.agent_defaults,
         })
     }
+}
+
+/// Built-in session fallback, also used when `[session_defaults]` is absent.
+pub fn default_model_config() -> ModelConfig {
+    ModelConfig {
+        model: Model {
+            provider: ProviderType::OpenAiCodex,
+            api_name: "gpt-5".into(),
+        },
+        effort: Effort::Medium,
+    }
+}
+
+fn deserialize_session_defaults<'de, D>(deserializer: D) -> Result<ModelConfig, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct SessionDefaults {
+        model: String,
+        effort: Effort,
+    }
+
+    let defaults = SessionDefaults::deserialize(deserializer)?;
+    let model = Model::parse_slug(&defaults.model).map_err(serde::de::Error::custom)?;
+    Ok(ModelConfig {
+        model,
+        effort: defaults.effort,
+    })
 }
 
 async fn ensure_default_config(path: &Path) -> Result<(), ConfigError> {

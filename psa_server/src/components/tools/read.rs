@@ -10,10 +10,8 @@ use crate::{
     sessions::Session,
 };
 use llm_api::api::{ContentBlock, ImageBlock, MediaSource, ToolDefinition};
-use psa_api::{
-    probe_transport::ProbeError,
-    probes::{Command, Event, Stdio},
-};
+use psa_api::probes::{Command, Event, Stdio};
+use psa_shared::probe_transport::ProbeError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::{

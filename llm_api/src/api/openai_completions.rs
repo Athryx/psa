@@ -779,7 +779,7 @@ impl CompletionsDecoder {
         {
             text.annotations.extend(annotations.iter().map(|raw| {
                 Annotation {
-                    provider: output.config.provider,
+                    provider: output.config.model.provider,
                     annotation_type: raw
                         .get("type")
                         .and_then(Value::as_str)
@@ -1049,7 +1049,7 @@ impl CompletionsDecoder {
 
         if let HistoryItemKind::Reasoning(reasoning) = &mut output.items[index].kind {
             reasoning.opaque_state = Some(ProviderOpaqueData {
-                provider: output.config.provider,
+                provider: output.config.model.provider,
                 data: Value::Object(data),
             });
         }
@@ -1201,7 +1201,12 @@ mod tests {
 
     // Existing behavior tests explicitly exercise the opt-in dialect.
     fn request_body(history: &AgentHistory, config: &RequestConfig) -> Result<Value, Error> {
-        super::build_request_body(history, config, history.config.provider, ROUTER_CONFIG)
+        super::build_request_body(
+            history,
+            config,
+            history.config.model.provider,
+            ROUTER_CONFIG,
+        )
     }
 
     fn append_messages(items: &[HistoryItem], messages: &mut Vec<Value>) -> Result<(), Error> {
@@ -1210,16 +1215,14 @@ mod tests {
 
     fn model_for(provider: ProviderType) -> ModelConfig {
         ModelConfig {
-            model: Model::new("test-model").unwrap(),
-            provider,
+            model: Model::new(provider, "test-model").unwrap(),
             effort: Effort::High,
         }
     }
 
     fn model() -> ModelConfig {
         ModelConfig {
-            model: Model::new("vendor/model").unwrap(),
-            provider: ProviderType::Openrouter,
+            model: Model::new(ProviderType::Openrouter, "vendor/model").unwrap(),
             effort: Effort::High,
         }
     }
@@ -2160,8 +2163,7 @@ mod tests {
     #[test]
     fn openrouter_reasoning_uses_resolved_efforts_or_omits_the_parameter() {
         let history = AgentHistory::new(ModelConfig {
-            provider: ProviderType::Openrouter,
-            model: Model::new("vendor/test").unwrap(),
+            model: Model::new(ProviderType::Openrouter, "vendor/test").unwrap(),
             effort: Effort::Minimal,
         });
         let dialect = OpenAiCompletionsConfig {

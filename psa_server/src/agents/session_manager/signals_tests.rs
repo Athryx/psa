@@ -67,7 +67,7 @@ impl Fixture {
             db,
             publication,
             providers: ProviderRegistry::new(vec![
-                llm_api::api::Provider::new(model.provider, "test-key").unwrap(),
+                llm_api::api::Provider::new(model.model.provider, "test-key").unwrap(),
             ]),
             probes: ProbeRegistry::start("signals".into()),
             sessions,
@@ -595,7 +595,7 @@ async fn subagent_steering_rejects_missing_and_cross_session_senders() {
         .await
         .unwrap();
     cursor.commit().await.unwrap();
-    for source in [AgentId(u32::MAX.into()), fork.agents[0].1.id] {
+    for source in [AgentId(u32::MAX.into()), fork.agents[0].id] {
         let result = fixture
             .manager
             .submit(

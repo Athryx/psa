@@ -241,7 +241,7 @@ impl Hook for SharedHook {
         }
         if self.state.hook_fails.load(Ordering::SeqCst) {
             return Err(HookError::Probe(
-                psa_api::probe_transport::ProbeError::Protocol("bundle hook failed".into()),
+                psa_shared::probe_transport::ProbeError::Protocol("bundle hook failed".into()),
             ));
         }
         self.increment();

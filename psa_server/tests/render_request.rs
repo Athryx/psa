@@ -66,8 +66,7 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
                 &[
                     NewEvent::new(EventType::NewContext),
                     NewEvent::new(EventType::Model(ModelConfig {
-                        model: Model::new("test-model").unwrap(),
-                        provider: ProviderType::Openrouter,
+                        model: Model::new(ProviderType::Openrouter, "test-model").unwrap(),
                         effort: Effort::High,
                     })),
                     NewEvent::new(EventType::Compaction(Compaction {

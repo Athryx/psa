@@ -1,5 +1,6 @@
+//! Async HTTP/SSE client, transport errors, and probe connection URL parsing.
 use crate::{
-    Agent, AgentConfig, AgentConfigStatus, AgentDefinitionId, AgentId, AgentRequest, ApiError,
+    Agent, AgentConfigInput, AgentConfigStatus, AgentDefinitionId, AgentId, AgentRequest, ApiError,
     ClientQueryId, ClientQueryResponse, ConfigId, CreateSession, EventsPage, EventsQuery,
     ForkSession, ForkedSession, ListSessions, NewConfiguredAgent, NewSkill, RequestAccepted,
     ResolvedAgentConfig, Session, SessionId, Skill, StreamMessage, UpdateSession, routes,
@@ -10,28 +11,48 @@ use reqwest::{Method, Response};
 use serde::{Serialize, de::DeserializeOwned};
 use std::pin::Pin;
 
+/// Transport, server-response, or event-decoding failure for a client operation.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
+    /// HTTP transport or JSON response-body decoding failed.
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
+    /// The server returned a non-success HTTP response.
     #[error("server returned HTTP {status}: {error:?}")]
-    Api { status: u16, error: ApiError },
+    Api {
+        /// Numeric HTTP status code.
+        status: u16,
+        /// Structured server error, or a fallback if its body was invalid.
+        error: ApiError,
+    },
+    /// An SSE message contained invalid JSON for the wire event type.
     #[error("invalid API response: {0}")]
     Json(#[from] serde_json::Error),
+    /// The response was not SSE or the SSE framing/transport failed.
     #[error("invalid event stream: {0}")]
     Stream(String),
+    /// The supplied base URL failed the constructor or probe URL parser checks.
     #[error("base URL must be an HTTP(S) URL without query or fragment")]
     InvalidBaseUrl,
 }
 
+/// One decoded server-sent event.
 #[derive(Debug, Clone)]
 pub struct StreamEvent {
+    /// SSE event ID; durable IDs are scoped resume cursors, not plain event IDs.
     pub id: String,
+    /// Decoded event, snapshot, or runtime notification.
     pub message: StreamMessage,
 }
 
+/// Owned SSE stream. EOF or a resync notification requires explicit reconnection.
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, ClientError>> + Send>>;
 
+/// Cloneable async client for PSA's trusted-client HTTP API.
+///
+/// Methods return [`ClientError`] for transport failures, non-success HTTP
+/// responses, or invalid response bodies. Streaming may also fail while polled.
+/// This wrapper adds no retries or automatic SSE reconnections.
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -39,10 +60,14 @@ pub struct Client {
 }
 
 impl Client {
+    /// Create a client for an HTTP(S) server URL, optionally including a path prefix.
+    /// Rejects malformed URLs, unsupported schemes, queries, and fragments.
     pub fn new(base: &str) -> Result<Self, ClientError> {
         Self::with_http_client(base, reqwest::Client::new())
     }
 
+    /// Create a client using a configured HTTP transport, such as one with custom
+    /// headers or timeouts. Uses the same base-URL validation as [`Self::new`].
     pub fn with_http_client(base: &str, http: reqwest::Client) -> Result<Self, ClientError> {
         let base = reqwest::Url::parse(base).map_err(|_| ClientError::InvalidBaseUrl)?;
         if !matches!(base.scheme(), "http" | "https")
@@ -78,6 +103,17 @@ impl Client {
         Ok(response.json().await?)
     }
 
+    async fn send_no_content(
+        &self,
+        method: Method,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<(), ClientError> {
+        let response = self.request(method, path).json(body).send().await?;
+        require_success(response).await?;
+        Ok(())
+    }
+
     async fn get<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -89,10 +125,14 @@ impl Client {
         Ok(response.json().await?)
     }
 
+    /// List supported providers and whether each has configured credentials.
+    /// This does not validate credentials or model access.
     pub async fn list_providers(&self) -> Result<Vec<crate::ProviderInfo>, ClientError> {
         self.get(routes::PROVIDERS, &()).await
     }
 
+    /// List catalog models matching the AND-combined filters in `query`.
+    /// Reads cached metadata; does not trigger a catalog refresh.
     pub async fn list_models(
         &self,
         query: &crate::ListModels,
@@ -100,20 +140,24 @@ impl Client {
         self.get(routes::MODELS, query).await
     }
 
+    /// Look up cached catalog metadata by provider and API model name.
+    /// Returns an API error with HTTP 404 if the model is unknown.
     pub async fn model_info(
         &self,
-        config: &llm_api::providers::ModelConfig,
+        model: &llm_api::providers::Model,
     ) -> Result<crate::ModelInfo, ClientError> {
         self.get(
             routes::MODEL_LOOKUP,
             &crate::ModelLookup {
-                provider: config.provider,
-                model: config.model.api_name.clone(),
+                provider: model.provider,
+                model: model.api_name.clone(),
             },
         )
         .await
     }
 
+    /// Set a model's server-wide pin, which survives catalog refreshes and restarts.
+    /// Pinning an unknown model returns HTTP 404; unpinning one returns `None`.
     pub async fn set_model_pinned(
         &self,
         request: &crate::PinModel,
@@ -121,46 +165,61 @@ impl Client {
         self.send(Method::PUT, routes::MODEL_PIN, request).await
     }
 
-    pub async fn resync_models(
-        &self,
-        request: &crate::ResyncModels,
-    ) -> Result<Vec<crate::ModelSyncResult>, ClientError> {
-        self.send(Method::POST, routes::MODELS_RESYNC, request)
+    /// Refresh the selected provider's catalog, or all providers when omitted.
+    /// Waits for every requested refresh; returns an API error if any fails.
+    /// Successful provider updates are retained even if another provider fails.
+    /// Success has no response body.
+    pub async fn resync_models(&self, request: &crate::ResyncModels) -> Result<(), ClientError> {
+        self.send_no_content(Method::POST, routes::MODELS_RESYNC, request)
             .await
     }
 
+    /// List registered probes, including disconnected probes and live activity state.
     pub async fn list_probes(&self) -> Result<Vec<crate::Probe>, ClientError> {
         self.get(routes::PROBES, &()).await
     }
 
+    /// Fetch a registered probe by ID, including its live activity state.
+    /// Returns HTTP 404 if the probe is unknown.
     pub async fn get_probe(&self, id: crate::ProbeId) -> Result<crate::Probe, ClientError> {
         self.get(&routes::probe_path(id), &()).await
     }
 
-    pub async fn upsert_agent_configs(
+    /// Atomically create or replace named configurations and return their statuses.
+    /// Omitted component lists inherit server defaults; explicit lists replace them.
+    /// Passing normalized [`crate::AgentConfig`] values keeps all lists explicit.
+    pub async fn upsert_agent_configs<I: Clone + Into<AgentConfigInput>>(
         &self,
-        configs: &[AgentConfig],
+        configs: &[I],
     ) -> Result<Vec<AgentConfigStatus>, ClientError> {
+        let configs: Vec<AgentConfigInput> = configs.iter().cloned().map(Into::into).collect();
         self.send(Method::POST, routes::AGENT_CONFIGS, &configs)
             .await
     }
 
-    pub async fn list_agent_configs(
+    /// Refresh discovery, then list all configurations and dependency statuses.
+    /// Global discovery is always refreshed; `Some(refresh_session_id)` also
+    /// refreshes that session's selected project. This is not a result filter.
+    pub async fn refresh_and_list_agent_configs(
         &self,
-        session_id: Option<SessionId>,
+        refresh_session_id: Option<SessionId>,
     ) -> Result<Vec<AgentConfigStatus>, ClientError> {
         self.get(
             routes::AGENT_CONFIGS,
-            &crate::ListAgentConfigs { session_id },
+            &crate::RefreshAndListAgentConfigs { refresh_session_id },
         )
         .await
     }
 
+    /// Fetch the current named configuration and its dependency status.
+    /// Returns HTTP 404 if the configuration is unknown.
     pub async fn get_agent_config(&self, id: &ConfigId) -> Result<AgentConfigStatus, ClientError> {
         self.send(Method::POST, routes::AGENT_CONFIG_LOOKUP, id)
             .await
     }
 
+    /// Fetch an immutable definition snapshot and its source policies/references.
+    /// Returns `None` if the snapshot ID is unknown.
     pub async fn get_resolved_agent_config(
         &self,
         id: AgentDefinitionId,
@@ -168,22 +227,34 @@ impl Client {
         self.get(&routes::agent_snapshot_path(id), &()).await
     }
 
+    /// Upload a skill's tar archive and create or replace its named registration.
+    /// The server validates the archive and `SKILL.md` metadata before registration.
     pub async fn upload_skill(&self, request: &NewSkill) -> Result<Skill, ClientError> {
         self.send(Method::POST, routes::SKILLS, request).await
     }
 
-    pub async fn list_skills(
+    /// Refresh discovery, then list all registered skills.
+    /// Global discovery is always refreshed; `Some(refresh_session_id)` also
+    /// refreshes that session's selected project. This is not a result filter.
+    pub async fn refresh_and_list_skills(
         &self,
-        session_id: Option<SessionId>,
+        refresh_session_id: Option<SessionId>,
     ) -> Result<Vec<Skill>, ClientError> {
-        self.get(routes::SKILLS, &crate::ListSkills { session_id })
-            .await
+        self.get(
+            routes::SKILLS,
+            &crate::RefreshAndListSkills { refresh_session_id },
+        )
+        .await
     }
 
+    /// Create a session with a registered probe and optional model configuration.
+    /// Omitted model configuration uses the server's configured session defaults.
+    /// The probe may be offline; paths refer to its filesystem.
     pub async fn create_session(&self, request: &CreateSession) -> Result<Session, ClientError> {
         self.send(Method::POST, routes::SESSIONS, request).await
     }
 
+    /// List direct children of `parent`, or root sessions when `parent` is `None`.
     pub async fn list_sessions(
         &self,
         parent: Option<SessionId>,
@@ -191,11 +262,14 @@ impl Client {
         self.get(routes::SESSIONS, &ListSessions { parent }).await
     }
 
+    /// Fetch a session and its live busy state. Unknown IDs return HTTP 404.
     pub async fn get_session(&self, id: SessionId) -> Result<Session, ClientError> {
         self.get(&routes::session_path(routes::SESSION, id), &())
             .await
     }
 
+    /// Apply the supplied session metadata changes, leaving omitted fields unchanged.
+    /// Configured session-update hooks run for the session's agents.
     pub async fn update_session(
         &self,
         id: SessionId,
@@ -209,6 +283,8 @@ impl Client {
         .await
     }
 
+    /// Create a child session with inherited history through the requested boundary.
+    /// Returns the new session and forked agents, with source IDs in `parent_id`.
     pub async fn fork_session(
         &self,
         id: SessionId,
@@ -222,6 +298,8 @@ impl Client {
         .await
     }
 
+    /// Create an agent from a named configuration, pinning its resolved definition.
+    /// The requested model must satisfy the configuration's model-selection policy.
     pub async fn create_agent(
         &self,
         session: SessionId,
@@ -235,11 +313,14 @@ impl Client {
         .await
     }
 
+    /// List agents belonging to the session, including state and cumulative usage.
     pub async fn list_agents(&self, session: SessionId) -> Result<Vec<Agent>, ClientError> {
         self.get(&routes::session_path(routes::AGENTS, session), &())
             .await
     }
 
+    /// Fetch an agent in the specified session.
+    /// Unknown agents or a mismatched session return HTTP 404.
     pub async fn get_agent(
         &self,
         session: SessionId,
@@ -249,6 +330,8 @@ impl Client {
             .await
     }
 
+    /// Submit an interrupt or message-delivery request and return its acceptance ID.
+    /// Acceptance does not mean inference or tool execution has finished.
     pub async fn submit_request(
         &self,
         session: SessionId,
@@ -264,6 +347,8 @@ impl Client {
     }
 
     /// Send attributed context using normal steering delivery.
+    /// `source: None` leaves sender attribution absent; this does not create an
+    /// agent or establish parentage.
     pub async fn send_subagent_message(
         &self,
         session: SessionId,
@@ -279,7 +364,9 @@ impl Client {
         .await
     }
 
-    /// Respond to an outstanding runtime query. Success has no response body.
+    /// Respond to an outstanding runtime query in the specified agent/session.
+    /// The first valid response wins; invalid responses leave the query pending.
+    /// Success has no response body.
     pub async fn respond_to_client_query(
         &self,
         session: SessionId,
@@ -287,32 +374,41 @@ impl Client {
         query: ClientQueryId,
         response: &ClientQueryResponse,
     ) -> Result<(), ClientError> {
-        let response = self
-            .request(
-                Method::POST,
-                &routes::client_query_response_path(session, agent, query),
-            )
-            .json(response)
-            .send()
-            .await?;
-        require_success(response).await?;
-        Ok(())
+        self.send_no_content(
+            Method::POST,
+            &routes::client_query_response_path(session, agent, query),
+            response,
+        )
+        .await
     }
 
+    /// Fetch one event page for a session or, with `Some(agent)`, one agent.
+    /// Session cursors are session positions; agent cursors are event IDs.
+    /// Requests `Accept: application/json`; paginate using the returned `next_after`.
     pub async fn events(
         &self,
         session: SessionId,
         agent: Option<AgentId>,
         query: &EventsQuery,
     ) -> Result<EventsPage, ClientError> {
-        let mut query = query.clone();
-        query.stream = false;
+        let response = self
+            .request(Method::GET, &events_path(session, agent))
+            .header("Accept", "application/json")
+            .query(query)
+            .send()
+            .await?;
+        let response = require_success(response).await?;
 
-        self.get(&events_path(session, agent), &query).await
+        Ok(response.json().await?)
     }
 
+    /// Stream session events, or one agent's events when `agent` is `Some`.
+    /// Requests `Accept: text/event-stream`; `last_event_id`, when supplied,
+    /// overrides `query.after` and must belong to the same session/agent scope.
+    ///
     /// Reconnect explicitly with the last durable ID after EOF/resync. Snapshots
     /// replace provisional state; committed items should be upserted by identity.
+    /// A `query.through` bound produces a finite stream without following updates.
     pub async fn stream_events(
         &self,
         session: SessionId,
@@ -320,11 +416,10 @@ impl Client {
         query: &EventsQuery,
         last_event_id: Option<&str>,
     ) -> Result<EventStream, ClientError> {
-        let mut query = query.clone();
-        query.stream = true;
         let mut request = self
             .request(Method::GET, &events_path(session, agent))
-            .query(&query);
+            .header("Accept", "text/event-stream")
+            .query(query);
         if let Some(id) = last_event_id {
             request = request.header("Last-Event-ID", id);
         }
@@ -370,7 +465,11 @@ async fn require_success(response: Response) -> Result<Response, ClientError> {
     Err(ClientError::Api { status, error })
 }
 
-/// Normalize a configured server base URL for a probe websocket connection.
+/// Build a probe WebSocket connection URL, preserving any server path prefix.
+///
+/// Accepts HTTP(S) or WS(S), converts to WS(S), and appends the probe connect path.
+/// Rejects malformed URLs, unsupported schemes, credentials, missing hosts,
+/// queries, and fragments with [`ClientError::InvalidBaseUrl`].
 pub fn parse_probe_server_url(value: &str) -> Result<String, ClientError> {
     let mut url = reqwest::Url::parse(value).map_err(|_| ClientError::InvalidBaseUrl)?;
     if url.query().is_some()

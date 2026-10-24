@@ -63,7 +63,7 @@ impl Hook for RecordLifecycle {
         };
         assert!(matches!(
             context.probe(),
-            Err(psa_api::probe_transport::ProbeError::Disconnected)
+            Err(psa_shared::probe_transport::ProbeError::Disconnected)
         ));
 
         if self.name == "create" && mark_running {
@@ -145,7 +145,7 @@ impl Fixture {
     async fn create_session(&self, sessions: &Sessions) -> Session {
         sessions
             .create_session(psa_api::CreateSession {
-                model_config: crate::test_support::model_config(),
+                model_config: Some(crate::test_support::model_config()),
                 name: "original".into(),
                 working_directory: "/work".into(),
                 probe_id: self.probe,
@@ -227,7 +227,11 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
     fixture.wait_idle(&runtime.handle, session.id).await;
 
     let mut explicit_model = session.model_config.clone();
-    explicit_model.model = llm_api::providers::Model::new("explicit-model").unwrap();
+    explicit_model.model = llm_api::providers::Model::new(
+        llm_api::providers::ProviderType::Openrouter,
+        "explicit-model",
+    )
+    .unwrap();
     let definition = runtime
         .handle
         .update_agent_definition(
@@ -292,7 +296,11 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
     cursor.rollback().await.unwrap();
 
     let mut updated_model = session.model_config.clone();
-    updated_model.model = llm_api::providers::Model::new("updated-model").unwrap();
+    updated_model.model = llm_api::providers::Model::new(
+        llm_api::providers::ProviderType::Openrouter,
+        "updated-model",
+    )
+    .unwrap();
     runtime
         .handle
         .update_session(
@@ -448,8 +456,8 @@ async fn fork_runs_creation_only_for_the_new_child_agent() {
         .await
         .unwrap();
     assert_eq!(fork.agents.len(), 1);
-    assert_eq!(fork.agents[0].0, parent.id);
-    let child = &fork.agents[0].1;
+    assert_eq!(fork.agents[0].parent_id, Some(parent.id));
+    let child = &fork.agents[0];
     assert_ne!(child.id, parent.id);
     let created = fixture.next("create", child.id).await;
     assert_eq!(created.session.id, fork.session.id);

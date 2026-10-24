@@ -66,7 +66,7 @@ async fn configured_creation_refreshes_sources_uploads_and_retains_selected_proj
         .unwrap();
     let session = harness.client.create_session(&CreateSession {
         name: "configured".into(), working_directory: nested.clone(), probe_id: harness.id,
-        model_config: serde_json::from_value(serde_json::json!({"model":{"api_name":"test-model"}, "provider":"Openrouter", "effort":"Medium"})).unwrap(),
+        model_config: Some(serde_json::from_value(serde_json::json!({"model":{"provider":"Openrouter","api_name":"test-model"}, "effort":"Medium"})).unwrap()),
     }).await.unwrap();
     // Introducing a nearer project must not change the project's retained identity.
     tokio::fs::create_dir_all(nested.join(".agents"))
@@ -80,9 +80,13 @@ async fn configured_creation_refreshes_sources_uploads_and_retains_selected_proj
         name: "review".into(),
         subagent_parent_id: None,
         interactive: false,
-        model: None,
+        model: Some(psa_api::ModelSelection::Global),
     };
-    let listed = harness.client.list_skills(Some(session.id)).await.unwrap();
+    let listed = harness
+        .client
+        .refresh_and_list_skills(Some(session.id))
+        .await
+        .unwrap();
     assert_eq!(listed.len(), 3);
     assert!(!harness.metadata.data_dir.join("skill-cache").exists());
     let agent = harness

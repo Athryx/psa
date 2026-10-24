@@ -189,8 +189,8 @@ fn normalize_catalog(provider: ProviderType, value: Value) -> Result<Vec<ModelIn
             continue;
         }
         let raw: PiModel = serde_json::from_value(value)?;
-        let model =
-            Model::new(raw.id.clone()).map_err(|error| CatalogError::Invalid(error.to_string()))?;
+        let model = Model::new(provider, raw.id.clone())
+            .map_err(|error| CatalogError::Invalid(error.to_string()))?;
         if !ids.insert(raw.id.clone()) {
             return Err(CatalogError::Invalid("duplicate catalog model ID".into()));
         }
@@ -202,7 +202,6 @@ fn normalize_catalog(provider: ProviderType, value: Value) -> Result<Vec<ModelIn
             .unwrap_or_default();
 
         models.push(ModelInfo {
-            provider,
             model,
             name: raw
                 .name

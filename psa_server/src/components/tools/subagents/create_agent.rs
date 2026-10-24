@@ -10,7 +10,7 @@ use crate::{
     sessions::Session,
 };
 use llm_api::api::ToolDefinition;
-use psa_api::AgentMessageSource;
+use psa_api::{AgentMessageSource, ModelSelection};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -23,9 +23,9 @@ struct CreateAgentArgs {
     task: String,
     /// Pinned permitted definition name. Required; there is no default.
     agent_template: Option<String>,
-    /// Allowed provider/model slug, or "global" / "parent". May be omitted when
-    /// the template has a default model (or only one allowed model).
-    model: Option<String>,
+    /// Exact allowed model selection, including its effort policy.
+    /// May be omitted when the template enables a default or has only one choice.
+    model: Option<ModelSelection>,
 }
 #[derive(Default)]
 pub struct CreateAgent {
@@ -40,7 +40,7 @@ impl CreateAgent {
     pub(crate) fn definition() -> ToolDefinition {
         ToolDefinition::for_type::<CreateAgentArgs>(
             "create_agent",
-            "Start a named child asynchronously in this session. agent_template must name a permitted template. model optionally selects an allowed provider/model slug, global, or parent; templates without a default require a model choice. Names must be session-unique.",
+            "Start a named child asynchronously in this session. agent_template must name a permitted template. model must match an allowed selection including its effort policy; templates with multiple choices and no default require an explicit selection. Names must be session-unique.",
             Some(false),
         )
     }
@@ -170,7 +170,10 @@ mod tests {
             json!({"name":"worker","task":"work"}),
             json!({"name":"worker","task":"work","agent_template":null}),
             json!({"name":"worker","task":"work","agent_template":"rust"}),
-            json!({"name":"worker","task":"work","agent_template":"rust","model":"global"}),
+            json!({"name":"worker","task":"work","agent_template":"rust","model":"Global"}),
+            json!({"name":"worker","task":"work","model":{"Fixed":{
+                "model":"openrouter/vendor/model","effort":{"Fixed":"High"}
+            }}}),
         ] {
             assert!(parse_tool_arguments::<CreateAgentArgs>(value).is_ok());
         }
@@ -180,6 +183,10 @@ mod tests {
             json!({"name":"worker","task":"work","extra":true}),
             json!({"name":"worker","task":"work","agent_template":false}),
             json!({"name":"worker","task":"work","model":12}),
+            json!({"name":"worker","task":"work","model":"global"}),
+            json!({"name":"worker","task":"work","model":{"Fixed":{
+                "model":"openrouter/vendor/model"
+            }}}),
         ] {
             assert!(parse_tool_arguments::<CreateAgentArgs>(value).is_err());
         }

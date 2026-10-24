@@ -1,8 +1,6 @@
 use super::{BashError, ProbeHandle};
-use psa_api::{
-    probe_transport::Call,
-    probes::{Command, Event},
-};
+use psa_api::probes::{Command, Event};
+use psa_shared::probe_transport::Call;
 use std::{
     path::{Path, PathBuf},
     time::Duration,

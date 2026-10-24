@@ -54,7 +54,7 @@ impl StartOptions {
 
         let explicit = self.config.is_some();
         let path = self.config.unwrap_or_else(|| data_dir.join("probe.toml"));
-        let _lock = psa_api::local_config::lock(&path).await?;
+        let _lock = psa_shared::local_config::lock(&path).await?;
         let text = match tokio::fs::read_to_string(&path).await {
             Ok(text) => text,
             Err(error) if !explicit && error.kind() == std::io::ErrorKind::NotFound => {

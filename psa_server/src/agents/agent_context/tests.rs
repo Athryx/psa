@@ -163,8 +163,7 @@ impl Fixture {
 
 fn model() -> ModelConfig {
     ModelConfig {
-        model: Model::new("test-model").unwrap(),
-        provider: ProviderType::Openrouter,
+        model: Model::new(ProviderType::Openrouter, "test-model").unwrap(),
         effort: Effort::Medium,
     }
 }
@@ -262,9 +261,8 @@ async fn trace_queries_match_database_and_bind_inherited_fork_history() {
     let child = fork
         .agents
         .iter()
-        .find(|(id, _)| *id == parent.id)
+        .find(|agent| agent.parent_id == Some(parent.id))
         .unwrap()
-        .1
         .clone();
     cursor
         .add_events(parent.id, &[log("parent after fork private")])

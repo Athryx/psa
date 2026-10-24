@@ -3,10 +3,137 @@ use llm_api::providers::{Effort, Model, ModelConfig, ProviderType};
 
 fn model_config() -> ModelConfig {
     ModelConfig {
-        model: Model::new("test-model").unwrap(),
-        provider: ProviderType::Openrouter,
+        model: Model::new(ProviderType::Openrouter, "test-model").unwrap(),
         effort: Effort::High,
     }
+}
+
+#[test]
+fn model_identity_is_shared_by_configuration_and_pin_requests() {
+    let model = Model::new(ProviderType::Openrouter, "vendor/model").unwrap();
+    let identity = serde_json::json!({
+        "provider": "Openrouter",
+        "api_name": "vendor/model"
+    });
+    let config = ModelConfig {
+        model: model.clone(),
+        effort: Effort::High,
+    };
+    let config_wire = serde_json::json!({"model": identity, "effort": "High"});
+    assert_eq!(serde_json::to_value(&config).unwrap(), config_wire);
+    assert_eq!(
+        serde_json::from_value::<ModelConfig>(config_wire).unwrap(),
+        config
+    );
+
+    let pin = PinModel {
+        model,
+        pinned: true,
+    };
+    let pin_wire = serde_json::json!({"model": identity, "pinned": true});
+    assert_eq!(serde_json::to_value(&pin).unwrap(), pin_wire);
+    let decoded: PinModel = serde_json::from_value(pin_wire).unwrap();
+    assert_eq!(decoded.model, pin.model);
+    assert!(decoded.pinned);
+}
+
+#[test]
+fn agent_config_listing_query_names_the_refresh_session() {
+    let query = RefreshAndListAgentConfigs {
+        refresh_session_id: Some(SessionId(7)),
+    };
+    let wire = serde_json::json!({"refresh_session_id": 7});
+    assert_eq!(serde_json::to_value(&query).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_value::<RefreshAndListAgentConfigs>(wire)
+            .unwrap()
+            .refresh_session_id,
+        Some(SessionId(7))
+    );
+    assert_eq!(
+        serde_json::from_str::<RefreshAndListAgentConfigs>("{}")
+            .unwrap()
+            .refresh_session_id,
+        None
+    );
+}
+
+#[test]
+fn skill_listing_query_names_the_refresh_session() {
+    let query = RefreshAndListSkills {
+        refresh_session_id: Some(SessionId(7)),
+    };
+    let wire = serde_json::json!({"refresh_session_id": 7});
+    assert_eq!(serde_json::to_value(&query).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_value::<RefreshAndListSkills>(wire)
+            .unwrap()
+            .refresh_session_id,
+        Some(SessionId(7))
+    );
+    assert_eq!(
+        serde_json::from_str::<RefreshAndListSkills>("{}")
+            .unwrap()
+            .refresh_session_id,
+        None
+    );
+}
+
+#[test]
+fn configured_agent_requests_carry_typed_model_and_effort_selections() {
+    for model in [
+        None,
+        Some(ModelSelection::Global),
+        Some(ModelSelection::Parent),
+        Some(ModelSelection::Fixed {
+            model: "openrouter/vendor/model".into(),
+            effort: EffortSelection::Fixed(Effort::High),
+        }),
+    ] {
+        let request = NewConfiguredAgent {
+            config_id: ConfigId {
+                config_group: ConfigGroup::Global,
+                name: "worker".into(),
+            },
+            name: "child".into(),
+            subagent_parent_id: None,
+            interactive: false,
+            model: model.clone(),
+        };
+        let wire = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            serde_json::from_value::<NewConfiguredAgent>(wire)
+                .unwrap()
+                .model,
+            model
+        );
+    }
+
+    for model in [
+        serde_json::json!("openrouter/vendor/model"),
+        serde_json::json!("global"),
+        serde_json::json!({"Fixed": {"model": "openrouter/vendor/model"}}),
+        serde_json::json!({"Fixed": {"model": "openrouter/vendor/model", "effort": 42}}),
+    ] {
+        assert!(
+            serde_json::from_value::<NewConfiguredAgent>(serde_json::json!({
+                "config_id": {"config_group": "Global", "name": "worker"},
+                "name": "child",
+                "model": model,
+            }))
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn provider_info_only_transmits_identity_and_authentication() {
+    let wire = serde_json::json!({"id": "Openrouter", "authed": true});
+    let provider: ProviderInfo = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(provider.id, ProviderType::Openrouter);
+    assert!(provider.authed);
+    assert_eq!(provider.id.name(), "OpenRouter");
+    assert_eq!(serde_json::to_value(provider).unwrap(), wire);
 }
 
 #[test]
@@ -113,16 +240,30 @@ fn bundle_requests_roundtrip_and_replacement_defaults_clear_bundles() {
 }
 
 #[test]
-fn session_models_are_required_and_agents_reference_definitions() {
+fn session_models_are_optional_and_agents_reference_definitions() {
     let mut session = serde_json::json!({
         "name": "session",
         "working_directory": "/work",
         "probe_id": "00000000-0000-0000-0000-000000000000"
     });
-    assert!(serde_json::from_value::<CreateSession>(session.clone()).is_err());
+    let omitted: CreateSession = serde_json::from_value(session.clone()).unwrap();
+    assert_eq!(omitted.model_config, None);
+    assert!(
+        serde_json::to_value(&omitted)
+            .unwrap()
+            .get("model_config")
+            .is_none()
+    );
+    session["model_config"] = serde_json::Value::Null;
+    assert_eq!(
+        serde_json::from_value::<CreateSession>(session.clone())
+            .unwrap()
+            .model_config,
+        None
+    );
     session["model_config"] = serde_json::to_value(model_config()).unwrap();
     let decoded: CreateSession = serde_json::from_value(session.clone()).unwrap();
-    assert_eq!(decoded.model_config, model_config());
+    assert_eq!(decoded.model_config, Some(model_config()));
     session["secret"] = serde_json::json!("not allowed");
     assert!(serde_json::from_value::<CreateSession>(session).is_err());
     let update: UpdateSession = serde_json::from_str("{}").unwrap();

@@ -16,8 +16,7 @@ pub fn probe_metadata() -> ProbeMetadata {
 pub fn model_config() -> llm_api::providers::ModelConfig {
     use llm_api::providers::{Effort, Model, ModelConfig, ProviderType};
     ModelConfig {
-        model: Model::new("test-model").unwrap(),
-        provider: ProviderType::Openrouter,
+        model: Model::new(ProviderType::Openrouter, "test-model").unwrap(),
         effort: Effort::Medium,
     }
 }

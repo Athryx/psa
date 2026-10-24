@@ -69,7 +69,7 @@ async fn commit_persists_multiple_operations_together() {
         cursor.get_agent(agent.id).await.unwrap().state,
         AgentState::Running
     );
-    let child = &fork.agents[0].1;
+    let child = &fork.agents[0];
     assert_eq!(
         cursor.get_agent(child.id).await.unwrap().state,
         AgentState::Running

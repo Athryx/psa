@@ -70,5 +70,5 @@ pub struct SessionFork {
 #[derive(Debug, Clone)]
 pub struct ForkedSession {
     pub session: Session,
-    pub agents: Vec<(AgentId, Agent)>,
+    pub agents: Vec<Agent>,
 }

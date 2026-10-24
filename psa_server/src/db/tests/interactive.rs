@@ -61,12 +61,11 @@ async fn interactive_round_trips_reloads_and_is_inherited_by_forks() {
         .await
         .unwrap();
     for agent in &originals {
-        let child = &fork
+        let child = fork
             .agents
             .iter()
-            .find(|(id, _)| *id == agent.id)
-            .unwrap()
-            .1;
+            .find(|agent| agent.parent_id == Some(agent.id))
+            .unwrap();
         assert_eq!(child.interactive, agent.interactive);
         assert_eq!(
             cursor.get_agent(child.id).await.unwrap().interactive,
@@ -83,7 +82,7 @@ async fn migration_defaults_legacy_agents_to_noninteractive_and_checks_values() 
     let path = dir.path().join("legacy.sqlite3");
     let pool = create_legacy_database(&path).await;
     sqlx::raw_sql(
-        "INSERT INTO sessions (id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (1,1,2,'legacy','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":{\"api_name\":\"test-model\"},\"provider\":\"Openrouter\",\"effort\":\"High\"}');
+        "INSERT INTO sessions (id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (1,1,2,'legacy','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":{\"provider\":\"Openrouter\",\"api_name\":\"test-model\"},\"effort\":\"High\"}');
          INSERT INTO agents (id,session_id,definition_id,first_event_seq,next_event_seq,created_position,name,created_at_us,updated_at_us) VALUES (1,1,1,1,1,1,'legacy',0,0);",
     )
     .execute(&pool)

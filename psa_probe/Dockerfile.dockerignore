@@ -12,6 +12,8 @@
 !llm_api/**
 !psa_api/
 !psa_api/**
+!psa_shared/
+!psa_shared/**
 !psa_probe/
 !psa_probe/**
 !psa_server/

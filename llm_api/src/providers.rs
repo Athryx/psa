@@ -9,6 +9,14 @@ pub enum ProviderType {
 impl ProviderType {
     pub const ALL: [Self; 2] = [Self::OpenAiCodex, Self::Openrouter];
 
+    /// Human-readable provider name.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::OpenAiCodex => "OpenAI Codex",
+            Self::Openrouter => "OpenRouter",
+        }
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::OpenAiCodex => "openai_codex",
@@ -30,22 +38,56 @@ impl ProviderType {
 /// Model identified by its provider-specific API name, without any harness
 /// provider prefix. On OpenRouter this is the `maker/model` slug the API
 /// expects (e.g. `z-ai/glm-5.3`); Codex uses a plain model name (e.g.
-/// `gpt-5`). The provider is tracked separately on `ModelConfig`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `gpt-5`). The provider and API name together define model identity.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Model {
+    pub provider: ProviderType,
     pub api_name: String,
 }
 
 impl Model {
-    /// Construct a model from its API name, validating that the name is
-    /// nonempty and has no surrounding whitespace.
-    pub fn new(api_name: impl Into<String>) -> Result<Self, crate::Error> {
+    /// Construct a model from its provider and API name, validating that the
+    /// name is nonempty and has no surrounding whitespace.
+    pub fn new(provider: ProviderType, api_name: impl Into<String>) -> Result<Self, crate::Error> {
         let model = Self {
+            provider,
             api_name: api_name.into(),
         };
 
         model.validate()?;
         Ok(model)
+    }
+
+    /// Parse a configuration slug in `provider_slug/api_name` form.
+    ///
+    /// The provider slug must match [`ProviderType::as_str`]. Only the first
+    /// slash separates the provider, preserving API names such as `vendor/model`.
+    /// Returns [`crate::Error::InvalidConfig`] for a missing or unknown provider,
+    /// a missing separator, an empty model name, or surrounding whitespace.
+    pub fn parse_slug(value: &str) -> Result<Self, crate::Error> {
+        if value.trim() != value {
+            return Err(crate::Error::InvalidConfig {
+                field: "model".into(),
+                message: "model slug must have no surrounding whitespace".into(),
+            });
+        }
+
+        let (provider_slug, api_name) =
+            value
+                .split_once('/')
+                .ok_or_else(|| crate::Error::InvalidConfig {
+                    field: "model".into(),
+                    message: "model slug must use provider_slug/api_name format".into(),
+                })?;
+        let provider = ProviderType::ALL
+            .into_iter()
+            .find(|provider| provider.as_str() == provider_slug)
+            .ok_or_else(|| crate::Error::InvalidConfig {
+                field: "model".into(),
+                message: format!("missing or unknown model provider: {provider_slug:?}"),
+            })?;
+
+        Self::new(provider, api_name)
     }
 
     /// Validate a nonempty API model name with no surrounding whitespace.
@@ -77,7 +119,7 @@ impl Model {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Effort {
     Off,
     Minimal,
@@ -105,7 +147,6 @@ impl Effort {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub model: Model,
-    pub provider: ProviderType,
     pub effort: Effort,
     // could add other configs like temperature top_p etc
     // but in modern llm, they often trained for specific defaults
@@ -115,7 +156,13 @@ pub struct ModelConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{Effort, Model, ProviderType};
+    use super::{Effort, Model, ModelConfig, ProviderType};
+
+    #[test]
+    fn provider_names_are_human_readable() {
+        assert_eq!(ProviderType::OpenAiCodex.name(), "OpenAI Codex");
+        assert_eq!(ProviderType::Openrouter.name(), "OpenRouter");
+    }
 
     #[test]
     fn api_base_urls_exclude_operation_paths() {
@@ -140,10 +187,94 @@ mod tests {
                 "claude-sonnet-4",
             ),
         ] {
-            let model = Model::new(api_name).unwrap();
+            let model = Model::new(ProviderType::Openrouter, api_name).unwrap();
             assert_eq!(model.prefix(), expected_prefix);
             assert_eq!(model.model_name(), expected_name);
         }
+    }
+
+    #[test]
+    fn parse_slug_resolves_providers_and_preserves_api_names() {
+        for (slug, provider, api_name) in [
+            ("openai_codex/gpt-5", ProviderType::OpenAiCodex, "gpt-5"),
+            ("openrouter/model", ProviderType::Openrouter, "model"),
+            (
+                "openrouter/vendor/model",
+                ProviderType::Openrouter,
+                "vendor/model",
+            ),
+            (
+                "openai_codex/vendor/model/variant",
+                ProviderType::OpenAiCodex,
+                "vendor/model/variant",
+            ),
+        ] {
+            assert_eq!(
+                Model::parse_slug(slug).unwrap(),
+                Model::new(provider, api_name).unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn parse_slug_rejects_malformed_slugs() {
+        for slug in [
+            "",
+            "model",
+            "openrouter",
+            "/model",
+            "unknown/model",
+            "Openrouter/model",
+            "openrouter/",
+            "openai_codex/",
+            "openrouter/ ",
+            "openrouter/ model",
+            "openrouter/model ",
+            " openrouter/model",
+            "openrouter /model",
+            "openrouter/model\n",
+            "\topenai_codex/gpt-5",
+        ] {
+            assert!(
+                matches!(
+                    Model::parse_slug(slug),
+                    Err(crate::Error::InvalidConfig { .. })
+                ),
+                "expected invalid configuration for {slug:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn model_identity_includes_provider_and_api_name() {
+        let model = Model::new(ProviderType::OpenAiCodex, "shared-model").unwrap();
+        let same = Model::new(ProviderType::OpenAiCodex, "shared-model").unwrap();
+        let other_provider = Model::new(ProviderType::Openrouter, "shared-model").unwrap();
+        let other_name = Model::new(ProviderType::OpenAiCodex, "other-model").unwrap();
+
+        assert_eq!(model, same);
+        assert_ne!(model, other_provider);
+        assert_ne!(model, other_name);
+        let identities = std::collections::HashSet::from([model, same, other_provider, other_name]);
+        assert_eq!(identities.len(), 3);
+    }
+
+    #[test]
+    fn model_config_serializes_provider_inside_model() {
+        let config = ModelConfig {
+            model: Model::new(ProviderType::Openrouter, "vendor/model").unwrap(),
+            effort: Effort::High,
+        };
+        let expected = serde_json::json!({
+            "model": {"provider": "Openrouter", "api_name": "vendor/model"},
+            "effort": "High",
+        });
+
+        assert_eq!(serde_json::to_value(&config).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_value::<ModelConfig>(expected).unwrap(),
+            config
+        );
     }
 
     #[test]

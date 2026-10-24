@@ -51,7 +51,7 @@ impl ApiProvider for OpenAiResponses {
         history: &AgentHistory,
         config: &RequestConfig,
     ) -> Result<Self::Stream, Error> {
-        require_provider(self.provider, history.config.provider)?;
+        require_provider(self.provider, history.config.model.provider)?;
 
         let body = build_request_body(history, config)?;
         let response = self.client.post(&body).await?;
@@ -158,7 +158,7 @@ fn build_request_items(history: &AgentHistory) -> Result<Vec<Value>, Error> {
     history
         .items
         .iter()
-        .map(|item| serialize_item(history.config.provider, item))
+        .map(|item| serialize_item(history.config.model.provider, item))
         .collect()
 }
 
@@ -559,7 +559,7 @@ impl ResponsesDecoder {
     ) -> Result<(), Error> {
         if index < output.items.len() {
             let slot = &self.slots[&index];
-            let item = parse_item(output.config.provider, &slot.raw, slot.completed)?
+            let item = parse_item(output.config.model.provider, &slot.raw, slot.completed)?
                 .ok_or_else(|| protocol("published function identity disappeared"))?;
             validate_item_compatibility(&output.items[index], &item)?;
             output.items[index] = item;
@@ -570,7 +570,8 @@ impl ResponsesDecoder {
 
         // Never expose index N before N-1, or a call before its identity is known.
         while let Some(slot) = self.slots.get_mut(&output.items.len()) {
-            let Some(item) = parse_item(output.config.provider, &slot.raw, slot.completed)? else {
+            let Some(item) = parse_item(output.config.model.provider, &slot.raw, slot.completed)?
+            else {
                 break;
             };
             let index = output.items.len();
@@ -606,7 +607,7 @@ impl ResponsesDecoder {
 
         if let Some(slot) = self.slots.get_mut(&index) {
             if slot.completed {
-                if done && matches_completed_item(output.config.provider, &slot.raw, &raw)? {
+                if done && matches_completed_item(output.config.model.provider, &slot.raw, &raw)? {
                     return Ok(());
                 }
                 return Err(protocol("snapshot changed a completed output item"));
@@ -1434,8 +1435,7 @@ mod tests {
 
     fn model() -> ModelConfig {
         ModelConfig {
-            provider: PROVIDER,
-            model: Model::new("gpt-test").unwrap(),
+            model: Model::new(PROVIDER, "gpt-test").unwrap(),
             effort: Effort::High,
         }
     }
@@ -2193,7 +2193,7 @@ mod tests {
     fn responses_decoder_and_replay_use_the_actual_provider_identity() {
         let provider = ProviderType::Openrouter;
         let mut h = Harness::new();
-        h.output.config.provider = provider;
+        h.output.config.model.provider = provider;
         h.output.config.model.api_name = "vendor/responses-model".into();
         let raw = json!([
             {"id":"reason","type":"reasoning","summary":[{"type":"summary_text","text":"summary"}],"encrypted_content":"encrypted"},
@@ -2350,8 +2350,7 @@ mod tests {
     #[test]
     fn resolves_all_efforts_without_changing_the_requested_config() {
         let history = AgentHistory::new(ModelConfig {
-            provider: ProviderType::OpenAiCodex,
-            model: Model::new("test").unwrap(),
+            model: Model::new(ProviderType::OpenAiCodex, "test").unwrap(),
             effort: Effort::Minimal,
         });
         for (effort, wire) in [

@@ -10,14 +10,13 @@ use crate::{
     db::{Database, DbError},
     probes::ProbeHandle,
 };
+use psa_api::probes::{DirectoryEntry, Event};
 use psa_api::{
-    AgentConfig, BundleId, ConfigGroup, ConfigId, HookIds, IncludedItems, ModelSelection, ProbeId,
-    Skill, SkillId, SkillLocation, SkillRegistration, ToolId,
+    AgentConfig, AgentConfigInput, AgentDefaults, BundleId, ConfigGroup, ConfigId, HookOverrides,
+    IncludedItems, ModelSelection, ProbeId, Skill, SkillId, SkillLocation, SkillRegistration,
+    ToolId,
 };
-use psa_api::{
-    probe_transport::ProbeError,
-    probes::{DirectoryEntry, Event},
-};
+use psa_shared::probe_transport::ProbeError;
 use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
@@ -50,6 +49,7 @@ pub enum DiscoveryError {
 #[derive(Clone)]
 pub struct ConfigRegistry {
     data_dir: PathBuf,
+    agent_defaults: AgentDefaults,
     gate: Arc<Mutex<()>>,
 }
 
@@ -57,8 +57,18 @@ impl ConfigRegistry {
     pub fn new(data_dir: PathBuf) -> Self {
         Self {
             data_dir,
+            agent_defaults: AgentDefaults::default(),
             gate: Arc::new(Mutex::new(())),
         }
+    }
+
+    pub fn with_agent_defaults(mut self, agent_defaults: AgentDefaults) -> Self {
+        self.agent_defaults = agent_defaults;
+        self
+    }
+
+    pub fn agent_defaults(&self) -> &AgentDefaults {
+        &self.agent_defaults
     }
 
     /// Select exactly the nearest .agents directory, even when it is empty.
@@ -198,6 +208,7 @@ impl ConfigRegistry {
                         additional,
                         &agent_ids,
                         &skill_ids,
+                        &self.agent_defaults,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -579,11 +590,11 @@ pub struct AgentDefinitionConfig {
     #[serde(default)]
     pub selectable: bool,
     #[serde(default)]
-    pub bundles: Vec<BundleId>,
+    pub bundles: Option<Vec<BundleId>>,
     #[serde(default)]
-    pub tools: Vec<ToolId>,
+    pub tools: Option<Vec<ToolId>>,
     #[serde(default)]
-    pub hooks: HookIds,
+    pub hooks: HookOverrides,
     #[serde(default)]
     pub extra_system_prompt: String,
     #[serde(default = "default_models")]
@@ -646,6 +657,7 @@ impl AgentDefinitionConfig {
         additional: Vec<ConfigId>,
         agents: &HashSet<ConfigId>,
         skills: &HashSet<ConfigId>,
+        defaults: &AgentDefaults,
     ) -> Result<AgentConfig, DiscoveryError> {
         let subagents = expand_inclusions(
             self.subagents.global_defaults,
@@ -664,7 +676,7 @@ impl AgentDefinitionConfig {
             skills,
         );
         included_skills.items.extend(additional);
-        Ok(AgentConfig {
+        Ok(AgentConfigInput {
             config_id: ConfigId {
                 config_group: group.clone(),
                 name: self.name,
@@ -679,7 +691,8 @@ impl AgentDefinitionConfig {
             default: self.default,
             subagents,
             skills: included_skills,
-        })
+        }
+        .resolve(defaults))
     }
 }
 

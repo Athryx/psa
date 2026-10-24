@@ -7,6 +7,7 @@ use crate::{
     db::{Database, DbError},
     providers::{AuthError, ProviderRegistry},
 };
+use llm_api::providers::ModelConfig;
 use std::{
     future::{Future, IntoFuture},
     sync::{
@@ -54,7 +55,9 @@ pub async fn start(config: ResolvedConfig) -> Result<(), ServerError> {
         database,
         providers,
         probes,
-        crate::config_registry::ConfigRegistry::new(config.data_dir),
+        crate::config_registry::ConfigRegistry::new(config.data_dir)
+            .with_agent_defaults(config.agent_defaults),
+        config.session_defaults,
         shutdown_signal(),
     )
     .await
@@ -114,18 +117,22 @@ pub async fn serve_with_probe_registry(
         providers,
         probes,
         crate::config_registry::ConfigRegistry::new(data_dir),
+        crate::config::default_model_config(),
         shutdown,
     )
     .await
 }
 
-/// Serve with explicit file-discovery and uploaded-skill storage roots.
+/// Serve with explicit file-discovery/upload roots and new-session model defaults.
+/// `default_model_config` is used only when a creation request omits its model;
+/// persisted sessions and forked session models are not reset to these defaults.
 pub async fn serve_with_configuration(
     listener: TcpListener,
     database: Database,
     providers: ProviderRegistry,
     probes: crate::probes::ProbeRegistry,
     configuration: crate::config_registry::ConfigRegistry,
+    default_model_config: ModelConfig,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
     let mut catalog = crate::models::ModelCatalogRuntime::start(
@@ -142,6 +149,7 @@ pub async fn serve_with_configuration(
         providers,
         probes.clone(),
         Some(configuration),
+        default_model_config,
     )
     .await?;
     let accepting = Arc::new(AtomicBool::new(true));

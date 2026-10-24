@@ -10,7 +10,7 @@ use crate::{
     sessions::Session,
 };
 use llm_api::api::ToolDefinition;
-use psa_api::probe_transport::ProbeError;
+use psa_shared::probe_transport::ProbeError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::{path::Path, time::Duration};

@@ -1,6 +1,6 @@
 //! Named configuration refresh, materialization, and creation-time snapshots.
 use super::*;
-use llm_api::providers::{Model, ModelConfig, ProviderType};
+use llm_api::providers::{Model, ModelConfig};
 use psa_api::{AgentConfig, ConfigGroup, ConfigId, EffortSelection, ModelSelection};
 use std::{collections::HashMap, path::Path};
 
@@ -76,23 +76,32 @@ impl Sessions {
             .map_err(invalid)
     }
 
-    pub async fn upsert_agent_configs(
+    pub async fn upsert_agent_configs<I: Into<api::AgentConfigInput>>(
         &self,
-        configs: Vec<AgentConfig>,
+        configs: Vec<I>,
     ) -> Result<Vec<api::AgentConfigStatus>, RuntimeError> {
         let _guard = self.configuration_gate.lock().await;
+        let defaults = self
+            .configuration
+            .as_ref()
+            .map(|configuration| configuration.agent_defaults().clone())
+            .unwrap_or_default();
+        let configs = configs
+            .into_iter()
+            .map(|config| config.into().resolve(&defaults))
+            .collect();
         let mut cursor = self.database.cursor().await?;
         let configs = cursor.upsert_agent_configs(configs).await?;
         cursor.commit().await?;
         Ok(configs)
     }
 
-    pub async fn list_agent_configs(
+    pub async fn refresh_and_list_agent_configs(
         &self,
-        session: Option<SessionId>,
+        refresh_session_id: Option<SessionId>,
     ) -> Result<Vec<api::AgentConfigStatus>, RuntimeError> {
         let _guard = self.configuration_gate.lock().await;
-        self.refresh_configuration(session).await?;
+        self.refresh_configuration(refresh_session_id).await?;
         let mut cursor = self.database.cursor().await?;
         let configs = cursor.list_agent_configs().await?;
         cursor.rollback().await?;
@@ -159,12 +168,12 @@ impl Sessions {
         result
     }
 
-    pub async fn list_skills(
+    pub async fn refresh_and_list_skills(
         &self,
-        session: Option<SessionId>,
+        refresh_session_id: Option<SessionId>,
     ) -> Result<Vec<api::Skill>, RuntimeError> {
         let _guard = self.configuration_gate.lock().await;
-        self.refresh_configuration(session).await?;
+        self.refresh_configuration(refresh_session_id).await?;
         let mut cursor = self.database.cursor().await?;
         let skills = cursor.list_skills().await?;
         cursor.rollback().await?;
@@ -209,7 +218,7 @@ impl Sessions {
         session: &sessions::Session,
         parent: Option<AgentId>,
         config: &AgentConfig,
-        choice: Option<&str>,
+        choice: Option<&ModelSelection>,
     ) -> Result<ModelConfig, RuntimeError> {
         let parent_model = if let Some(id) = parent {
             let mut cursor = self.database.cursor().await?;
@@ -247,7 +256,7 @@ impl Sessions {
                 &session,
                 request.subagent_parent_id,
                 root,
-                request.model.as_deref(),
+                request.model.as_ref(),
             )
             .await?;
         let paths = self.materialize_skills(&session, &graph.skills).await?;
@@ -274,7 +283,7 @@ impl Sessions {
         &self,
         id: SessionId,
         mut request: api::CreateAgent,
-        model: Option<String>,
+        model: Option<ModelSelection>,
     ) -> Result<Agent, RuntimeError> {
         let _guard = self.configuration_gate.lock().await;
         let snapshot = self
@@ -288,7 +297,7 @@ impl Sessions {
                     &session,
                     request.subagent_parent_id,
                     &snapshot.config,
-                    model.as_deref(),
+                    model.as_ref(),
                 )
                 .await?;
             let mut cursor = self.database.cursor().await?;
@@ -323,7 +332,7 @@ impl Sessions {
 
 fn select_model(
     config: &AgentConfig,
-    choice: Option<&str>,
+    choice: Option<&ModelSelection>,
     global: &ModelConfig,
     parent: Option<&ModelConfig>,
 ) -> Result<ModelConfig, RuntimeError> {
@@ -331,11 +340,7 @@ fn select_model(
         Some(choice) => config
             .models
             .iter()
-            .find(|selection| match selection {
-                ModelSelection::Global => choice == "global",
-                ModelSelection::Parent => choice == "parent",
-                ModelSelection::Fixed { model, .. } => choice == model,
-            })
+            .find(|selection| *selection == choice)
             .ok_or_else(|| invalid("model choice is not permitted by this agent definition"))?,
         None if config.models.len() == 1 || config.default => config
             .models
@@ -352,24 +357,13 @@ fn select_model(
         ModelSelection::Global => Ok(global.clone()),
         ModelSelection::Parent => Ok(parent.clone()),
         ModelSelection::Fixed { model, effort } => {
-            let (slug, name) = model
-                .split_once('/')
-                .ok_or_else(|| invalid("model must start with a provider slug"))?;
-            let provider = ProviderType::ALL
-                .into_iter()
-                .find(|provider| provider.as_str() == slug)
-                .ok_or_else(|| invalid(format!("unknown model provider: {slug}")))?;
-            let model = Model::new(name).map_err(invalid)?;
+            let model = Model::parse_slug(model).map_err(invalid)?;
             let effort = match effort {
                 EffortSelection::Fixed(effort) => *effort,
                 EffortSelection::Parent => parent.effort,
                 EffortSelection::Global => global.effort,
             };
-            Ok(ModelConfig {
-                model,
-                provider,
-                effort,
-            })
+            Ok(ModelConfig { model, effort })
         }
     }
 }

@@ -173,21 +173,19 @@ impl DatabaseCursor {
 
         let originals = list_agents(&mut savepoint, source).await?;
         let mut agents = Vec::new();
+        let mut copied_agent_ids = std::collections::HashMap::new();
         for agent in &originals {
             if agent.created_position <= position {
                 let child = fork_agent(&mut savepoint, agent, child_id, position).await?;
-                agents.push((agent.id, child));
+                copied_agent_ids.insert(agent.id, child.id);
+                agents.push(child);
             }
         }
 
-        let copied_agent_ids: std::collections::HashMap<_, _> = agents
-            .iter()
-            .map(|(source, copy)| (*source, copy.id))
-            .collect();
-        for (source, copy) in &mut agents {
+        for copy in &mut agents {
             let original = originals
                 .iter()
-                .find(|agent| agent.id == *source)
+                .find(|agent| Some(agent.id) == copy.parent_id)
                 .expect("fork source exists");
             copy.subagent_parent_id = original
                 .subagent_parent_id

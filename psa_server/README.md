@@ -42,7 +42,42 @@ listen = "127.0.0.1:8080"
 
 [database]
 path = "psa.sqlite3"
+
+[session_defaults]
+model = "openai_codex/gpt-5"
+effort = "Medium"
+
+# Optional fallbacks for omitted API/TOML agent component fields.
+[agent_defaults]
+bundles = ["FileTools", "Bash"]
+tools = []
+
+[agent_defaults.hooks]
+agent_create = ["DefaultStartup", "ToolDefinitions", "Cwd", "Skills"]
+after_request = ["StopWithoutTools"]
 ```
+
+`[session_defaults]` provides the model for new sessions that omit `model_config`
+or send null. Model configuration files use a provider/API-name slug string, such
+as `openrouter/vendor/model`, not a structured `Model`. If the entire section is
+absent, the built-in default is OpenAI Codex `gpt-5` with `Medium` effort. If the
+section is present, both `model` and `effort` are required. Explicit API model
+configurations override it. The concrete chosen configuration is persisted and
+returned in session responses; reloads, updates, and forks do not reapply defaults.
+Changing creation defaults requires a server restart.
+
+Omitted `tools`/`bundles` inherit the whole default list; explicit lists replace
+it, and `[]` disables it. Hook stages inherit independently: an omitted stage
+inherits, while `after_request = []` disables only that stage. No
+`[agent_defaults]` means all fallbacks are empty. Defaults apply during API
+registration/file refresh, not additively or to existing snapshots. Restart to
+load changed server defaults; API callers must resubmit omission-aware input to
+adopt them. Library servers can use
+`ConfigRegistry::new(data_dir).with_agent_defaults(defaults)` with
+`server::serve_with_configuration(listener, database, providers, probes,
+configuration, default_model_config, shutdown)`. Pass a concrete `ModelConfig`
+as `default_model_config`; CLI resolution exposes it as
+`ResolvedConfig.session_defaults`.
 
 Relative database paths resolve against the selected data directory. The listen
 CLI option overrides TOML. Startup applies embedded migrations before listening;
@@ -80,8 +115,8 @@ lifecycle state and cumulative usage. Requests are accepted into bounded queues,
 not necessarily persisted or executed at the time HTTP 202 is returned.
 
 ```rust,no_run
-use psa_api::{Client, CreateSession, NewConfiguredAgent, AgentConfig, AgentRequest,
-    ConfigGroup, ConfigId, HookId, HookIds, IncludedItems, MessageDelivery, ModelSelection};
+use psa_api::{Client, CreateSession, NewConfiguredAgent, AgentConfigInput, AgentRequest,
+    ConfigGroup, ConfigId, HookId, HookOverrides, IncludedItems, MessageDelivery, ModelSelection};
 use llm_api::{api::{ContentBlock, TextBlock}, providers::{Effort, Model, ModelConfig, ProviderType}};
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let client = Client::new("http://127.0.0.1:8080")?;
@@ -89,30 +124,27 @@ let probe = client.list_probes().await?.into_iter().next().ok_or("connect a prob
 let session = client.create_session(&CreateSession {
     probe_id: probe.metadata.id,
     name: "Example".into(), working_directory: "/work/project".into(),
-    model_config: ModelConfig { provider: ProviderType::Openrouter,
-        model: Model::new("your-provider/model")?, effort: Effort::Medium },
+    model_config: Some(ModelConfig {
+        model: Model::new(ProviderType::Openrouter, "your-provider/model")?,
+        effort: Effort::Medium,
+    }), // Use None to accept server session_defaults.
 }).await?;
 let config_id = ConfigId { config_group: ConfigGroup::Custom("examples".into()), name: "Assistant".into() };
-client.upsert_agent_configs(&[AgentConfig {
-    config_id: config_id.clone(),
-    description: "Example assistant".into(),
-    selectable: true,
-    bundles: vec![psa_api::BundleId::FileTools],
-    tools: vec![],
-    hooks: HookIds {
-        agent_create: vec![
-            HookId::DefaultStartup, HookId::ToolDefinitions, HookId::Cwd, HookId::Skills,
-        ],
-        session_update: vec![HookId::SessionModelUpdate],
-        after_request: vec![HookId::StopWithoutTools],
-        ..Default::default()
-    },
-    extra_system_prompt: String::new(),
-    models: vec![ModelSelection::Global],
-    default: true,
-    subagents: IncludedItems::default(),
-    skills: IncludedItems { groups: vec![ConfigGroup::Global], items: vec![] },
-}]).await?;
+let mut config = AgentConfigInput::new(config_id.clone(), vec![ModelSelection::Global]);
+config.description = "Example assistant".into();
+config.selectable = true;
+config.bundles = Some(vec![psa_api::BundleId::FileTools]); // Replace the default bundles.
+config.tools = Some(vec![]); // Disable default tools; the bundle still installs its tools.
+config.hooks = HookOverrides {
+    agent_create: Some(vec![
+        HookId::DefaultStartup, HookId::ToolDefinitions, HookId::Cwd, HookId::Skills,
+    ]),
+    session_update: Some(vec![HookId::SessionModelUpdate]),
+    after_request: Some(vec![HookId::StopWithoutTools]),
+    ..Default::default() // Omitted before_request inherits its server default.
+};
+config.skills = IncludedItems { groups: vec![ConfigGroup::Global], items: vec![] };
+client.upsert_agent_configs(&[config]).await?;
 let agent = client.create_agent(session.id, &NewConfiguredAgent {
     config_id,
     subagent_parent_id: None,
@@ -131,13 +163,16 @@ client.submit_request(session.id, agent.id, &AgentRequest::Message {
 Routes are defined in `psa_api::routes`: batch upsert/list/lookup agent configs,
 read immutable agent snapshots, upload/list skills, create/list/get/update/fork
 sessions, create/list/get agents, submit requests, and query session or agent events. Event
-GETs return paged JSON or SSE with `stream=true`. `after` is an exclusive agent
+GETs return paged JSON with `Accept: application/json` (the default) or SSE with
+`Accept: text/event-stream`. There is no `stream` query field. `after` is an exclusive agent
 EventId on an agent route, or shared session position on a session route;
 `through` is inclusive. `limit` accepts 1–10,000. JSON pages expose `head`,
 `next_after`, and `has_more`. Session lists default to roots; `parent` lists
 immediate children.
 
-Use `Client::stream_events(session, optional_agent, query, last_event_id)` with
+`Client::events()` requests JSON; `Client::stream_events()` requests SSE.
+`Last-Event-ID` is an SSE resume header used only by the streaming method, not JSON
+page requests. Use `Client::stream_events(session, optional_agent, query, last_event_id)` with
 `include_pending=true` to receive provisional upserts, committed events with
 optional promotion IDs, and removal messages. Upserts contain complete current
 snapshots with stable IDs/revisions, not independently persisted token deltas.
@@ -148,10 +183,19 @@ The client intentionally leaves reconnect policy to callers: after EOF or
 `ResyncRequired`, open another stream using that durable ID. Headers are supported
 by using `Client::with_http_client` with a configured reqwest client.
 
+`SessionUpdated` publishes a full `Session` snapshot for both metadata edits and
+runtime `busy` changes; there is no separate `SessionBusy` message. Metadata writes
+and the supervisor's published activity projection share the publication gate,
+preventing stale busy values from overwriting newer transitions. Apply these
+snapshots in stream order: activity-only changes do not advance `updated_at`.
+
 ### Configurations, snapshots, and hook bindings
 
-`POST /agent-configs` takes a JSON array of `AgentConfig`, upserting mutable
-configuration by `ConfigId { config_group, name }`. `GET /agent-configs` lists
+`POST /agent-configs` takes a JSON array of omission-aware `AgentConfigInput`,
+upserting by `ConfigId { config_group, name }` after resolving server component
+defaults. The client accepts either `AgentConfigInput` or normalized `AgentConfig`;
+the latter sends every component list explicitly, including empty lists. Use
+`AgentConfigInput::new(config_id, models)` to inherit defaults. `GET /agent-configs` lists
 `AgentConfigStatus`; `POST /agent-configs/lookup` takes a `ConfigId` body and reads
 its current configuration/status. `GET /agent-snapshots/{definition_id}` reads an
 immutable `ResolvedAgentConfig` snapshot (JSON `null` when absent). Existing
@@ -160,10 +204,13 @@ There is no compatibility API: `/agent-definitions` CRUD routes and client
 methods are removed.
 
 `POST /sessions/{session_id}/agents` takes `NewConfiguredAgent` with `config_id`
-and a name, not a `definition_id`. Its optional `model` chooses a configured
-provider/model string, `"global"`, or `"parent"`. A single allowed model is chosen
-automatically; otherwise omitted model uses the first choice only when the
-config's `default` is true. Models and effort inheritance resolve at creation.
+and a name, not a `definition_id`. Its optional `model: Option<ModelSelection>`
+must exactly match a configured selector: `"Global"`, `"Parent"`, or a `Fixed`
+object including both model and effort policy. Omitted/null selects the sole
+choice, or the first choice when `default` is true. Registration/upsert normalizes
+`default` to true for single-model configurations; multiple choices with
+`default = false` require explicit selection. Model and effort inheritance resolve
+at creation.
 
 `POST /skills` uploads `NewSkill { config_id, tar_data }`, a complete skill tar
 archive represented as JSON bytes. `GET /skills` and `GET /agent-configs` refresh
@@ -181,8 +228,11 @@ JSON. It is creation-time metadata available to tools and hooks, not a runtime
 behavior switch. The opt-in Goal bundle uses it to enable goal tools and policy.
 Agent responses expose it, and forks inherit the source flag.
 
-Sessions require `model_config`, which can be changed with `UpdateSession`.
-Each `AgentConfig` supplies a nonempty `models` policy list (`Global`, `Parent`,
+`CreateSession.model_config: Option<ModelConfig>` is optional: omitted/null uses
+server `session_defaults`, while an explicit configuration wins. Session responses
+always contain the concrete persisted configuration, which `UpdateSession` can
+replace explicitly. Reloading, updating, or forking never resets it to defaults.
+Each input/normalized config supplies a nonempty `models` policy list (`Global`, `Parent`,
 or `Fixed` with an effort policy), plus `description`, `selectable`, inclusions,
 and `extra_system_prompt`. Resolution produces an internal executable
 `AgentDefinition` with `model_config`, probe-local skill paths, and
@@ -193,7 +243,8 @@ extra system prompts. The opt-in Subagents tool checks pinned permitted IDs when
 creating children; trusted-client config-based creation remains unrestricted.
 Unknown extra configuration/creation JSON fields are rejected.
 
-Definitions also persist ordered `bundles`, defaulting to `[]`.
+Normalized configs and snapshots persist ordered `bundles`; omitted input
+inherits server defaults, while explicit `[]` selects no bundles.
 `BundleId::FileTools` installs `Read`, `Edit`, and `Write`; `BundleId::Bash`
 installs `Bash`, `InteractBash`, and `CloseBash`. `Goal` installs interactive
 `SetGoal`/`SetGoalStatus` plus stopping policy. `Subagents` installs child creation,
@@ -209,13 +260,14 @@ agents. Shutdown interrupts all workers, closes query/session coordination
 services, then joins workers and cleans per-agent bundles in reverse order under
 bounded timeouts. Probes stay
 connected until cleanup finishes. See `../docs/BASH_TOOLS.md` for process tools.
-Omitting bundles during a config upsert clears the current configuration's list;
-existing executable snapshots are not changed.
+Omitting bundles during an omission-aware upsert uses the server default list;
+explicit `[]` clears it. Existing executable snapshots are not changed.
 
-Each definition explicitly binds ordered `HookId` lists at `agent_create`,
-`session_update`, `before_request`, and `after_request`. All lists default empty;
-no global hooks are installed by default, though explicitly selected bundles
-supply their own hooks. Built-ins:
+Each normalized config binds ordered `HookId` lists at `agent_create`,
+`session_update`, `before_request`, and `after_request`. Omitted input stages
+inherit independently from `[agent_defaults.hooks]`; explicit empty stages disable
+those defaults. Without server defaults, all lists are empty. Selected bundles
+can additionally supply their own hooks. Built-ins:
 
 - `DefaultStartup`: normally bound to `agent_create`; saves `NewContext`, the
   resolved `Model`, and a `System` message with the base assistant identity for a
@@ -311,7 +363,9 @@ status. Operations are never automatically retried.
 lookup/list and snapshot reads, skill upload/list, session create/query/update/fork,
 configured agent create/query, request submission, steering, resume, interrupt,
 and busy queries. `Runtime::handle` and `AgentContext::sessions()` expose it.
-Configs use `psa_api::AgentConfig`; executable snapshots use `psa_api::AgentDefinition`. Session/agent operations
+Registration uses `psa_api::AgentConfigInput`, normalized configs use
+`psa_api::AgentConfig`, and executable snapshots use `psa_api::AgentDefinition`.
+Session/agent operations
 return server-native `Session`, `Agent`, and `ForkedSession` values, including
 internal event/position metadata; HTTP handlers convert these to wire types and
 query busy status separately. Request queues and worker lifecycles
@@ -371,11 +425,11 @@ let session = cursor.create_session(NewSession {
     name: "Example".into(),
     working_directory: "/work/project".into(),
     model_config: ModelConfig {
-        model: Model::new("example-model")?,
-        provider: ProviderType::Openrouter,
+        model: Model::new(ProviderType::Openrouter, "example-model")?,
         effort: Effort::High,
     },
 }).await?;
+// Low-level cursor registration takes normalized configs, not server-default input.
 let config: psa_api::AgentConfig = serde_json::from_value(serde_json::json!({
     "config_id": {"config_group": {"Custom": "examples"}, "name": "manual-replay"},
     "models": ["Global"]
@@ -395,8 +449,7 @@ let agent = cursor.create_agent(session.id, NewAgent {
 
 cursor.add_events(agent.id, &[
     NewEvent::new(EventType::Model(ModelConfig {
-        model: Model::new("example-model")?,
-        provider: ProviderType::Openrouter,
+        model: Model::new(ProviderType::Openrouter, "example-model")?,
         effort: Effort::High,
     })),
     NewEvent::new(EventType::Message(Message::text(MessageType::Human, "Hello"))),
@@ -420,7 +473,8 @@ let fork = cursor.fork_session(session.id, SessionFork {
     point: ForkPoint::Head,
     metadata: SessionUpdate { name: Some("Alternative".into()), ..Default::default() },
 }).await?;
-// fork.agents maps each source AgentId to its child agent, including empty streams.
+// fork.agents is Vec<Agent>, including agents with empty streams.
+// Each child agent.parent_id identifies its source agent.
 # let _ = (request, fork);
 cursor.commit().await?;
 db.close().await;
@@ -448,7 +502,9 @@ messages and tool results to history before calling it.
 
 Generated output is delimited by `InferenceResultStart` (ID and actual model/request
 snapshots), output item events, and `InferenceResultEnd` (matching ID, terminal
-outcome, usage, timing, and response metadata). Persist the entire block atomically
+outcome, usage, timing, and response metadata). Model configurations in `Model`
+events and inference-result snapshots use `{ model: { provider, api_name }, effort }`;
+there is no separate top-level provider. Persist the entire block atomically
 after generation, including both markers for an empty or failed response. These
 markers describe a result, not a running request. Prompt messages and tool results
 belong outside the block. A historical fork inside a result block is inspectable

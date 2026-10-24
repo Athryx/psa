@@ -11,7 +11,7 @@ use llm_api::{
     api::ReasoningOverride,
     providers::{Model, ModelConfig, ProviderType},
 };
-use psa_api::{ListModels, ModelInfo, ModelSyncResult, PinModel, ProviderInfo};
+use psa_api::{ListModels, ModelInfo, PinModel, ProviderInfo};
 use serde::{Deserialize, Serialize};
 pub use source::CatalogSource;
 use source::CatalogUpdate;
@@ -38,6 +38,8 @@ pub enum CatalogError {
     NotFound,
     #[error("model catalog is shutting down or unavailable")]
     Unavailable,
+    #[error("model catalog sync failed: {0}")]
+    SyncFailed(String),
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -60,11 +62,6 @@ impl ModelCatalog {
             .into_iter()
             .map(|id| ProviderInfo {
                 id,
-                name: match id {
-                    ProviderType::OpenAiCodex => "OpenAI Codex",
-                    ProviderType::Openrouter => "OpenRouter",
-                }
-                .into(),
                 authed: self.authed.contains(&id),
             })
             .collect()
@@ -76,77 +73,61 @@ impl ModelCatalog {
         cursor.rollback().await?;
 
         for model in &mut models {
-            model.authed = self.authed.contains(&model.provider);
+            model.authed = self.authed.contains(&model.model.provider);
         }
         models.retain(|model| {
             query
                 .provider
-                .is_none_or(|provider| model.provider == provider)
+                .is_none_or(|provider| model.model.provider == provider)
                 && query.authed.is_none_or(|authed| model.authed == authed)
                 && query.pinned.is_none_or(|pinned| model.pinned == pinned)
         });
         Ok(models)
     }
 
-    pub async fn model_info(
-        &self,
-        config: &ModelConfig,
-    ) -> Result<Option<ModelInfo>, CatalogError> {
-        self.lookup(config.provider, &config.model).await
-    }
-
-    pub async fn lookup(
-        &self,
-        provider: ProviderType,
-        model: &Model,
-    ) -> Result<Option<ModelInfo>, CatalogError> {
+    pub async fn model_info(&self, model: &Model) -> Result<Option<ModelInfo>, CatalogError> {
         let mut cursor = self.database.cursor().await?;
-        let mut info = cursor.get_model_info(provider, model).await?;
+        let mut info = cursor.get_model_info(model).await?;
         cursor.rollback().await?;
 
         if let Some(info) = &mut info {
-            info.authed = self.authed.contains(&provider);
+            info.authed = self.authed.contains(&model.provider);
         }
         Ok(info)
     }
 
     pub async fn set_pinned(&self, request: PinModel) -> Result<Option<ModelInfo>, CatalogError> {
-        Model::new(request.model.api_name.clone())
+        Model::new(request.model.provider, request.model.api_name.clone())
             .map_err(|error| CatalogError::Invalid(error.to_string()))?;
         let mut cursor = self.database.cursor().await?;
-        let mut info = cursor
-            .get_model_info(request.provider, &request.model)
-            .await?;
+        let mut info = cursor.get_model_info(&request.model).await?;
         if request.pinned && info.is_none() {
             return Err(CatalogError::NotFound);
         }
         cursor
-            .set_model_pinned(request.provider, &request.model, request.pinned)
+            .set_model_pinned(&request.model, request.pinned)
             .await?;
         cursor.commit().await?;
 
         if let Some(info) = &mut info {
             info.pinned = request.pinned;
-            info.authed = self.authed.contains(&request.provider);
+            info.authed = self.authed.contains(&request.model.provider);
         }
         Ok(info)
     }
 
-    pub async fn resync(
-        &self,
-        provider: Option<ProviderType>,
-    ) -> Result<Vec<ModelSyncResult>, CatalogError> {
+    pub async fn resync(&self, provider: Option<ProviderType>) -> Result<(), CatalogError> {
         self.commands
             .request(|reply| Command::Resync { provider, reply })
             .await
-            .map_err(|_| CatalogError::Unavailable)
+            .map_err(|_| CatalogError::Unavailable)?
     }
 
     pub async fn resolve_reasoning(
         &self,
         config: &ModelConfig,
     ) -> Result<Option<ReasoningOverride>, CatalogError> {
-        let Some(info) = self.model_info(config).await? else {
+        let Some(info) = self.model_info(&config.model).await? else {
             return Ok(None);
         };
         let Some(option) = info
@@ -251,15 +232,15 @@ impl ModelCatalogRuntime {
 enum Command {
     Resync {
         provider: Option<ProviderType>,
-        reply: Reply<Vec<ModelSyncResult>>,
+        reply: Reply<Result<(), CatalogError>>,
     },
     Shutdown,
 }
 
 struct RefreshWaiter {
     remaining: HashSet<ProviderType>,
-    results: Vec<ModelSyncResult>,
-    reply: Reply<Vec<ModelSyncResult>>,
+    failures: Vec<String>,
+    reply: Reply<Result<(), CatalogError>>,
 }
 
 type RefreshJob = BoxFuture<'static, (ProviderType, Result<(), CatalogError>)>;
@@ -288,7 +269,7 @@ impl State {
     fn register_refresh(
         &mut self,
         provider: Option<ProviderType>,
-        reply: Reply<Vec<ModelSyncResult>>,
+        reply: Reply<Result<(), CatalogError>>,
     ) {
         let providers: HashSet<_> = provider.map_or_else(
             || ProviderType::ALL.into_iter().collect(),
@@ -299,7 +280,7 @@ impl State {
         }
         self.waiters.push(RefreshWaiter {
             remaining: providers,
-            results: Vec::new(),
+            failures: Vec::new(),
             reply,
         });
     }
@@ -308,27 +289,30 @@ impl State {
         self.active.remove(&provider);
         self.deadlines
             .insert(provider, Instant::now() + REFRESH_INTERVAL);
-        let result = ModelSyncResult {
-            provider,
-            success: result.is_ok(),
-            error: result.err().map(|error| error.to_string()),
-        };
-        if let Some(error) = &result.error {
+        let error = result
+            .err()
+            .map(|error| format!("{}: {error}", provider.name()));
+        if let Some(error) = &error {
             tracing::warn!(?provider, %error, "model catalog sync failed");
         }
 
         for waiter in &mut self.waiters {
-            if waiter.remaining.remove(&provider) {
-                waiter.results.push(result.clone());
+            if waiter.remaining.remove(&provider)
+                && let Some(error) = &error
+            {
+                waiter.failures.push(error.clone());
             }
         }
         let mut pending = Vec::new();
         for mut waiter in self.waiters.drain(..) {
             if waiter.remaining.is_empty() {
-                waiter
-                    .results
-                    .sort_by_key(|result| result.provider.as_str());
-                let _ = waiter.reply.send(waiter.results);
+                waiter.failures.sort();
+                let result = if waiter.failures.is_empty() {
+                    Ok(())
+                } else {
+                    Err(CatalogError::SyncFailed(waiter.failures.join("; ")))
+                };
+                let _ = waiter.reply.send(result);
             } else if !waiter.reply.is_closed() {
                 pending.push(waiter);
             }

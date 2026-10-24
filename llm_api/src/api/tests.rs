@@ -86,8 +86,7 @@ async fn server(
 fn history(provider: ProviderType) -> AgentHistory {
     AgentHistory {
         config: ModelConfig {
-            provider,
-            model: Model::new("test-model").unwrap(),
+            model: Model::new(provider, "test-model").unwrap(),
             effort: Effort::Medium,
         },
         items: vec![HistoryItem {
@@ -362,7 +361,10 @@ async fn standard_completions_uses_supplied_identity_and_standard_reasoning_fiel
         event.unwrap();
     }
 
-    assert_eq!(stream.current().config.provider, ProviderType::OpenAiCodex);
+    assert_eq!(
+        stream.current().config.model.provider,
+        ProviderType::OpenAiCodex
+    );
     assert_eq!(text(stream.current()), "héllo");
 
     let body = request.await.unwrap().body;

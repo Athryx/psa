@@ -296,7 +296,7 @@ impl AgentManagerState {
     ) -> Result<(), AgentError> {
         let mut request = self.context.prepare_request(RequestConfig::default())?;
         let provider = providers
-            .provider(request.history.config.provider)
+            .provider(request.history.config.model.provider)
             .ok_or_else(|| llm_api::Error::InvalidRequest {
                 message: "provider is not configured".into(),
             })?;

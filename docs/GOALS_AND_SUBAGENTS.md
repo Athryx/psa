@@ -44,6 +44,15 @@ IDs. Missing/null templates fail: no implicit default is configured.
 Templates map to PSA definitions, not Pi-local template files. Define the intended
 model, tools, skills, extra prompt, and hooks on each pinned definition. Ordinary
 PSA model/session configuration rules apply; no credentials are copied to probes.
+The native `create_agent` tool accepts an optional typed `model` selector, not a
+provider/model string: `"Global"`, `"Parent"`, or, for example,
+`{"Fixed":{"model":"openrouter/vendor/model","effort":{"Fixed":"High"}}}`.
+It must exactly match an allowed selector, including its effort policy. Fixed
+selectors may use effort `"Parent"` or `"Global"` only when configured that way.
+The allowed-template identity prompt carries the full selectors. Omitted/null
+selects the sole policy, or the first when the template's `default` is true.
+Registration normalizes single-model configurations to `default = true`;
+multiple choices with `default = false` require explicit selection.
 
 ## Goal mode
 

@@ -2,12 +2,15 @@
 
 use super::{AgentError, AgentId, agent_projection::AgentProjection};
 use crate::{
-    db::{AddEventResult, Database},
+    db::{AddEventResult, Database, DbError},
     sessions::SessionId,
 };
 use psa_api::events::*;
 use psa_api::{ClientQueryId, ClientQueryRequest, EventEnvelope, PendingEvent, StreamMessage};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use tokio::sync::{Mutex, MutexGuard, broadcast, watch};
 
 #[derive(Clone)]
@@ -20,6 +23,9 @@ pub struct PublicationState {
     pub(crate) pending: HashMap<String, PendingEvent>,
     /// Read projection of runtime queries, updated by the query actor under this gate.
     pub(crate) queries: HashMap<ClientQueryId, ClientQueryRequest>,
+    /// Published activity projection, maintained by the worker supervisor.
+    /// Metadata writers read it under this gate to avoid publishing stale busy state.
+    busy_sessions: HashSet<SessionId>,
     sender: broadcast::Sender<StreamMessage>,
 }
 
@@ -31,6 +37,7 @@ impl Default for Publication {
             state: Arc::new(Mutex::new(PublicationState {
                 pending: HashMap::new(),
                 queries: HashMap::new(),
+                busy_sessions: HashSet::new(),
                 sender,
             })),
             shutdown,
@@ -49,6 +56,42 @@ impl Publication {
 
     pub fn close(&self) {
         self.shutdown.send_replace(true);
+    }
+
+    /// Publish a supervisor activity transition with current session metadata.
+    /// The activity projection and snapshot are updated under the publication gate,
+    /// in the same order as metadata writes. A failed read invalidates client state.
+    pub async fn update_session_busy(
+        &self,
+        db: &Database,
+        session_id: SessionId,
+        busy: bool,
+    ) -> Result<(), DbError> {
+        let mut publication = self.lock().await;
+        if busy {
+            publication.busy_sessions.insert(session_id);
+        } else {
+            publication.busy_sessions.remove(&session_id);
+        }
+
+        let result = async {
+            let mut cursor = db.cursor().await?;
+            let session = cursor.get_session(session_id).await?;
+            cursor.rollback().await?;
+            Ok::<_, DbError>(session)
+        }
+        .await;
+        let session = match result {
+            Ok(session) => session,
+            Err(error) => {
+                publication.publish(StreamMessage::ResyncRequired);
+                return Err(error);
+            }
+        };
+        publication.publish(StreamMessage::SessionUpdated {
+            session: session.into_api(busy),
+        });
+        Ok(())
     }
 
     pub async fn upsert(
@@ -140,6 +183,11 @@ impl Publication {
 }
 
 impl PublicationState {
+    /// Last supervisor activity state, ordered with session snapshot publication.
+    pub fn is_session_busy(&self, session: SessionId) -> bool {
+        self.busy_sessions.contains(&session)
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<StreamMessage> {
         self.sender.subscribe()
     }

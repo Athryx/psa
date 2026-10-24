@@ -113,6 +113,7 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
         providers,
         probes.clone(),
         psa_server::config_registry::ConfigRegistry::new(directory.path().join("config")),
+        psa_server::config::default_model_config(),
         async {
             let _ = stopped.await;
         },
@@ -124,12 +125,18 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
         fake_probe::FakeFiles::default(),
     )
     .await;
-    let refreshed = client
+    let () = client
         .resync_models(&api::ResyncModels::default())
         .await
         .unwrap();
-    assert_eq!(refreshed.len(), 2);
-    assert!(refreshed.iter().all(|result| result.success));
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/models/resync"))
+        .json(&api::ResyncModels::default())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(response.bytes().await.unwrap().is_empty());
     let providers = client.list_providers().await.unwrap();
     assert_eq!(providers.len(), 2);
     assert!(
@@ -158,16 +165,14 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
         1
     );
     let config = ModelConfig {
-        provider: ProviderType::Openrouter,
-        model: Model::new("vendor/model").unwrap(),
+        model: Model::new(ProviderType::Openrouter, "vendor/model").unwrap(),
         effort: Effort::Minimal,
     };
-    let info = client.model_info(&config).await.unwrap();
+    let info = client.model_info(&config.model).await.unwrap();
     assert_eq!(info.name, "Catalog model");
     assert_eq!(info.cost.rates.input, Some(2.5));
     assert_eq!(info.context_window, Some(128000));
     let pin = api::PinModel {
-        provider: config.provider,
         model: config.model.clone(),
         pinned: true,
     };
@@ -196,13 +201,12 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
         1
     );
     let mut missing = config.clone();
-    missing.model = Model::new("unknown/model").unwrap();
+    missing.model = Model::new(ProviderType::Openrouter, "unknown/model").unwrap();
     assert!(matches!(
-        client.model_info(&missing).await,
+        client.model_info(&missing.model).await,
         Err(api::ClientError::Api { status: 404, .. })
     ));
     let missing_pin = api::PinModel {
-        provider: config.provider,
         model: missing.model.clone(),
         pinned: true,
     };
@@ -258,10 +262,10 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
                 name: format!("{effort:?}"),
                 working_directory: "/work".into(),
                 probe_id: support::probe_metadata().id,
-                model_config: ModelConfig {
+                model_config: Some(ModelConfig {
                     effort,
                     ..config.clone()
-                },
+                }),
             })
             .await
             .unwrap();
@@ -328,15 +332,17 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
         cursor.rollback().await.unwrap();
     }
     fail.store(true, Ordering::SeqCst);
-    let failed = client
-        .resync_models(&api::ResyncModels {
-            provider: Some(config.provider),
-        })
-        .await
-        .unwrap();
-    assert_eq!(failed.len(), 1);
-    assert!(!failed[0].success);
-    assert!(client.model_info(&config).await.unwrap().pinned);
+    for provider in [Some(config.model.provider), None] {
+        let failed = client
+            .resync_models(&api::ResyncModels { provider })
+            .await
+            .unwrap_err();
+        assert!(matches!(failed,
+            api::ClientError::Api { status: 502, error }
+                if error.code == "catalog_sync_failed"
+        ));
+    }
+    assert!(client.model_info(&config.model).await.unwrap().pinned);
     probe.disconnect(&probes).await;
     stop.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(5), server)

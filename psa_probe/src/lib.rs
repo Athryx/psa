@@ -5,10 +5,8 @@ pub mod tools;
 
 use config::ResolvedConfig;
 use futures_util::{SinkExt, StreamExt, future::ready};
-use psa_api::{
-    probe_transport::{Frame, spawn_connection},
-    probes::PROTOCOL_VERSION,
-};
+use psa_api::probes::PROTOCOL_VERSION;
+use psa_shared::probe_transport::{Frame, spawn_connection};
 use std::{future::Future, path::Path, pin::Pin, time::Duration};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{

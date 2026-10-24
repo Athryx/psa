@@ -62,6 +62,15 @@ publishes into the same session/agent SSE streams used for other runtime state:
 - `client_query_removed { session_id, agent_id, query_id }`: remove by UUID.
 - `snapshot { ..., queries }`: replace query state for that stream's scope.
 
+Event endpoints use `Accept: text/event-stream` for SSE and
+`Accept: application/json` for JSON; `EventsQuery` has no `stream` field.
+`Client::stream_events()` selects SSE and optionally sends `Last-Event-ID`;
+`Client::events()` selects JSON without that resume header.
+
+`SessionUpdated` on these streams carries a full `Session` for both metadata
+and runtime busy changes, ordered under the publication gate. There is no
+separate `SessionBusy` message.
+
 Nonstream event pages also include `queries`. These are current runtime state,
 not historical events at a transcript cursor. Queries are included regardless of
 `include_pending`, which continues to control provisional transcript events.

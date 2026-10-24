@@ -39,7 +39,9 @@ async fn persisted_model_updates_live_request_projection_and_survives_reload() {
         .unwrap();
     assert!(state.context().model_config().is_none());
     let mut model = session.model_config.clone();
-    model.model = llm_api::providers::Model::new("saved-model").unwrap();
+    model.model =
+        llm_api::providers::Model::new(llm_api::providers::ProviderType::Openrouter, "saved-model")
+            .unwrap();
     state
         .persist_events(&[
             NewEvent::new(EventType::NewContext),
@@ -58,7 +60,11 @@ async fn persisted_model_updates_live_request_projection_and_survives_reload() {
         model
     );
 
-    model.model = llm_api::providers::Model::new("updated-model").unwrap();
+    model.model = llm_api::providers::Model::new(
+        llm_api::providers::ProviderType::Openrouter,
+        "updated-model",
+    )
+    .unwrap();
     state
         .persist_events(&[NewEvent::new(EventType::Model(model.clone()))])
         .await
@@ -359,8 +365,8 @@ async fn committed_calls_get_not_run_results_when_interrupted_before_execution()
         .await
         .unwrap();
     let model = llm_api::providers::ModelConfig {
-        provider: llm_api::providers::ProviderType::Openrouter,
-        model: llm_api::providers::Model::new("test").unwrap(),
+        model: llm_api::providers::Model::new(llm_api::providers::ProviderType::Openrouter, "test")
+            .unwrap(),
         effort: llm_api::providers::Effort::Medium,
     };
     cursor

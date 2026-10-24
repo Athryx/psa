@@ -1,4 +1,4 @@
 [workspace]
 resolver = "3"
-members = ["actors", "actors_macros", "llm_api", "psa_api", "psa_server", "psa_probe"]
+members = ["actors", "actors_macros", "llm_api", "psa_api", "psa_shared", "psa_server", "psa_probe"]
 exclude = ["target/probe-sources/ripgrep", "target/probe-sources/fd"]

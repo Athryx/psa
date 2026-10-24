@@ -1,7 +1,7 @@
 //! A bounded connection actor shared by the server and probe socket adapters.
-use crate::probes::*;
 use actors::{Mailbox, MailboxHandle, mailbox};
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
+use psa_api::probes::*;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::{Semaphore, mpsc, oneshot, watch};
 

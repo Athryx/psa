@@ -14,9 +14,9 @@ use axum::{
 use futures_util::{SinkExt, StreamExt, future::ready};
 use psa_api::{
     ProbeId,
-    probe_transport::{Call, Connection, Frame, ProbeError, spawn_connection},
     probes::{Command, ConnectProbe, Event, Operation, PROTOCOL_VERSION},
 };
+use psa_shared::probe_transport::{Call, Connection, Frame, ProbeError, spawn_connection};
 use std::collections::HashMap;
 use tokio::sync::oneshot;
 

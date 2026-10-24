@@ -19,11 +19,7 @@ impl DatabaseCursor {
         rows.into_iter().map(decode_model_info).collect()
     }
 
-    pub async fn get_model_info(
-        &mut self,
-        provider: ProviderType,
-        model: &Model,
-    ) -> Result<Option<ModelInfo>, DbError> {
+    pub async fn get_model_info(&mut self, model: &Model) -> Result<Option<ModelInfo>, DbError> {
         let row = sqlx::query(
             "SELECT c.info, p.model IS NOT NULL AS pinned, s.state AS sync_state
              FROM model_catalog c
@@ -31,30 +27,25 @@ impl DatabaseCursor {
              LEFT JOIN model_catalog_sync s ON s.provider=c.provider
              WHERE c.provider=? AND c.model=?",
         )
-        .bind(provider.as_str())
+        .bind(model.provider.as_str())
         .bind(&model.api_name)
         .fetch_optional(self.connection())
         .await?;
         row.map(decode_model_info).transpose()
     }
 
-    pub async fn set_model_pinned(
-        &mut self,
-        provider: ProviderType,
-        model: &Model,
-        pinned: bool,
-    ) -> Result<(), DbError> {
+    pub async fn set_model_pinned(&mut self, model: &Model, pinned: bool) -> Result<(), DbError> {
         if pinned {
             sqlx::query(
                 "INSERT INTO model_pins (provider,model) VALUES (?,?) ON CONFLICT DO NOTHING",
             )
-            .bind(provider.as_str())
+            .bind(model.provider.as_str())
             .bind(&model.api_name)
             .execute(self.connection())
             .await?;
         } else {
             sqlx::query("DELETE FROM model_pins WHERE provider=? AND model=?")
-                .bind(provider.as_str())
+                .bind(model.provider.as_str())
                 .bind(&model.api_name)
                 .execute(self.connection())
                 .await?;
@@ -72,7 +63,7 @@ impl DatabaseCursor {
             .execute(self.connection())
             .await?;
         for info in models {
-            if info.provider != provider {
+            if info.model.provider != provider {
                 return Err(DbError::InvalidInput("catalog provider mismatch".into()));
             }
             sqlx::query("INSERT INTO model_catalog (provider,model,info) VALUES (?,?,?)")

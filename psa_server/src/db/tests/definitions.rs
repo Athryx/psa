@@ -206,11 +206,15 @@ async fn fork_preserves_definition_reference_and_session_model_or_explicit_overr
         .await
         .unwrap();
     assert_eq!(fork.session.model_config, session.model_config);
-    assert_eq!(fork.agents[0].1.definition_id, agent.definition_id);
-    assert_ne!(fork.agents[0].1.definition_id, updated_definition.id);
+    assert_eq!(fork.agents[0].definition_id, agent.definition_id);
+    assert_ne!(fork.agents[0].definition_id, updated_definition.id);
 
     let mut changed = model();
-    changed.model = llm_api::providers::Model::new("different-model").unwrap();
+    changed.model = llm_api::providers::Model::new(
+        llm_api::providers::ProviderType::Openrouter,
+        "different-model",
+    )
+    .unwrap();
     let overridden = cursor
         .fork_session(
             session.id,
@@ -231,7 +235,7 @@ async fn fork_preserves_definition_reference_and_session_model_or_explicit_overr
     );
     assert_eq!(
         cursor
-            .get_agent(overridden.agents[0].1.id)
+            .get_agent(overridden.agents[0].id)
             .await
             .unwrap()
             .definition_id,

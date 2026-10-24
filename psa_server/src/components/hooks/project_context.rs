@@ -8,9 +8,9 @@ use crate::{
 };
 use psa_api::{
     events::{EventType, Log, Message, MessageType, NewEvent},
-    probe_transport::ProbeError,
     probes::Event,
 };
+use psa_shared::probe_transport::ProbeError;
 use std::{
     path::{Component, Path, PathBuf},
     time::Duration,

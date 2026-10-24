@@ -19,7 +19,8 @@ Probes execute with their process's OS permissions, not an additional sandbox.
 | Crate | Purpose |
 | --- | --- |
 | `psa_server` | HTTP server, SQLite storage, and agent runtime |
-| `psa_api` | Shared types, routes, async client, and probe transport |
+| `psa_api` | API/protocol types, routes, and async client |
+| `psa_shared` | Shared probe transport and local configuration locking |
 | `psa_probe` | Linux remote filesystem and process execution |
 | `llm_api` | Low-level model provider adapters |
 | `actors`, `actors_macros` | Async mailboxes and typed client generation |
@@ -176,7 +177,39 @@ listen = "127.0.0.1:8080"
 
 [database]
 path = "psa.sqlite3"
+
+[session_defaults]
+model = "openai_codex/gpt-5"
+effort = "Medium"
+
+# Optional fallbacks for omitted component fields in API/TOML agent configs.
+[agent_defaults]
+bundles = ["FileTools", "Bash"]
+tools = []
+
+[agent_defaults.hooks]
+agent_create = ["DefaultStartup", "ToolDefinitions", "Cwd", "Skills"]
+after_request = ["StopWithoutTools"]
 ```
+
+`[session_defaults]` supplies the model for session creation when `model_config`
+is omitted or null. Config files use a `provider/api-name` string, not a structured
+model object (for example `openrouter/vendor/model`). Omitting the entire section
+uses OpenAI Codex `gpt-5` with `Medium` effort; when present, both fields are
+required. An explicit API model override wins. The resolved concrete model is
+persisted and returned in session responses; reloads, updates, and forks do not
+reset it to these defaults. Restart the server to change creation defaults.
+
+Omitted tools/bundles inherit the entire server default list; explicit lists
+replace it, and `[]` disables it. Hook stages inherit independently. Without
+`[agent_defaults]`, all fallback lists are empty. Defaults resolve during API
+registration/file refresh, not additively or against existing snapshots. Restart
+the server after changing defaults; API callers must resubmit omission-aware
+input to use them. Library integrations configure defaults with
+`ConfigRegistry::new(data_dir).with_agent_defaults(defaults)` passed to
+`server::serve_with_configuration`; its `default_model_config: ModelConfig`
+argument precedes `shutdown`. `ResolvedConfig.session_defaults` contains the
+resolved model configuration.
 
 Relative database paths resolve against `--data-dir`. `--listen` overrides the
 configured address. `--config /path/config.toml` selects an existing file;
@@ -228,13 +261,22 @@ resume or replay operations; a disconnected mutation may have an unknown outcome
 
 Use `psa_api::Client` for agent configs, skills, immutable snapshots, sessions,
 agents, probe discovery, and JSON/SSE event queries. Every session requires a
-registered probe ID and `model_config`; its working directory is on that probe.
-Batch-upsert `AgentConfig` values with `upsert_agent_configs`, then create an agent
+registered probe ID; its working directory is on that probe. Optional
+`CreateSession.model_config` overrides server `[session_defaults]`; omission or
+null uses the server default, persisted as a concrete session model configuration.
+Batch-upsert `AgentConfigInput` values with `upsert_agent_configs`, then create an agent
 with `NewConfiguredAgent { config_id, name, subagent_parent_id, interactive, model }`.
 `config_id` is a `(config_group, name)` identity, not an immutable definition ID.
 Creation resolves the config's allowed model/effort policies and pins an immutable
 snapshot; later config upserts do not change existing agents. Optional `model`
-chooses an allowed provider/model string, `"global"`, or `"parent"`.
+is a `ModelSelection` that must exactly match an allowed policy, including the
+fixed model and effort policy. JSON uses `"Global"`, `"Parent"`, or a `Fixed`
+object. Omitted/null selects the sole policy, or the first policy when `default`
+is true. Registration normalizes `default` to true for a single allowed policy;
+multiple policies with `default = false` require an explicit selection.
+Use `AgentConfigInput::new(config_id, models)` to inherit component defaults;
+normalized `AgentConfig` values are also accepted but send all component lists
+explicitly, including empty lists.
 
 The HTTP API uses `/agent-configs` (batch POST/list GET),
 `POST /agent-configs/lookup`, `/skills` (upload POST/list GET), and
@@ -244,7 +286,9 @@ not retained as a compatibility API. Global discovery reads
 probe-local `.agents/{agents,skills}`. See
 [configuration types, JSON/TOML examples, and snapshot semantics](docs/AGENT_DEF_SCHEMA.md).
 
-Hook bindings default empty. For ordinary execution, explicitly bind
+Hook bindings inherit `[agent_defaults.hooks]` per omitted stage; explicit `[]`
+disables a stage, and without configured defaults all are empty. For ordinary
+execution, configure defaults or explicitly bind
 `[DefaultStartup, ToolDefinitions, Cwd, Skills]` to `agent_create` in that order,
 `SessionModelUpdate` to `session_update`, and `StopWithoutTools` to `after_request`;
 see the server client example below. `DefaultStartup` initializes root context,

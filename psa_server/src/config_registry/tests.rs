@@ -1,4 +1,70 @@
 use super::*;
+use psa_api::{HookId, HookIds};
+
+fn configured_defaults() -> AgentDefaults {
+    AgentDefaults {
+        tools: vec![ToolId::Read],
+        bundles: vec![BundleId::FileTools],
+        hooks: HookIds {
+            agent_create: vec![HookId::Skills],
+            session_update: vec![HookId::SessionModelUpdate],
+            before_request: vec![HookId::Noop],
+            after_request: vec![HookId::StopWithoutTools],
+        },
+    }
+}
+
+fn lower_config(text: &str, defaults: &AgentDefaults) -> AgentConfig {
+    let config: AgentDefinitionConfig = toml::from_str(text).unwrap();
+    config
+        .lower(
+            &ConfigGroup::Global,
+            None,
+            Vec::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            defaults,
+        )
+        .unwrap()
+}
+
+#[test]
+fn omitted_components_inherit_configured_defaults() {
+    let defaults = configured_defaults();
+    let registry =
+        ConfigRegistry::new(PathBuf::from("/tmp/defaults")).with_agent_defaults(defaults.clone());
+    let config = lower_config("name = 'example'", registry.agent_defaults());
+    assert_eq!(config.tools, defaults.tools);
+    assert_eq!(config.bundles, defaults.bundles);
+    assert_eq!(config.hooks, defaults.hooks);
+}
+
+#[test]
+fn explicit_empty_components_disable_configured_defaults() {
+    let defaults = configured_defaults();
+    let config = lower_config(
+        "name = 'example'\ntools = []\nbundles = []\n[hooks]\nagent_create = []\nsession_update = []\nbefore_request = []\nafter_request = []",
+        &defaults,
+    );
+    assert!(config.tools.is_empty());
+    assert!(config.bundles.is_empty());
+    assert_eq!(config.hooks, HookIds::default());
+}
+
+#[test]
+fn hook_stages_inherit_and_override_independently() {
+    let defaults = configured_defaults();
+    let config = lower_config(
+        "name = 'example'\n[hooks]\nagent_create = []\nafter_request = ['Noop']",
+        &defaults,
+    );
+    assert!(config.hooks.agent_create.is_empty());
+    assert_eq!(config.hooks.session_update, defaults.hooks.session_update);
+    assert_eq!(config.hooks.before_request, defaults.hooks.before_request);
+    assert_eq!(config.hooks.after_request, vec![HookId::Noop]);
+    assert_eq!(config.tools, defaults.tools);
+    assert_eq!(config.bundles, defaults.bundles);
+}
 
 #[test]
 fn file_defaults_and_explicit_values() {

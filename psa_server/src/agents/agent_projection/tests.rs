@@ -12,8 +12,7 @@ fn build_text_block(value: &str) -> api::ContentBlock {
 
 fn config() -> ModelConfig {
     ModelConfig {
-        model: Model::new("test").unwrap(),
-        provider: ProviderType::Openrouter,
+        model: Model::new(ProviderType::Openrouter, "test").unwrap(),
         effort: Effort::High,
     }
 }
@@ -240,8 +239,7 @@ fn rejects_unfinished_or_mismatched_result_blocks_without_mutating_state() {
 #[test]
 fn model_switches_convert_context_but_preserve_the_response_snapshot() {
     let mut new = config();
-    new.provider = ProviderType::OpenAiCodex;
-    new.model = Model::new("other").unwrap();
+    new.model = Model::new(ProviderType::OpenAiCodex, "other").unwrap();
     let transcript = events(vec![
         EventType::Model(config()),
         message(MessageType::Human, "question"),
@@ -418,7 +416,7 @@ fn result_blocks_reject_prompt_items_and_mismatched_model_snapshots() {
     let EventType::InferenceResultStart(start) = &mut event.kind else {
         panic!()
     };
-    start.model_config.model = Model::new("different-model").unwrap();
+    start.model_config.model = Model::new(ProviderType::Openrouter, "different-model").unwrap();
     let before = format!("{state:?}");
     assert!(state.apply_event(&event).is_err());
     assert_eq!(format!("{state:?}"), before);

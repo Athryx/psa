@@ -36,8 +36,8 @@ use crate::{
     sessions::Session,
 };
 use actors::UnboundedMailbox;
-use psa_api::probe_transport::ProbeError;
 pub use psa_api::{HookId, HookIds};
+use psa_shared::probe_transport::ProbeError;
 use std::time::Duration;
 
 /// Hooks are part of the core loop and propagate failures from their capabilities.

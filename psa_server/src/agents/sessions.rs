@@ -28,6 +28,7 @@ pub struct Sessions {
     configuration: Option<crate::config_registry::ConfigRegistry>,
     probes: Option<crate::probes::ProbeRegistry>,
     configuration_gate: std::sync::Arc<tokio::sync::Mutex<()>>,
+    default_model_config: llm_api::providers::ModelConfig,
 }
 
 impl Sessions {
@@ -46,7 +47,16 @@ impl Sessions {
             configuration: None,
             probes: None,
             configuration_gate: Default::default(),
+            default_model_config: crate::config::default_model_config(),
         }
+    }
+
+    pub(crate) fn with_default_model_config(
+        mut self,
+        default_model_config: llm_api::providers::ModelConfig,
+    ) -> Self {
+        self.default_model_config = default_model_config;
+        self
     }
 
     pub(crate) fn with_catalog(mut self, catalog: Option<crate::models::ModelCatalog>) -> Self {
@@ -129,6 +139,9 @@ impl Sessions {
         &self,
         request: api::CreateSession,
     ) -> Result<sessions::Session, RuntimeError> {
+        let model_config = request
+            .model_config
+            .unwrap_or_else(|| self.default_model_config.clone());
         let project = self
             .discover_session_project(request.probe_id, &request.working_directory)
             .await?;
@@ -139,7 +152,7 @@ impl Sessions {
                 name: request.name,
                 working_directory: request.working_directory,
                 probe_id: request.probe_id,
-                model_config: request.model_config,
+                model_config,
             })
             .await?;
         if let Some(project) = project {
@@ -184,7 +197,6 @@ impl Sessions {
         } else {
             None
         };
-        let busy = self.is_busy(id).await?;
         let notification = self.commands.reserve_notification().await?;
 
         let publication = self.publication.lock().await;
@@ -209,6 +221,7 @@ impl Sessions {
         notification.send(ManagerCommand::SessionUpdated {
             session: session.clone(),
         });
+        let busy = publication.is_session_busy(id);
         publication.publish(api::StreamMessage::SessionUpdated {
             session: session.clone().into_api(busy),
         });
@@ -255,7 +268,7 @@ impl Sessions {
 
         let mut agents = Vec::new();
         let mut committed_messages = Vec::new();
-        for (parent_id, agent) in fork.agents {
+        for agent in fork.agents {
             let projection = AgentProjection::replay(&cursor.load_all_events(agent.id).await?)
                 .map_err(AgentError::from)?;
             let events = build_recovery_events(&agent, &projection)?;
@@ -273,7 +286,7 @@ impl Sessions {
                     pending_id: None,
                 },
             ));
-            agents.push((parent_id, cursor.get_agent(agent.id).await?));
+            agents.push(cursor.get_agent(agent.id).await?);
         }
 
         let session = cursor.get_session(fork.session.id).await?;
@@ -283,7 +296,7 @@ impl Sessions {
         cursor.commit().await?;
 
         notification.send(ManagerCommand::AgentsCreated {
-            agents: agents.iter().map(|(_, agent)| agent.id).collect(),
+            agents: agents.iter().map(|agent| agent.id).collect(),
         });
         for message in committed_messages {
             publication.publish(message);
@@ -537,7 +550,7 @@ mod tests {
                     name: "test".into(),
                     working_directory: "/work".into(),
                     probe_id: api::ProbeId(api::probes::Uuid::nil()),
-                    model_config: crate::test_support::model_config(),
+                    model_config: Some(crate::test_support::model_config()),
                 })
                 .await
                 .unwrap()
@@ -634,11 +647,11 @@ mod tests {
         assert_eq!(fork.session.name, "fork");
         assert_eq!(fork.session.first_position, 5);
         assert_eq!(fork.session.next_position, 6);
-        assert_eq!(fork.agents[0].0, agent.id);
-        assert_eq!(fork.agents[0].1.created_position, agent.created_position);
-        assert_eq!(fork.agents[0].1.first_event_id, EventId(4));
-        assert_eq!(fork.agents[0].1.next_event_id, EventId(5));
-        assert_eq!(fork.agents[0].1.state, api::AgentState::Interrupted);
+        assert_eq!(fork.agents[0].parent_id, Some(agent.id));
+        assert_eq!(fork.agents[0].created_position, agent.created_position);
+        assert_eq!(fork.agents[0].first_event_id, EventId(4));
+        assert_eq!(fork.agents[0].next_event_id, EventId(5));
+        assert_eq!(fork.agents[0].state, api::AgentState::Interrupted);
         assert_eq!(
             sessions
                 .get_agent(session.id, agent.id)
@@ -650,7 +663,7 @@ mod tests {
         let api::StreamMessage::Committed { event, .. } = published.recv().await.unwrap() else {
             panic!("expected recovery event");
         };
-        assert_eq!(event.agent_id, fork.agents[0].1.id);
+        assert_eq!(event.agent_id, fork.agents[0].id);
         assert!(matches!(
             event.event.kind,
             EventType::StatusChange(StatusChange {
@@ -677,18 +690,15 @@ mod tests {
             .unwrap();
         assert_eq!(earlier.session.first_position, 3);
         assert_eq!(earlier.session.next_position, 3);
-        assert_eq!(earlier.agents[0].1.created_position, agent.created_position);
-        assert_eq!(earlier.agents[0].1.first_event_id, EventId(2));
+        assert_eq!(earlier.agents[0].created_position, agent.created_position);
+        assert_eq!(earlier.agents[0].first_event_id, EventId(2));
         let mut cursor = sessions.database.cursor().await.unwrap();
-        let events = cursor
-            .load_all_events(earlier.agents[0].1.id)
-            .await
-            .unwrap();
+        let events = cursor.load_all_events(earlier.agents[0].id).await.unwrap();
         cursor.rollback().await.unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0].kind, EventType::Model(_)));
         assert!(matches!(
-            sessions.get_agent(session.id, fork.agents[0].1.id).await,
+            sessions.get_agent(session.id, fork.agents[0].id).await,
             Err(RuntimeError::Database(DbError::NotFound { .. }))
         ));
     }
@@ -776,10 +786,16 @@ mod tests {
         assert_eq!(listed[0].first_position, 1);
         assert_eq!(listed[0].next_position, 1);
 
+        sessions
+            .publication
+            .update_session_busy(&sessions.database, session.id, true)
+            .await
+            .unwrap();
         let mut published = sessions.publication.lock().await.subscribe();
         let received = &mut fixture.received;
         let serve_manager = async {
-            for busy in [true, false, true] {
+            // Only the two explicit reads below consult the manager; the update uses the projection.
+            for busy in [true, false] {
                 let ManagerCommand::IsBusy { session: id, reply } = received.recv().await.unwrap()
                 else {
                     panic!("expected busy query");
@@ -845,6 +861,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn metadata_updates_publish_the_busy_projection_under_the_same_gate() {
+        let fixture = Fixture::new().await;
+        let session = fixture.create_session().await;
+        let sessions = &fixture.sessions;
+        let mut published = sessions.publication.lock().await.subscribe();
+        // Queue the busy transition first, then metadata, while both wait on the same gate.
+        let publication = sessions.publication.lock().await;
+        assert!(!publication.is_session_busy(session.id));
+        let start = sessions
+            .publication
+            .update_session_busy(&sessions.database, session.id, true);
+        tokio::pin!(start);
+        assert!(futures_util::poll!(&mut start).is_pending());
+        let update = sessions.update_session(
+            session.id,
+            api::UpdateSession {
+                name: Some("renamed while busy".into()),
+                ..Default::default()
+            },
+        );
+        tokio::pin!(update);
+        assert!(futures_util::poll!(&mut update).is_pending());
+        drop(publication);
+        let (started, updated) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(&mut start, &mut update)
+        })
+        .await
+        .expect("metadata update must not query the unpolled manager");
+        started.unwrap();
+        let updated = updated.unwrap();
+        assert_eq!(updated.name, "renamed while busy");
+        let api::StreamMessage::SessionUpdated { session: started } =
+            published.recv().await.unwrap()
+        else {
+            panic!("expected worker-start session snapshot");
+        };
+        assert!(started.busy);
+        let api::StreamMessage::SessionUpdated { session: metadata } =
+            published.recv().await.unwrap()
+        else {
+            panic!("expected metadata session snapshot");
+        };
+        assert!(
+            metadata.busy,
+            "metadata must not overwrite the preceding busy=true snapshot"
+        );
+        assert_eq!(metadata.name, updated.name);
+
+        sessions
+            .publication
+            .update_session_busy(&sessions.database, session.id, false)
+            .await
+            .unwrap();
+        let api::StreamMessage::SessionUpdated { session: stopped } =
+            published.recv().await.unwrap()
+        else {
+            panic!("expected worker-stop session snapshot");
+        };
+        assert!(!stopped.busy);
+        assert_eq!(
+            stopped.name, updated.name,
+            "busy transitions must include the latest metadata"
+        );
+        assert!(
+            !sessions
+                .publication
+                .lock()
+                .await
+                .is_session_busy(session.id)
+        );
+    }
+
+    #[tokio::test]
     async fn validates_inputs_without_partial_records_or_manager_access() {
         let fixture = Fixture::new().await;
         let session = fixture.create_session().await;
@@ -869,7 +958,7 @@ mod tests {
                     name: "missing probe".into(),
                     working_directory: "/work".into(),
                     probe_id: api::ProbeId(api::probes::Uuid::new_v4()),
-                    model_config: crate::test_support::model_config(),
+                    model_config: Some(crate::test_support::model_config()),
                 })
                 .await,
             Err(RuntimeError::Database(DbError::ProbeNotFound(_)))

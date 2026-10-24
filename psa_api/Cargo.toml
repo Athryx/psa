@@ -7,17 +7,11 @@ edition = "2024"
 llm_api = { path = "../llm_api" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+schemars = "1"
 time = { version = "0.3.55", features = ["serde-well-known"] }
 reqwest = { version = "0.13.5", features = ["json", "stream", "query"] }
-futures-util = { version = "0.3", features = ["sink"] }
+futures-util = "0.3"
 eventsource-stream = "0.2"
 thiserror = "2"
 
-tracing = "0.1"
-actors = { path = "../actors" }
 uuid = { version = "1", features = ["v4", "serde"] }
-tokio = { version = "1", features = ["rt", "sync", "time", "macros", "io-util", "fs"] }
-
-[dev-dependencies]
-futures-channel = { version = "0.3", features = ["sink"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }

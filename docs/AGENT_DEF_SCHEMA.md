@@ -2,7 +2,7 @@
 
 ## Implemented API and identity
 
-The configuration API is implemented in `psa_api/src/definitions.rs`, with HTTP
+The configuration API is implemented in `psa_api/src/definitions.rs` and `psa_api/src/agent_defaults.rs`, with HTTP
 routes in `psa_server/src/http.rs` and a thin `psa_api::Client`. Discovery is in
 `psa_server/src/config_registry`; registration and immutable graph resolution are
 in `psa_server/src/db/configurations.rs`.
@@ -23,19 +23,20 @@ in `psa_server/src/db/configurations.rs`.
 
 | Route | Input | Response | `Client` method |
 | --- | --- | --- | --- |
-| `POST /agent-configs` | JSON array of `AgentConfig` | `Vec<AgentConfigStatus>` | `upsert_agent_configs(&[AgentConfig])` |
-| `GET /agent-configs?session_id=...` | Optional session query | `Vec<AgentConfigStatus>` | `list_agent_configs(Option<SessionId>)` |
+| `POST /agent-configs` | JSON array of `AgentConfigInput` | `Vec<AgentConfigStatus>` | `upsert_agent_configs(&[I])` (`I: Clone + Into<AgentConfigInput>`) |
+| `GET /agent-configs?refresh_session_id=...` | Optional discovery-refresh session | `Vec<AgentConfigStatus>` | `refresh_and_list_agent_configs(Option<SessionId>)` |
 | `POST /agent-configs/lookup` | `ConfigId` JSON body | `AgentConfigStatus` | `get_agent_config(&ConfigId)` |
 | `GET /agent-snapshots/{definition_id}` | Internal snapshot ID | `Option<ResolvedAgentConfig>` | `get_resolved_agent_config(AgentDefinitionId)` |
 | `POST /skills` | `NewSkill` JSON body | `Skill` (201) | `upload_skill(&NewSkill)` |
-| `GET /skills?session_id=...` | Optional session query | `Vec<Skill>` | `list_skills(Option<SessionId>)` |
+| `GET /skills?refresh_session_id=...` | Optional discovery-refresh session | `Vec<Skill>` | `refresh_and_list_skills(Option<SessionId>)` |
 | `POST /sessions/{session_id}/agents` | `NewConfiguredAgent` | `Agent` (201) | `create_agent(SessionId, &NewConfiguredAgent)` |
 
 Lookup by compound config ID uses a body rather than path encoding. An unknown
 snapshot returns JSON `null`; a missing current config produces a not-found
-error. Lists refresh source metadata first; `session_id` selects the project to
-refresh, not a filter that hides other registered groups. Snapshot reads and
-current-config lookup do not perform discovery.
+error. Lists refresh source metadata first; `refresh_session_id` selects the
+project to refresh for both agent configurations and skills, not a filter that
+hides other registered groups. Snapshot reads and current-config lookup do not
+perform discovery.
 
 There is **no backwards compatibility**: `/agent-definitions` CRUD routes,
 constants, and client methods are removed. The old `CreateAgent` body is not
@@ -44,6 +45,8 @@ remains available to the subagent runtime, not as an alternate HTTP API.
 
 ## Current configuration and skill types
 
+`AgentConfigInput` is omission-aware registration input; `AgentConfig` is the
+normalized stored/returned form. The client accepts slices of either type.
 The following field summaries use the actual Rust API names:
 
 ```rust
@@ -55,6 +58,7 @@ enum ConfigGroup {
 }
 struct IncludedItems { groups: Vec<ConfigGroup>, items: Vec<ConfigId> }
 
+// Normalized form: all component lists are explicit.
 struct AgentConfig {
     config_id: ConfigId,
     description: String,
@@ -106,7 +110,7 @@ its name must match `config_id.name`. `disable-model-invocation` is preserved.
 
 ### Batch JSON example
 
-`POST /agent-configs` takes an array, even for one config:
+`POST /agent-configs` takes an array of `AgentConfigInput`, even for one config:
 
 ```json
 [
@@ -126,8 +130,42 @@ Model names here are illustrative, not catalogue recommendations. JSON enums
 use their Rust variant spellings: `"Global"`, `"Parent"`, and externally tagged
 objects such as `{"Custom":"examples"}` or `{"Fixed":"High"}`. API configs
 require a nonempty `models`; omitted ordinary fields use their declared defaults
-(empty strings/lists, false `selectable`, empty hooks/inclusions, true `default`).
-Unlike TOML discovery, omitted API inclusions do not include default groups.
+(empty strings/inclusions, false `selectable`, true `default`). Components follow
+the server defaults below. Unlike TOML discovery, omitted API inclusions do not
+include default groups.
+
+### Server component defaults
+
+The server's `config.toml` can supply fallbacks shared by TOML files and API input:
+
+```toml
+[agent_defaults]
+bundles = ["FileTools", "Bash"]
+tools = []
+
+[agent_defaults.hooks]
+agent_create = ["DefaultStartup", "ToolDefinitions", "Cwd", "Skills"]
+after_request = ["StopWithoutTools"]
+```
+
+An omitted `tools` or `bundles` field inherits its entire configured default
+list; an explicit list replaces it, and `[]` disables it. Hook stages inherit
+independently: omitted `hooks.after_request` inherits, while
+`hooks.after_request = []` disables that stage without affecting other stages.
+An omitted `[agent_defaults]` means all fallback lists are empty. Defaults are
+not appended to explicit lists.
+
+`AgentConfigInput` represents `tools`/`bundles` as `Option<Vec<_>>` and `hooks` as
+`HookOverrides` whose four stages are `Option<Vec<HookId>>`.
+`AgentConfigInput::new(config_id, models)` leaves components omitted, inheriting
+server defaults. Converting a normalized `AgentConfig` into input makes every
+component list explicit, including empty lists; resubmitting a returned config
+therefore does not unexpectedly inherit defaults.
+
+Defaults resolve at API registration or file refresh, not at agent execution.
+Changing `config.toml` requires a server restart; there is no live config watch.
+API callers must resubmit omission-aware input to adopt changed defaults, while
+file refresh resolves omitted fields again. Existing snapshots never change.
 
 ## Discovery and source publication
 
@@ -137,8 +175,13 @@ Unlike TOML discovery, omitted API inclusions do not include default groups.
 - Server startup uses the resolved server `data_dir` (CLI `--data-dir`). Library
   integrations can pass `ConfigRegistry::new(custom_data_dir)` to
   `server::serve_with_configuration(listener, database, providers, probes,
-  configuration, shutdown)` to set both discovery and uploaded-skill storage.
-  Uploads are stored beneath `skill-uploads` in that root.
+  configuration, default_model_config, shutdown)` to set both discovery and
+  uploaded-skill storage. `default_model_config: ModelConfig` supplies the concrete
+  session creation fallback; CLI resolution exposes it as
+  `ResolvedConfig.session_defaults`.
+  Use `ConfigRegistry::new(custom_data_dir).with_agent_defaults(agent_defaults)`
+  to configure library-side component defaults. Uploads are stored beneath
+  `skill-uploads` in that root.
 - Probe projects use `.agents/{agents,skills}`. At session creation, start at the
   probe cwd and walk upward to the first `.agents` directory; stop there, even
   when empty or missing its `agents`/`skills` subdirectories. Ancestor projects
@@ -159,7 +202,9 @@ Unlike TOML discovery, omitted API inclusions do not include default groups.
 
 `AgentDefinitionConfig` is the loader type, lowered to `AgentConfig`. Its group
 comes from discovery and is not repeated in the file. Ordinary agent fields
-match API fields. The file-specific inclusion tables are:
+match API input, including omission-aware components and per-stage hooks; both
+loaders normalize against the same server defaults. The file-specific inclusion
+tables are:
 
 ```rust
 struct SubagentInclusionsConfig {
@@ -214,6 +259,8 @@ inherited effort can instead be `effort = "Parent"` or `effort = "Global"` insid
 `Fixed`. Other optional file fields include `description`, `selectable`,
 `bundles`, `tools`, `extra_system_prompt`, and `[hooks]`; hooks contain the
 `agent_create`, `session_update`, `before_request`, and `after_request` arrays.
+Omitted component fields inherit `[agent_defaults]`; for example, `bundles = []`
+and `[hooks]` with `after_request = []` explicitly disable those defaults.
 
 ## Creation-time model choice
 
@@ -223,7 +270,7 @@ struct NewConfiguredAgent {
     name: String,
     subagent_parent_id: Option<AgentId>,
     interactive: bool,
-    model: Option<String>,
+    model: Option<ModelSelection>,
 }
 ```
 
@@ -233,20 +280,27 @@ For example, `POST /sessions/1/agents`:
 {
   "config_id": {"config_group": {"Custom": "examples"}, "name": "worker"},
   "name": "worker-1",
-  "model": "openrouter/example/model"
+  "model": {"Fixed": {"model": "openrouter/example/model", "effort": {"Fixed": "High"}}}
 }
 ```
 
-`model` is a choice string, not a `ModelSelection` object: fixed choices use the
-exact configured provider/model string; Global and Parent use lowercase
-`"global"` and `"parent"`. Omitted/null model selects the sole choice, or the first
-choice when `default` is true. Multiple choices with `default = false` require
-an explicit selection. `interactive` defaults to false and parent to none.
+`model` is a typed `ModelSelection`: `"Global"`, `"Parent"`, or a `Fixed` object.
+The complete selector must exactly match a configured entry, including the fixed
+provider/model string and effort policy. Fixed effort policies may also be
+`"Parent"` or `"Global"`, but only when that exact policy is configured; selecting
+an equivalent resolved effort is not sufficient. Omitted/null model selects the
+sole choice, or the first choice when `default` is true. Database registration
+and upsert normalize stored `AgentConfig.default` to true for single-model
+configurations, even when input specifies false. Multiple choices with
+`default = false` require explicit selection. `interactive` defaults to false
+and parent to none.
 
 `Parent` and `Global` model/effort policies resolve at creation time, not as live
 bindings. Parent falls back to the session/global model without a parent. The
-subagent creation tool applies the same model-choice policy to a permitted
-pinned template, without replacing its source graph with a newer mutable config.
+subagent creation tool applies the same typed selector and exact-match policy to
+a permitted pinned template, without replacing its source graph with a newer
+mutable config. Its allowed-template identity prompt carries full model selectors,
+not just provider/model names.
 
 ## Immutable snapshots and current status
 
@@ -280,6 +334,8 @@ These fields have distinct purposes:
   probe-local `SKILL.md` paths), and
   `permitted_subagents: Vec<AgentDefinitionId>`. Its `skills` are **paths**, not
   skill record IDs; its model is a resolved execution choice, not `models`.
+  `ModelConfig` contains `model: { provider, api_name }` and `effort`; the provider
+  belongs to the nested model identity, not the configuration itself.
 - `references` separately records immutable subagent IDs and mutable skill IDs.
   It must not be confused with source `IncludedItems` or executable skill paths.
 - `AgentConfigStatus` is current lookup/list/upsert response metadata, not a

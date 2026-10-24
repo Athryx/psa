@@ -42,14 +42,14 @@ impl AgentHistory {
     /// Callers must re-upload/replace such media before retrying. A tool result
     /// whose entire content would be lost also fails instead of fabricating data.
     pub fn update_model_config(&mut self, config: ModelConfig) -> Result<(), Error> {
-        let changed = self.config.provider != config.provider || self.config.model != config.model;
+        let changed = self.config.model != config.model;
         let mut converted = self.clone();
 
         if changed {
-            strip_items_replay_state(&mut converted.items, config.provider)?;
+            strip_items_replay_state(&mut converted.items, config.model.provider)?;
         }
 
-        validate_item_providers(&converted.items, config.provider)?;
+        validate_item_providers(&converted.items, config.model.provider)?;
         converted.config = config;
         *self = converted;
 
@@ -65,7 +65,7 @@ pub fn validate_request(
     provider: ProviderType,
     config: &RequestConfig,
 ) -> Result<(), Error> {
-    require_provider(provider, history.config.provider)?;
+    require_provider(provider, history.config.model.provider)?;
     history.config.model.validate()?;
     if config.max_output_tokens == Some(0) {
         return Err(Error::InvalidConfig {
@@ -86,10 +86,10 @@ pub fn convert_items_for_model(
     config: &ModelConfig,
 ) -> Result<Vec<HistoryItem>, Error> {
     let mut converted = items.to_vec();
-    if previous.provider != config.provider || previous.model != config.model {
-        strip_items_replay_state(&mut converted, config.provider)?;
+    if previous.model != config.model {
+        strip_items_replay_state(&mut converted, config.model.provider)?;
     }
-    validate_item_providers(&converted, config.provider)?;
+    validate_item_providers(&converted, config.model.provider)?;
     Ok(converted)
 }
 
@@ -351,12 +351,14 @@ mod tests {
 
     fn config(provider: ProviderType) -> ModelConfig {
         ModelConfig {
-            model: Model::new(match provider {
-                ProviderType::OpenAiCodex => "gpt-5",
-                ProviderType::Openrouter => "anthropic/claude-sonnet-4",
-            })
+            model: Model::new(
+                provider,
+                match provider {
+                    ProviderType::OpenAiCodex => "gpt-5",
+                    ProviderType::Openrouter => "anthropic/claude-sonnet-4",
+                },
+            )
             .unwrap(),
-            provider,
             effort: Effort::High,
         }
     }
@@ -388,13 +390,13 @@ mod tests {
     fn accepts_empty_history_and_prompt_items() {
         let config = config(ProviderType::OpenAiCodex);
         let mut history = AgentHistory::new(config.clone());
-        validate_request(&history, config.provider, &RequestConfig::default()).unwrap();
+        validate_request(&history, config.model.provider, &RequestConfig::default()).unwrap();
         assert!(history.items.is_empty());
         history.items.push(item(HistoryItemKind::Message(Message {
             role: Role::User,
             content: vec![text()],
         })));
-        validate_request(&history, config.provider, &RequestConfig::default()).unwrap();
+        validate_request(&history, config.model.provider, &RequestConfig::default()).unwrap();
         assert_eq!(history.items.len(), 1);
     }
 
@@ -408,7 +410,7 @@ mod tests {
         })));
         let request = RequestConfig::default();
 
-        validate_request(&history, config.provider, &request).unwrap();
+        validate_request(&history, config.model.provider, &request).unwrap();
     }
 
     #[test]
@@ -436,14 +438,14 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            validate_request(&history, config.provider, &request),
+            validate_request(&history, config.model.provider, &request),
             Err(Error::InvalidConfig { .. })
         ));
         request.tool_choice = Some(ToolChoice::Function {
             name: "read".into(),
         });
         assert!(matches!(
-            validate_request(&history, config.provider, &request),
+            validate_request(&history, config.model.provider, &request),
             Err(Error::UnknownTool { .. })
         ));
         history.tools.push(ToolDefinition {
@@ -452,23 +454,23 @@ mod tests {
             parameters: serde_json::json!({"type":"object"}).into(),
             strict: None,
         });
-        validate_request(&history, config.provider, &request).unwrap();
+        validate_request(&history, config.model.provider, &request).unwrap();
         history.tools.push(history.tools[0].clone());
         assert!(matches!(
-            validate_request(&history, config.provider, &request),
+            validate_request(&history, config.model.provider, &request),
             Err(Error::DuplicateToolName { .. })
         ));
         history.tools.pop();
         history.tools[0].parameters = serde_json::json!(42).into();
         assert!(matches!(
-            validate_request(&history, config.provider, &request),
+            validate_request(&history, config.model.provider, &request),
             Err(Error::InvalidToolDefinition { .. })
         ));
         history.tools.clear();
         request.tool_choice = None;
         request.max_output_tokens = Some(0);
         assert!(matches!(
-            validate_request(&history, config.provider, &request),
+            validate_request(&history, config.model.provider, &request),
             Err(Error::InvalidConfig { .. })
         ));
     }
@@ -484,7 +486,7 @@ mod tests {
         })));
         let request = RequestConfig::default();
         assert!(matches!(
-            validate_request(&history, config.provider, &request),
+            validate_request(&history, config.model.provider, &request),
             Err(Error::InvalidHistory { .. })
         ));
         history
@@ -494,10 +496,10 @@ mod tests {
                 content: vec![text()],
                 is_error: false,
             })));
-        validate_request(&history, config.provider, &request).unwrap();
+        validate_request(&history, config.model.provider, &request).unwrap();
         history.items.push(history.items[1].clone());
         assert!(matches!(
-            validate_request(&history, config.provider, &request),
+            validate_request(&history, config.model.provider, &request),
             Err(Error::InvalidHistory { .. })
         ));
     }
@@ -512,7 +514,7 @@ mod tests {
                 item(HistoryItemKind::Reasoning(Reasoning {
                     summary: vec!["summary".into()],
                     opaque_state: Some(ProviderOpaqueData {
-                        provider: old.provider,
+                        provider: old.model.provider,
                         data: serde_json::json!("encrypted"),
                     }),
                 })),
@@ -533,7 +535,7 @@ mod tests {
         assert_eq!(response.items.len(), 2);
         assert_eq!(history.items.len(), 1);
         assert!(history.items[0].metadata.item_id.is_none());
-        validate_request(&history, new.provider, &RequestConfig::default()).unwrap();
+        validate_request(&history, new.model.provider, &RequestConfig::default()).unwrap();
     }
 
     #[test]
@@ -544,7 +546,7 @@ mod tests {
             role: Role::User,
             content: vec![ContentBlock::File(FileBlock {
                 source: MediaSource::ProviderFile {
-                    provider: old.provider,
+                    provider: old.model.provider,
                     file_id: "file_1".into(),
                 },
                 filename: None,
@@ -557,6 +559,26 @@ mod tests {
         ));
         assert_eq!(history.config, old);
         assert_eq!(history.items.len(), 1);
+    }
+
+    #[test]
+    fn switching_provider_with_the_same_api_name_strips_replay_state() {
+        let old = config(ProviderType::OpenAiCodex);
+        let mut history = AgentHistory::new(old.clone());
+        history
+            .items
+            .push(item(HistoryItemKind::Reasoning(Reasoning::default())));
+        let mut new = old.clone();
+        new.model.provider = ProviderType::Openrouter;
+
+        assert!(
+            convert_items_for_model(&history.items, &old, &new)
+                .unwrap()
+                .is_empty()
+        );
+        history.update_model_config(new.clone()).unwrap();
+        assert_eq!(history.config, new);
+        assert!(history.items.is_empty());
     }
 
     #[test]

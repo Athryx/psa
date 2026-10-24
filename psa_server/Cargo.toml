@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 actors = { path = "../actors" }
 psa_api = { path = "../psa_api" }
+psa_shared = { path = "../psa_shared" }
 llm_api = { path = "../llm_api" }
 time = "0.3.55"
 serde_json = "1"

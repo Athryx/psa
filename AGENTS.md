@@ -13,6 +13,7 @@ The following crates are present in the workspace:
 - `llm_api`: a generic wrapper over different llm api types, like OpenAI responses and completions, low level close to the api.
 - `psa_server`: main server managing sessions and calling into `llm_api` to make inference requests.
 - `psa_api`: defines common types and endpoints clients and probes use to communicate to psa server, and provides a thin client library for making the requests.
+- `psa_shared`: shared implementation utilities for the server and probe, including probe transport and local configuration locking.
 - `psa_probe`: standalone Linux probe providing remote file, directory, and process operations over an authenticated WebSocket.
 - `actors`: provides async mailboxes and handles for actor-style message passing, with the `#[mailbox]` macro supplied by `actors_macros`.
 

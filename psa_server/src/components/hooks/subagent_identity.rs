@@ -28,19 +28,7 @@ impl SubagentIdentity {
                 .await
                 .map_err(|error| error.to_string())?;
             let (models, default) = match snapshot {
-                Some(snapshot) => (
-                    snapshot
-                        .config
-                        .models
-                        .iter()
-                        .map(|selection| match selection {
-                            psa_api::ModelSelection::Global => "global".to_owned(),
-                            psa_api::ModelSelection::Parent => "parent".to_owned(),
-                            psa_api::ModelSelection::Fixed { model, .. } => model.clone(),
-                        })
-                        .collect::<Vec<_>>(),
-                    snapshot.config.default,
-                ),
+                Some(snapshot) => (snapshot.config.models, snapshot.config.default),
                 None => (Vec::new(), true),
             };
             permitted.push(

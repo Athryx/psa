@@ -10,7 +10,8 @@ use crate::{
     probes::ProbeHandle,
     sessions::Session,
 };
-use psa_api::{EventEnvelope, events::*, probe_transport::ProbeError};
+use psa_api::{EventEnvelope, events::*};
+use psa_shared::probe_transport::ProbeError;
 
 #[cfg(test)]
 mod tests;

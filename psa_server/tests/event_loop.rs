@@ -4,6 +4,8 @@
 mod component_features;
 #[path = "support/fake_probe.rs"]
 mod fake_probe;
+#[path = "event_loop/model_choices.rs"]
+mod model_choices;
 mod support;
 use axum::{
     Json, Router,
@@ -40,8 +42,7 @@ use tokio::{
 
 fn model() -> ModelConfig {
     ModelConfig {
-        provider: ProviderType::Openrouter,
-        model: Model::new("test-model").unwrap(),
+        model: Model::new(ProviderType::Openrouter, "test-model").unwrap(),
         effort: Effort::Medium,
     }
 }
@@ -210,6 +211,7 @@ impl Harness {
             providers,
             probes.clone(),
             psa_server::config_registry::ConfigRegistry::new(dir.path().join("config")),
+            psa_server::config::default_model_config(),
             async {
                 let _ = stopped.await;
             },
@@ -261,7 +263,7 @@ impl Harness {
         let session = self
             .client
             .create_session(&wire::CreateSession {
-                model_config: model(),
+                model_config: Some(model()),
                 probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
                 name: "session".into(),
                 working_directory: "/work".into(),
@@ -374,7 +376,11 @@ async fn interactive_metadata_survives_http_create_get_list_and_fork() {
     let children = harness.client.list_agents(fork.session.id).await.unwrap();
     assert_eq!(children.len(), 2);
     for source in [&ordinary, &interactive] {
-        let (_, child) = fork.agents.iter().find(|(id, _)| *id == source.id).unwrap();
+        let child = fork
+            .agents
+            .iter()
+            .find(|agent| agent.parent_id == Some(source.id))
+            .unwrap();
         assert_eq!(child.interactive, source.interactive);
         assert_eq!(child.definition_id, source.definition_id);
         assert_eq!(child.parent_id, Some(source.id));
@@ -407,7 +413,7 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
             name: "project".into(),
             working_directory: "/work/project/nested".into(),
             probe_id: support::probe_metadata().id,
-            model_config: model(),
+            model_config: Some(model()),
         })
         .await
         .unwrap();
@@ -607,7 +613,7 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
     assert_eq!(updated_snapshot.definition.hooks, replacement.hooks);
     let configs = harness
         .client
-        .list_agent_configs(Some(session.id))
+        .refresh_and_list_agent_configs(Some(session.id))
         .await
         .unwrap();
     assert_eq!(
@@ -722,7 +728,7 @@ async fn config_batches_cycles_and_dependency_changes_pin_complete_graphs() {
     assert!(
         !harness
             .client
-            .list_agent_configs(None)
+            .refresh_and_list_agent_configs(None)
             .await
             .unwrap()
             .iter()
@@ -893,7 +899,7 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
             name: "offline hooks".into(),
             working_directory: "/work/<project>&".into(),
             probe_id: support::probe_metadata().id,
-            model_config: model(),
+            model_config: Some(model()),
         })
         .await
         .unwrap();
@@ -1004,10 +1010,10 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
     let ordered = fork
         .agents
         .iter()
-        .find(|(_, agent)| agent.name == "ordered")
+        .find(|agent| agent.name == "ordered")
         .unwrap();
     let mut cursor = harness.db.cursor().await.unwrap();
-    let events = cursor.load_all_events(ordered.1.id).await.unwrap();
+    let events = cursor.load_all_events(ordered.id).await.unwrap();
     assert_eq!(
         events.len(),
         6,
@@ -1338,7 +1344,11 @@ async fn http_tools_hooks_usage_streaming_and_reconnect() {
                     promoted |= pending_id.is_some();
                     durable.push(event);
                 }
-                StreamMessage::SessionBusy { busy: false, .. } => break,
+                StreamMessage::SessionUpdated { session: snapshot }
+                    if snapshot.id == session.id && !snapshot.busy =>
+                {
+                    break;
+                }
                 _ => {}
             }
         }
@@ -1427,7 +1437,7 @@ async fn http_tools_hooks_usage_streaming_and_reconnect() {
     let other = harness
         .client
         .create_session(&wire::CreateSession {
-            model_config: model(),
+            model_config: Some(model()),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             name: "other".into(),
             working_directory: "/other".into(),
@@ -1450,7 +1460,7 @@ async fn http_tools_hooks_usage_streaming_and_reconnect() {
         .await
         .unwrap();
     harness.wait_stopped(fork.session.id).await;
-    assert_eq!(fork.agents[0].1.usage, agent_view.usage);
+    assert_eq!(fork.agents[0].usage, agent_view.usage);
     // Leave SSE connections open: shutdown must close them, not hang draining.
     harness.close().await;
     assert!(
@@ -1485,7 +1495,7 @@ async fn shutdown_interrupts_inference_persists_partial_output_and_discards_queu
         .await
         .unwrap();
     harness.wait_stopped(fork.session.id).await;
-    assert_eq!(fork.agents[0].1.state, AgentState::Interrupted);
+    assert_eq!(fork.agents[0].state, AgentState::Interrupted);
     harness
         .client
         .submit_request(session.id, agent.id, &message(MessageDelivery::Queue))
@@ -1644,7 +1654,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
         )
         .await
         .unwrap();
-    let child = &fork.agents[0].1;
+    let child = &fork.agents[0];
     assert_eq!(child.usage.total_tokens, Some(15));
     let incomplete = cursor
         .fork_session(
@@ -1661,7 +1671,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
         .unwrap();
     assert!(matches!(
         cursor
-            .load_last_inference_result(incomplete.agents[0].1.id)
+            .load_last_inference_result(incomplete.agents[0].id)
             .await,
         Err(DbError::IncompleteInference(1))
     ));
@@ -1916,16 +1926,14 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
     let copied_parent = fork
         .agents
         .iter()
-        .find(|(id, _)| *id == parent.id)
+        .find(|agent| agent.parent_id == Some(parent.id))
         .unwrap()
-        .1
         .id;
-    let copied_child = &fork
+    let copied_child = fork
         .agents
         .iter()
-        .find(|(id, _)| *id == child.id)
-        .unwrap()
-        .1;
+        .find(|agent| agent.parent_id == Some(child.id))
+        .unwrap();
     assert_eq!(copied_child.subagent_parent_id, Some(copied_parent));
     assert_eq!(copied_child.parent_id, Some(child.id));
     harness.wait_stopped(fork.session.id).await;
