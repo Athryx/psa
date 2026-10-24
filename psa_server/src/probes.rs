@@ -255,6 +255,11 @@ impl ProbeHandle {
             .await
     }
 
+    /// Stream a tar archive to atomically replace (or create) a probe directory.
+    pub async fn sync_dir(&self, path: impl Into<std::path::PathBuf>) -> Result<Call, ProbeError> {
+        self.request(Operation::SyncDir { path: path.into() }).await
+    }
+
     pub async fn download_dir(
         &self,
         path: impl Into<std::path::PathBuf>,

@@ -2,6 +2,8 @@
 
 pub mod client;
 pub mod client_queries;
+pub mod definitions;
+pub use definitions::*;
 pub mod events;
 pub mod models;
 pub mod routes;

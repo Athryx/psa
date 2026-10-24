@@ -11,7 +11,6 @@ use psa_api::{
     probe_transport::ProbeError,
     probes::Event,
 };
-use serde::Deserialize;
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
@@ -139,66 +138,20 @@ async fn read_skill_file(probe: &ProbeHandle, path: &Path) -> Result<Vec<u8>, Re
     }
 }
 
-#[derive(Deserialize)]
-struct SkillMetadata {
-    name: Option<String>,
-    description: String,
-    #[serde(default, rename = "disable-model-invocation")]
-    disable_model_invocation: bool,
-}
-
 struct ParsedSkill {
     description: SkillDescription,
     disable_model_invocation: bool,
 }
 
 fn parse_skill(path: &Path, bytes: &[u8]) -> Result<ParsedSkill, String> {
-    let text = std::str::from_utf8(bytes).map_err(|error| format!("invalid UTF-8: {error}"))?;
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut lines = text.split_inclusive('\n');
-    if lines.next().map(|line| line.trim_end_matches(['\r', '\n'])) != Some("---") {
-        return Err("missing YAML frontmatter".into());
-    }
-
-    let mut yaml = String::new();
-    let mut closed = false;
-    for line in lines {
-        if line.trim_end_matches(['\r', '\n']) == "---" {
-            closed = true;
-            break;
-        }
-        yaml.push_str(line);
-    }
-    if !closed {
-        return Err("unterminated YAML frontmatter".into());
-    }
-    // Parsing through Value keeps YAML scalar types: direct String deserialization
-    // also accepts numbers and booleans, which are not skill descriptions.
-    let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml)
-        .map_err(|error| format!("invalid skill metadata: {error}"))?;
-    let metadata: SkillMetadata = serde_yaml_ng::from_value(yaml)
-        .map_err(|error| format!("invalid skill metadata: {error}"))?;
-    if metadata.description.trim().is_empty() {
-        return Err("description is required and must not be empty".into());
-    }
-
-    let fallback_name = || {
-        path.parent()
-            .and_then(Path::file_name)
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    };
-    let name = metadata
-        .name
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(fallback_name);
+    let parsed = crate::config_registry::skills::parse_skill(path, bytes)?;
     Ok(ParsedSkill {
         description: SkillDescription {
-            name,
-            description: metadata.description,
+            name: parsed.name,
+            description: parsed.description,
             location: path.to_string_lossy().into_owned(),
         },
-        disable_model_invocation: metadata.disable_model_invocation,
+        disable_model_invocation: parsed.disable_model_invocation,
     })
 }
 

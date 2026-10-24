@@ -46,6 +46,29 @@ fn model() -> ModelConfig {
     }
 }
 
+fn config_id(name: &str) -> wire::ConfigId {
+    wire::ConfigId {
+        config_group: wire::ConfigGroup::Custom("test".into()),
+        name: name.into(),
+    }
+}
+
+fn agent_config(name: &str) -> wire::AgentConfig {
+    wire::AgentConfig {
+        config_id: config_id(name),
+        description: String::new(),
+        selectable: true,
+        bundles: vec![],
+        tools: vec![],
+        hooks: Default::default(),
+        extra_system_prompt: String::new(),
+        models: vec![wire::ModelSelection::Global],
+        default: true,
+        subagents: Default::default(),
+        skills: Default::default(),
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Script {
     Text,
@@ -111,6 +134,7 @@ struct Harness {
     db: Database,
     client: wire::Client,
     requests: mpsc::UnboundedReceiver<Value>,
+    scripts: Arc<Mutex<VecDeque<Script>>>,
     stop: oneshot::Sender<()>,
     server: JoinHandle<Result<(), psa_server::server::ServerError>>,
     fake_stop: watch::Sender<bool>,
@@ -125,6 +149,14 @@ impl Harness {
     }
 
     async fn start_with_probe(scripts: Vec<Script>, connect_probe: bool) -> Self {
+        Self::start_with_files(scripts, connect_probe, fake_probe::FakeFiles::default()).await
+    }
+
+    async fn start_with_files(
+        scripts: Vec<Script>,
+        connect_probe: bool,
+        files: fake_probe::FakeFiles,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let db = Database::open(dir.path().join("test.sqlite3"))
             .await
@@ -135,6 +167,7 @@ impl Harness {
         let fake_address = listener.local_addr().unwrap();
         let (requests, received) = mpsc::unbounded_channel();
         let (fake_stop, stopped) = watch::channel(false);
+        let scripts = Arc::new(Mutex::new(scripts.into()));
         let app = Router::new()
             .route("/inference", post(inference))
             .route(
@@ -142,7 +175,7 @@ impl Harness {
                 axum::routing::get(|| async { Json(json!([])) }),
             )
             .with_state(Fake {
-                scripts: Arc::new(Mutex::new(scripts.into())),
+                scripts: scripts.clone(),
                 requests,
                 stop: stopped.clone(),
             });
@@ -171,27 +204,40 @@ impl Harness {
         let address = listener.local_addr().unwrap();
         let (stop, stopped) = oneshot::channel();
         let probes = ProbeRegistry::start(fake_probe::PROBE_KEY.into());
-        let server = tokio::spawn(psa_server::server::serve_with_probe_registry(
+        let server = tokio::spawn(psa_server::server::serve_with_configuration(
             listener,
             db.clone(),
             providers,
             probes.clone(),
+            psa_server::config_registry::ConfigRegistry::new(dir.path().join("config")),
             async {
                 let _ = stopped.await;
             },
         ));
 
         let probe = if connect_probe {
-            Some(fake_probe::FakeProbe::connect(address, &probes).await)
+            Some(fake_probe::FakeProbe::connect_with_files(address, &probes, files).await)
         } else {
             None
         };
 
+        let client = wire::Client::new(&format!("http://{address}")).unwrap();
+        let mut default = agent_config("default");
+        default.tools = vec![ToolId::Noop];
+        default.hooks = wire::HookIds {
+            agent_create: vec![wire::HookId::DefaultStartup, wire::HookId::ToolDefinitions],
+            session_update: vec![wire::HookId::SessionModelUpdate],
+            after_request: vec![wire::HookId::StopWithoutTools],
+            ..Default::default()
+        };
+        client.upsert_agent_configs(&[default]).await.unwrap();
+
         Self {
             _dir: dir,
             db,
-            client: wire::Client::new(&format!("http://{address}")).unwrap(),
+            client,
             requests: received,
+            scripts,
             stop,
             server,
             fake_stop,
@@ -199,6 +245,16 @@ impl Harness {
             probes,
             probe,
         }
+    }
+
+    async fn upsert_config(&self, config: wire::AgentConfig) -> wire::AgentConfig {
+        let statuses = self
+            .client
+            .upsert_agent_configs(std::slice::from_ref(&config))
+            .await
+            .unwrap();
+        assert!(statuses[0].status.missing_components.is_empty());
+        config
     }
 
     async fn create_agent(&self) -> (wire::Session, wire::Agent) {
@@ -216,11 +272,12 @@ impl Harness {
             .client
             .create_agent(
                 session.id,
-                &wire::CreateAgent {
+                &wire::NewConfiguredAgent {
+                    model: None,
                     subagent_parent_id: None,
                     interactive: false,
                     name: "agent".into(),
-                    definition_id: wire::AgentDefinitionId(1),
+                    config_id: config_id("default"),
                 },
             )
             .await
@@ -229,9 +286,11 @@ impl Harness {
     }
 
     async fn wait_stopped(&self, session: wire::SessionId) {
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(15), async {
             while self.client.get_session(session).await.unwrap().busy {
-                tokio::task::yield_now().await;
+                // Session reads share the database cursor with worker writes.
+                // Leave time for progress instead of immediately polling again.
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
@@ -273,10 +332,11 @@ async fn interactive_metadata_survives_http_create_get_list_and_fork() {
         .client
         .create_agent(
             session.id,
-            &wire::CreateAgent {
+            &wire::NewConfiguredAgent {
+                model: None,
                 subagent_parent_id: None,
                 name: "interactive".into(),
-                definition_id: wire::AgentDefinitionId(1),
+                config_id: config_id("default"),
                 interactive: true,
             },
         )
@@ -316,6 +376,7 @@ async fn interactive_metadata_survives_http_create_get_list_and_fork() {
     for source in [&ordinary, &interactive] {
         let (_, child) = fork.agents.iter().find(|(id, _)| *id == source.id).unwrap();
         assert_eq!(child.interactive, source.interactive);
+        assert_eq!(child.definition_id, source.definition_id);
         assert_eq!(child.parent_id, Some(source.id));
         let loaded = harness
             .client
@@ -330,131 +391,496 @@ async fn interactive_metadata_survives_http_create_get_list_and_fork() {
 }
 
 #[tokio::test]
-async fn definition_client_routes_preserve_versions_and_explicit_hook_configuration() {
-    let harness = Harness::start(vec![]).await;
-    let request = wire::CreateAgentDefinition {
-        name: "custom".into(),
-        description: "A versioned HTTP fixture".into(),
-        selectable: true,
-        bundles: vec![],
-        tools: vec![ToolId::Noop],
-        hooks: wire::HookIds {
-            agent_create: vec![wire::HookId::Noop],
-            session_update: vec![wire::HookId::Noop],
-            before_request: vec![wire::HookId::Noop],
-            after_request: vec![wire::HookId::Noop],
-        },
-        model_config: Some(model()),
-        skills: vec!["/skills/review.md".into()],
-        permitted_subagents: vec![wire::AgentDefinitionId(1)],
-        extra_system_prompt: "Review carefully.".into(),
-    };
-    let original = harness
-        .client
-        .create_agent_definition(&request)
-        .await
-        .unwrap();
-    assert_eq!(original.version, 1);
-    assert_eq!(original.previous_version_id, None);
-    assert_eq!(original.name, request.name);
-    assert_eq!(original.description, request.description);
-    assert_eq!(original.selectable, request.selectable);
-    assert_eq!(original.tools, request.tools);
-    assert_eq!(original.hooks, request.hooks);
-    assert_eq!(original.model_config, request.model_config);
-    assert_eq!(original.skills, request.skills);
-    assert_eq!(original.permitted_subagents, request.permitted_subagents);
-    assert_eq!(original.extra_system_prompt, request.extra_system_prompt);
-    let loaded = harness
-        .client
-        .get_agent_definition(original.id)
-        .await
-        .unwrap();
-    assert_eq!(
-        serde_json::to_value(&loaded).unwrap(),
-        serde_json::to_value(&original).unwrap()
-    );
-
-    let mut replacement = request.clone();
-    replacement.name = "custom v2".into();
-    replacement.hooks.agent_create =
-        vec![wire::HookId::DefaultStartup, wire::HookId::ToolDefinitions];
-    replacement.extra_system_prompt = "Updated prompt.".into();
-    let updated = harness
-        .client
-        .update_agent_definition(original.id, &replacement)
-        .await
-        .unwrap();
-    assert_ne!(updated.id, original.id);
-    assert_eq!(updated.previous_version_id, Some(original.id));
-    assert_eq!(updated.version, 2);
-    assert_eq!(updated.name, replacement.name);
-    assert_eq!(updated.hooks, replacement.hooks);
-    assert_eq!(updated.extra_system_prompt, replacement.extra_system_prompt);
-    let retained = harness
-        .client
-        .get_agent_definition(original.id)
-        .await
-        .unwrap();
-    assert_eq!(
-        serde_json::to_value(retained).unwrap(),
-        serde_json::to_value(&original).unwrap()
-    );
-    let definitions = harness.client.list_agent_definitions().await.unwrap();
-    assert!(
-        definitions
-            .iter()
-            .any(|definition| definition.id == original.id)
-    );
-    assert!(
-        definitions
-            .iter()
-            .any(|definition| definition.id == updated.id)
-    );
-
+async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks() {
+    let harness = Harness::start_with_files(
+        vec![],
+        true,
+        fake_probe::FakeFiles::default()
+            .directory("/work/.agents")
+            .directory("/work/project/.agents")
+            .directory("/else/.agents"),
+    )
+    .await;
     let session = harness
         .client
         .create_session(&wire::CreateSession {
-            name: "definitions".into(),
-            working_directory: "/work".into(),
+            name: "project".into(),
+            working_directory: "/work/project/nested".into(),
             probe_id: support::probe_metadata().id,
             model_config: model(),
         })
         .await
         .unwrap();
-    let agent = harness
+    let expected = Some(wire::ConfigGroup::Project {
+        path: "/work/project/.agents".into(),
+        probe_id: support::probe_metadata().id,
+    });
+    let mut cursor = harness.db.cursor().await.unwrap();
+    assert_eq!(
+        cursor.get_session_project(session.id).await.unwrap(),
+        expected
+    );
+    cursor.rollback().await.unwrap();
+
+    let inherited = harness
+        .client
+        .fork_session(
+            session.id,
+            &wire::ForkSession {
+                point: wire::ForkPoint::Head,
+                metadata: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let moved = harness
+        .client
+        .fork_session(
+            session.id,
+            &wire::ForkSession {
+                point: wire::ForkPoint::Head,
+                metadata: wire::UpdateSession {
+                    working_directory: Some("/else/child".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let mut cursor = harness.db.cursor().await.unwrap();
+    assert_eq!(
+        cursor
+            .get_session_project(inherited.session.id)
+            .await
+            .unwrap(),
+        expected
+    );
+    assert_eq!(
+        cursor.get_session_project(moved.session.id).await.unwrap(),
+        Some(wire::ConfigGroup::Project {
+            path: "/else/.agents".into(),
+            probe_id: support::probe_metadata().id,
+        })
+    );
+    assert_eq!(
+        cursor.get_session_project(session.id).await.unwrap(),
+        expected
+    );
+    cursor.rollback().await.unwrap();
+
+    harness
+        .client
+        .update_session(
+            session.id,
+            &wire::UpdateSession {
+                working_directory: Some("/outside".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let mut cursor = harness.db.cursor().await.unwrap();
+    assert_eq!(cursor.get_session_project(session.id).await.unwrap(), None);
+    assert_eq!(
+        cursor
+            .get_session_project(inherited.session.id)
+            .await
+            .unwrap(),
+        expected
+    );
+    cursor.rollback().await.unwrap();
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
+    let harness = Harness::start(vec![]).await;
+    let mut request = agent_config("custom");
+    request.description = "An HTTP snapshot fixture".into();
+    request.selectable = true;
+    request.tools = vec![ToolId::Noop];
+    request.hooks = wire::HookIds {
+        agent_create: vec![wire::HookId::Noop],
+        session_update: vec![wire::HookId::Noop],
+        before_request: vec![wire::HookId::Noop],
+        after_request: vec![wire::HookId::Noop],
+    };
+    request.extra_system_prompt = "Review carefully.".into();
+    harness.upsert_config(request.clone()).await;
+    let loaded = harness
+        .client
+        .get_agent_config(&request.config_id)
+        .await
+        .unwrap();
+    assert!(loaded.status.missing_components.is_empty());
+    assert_eq!(
+        serde_json::to_value(&loaded.config).unwrap(),
+        serde_json::to_value(&request).unwrap()
+    );
+
+    let (session, _) = harness.create_agent().await;
+    let original = harness
         .client
         .create_agent(
             session.id,
-            &wire::CreateAgent {
+            &wire::NewConfiguredAgent {
+                config_id: request.config_id.clone(),
+                name: "pinned".into(),
                 subagent_parent_id: None,
                 interactive: false,
-                name: "pinned".into(),
-                definition_id: original.id,
+                model: None,
             },
         )
         .await
         .unwrap();
     harness.wait_stopped(session.id).await;
-    assert_eq!(agent.definition_id, original.id);
+    let snapshot = harness
+        .client
+        .get_resolved_agent_config(original.definition_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        harness
-            .client
-            .get_agent(session.id, agent.id)
-            .await
-            .unwrap()
-            .definition_id,
-        original.id
+        serde_json::to_value(&snapshot.config).unwrap(),
+        serde_json::to_value(&request).unwrap()
     );
     let events = harness
         .client
-        .events(session.id, Some(agent.id), &wire::EventsQuery::default())
+        .events(session.id, Some(original.id), &wire::EventsQuery::default())
         .await
         .unwrap();
     assert!(
         events.events.is_empty(),
         "explicit Noop hooks must not acquire default startup hooks"
     );
+
+    let mut replacement = request.clone();
+    replacement.hooks.agent_create =
+        vec![wire::HookId::DefaultStartup, wire::HookId::ToolDefinitions];
+    replacement.extra_system_prompt = "Updated prompt.".into();
+    harness.upsert_config(replacement.clone()).await;
+    let updated = harness
+        .client
+        .create_agent(
+            session.id,
+            &wire::NewConfiguredAgent {
+                config_id: request.config_id.clone(),
+                name: "updated".into(),
+                subagent_parent_id: None,
+                interactive: false,
+                model: None,
+            },
+        )
+        .await
+        .unwrap();
+    harness.wait_stopped(session.id).await;
+    assert_ne!(updated.definition_id, original.definition_id);
+    assert_eq!(
+        harness
+            .client
+            .get_agent(session.id, original.id)
+            .await
+            .unwrap()
+            .definition_id,
+        original.definition_id
+    );
+    let retained = harness
+        .client
+        .get_resolved_agent_config(original.definition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&retained).unwrap(),
+        serde_json::to_value(&snapshot).unwrap()
+    );
+    let updated_snapshot = harness
+        .client
+        .get_resolved_agent_config(updated.definition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        updated_snapshot.config.extra_system_prompt,
+        replacement.extra_system_prompt
+    );
+    assert_eq!(updated_snapshot.definition.hooks, replacement.hooks);
+    let configs = harness
+        .client
+        .list_agent_configs(Some(session.id))
+        .await
+        .unwrap();
+    assert_eq!(
+        configs
+            .iter()
+            .filter(|entry| entry.config.config_id == request.config_id)
+            .count(),
+        1
+    );
+    assert_eq!(
+        harness
+            .client
+            .get_agent_config(&request.config_id)
+            .await
+            .unwrap()
+            .config
+            .extra_system_prompt,
+        replacement.extra_system_prompt
+    );
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn config_batches_cycles_and_dependency_changes_pin_complete_graphs() {
+    let harness = Harness::start(vec![]).await;
+    let mut first = agent_config("cycle-first");
+    let mut second = agent_config("cycle-second");
+    first.subagents.items = vec![second.config_id.clone()];
+    second.subagents.items = vec![first.config_id.clone()];
+    let statuses = harness
+        .client
+        .upsert_agent_configs(&[first.clone(), second.clone()])
+        .await
+        .unwrap();
+    assert_eq!(statuses.len(), 2);
+    assert!(
+        statuses
+            .iter()
+            .all(|entry| entry.status.missing_components.is_empty())
+    );
+    let (session, _) = harness.create_agent().await;
+    let create = |name: &str| wire::NewConfiguredAgent {
+        config_id: first.config_id.clone(),
+        name: name.into(),
+        subagent_parent_id: None,
+        interactive: false,
+        model: None,
+    };
+    let original = harness
+        .client
+        .create_agent(session.id, &create("original"))
+        .await
+        .unwrap();
+    let same = harness
+        .client
+        .create_agent(session.id, &create("same"))
+        .await
+        .unwrap();
+    assert_eq!(
+        same.definition_id, original.definition_id,
+        "unchanged graphs reuse snapshots"
+    );
+    let snapshot = harness
+        .client
+        .get_resolved_agent_config(original.definition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.references.subagents.len(), 1);
+    let child = harness
+        .client
+        .get_resolved_agent_config(snapshot.references.subagents[0])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(child.config.config_id, second.config_id);
+    assert_eq!(child.references.subagents, vec![original.definition_id]);
+
+    second.extra_system_prompt = "Changed dependency".into();
+    harness.upsert_config(second.clone()).await;
+    let changed = harness
+        .client
+        .create_agent(session.id, &create("changed"))
+        .await
+        .unwrap();
+    assert_ne!(changed.definition_id, original.definition_id);
+    let retained = harness
+        .client
+        .get_resolved_agent_config(original.definition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.references.subagents, snapshot.references.subagents);
+    let retained_child = harness
+        .client
+        .get_resolved_agent_config(child.definition.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(retained_child.config.extra_system_prompt.is_empty());
+
+    let mut invalid = agent_config("invalid-batch");
+    invalid.models.clear();
+    let never_written = agent_config("never-written");
+    assert!(
+        harness
+            .client
+            .upsert_agent_configs(&[never_written.clone(), invalid])
+            .await
+            .is_err()
+    );
+    assert!(
+        !harness
+            .client
+            .list_agent_configs(None)
+            .await
+            .unwrap()
+            .iter()
+            .any(|entry| entry.config.config_id == never_written.config_id)
+    );
+    harness.wait_stopped(session.id).await;
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn group_membership_changes_only_advance_new_agent_snapshots() {
+    let harness = Harness::start(vec![]).await;
+    let group = wire::ConfigGroup::Custom("dynamic-members".into());
+    let mut parent = agent_config("group-parent");
+    parent.subagents.groups = vec![group.clone()];
+    harness.upsert_config(parent.clone()).await;
+    let (session, _) = harness.create_agent().await;
+    let request = |name: &str| wire::NewConfiguredAgent {
+        config_id: parent.config_id.clone(),
+        name: name.into(),
+        subagent_parent_id: None,
+        interactive: false,
+        model: None,
+    };
+    let original = harness
+        .client
+        .create_agent(session.id, &request("before"))
+        .await
+        .unwrap();
+    let before = harness
+        .client
+        .get_resolved_agent_config(original.definition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(before.references.subagents.is_empty());
+
+    let mut member = agent_config("member");
+    member.config_id.config_group = group;
+    harness.upsert_config(member.clone()).await;
+    let updated = harness
+        .client
+        .create_agent(session.id, &request("after"))
+        .await
+        .unwrap();
+    assert_ne!(updated.definition_id, original.definition_id);
+    let after = harness
+        .client
+        .get_resolved_agent_config(updated.definition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.references.subagents.len(), 1);
+    let selected = harness
+        .client
+        .get_resolved_agent_config(after.references.subagents[0])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.config.config_id, member.config_id);
+    assert!(
+        harness
+            .client
+            .get_resolved_agent_config(original.definition_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .references
+            .subagents
+            .is_empty()
+    );
+    harness.wait_stopped(session.id).await;
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn missing_explicit_dependencies_warn_and_resolve_again_when_registered() {
+    let harness = Harness::start(vec![]).await;
+    let mut parent = agent_config("missing-parent");
+    let child = agent_config("missing-child");
+    parent.subagents.items = vec![child.config_id.clone()];
+    let statuses = harness
+        .client
+        .upsert_agent_configs(&[parent.clone()])
+        .await
+        .unwrap();
+    assert_eq!(
+        statuses[0].status.missing_components,
+        vec![wire::MissingComponent::Agent {
+            config_id: child.config_id.clone()
+        }]
+    );
+    let (session, _) = harness.create_agent().await;
+    let request = wire::NewConfiguredAgent {
+        config_id: parent.config_id.clone(),
+        name: "parent".into(),
+        subagent_parent_id: None,
+        interactive: false,
+        model: None,
+    };
+    let incomplete = harness
+        .client
+        .create_agent(session.id, &request)
+        .await
+        .unwrap();
+    let incomplete_snapshot = harness
+        .client
+        .get_resolved_agent_config(incomplete.definition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(incomplete_snapshot.references.subagents.is_empty());
+    assert_eq!(
+        incomplete_snapshot.config.subagents.items,
+        parent.subagents.items
+    );
+    harness.upsert_config(child).await;
+    assert!(
+        harness
+            .client
+            .get_agent_config(&parent.config_id)
+            .await
+            .unwrap()
+            .status
+            .missing_components
+            .is_empty()
+    );
+    let agent = harness
+        .client
+        .create_agent(
+            session.id,
+            &wire::NewConfiguredAgent {
+                name: "restored".into(),
+                ..request
+            },
+        )
+        .await
+        .unwrap();
+    assert_ne!(agent.definition_id, incomplete.definition_id);
+    assert!(
+        harness
+            .client
+            .get_resolved_agent_config(incomplete.definition_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .references
+            .subagents
+            .is_empty()
+    );
+    let snapshot = harness
+        .client
+        .get_resolved_agent_config(agent.definition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.references.subagents.len(), 1);
+    harness.wait_stopped(session.id).await;
     harness.close().await;
 }
 
@@ -486,27 +912,25 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
         ),
     ] {
         let definition = harness
-            .client
-            .create_agent_definition(&wire::CreateAgentDefinition {
-                name: name.into(),
+            .upsert_config(wire::AgentConfig {
                 tools: vec![ToolId::Noop],
                 hooks: wire::HookIds {
                     agent_create: hooks,
                     ..Default::default()
                 },
-                ..Default::default()
+                ..agent_config(name)
             })
-            .await
-            .unwrap();
+            .await;
         let agent = harness
             .client
             .create_agent(
                 session.id,
-                &wire::CreateAgent {
+                &wire::NewConfiguredAgent {
+                    model: None,
                     subagent_parent_id: None,
                     interactive: false,
                     name: name.into(),
-                    definition_id: definition.id,
+                    config_id: definition.config_id,
                 },
             )
             .await
@@ -742,11 +1166,12 @@ async fn busy_queries_track_all_workers_and_request_ids_ignore_generations() {
             .client
             .create_agent(
                 session.id,
-                &wire::CreateAgent {
+                &wire::NewConfiguredAgent {
+                    model: None,
                     subagent_parent_id: None,
                     interactive: false,
                     name: "second".into(),
-                    definition_id: wire::AgentDefinitionId(1),
+                    config_id: config_id("default"),
                 },
             )
             .await
@@ -1387,9 +1812,10 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
         .client
         .create_agent(
             session.id,
-            &wire::CreateAgent {
+            &wire::NewConfiguredAgent {
+                model: None,
                 subagent_parent_id: Some(parent.id),
-                definition_id: parent.definition_id,
+                config_id: config_id("default"),
                 name: "plain-child".into(),
                 interactive: false,
             },

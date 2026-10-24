@@ -16,6 +16,8 @@ use super::{
 use crate::{components::cancellation::Cancellation, db::Database, sessions};
 use psa_api::{self as api, AgentId, SessionId};
 
+mod configurations;
+
 #[derive(Clone)]
 pub struct Sessions {
     database: Database,
@@ -23,6 +25,9 @@ pub struct Sessions {
     pub(crate) commands: ManagerClient,
     queries: ClientQueriesHandle,
     catalog: Option<crate::models::ModelCatalog>,
+    configuration: Option<crate::config_registry::ConfigRegistry>,
+    probes: Option<crate::probes::ProbeRegistry>,
+    configuration_gate: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Sessions {
@@ -38,11 +43,24 @@ impl Sessions {
             commands,
             queries,
             catalog: None,
+            configuration: None,
+            probes: None,
+            configuration_gate: Default::default(),
         }
     }
 
     pub(crate) fn with_catalog(mut self, catalog: Option<crate::models::ModelCatalog>) -> Self {
         self.catalog = catalog;
+        self
+    }
+
+    pub(crate) fn with_configuration(
+        mut self,
+        configuration: Option<crate::config_registry::ConfigRegistry>,
+        probes: crate::probes::ProbeRegistry,
+    ) -> Self {
+        self.configuration = configuration;
+        self.probes = Some(probes);
         self
     }
 
@@ -64,7 +82,8 @@ impl Sessions {
         self.queries.respond(session, agent, id, response).await
     }
 
-    pub async fn create_agent_definition(
+    #[cfg(test)]
+    pub(crate) async fn create_agent_definition(
         &self,
         request: api::CreateAgentDefinition,
     ) -> Result<api::AgentDefinition, RuntimeError> {
@@ -84,14 +103,18 @@ impl Sessions {
         Ok(definition)
     }
 
-    pub async fn list_agent_definitions(&self) -> Result<Vec<api::AgentDefinition>, RuntimeError> {
+    #[cfg(test)]
+    pub(crate) async fn list_agent_definitions(
+        &self,
+    ) -> Result<Vec<api::AgentDefinition>, RuntimeError> {
         let mut cursor = self.database.cursor().await?;
         let definitions = cursor.list_agent_definitions().await?;
         cursor.rollback().await?;
         Ok(definitions)
     }
 
-    pub async fn update_agent_definition(
+    #[cfg(test)]
+    pub(crate) async fn update_agent_definition(
         &self,
         id: api::AgentDefinitionId,
         request: api::UpdateAgentDefinition,
@@ -106,6 +129,9 @@ impl Sessions {
         &self,
         request: api::CreateSession,
     ) -> Result<sessions::Session, RuntimeError> {
+        let project = self
+            .discover_session_project(request.probe_id, &request.working_directory)
+            .await?;
         let publication = self.publication.lock().await;
         let mut cursor = self.database.cursor().await?;
         let session = cursor
@@ -116,6 +142,9 @@ impl Sessions {
                 model_config: request.model_config,
             })
             .await?;
+        if let Some(project) = project {
+            cursor.set_session_project(session.id, project).await?;
+        }
         cursor.commit().await?;
 
         publication.publish(api::StreamMessage::SessionUpdated {
@@ -148,6 +177,13 @@ impl Sessions {
         id: SessionId,
         request: api::UpdateSession,
     ) -> Result<sessions::Session, RuntimeError> {
+        let _guard = self.configuration_gate.lock().await;
+        let project = if let Some(cwd) = &request.working_directory {
+            let session = self.get_session(id).await?;
+            Some(self.discover_session_project(session.probe_id, cwd).await?)
+        } else {
+            None
+        };
         let busy = self.is_busy(id).await?;
         let notification = self.commands.reserve_notification().await?;
 
@@ -163,6 +199,11 @@ impl Sessions {
                 },
             )
             .await?;
+        match project {
+            Some(Some(project)) => cursor.set_session_project(id, project).await?,
+            Some(None) => cursor.clear_session_project(id).await?,
+            None => {}
+        }
         cursor.commit().await?;
 
         notification.send(ManagerCommand::SessionUpdated {
@@ -179,6 +220,17 @@ impl Sessions {
         id: SessionId,
         request: api::ForkSession,
     ) -> Result<sessions::ForkedSession, RuntimeError> {
+        let _guard = self.configuration_gate.lock().await;
+        let project = if let Some(cwd) = &request.metadata.working_directory {
+            let source = self.get_session(id).await?;
+            self.discover_session_project(source.probe_id, cwd).await?
+        } else {
+            let mut cursor = self.database.cursor().await?;
+            let known = cursor.has_session_project_discovery(id).await?;
+            let project = cursor.get_session_project(id).await?;
+            cursor.rollback().await?;
+            known.then_some(project)
+        };
         let notification = self.commands.reserve_notification().await?;
         let publication = self.publication.lock().await;
         let mut cursor = self.database.cursor().await?;
@@ -225,6 +277,9 @@ impl Sessions {
         }
 
         let session = cursor.get_session(fork.session.id).await?;
+        if let Some(project) = project {
+            cursor.set_session_project(session.id, project).await?;
+        }
         cursor.commit().await?;
 
         notification.send(ManagerCommand::AgentsCreated {
@@ -239,7 +294,7 @@ impl Sessions {
         Ok(sessions::ForkedSession { session, agents })
     }
 
-    pub async fn create_agent(
+    async fn commit_agent(
         &self,
         session: SessionId,
         request: api::CreateAgent,

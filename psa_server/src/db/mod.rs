@@ -2,6 +2,7 @@
 
 mod agent_definitions;
 mod agents;
+mod configurations;
 mod error;
 mod events;
 mod models;

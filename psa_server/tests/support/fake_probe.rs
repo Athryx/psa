@@ -259,6 +259,7 @@ pub struct FakeProbe {
 }
 
 impl FakeProbe {
+    #[allow(dead_code)] // Connection-only mode is used by core unit tests.
     pub async fn connect(address: SocketAddr, probes: &ProbeRegistry) -> Self {
         Self::connect_inner(address, probes, None).await
     }

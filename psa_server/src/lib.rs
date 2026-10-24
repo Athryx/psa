@@ -3,6 +3,7 @@
 pub mod agents;
 pub mod components;
 pub mod config;
+pub mod config_registry;
 pub mod db;
 pub mod http;
 pub mod models;

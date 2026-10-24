@@ -419,8 +419,8 @@ fn paths_and_client_base_urls_are_validated() {
         "/sessions/1/agents/2/events"
     );
     assert_eq!(
-        routes::agent_definition_path(AgentDefinitionId(42)),
-        "/agent-definitions/42"
+        routes::agent_snapshot_path(AgentDefinitionId(42)),
+        "/agent-snapshots/42"
     );
     let query = ClientQueryId(uuid::Uuid::nil());
     assert_eq!(

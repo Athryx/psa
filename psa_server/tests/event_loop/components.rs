@@ -1,5 +1,5 @@
 use super::*;
-use wire::{BundleId, CreateAgent, CreateAgentDefinition, HookId, HookIds};
+use wire::{AgentConfig, BundleId, HookId, HookIds, NewConfiguredAgent};
 
 fn hooks() -> HookIds {
     HookIds {
@@ -56,25 +56,23 @@ async fn goal_continues_after_a_final_answer_and_stops_after_explicit_completion
     ])
     .await;
     let definition = harness
-        .client
-        .create_agent_definition(&CreateAgentDefinition {
-            name: "goal agent".into(),
+        .upsert_config(AgentConfig {
             bundles: vec![BundleId::Goal],
             hooks: hooks(),
-            ..Default::default()
+            ..agent_config("goal agent")
         })
-        .await
-        .unwrap();
+        .await;
     let session = create_session(&harness).await;
     let agent = harness
         .client
         .create_agent(
             session.id,
-            &CreateAgent {
+            &NewConfiguredAgent {
+                model: None,
                 subagent_parent_id: None,
                 interactive: true,
                 name: "main".into(),
-                definition_id: definition.id,
+                config_id: definition.config_id,
             },
         )
         .await
@@ -134,7 +132,7 @@ async fn goal_continues_after_a_final_answer_and_stops_after_explicit_completion
 async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_addressable() {
     let mut harness = Harness::start(vec![
         Script::Calls(&[
-            ("wait-child", "wait_message", r#"{"timeout":3}"#),
+            ("wait-child", "wait_message", r#"{"timeout":10}"#),
             (
                 "create-child",
                 "create_agent",
@@ -143,49 +141,37 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
         ]),
         Script::Text,
         Script::Text,
-        Script::Calls(&[
-            ("wait-again", "wait_message", r#"{"timeout":3}"#),
-            (
-                "send-again",
-                "send_message",
-                r#"{"agent_name":"worker-one","message":"Run a second task"}"#,
-            ),
-        ]),
-        Script::Text,
-        Script::Text,
     ])
     .await;
     let worker = harness
-        .client
-        .create_agent_definition(&CreateAgentDefinition {
-            name: "worker".into(),
+        .upsert_config(AgentConfig {
             bundles: vec![BundleId::Subagents],
             hooks: hooks(),
-            ..Default::default()
+            ..agent_config("worker")
         })
-        .await
-        .unwrap();
+        .await;
     let definition = harness
-        .client
-        .create_agent_definition(&CreateAgentDefinition {
-            name: "coordinator".into(),
+        .upsert_config(AgentConfig {
             bundles: vec![BundleId::Subagents],
-            permitted_subagents: vec![worker.id],
+            subagents: wire::IncludedItems {
+                items: vec![worker.config_id.clone()],
+                ..Default::default()
+            },
             hooks: hooks(),
-            ..Default::default()
+            ..agent_config("coordinator")
         })
-        .await
-        .unwrap();
+        .await;
     let session = create_session(&harness).await;
     let parent = harness
         .client
         .create_agent(
             session.id,
-            &CreateAgent {
+            &NewConfiguredAgent {
+                model: None,
                 subagent_parent_id: None,
                 interactive: true,
                 name: "main".into(),
-                definition_id: definition.id,
+                config_id: definition.config_id,
             },
         )
         .await
@@ -206,7 +192,13 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
         child.parent_id, None,
         "subagent parentage must not be stored as fork ancestry"
     );
-    assert_eq!(child.definition_id, worker.id);
+    let child_snapshot = harness
+        .client
+        .get_resolved_agent_config(child.definition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(child_snapshot.config.config_id, worker.config_id);
     assert_eq!(child.subagent_parent_id, Some(parent.id));
     assert_eq!(child.state, AgentState::Idle);
     let page = harness
@@ -269,7 +261,20 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
     );
 
     // A later parent worker generation reuses the session coordinator and wakes
-    // the existing child rather than creating a new agent/conversation.
+    // the existing child rather than creating a new agent/conversation. Only
+    // expose this phase's script after checking phase one's exact request count.
+    harness.scripts.lock().await.extend([
+        Script::Calls(&[
+            ("wait-again", "wait_message", r#"{"timeout":10}"#),
+            (
+                "send-again",
+                "send_message",
+                r#"{"agent_name":"worker-one","message":"Run a second task"}"#,
+            ),
+        ]),
+        Script::Text,
+        Script::Text,
+    ]);
     harness
         .client
         .submit_request(session.id, parent.id, &message(MessageDelivery::Steer))
@@ -329,35 +334,33 @@ async fn subagent_creation_checks_permitted_definitions_without_creating_a_child
     ])
     .await;
     let worker = harness
-        .client
-        .create_agent_definition(&CreateAgentDefinition {
-            name: "worker".into(),
+        .upsert_config(AgentConfig {
             hooks: hooks(),
-            ..Default::default()
+            ..agent_config("worker")
         })
-        .await
-        .unwrap();
+        .await;
     let definition = harness
-        .client
-        .create_agent_definition(&CreateAgentDefinition {
-            name: "coordinator".into(),
+        .upsert_config(AgentConfig {
             bundles: vec![BundleId::Subagents],
-            permitted_subagents: vec![worker.id],
+            subagents: wire::IncludedItems {
+                items: vec![worker.config_id.clone()],
+                ..Default::default()
+            },
             hooks: hooks(),
-            ..Default::default()
+            ..agent_config("coordinator")
         })
-        .await
-        .unwrap();
+        .await;
     let session = create_session(&harness).await;
     let parent = harness
         .client
         .create_agent(
             session.id,
-            &CreateAgent {
+            &NewConfiguredAgent {
+                model: None,
                 subagent_parent_id: None,
                 interactive: true,
                 name: "main".into(),
-                definition_id: definition.id,
+                config_id: definition.config_id,
             },
         )
         .await
@@ -398,23 +401,21 @@ async fn subagent_tools_list_and_message_unrelated_roots_in_the_same_session() {
     ])
     .await;
     let definition = harness
-        .client
-        .create_agent_definition(&CreateAgentDefinition {
-            name: "messenger".into(),
+        .upsert_config(AgentConfig {
             bundles: vec![BundleId::Subagents],
             hooks: hooks(),
-            ..Default::default()
+            ..agent_config("messenger")
         })
-        .await
-        .unwrap();
+        .await;
     let session = create_session(&harness).await;
     let parent = harness
         .client
         .create_agent(
             session.id,
-            &CreateAgent {
+            &NewConfiguredAgent {
+                model: None,
                 subagent_parent_id: None,
-                definition_id: definition.id,
+                config_id: definition.config_id,
                 name: "main".into(),
                 interactive: false,
             },
@@ -425,9 +426,10 @@ async fn subagent_tools_list_and_message_unrelated_roots_in_the_same_session() {
         .client
         .create_agent(
             session.id,
-            &CreateAgent {
+            &NewConfiguredAgent {
+                model: None,
                 subagent_parent_id: None,
-                definition_id: wire::AgentDefinitionId(1),
+                config_id: config_id("default"),
                 name: "peer".into(),
                 interactive: false,
             },

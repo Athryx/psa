@@ -17,13 +17,34 @@ impl SubagentIdentity {
         let agent = context.agent();
         let mut permitted = Vec::new();
         for id in &context.definition().permitted_subagents {
+            let definition = context
+                .sessions()
+                .get_agent_definition(*id)
+                .await
+                .map_err(|error| error.to_string())?;
+            let snapshot = context
+                .sessions()
+                .get_resolved_agent_config(*id)
+                .await
+                .map_err(|error| error.to_string())?;
+            let (models, default) = match snapshot {
+                Some(snapshot) => (
+                    snapshot
+                        .config
+                        .models
+                        .iter()
+                        .map(|selection| match selection {
+                            psa_api::ModelSelection::Global => "global".to_owned(),
+                            psa_api::ModelSelection::Parent => "parent".to_owned(),
+                            psa_api::ModelSelection::Fixed { model, .. } => model.clone(),
+                        })
+                        .collect::<Vec<_>>(),
+                    snapshot.config.default,
+                ),
+                None => (Vec::new(), true),
+            };
             permitted.push(
-                context
-                    .sessions()
-                    .get_agent_definition(*id)
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .name,
+                serde_json::json!({"name": definition.name, "models": models, "default": default}),
             );
         }
         Ok(format!(

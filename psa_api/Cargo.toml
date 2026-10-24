@@ -9,7 +9,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 time = { version = "0.3.55", features = ["serde-well-known"] }
 reqwest = { version = "0.13.5", features = ["json", "stream", "query"] }
-futures-util = "0.3"
+futures-util = { version = "0.3", features = ["sink"] }
 eventsource-stream = "0.2"
 thiserror = "2"
 

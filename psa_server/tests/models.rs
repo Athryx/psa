@@ -107,17 +107,23 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
     let client = api::Client::new(&format!("http://{address}")).unwrap();
     let (stop, stopped) = oneshot::channel();
     let probes = psa_server::probes::ProbeRegistry::start("test-key".into());
-    let server = tokio::spawn(psa_server::server::serve_with_probe_registry(
+    let server = tokio::spawn(psa_server::server::serve_with_configuration(
         listener,
         database.clone(),
         providers,
         probes.clone(),
+        psa_server::config_registry::ConfigRegistry::new(directory.path().join("config")),
         async {
             let _ = stopped.await;
         },
     ));
     // The worker requires a connected probe even when no probe tools are used.
-    let probe = fake_probe::FakeProbe::connect(address, &probes).await;
+    let probe = fake_probe::FakeProbe::connect_with_files(
+        address,
+        &probes,
+        fake_probe::FakeFiles::default(),
+    )
+    .await;
     let refreshed = client
         .resync_models(&api::ResyncModels::default())
         .await
@@ -222,16 +228,28 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
         StatusCode::BAD_REQUEST
     );
 
-    let definition = client
-        .create_agent_definition(&api::CreateAgentDefinition {
-            name: "catalog-aware".into(),
+    let config_id = api::ConfigId {
+        config_group: api::ConfigGroup::Custom("test".into()),
+        name: "catalog-aware".into(),
+    };
+    client
+        .upsert_agent_configs(&[api::AgentConfig {
+            config_id: config_id.clone(),
+            description: String::new(),
+            selectable: true,
+            bundles: vec![],
+            tools: vec![],
+            extra_system_prompt: String::new(),
+            models: vec![api::ModelSelection::Global],
+            default: true,
+            subagents: Default::default(),
+            skills: Default::default(),
             hooks: api::HookIds {
                 agent_create: vec![api::HookId::DefaultStartup],
                 after_request: vec![api::HookId::StopWithoutTools],
                 ..Default::default()
             },
-            ..Default::default()
-        })
+        }])
         .await
         .unwrap();
     for effort in [Effort::Minimal, Effort::Off] {
@@ -250,10 +268,11 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
         let agent = client
             .create_agent(
                 session.id,
-                &api::CreateAgent {
+                &api::NewConfiguredAgent {
                     subagent_parent_id: None,
+                    model: None,
                     name: "main".into(),
-                    definition_id: definition.id,
+                    config_id: config_id.clone(),
                     interactive: false,
                 },
             )

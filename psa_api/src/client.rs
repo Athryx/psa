@@ -1,8 +1,8 @@
 use crate::{
-    Agent, AgentDefinition, AgentDefinitionId, AgentId, AgentRequest, ApiError, ClientQueryId,
-    ClientQueryResponse, CreateAgent, CreateAgentDefinition, CreateSession, EventsPage,
-    EventsQuery, ForkSession, ForkedSession, ListSessions, RequestAccepted, Session, SessionId,
-    StreamMessage, UpdateAgentDefinition, UpdateSession, routes,
+    Agent, AgentConfig, AgentConfigStatus, AgentDefinitionId, AgentId, AgentRequest, ApiError,
+    ClientQueryId, ClientQueryResponse, ConfigId, CreateSession, EventsPage, EventsQuery,
+    ForkSession, ForkedSession, ListSessions, NewConfiguredAgent, NewSkill, RequestAccepted,
+    ResolvedAgentConfig, Session, SessionId, Skill, StreamMessage, UpdateSession, routes,
 };
 use eventsource_stream::Eventsource;
 use futures_util::{Stream, StreamExt};
@@ -137,32 +137,46 @@ impl Client {
         self.get(&routes::probe_path(id), &()).await
     }
 
-    pub async fn create_agent_definition(
+    pub async fn upsert_agent_configs(
         &self,
-        request: &CreateAgentDefinition,
-    ) -> Result<AgentDefinition, ClientError> {
-        self.send(Method::POST, routes::AGENT_DEFINITIONS, request)
+        configs: &[AgentConfig],
+    ) -> Result<Vec<AgentConfigStatus>, ClientError> {
+        self.send(Method::POST, routes::AGENT_CONFIGS, &configs)
             .await
     }
 
-    pub async fn list_agent_definitions(&self) -> Result<Vec<AgentDefinition>, ClientError> {
-        self.get(routes::AGENT_DEFINITIONS, &()).await
+    pub async fn list_agent_configs(
+        &self,
+        session_id: Option<SessionId>,
+    ) -> Result<Vec<AgentConfigStatus>, ClientError> {
+        self.get(
+            routes::AGENT_CONFIGS,
+            &crate::ListAgentConfigs { session_id },
+        )
+        .await
     }
 
-    pub async fn get_agent_definition(
-        &self,
-        id: AgentDefinitionId,
-    ) -> Result<AgentDefinition, ClientError> {
-        self.get(&routes::agent_definition_path(id), &()).await
+    pub async fn get_agent_config(&self, id: &ConfigId) -> Result<AgentConfigStatus, ClientError> {
+        self.send(Method::POST, routes::AGENT_CONFIG_LOOKUP, id)
+            .await
     }
 
-    /// Creates a new immutable version; the original definition is unchanged.
-    pub async fn update_agent_definition(
+    pub async fn get_resolved_agent_config(
         &self,
         id: AgentDefinitionId,
-        request: &UpdateAgentDefinition,
-    ) -> Result<AgentDefinition, ClientError> {
-        self.send(Method::PUT, &routes::agent_definition_path(id), request)
+    ) -> Result<Option<ResolvedAgentConfig>, ClientError> {
+        self.get(&routes::agent_snapshot_path(id), &()).await
+    }
+
+    pub async fn upload_skill(&self, request: &NewSkill) -> Result<Skill, ClientError> {
+        self.send(Method::POST, routes::SKILLS, request).await
+    }
+
+    pub async fn list_skills(
+        &self,
+        session_id: Option<SessionId>,
+    ) -> Result<Vec<Skill>, ClientError> {
+        self.get(routes::SKILLS, &crate::ListSkills { session_id })
             .await
     }
 
@@ -211,7 +225,7 @@ impl Client {
     pub async fn create_agent(
         &self,
         session: SessionId,
-        request: &CreateAgent,
+        request: &NewConfiguredAgent,
     ) -> Result<Agent, ClientError> {
         self.send(
             Method::POST,

@@ -7,19 +7,27 @@ use psa_api::{
     probes::{CHUNK_SIZE, Command, DirectoryEntry, Event, ExitStatus, Operation, Stdio},
 };
 use std::{
+    collections::HashMap,
     io,
     os::unix::{fs::PermissionsExt, process::ExitStatusExt},
     path::{Path, PathBuf},
     process::Stdio as ProcessStdio,
     sync::{
-        Arc,
+        Arc, LazyLock, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::io::SyncIoBridge;
 
+#[cfg(test)]
+#[path = "sync_dir_tests.rs"]
+mod sync_dir_tests;
+
 static ARCHIVE_WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+type PublicationLocks = HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>;
+static DIRECTORY_PUBLICATIONS: LazyLock<tokio::sync::Mutex<PublicationLocks>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -27,7 +35,10 @@ pub async fn execute(operation: Operation, mut call: Call, bin: PathBuf) {
     let sender = call.sender.clone();
     let result = match operation {
         Operation::Spawn { command } => run_command(command, &mut call, &bin).await.map(Some),
-        Operation::UploadDir { path } => upload_directory(path, &mut call).await.map(|()| None),
+        Operation::UploadDir { path } => upload_directory(path, &mut call, false)
+            .await
+            .map(|()| None),
+        Operation::SyncDir { path } => upload_directory(path, &mut call, true).await.map(|()| None),
         Operation::DownloadDir { path } => download_directory(path, &mut call).await.map(|()| None),
         operation => tokio::select! {
             biased;
@@ -83,7 +94,10 @@ async fn execute_filesystem_operation(operation: Operation, call: &mut Call) -> 
             let entries = read_directory(&path).await?;
             call.sender.event(Event::Entries { entries }).await?;
         }
-        Operation::DownloadDir { .. } | Operation::UploadDir { .. } | Operation::Spawn { .. } => {
+        Operation::DownloadDir { .. }
+        | Operation::UploadDir { .. }
+        | Operation::SyncDir { .. }
+        | Operation::Spawn { .. } => {
             unreachable!()
         }
     }
@@ -96,7 +110,12 @@ async fn read_directory(path: &Path) -> Result<Vec<DirectoryEntry>> {
     let mut bytes = 0;
 
     while let Some(entry) = directory.next_entry().await? {
-        let metadata = tokio::fs::symlink_metadata(entry.path()).await?;
+        let metadata = match tokio::fs::symlink_metadata(entry.path()).await {
+            Ok(metadata) => metadata,
+            // A directory entry may disappear between readdir and metadata.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
         let name = entry.file_name().into_string().map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -394,9 +413,9 @@ async fn download_directory(path: PathBuf, call: &mut Call) -> Result<()> {
     Ok(())
 }
 
-async fn upload_directory(path: PathBuf, call: &mut Call) -> Result<()> {
+async fn upload_directory(path: PathBuf, call: &mut Call, replace: bool) -> Result<()> {
     require_absolute(&path)?;
-    if tokio::fs::try_exists(&path).await? {
+    if !replace && tokio::fs::try_exists(&path).await? {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "upload destination already exists",
@@ -414,7 +433,7 @@ async fn upload_directory(path: PathBuf, call: &mut Call) -> Result<()> {
     let mut worker = tokio::task::spawn_blocking(move || -> Result<()> {
         let _permit = permit;
         let cancelled = worker_cancelled;
-        extract_directory_archive(&path, SyncIoBridge::new(reader), &cancelled)
+        extract_directory_archive(&path, SyncIoBridge::new(reader), &cancelled, replace)
     });
 
     let sender = call.sender.clone();
@@ -492,6 +511,7 @@ fn extract_directory_archive(
     path: &Path,
     reader: impl io::Read,
     cancelled: &AtomicBool,
+    replace: bool,
 ) -> Result<()> {
     let parent = path
         .parent()
@@ -527,7 +547,14 @@ fn extract_directory_archive(
     std::io::copy(&mut archive.into_inner(), &mut std::io::sink())?;
     require_archive_active(cancelled)?;
 
-    publish_directory(staging.path(), path, directories)
+    let _publication = lock_directory_publication(path)?;
+    require_archive_active(cancelled)?;
+    let published = publish_directory(staging.path(), path, directories, replace);
+    // After exchange this path holds the old tree, not the new destination.
+    // Restore traversability before cleanup, including for read-only old trees.
+    let cleaned = remove_staging_directory(staging);
+    published?;
+    cleaned
 }
 
 fn validate_archive_entry<R: io::Read>(entry: &tar::Entry<'_, R>) -> Result<()> {
@@ -553,10 +580,35 @@ fn validate_archive_entry<R: io::Read>(entry: &tar::Entry<'_, R>) -> Result<()> 
     Ok(())
 }
 
+// Called only by archive blocking workers. Parent canonicalization also serializes
+// probe requests that spell the same destination through different parent aliases.
+fn lock_directory_publication(destination: &Path) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| io::Error::other("directory needs a parent"))?;
+    let name = destination
+        .file_name()
+        .ok_or_else(|| io::Error::other("directory needs a name"))?;
+    let key = std::fs::canonicalize(parent)?.join(name);
+    let lock = {
+        let mut locks = DIRECTORY_PUBLICATIONS.blocking_lock();
+        locks.retain(|_, lock| lock.strong_count() != 0);
+        if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+            lock
+        } else {
+            let lock = Arc::new(tokio::sync::Mutex::new(()));
+            locks.insert(key, Arc::downgrade(&lock));
+            lock
+        }
+    };
+    Ok(lock.blocking_lock_owned())
+}
+
 fn publish_directory(
     staging: &Path,
     destination: &Path,
     mut directories: Vec<(PathBuf, u32)>,
+    replace: bool,
 ) -> Result<()> {
     // Defer directory permissions so read-only directories can receive
     // their children before their final modes are applied.
@@ -568,12 +620,30 @@ fn publish_directory(
                 std::fs::Permissions::from_mode(*mode),
             )?;
         }
+        let flags = if replace {
+            match std::fs::symlink_metadata(destination) {
+                Ok(metadata) if metadata.is_dir() => rustix::fs::RenameFlags::EXCHANGE,
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "sync destination must be a directory, not a file or symlink",
+                    )
+                    .into());
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    rustix::fs::RenameFlags::NOREPLACE
+                }
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            rustix::fs::RenameFlags::NOREPLACE
+        };
         rustix::fs::renameat_with(
             rustix::fs::CWD,
             staging,
             rustix::fs::CWD,
             destination,
-            rustix::fs::RenameFlags::NOREPLACE,
+            flags,
         )?;
         Ok(())
     })();
@@ -591,6 +661,33 @@ fn publish_directory(
     }
 
     published
+}
+
+fn remove_staging_directory(staging: tempfile::TempDir) -> Result<()> {
+    let mut directories = vec![staging.path().to_owned()];
+    while let Some(path) = directories.pop() {
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if !metadata.is_dir() {
+            continue;
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                directories.push(entry.path());
+            }
+        }
+    }
+    match staging.close() {
+        Ok(()) => Ok(()),
+        // A non-replacing publication moved staging away entirely.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn require_archive_active(cancelled: &AtomicBool) -> Result<()> {

@@ -80,8 +80,8 @@ lifecycle state and cumulative usage. Requests are accepted into bounded queues,
 not necessarily persisted or executed at the time HTTP 202 is returned.
 
 ```rust,no_run
-use psa_api::{Client, CreateSession, CreateAgent, CreateAgentDefinition, AgentRequest,
-    HookId, HookIds, MessageDelivery};
+use psa_api::{Client, CreateSession, NewConfiguredAgent, AgentConfig, AgentRequest,
+    ConfigGroup, ConfigId, HookId, HookIds, IncludedItems, MessageDelivery, ModelSelection};
 use llm_api::{api::{ContentBlock, TextBlock}, providers::{Effort, Model, ModelConfig, ProviderType}};
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let client = Client::new("http://127.0.0.1:8080")?;
@@ -92,8 +92,10 @@ let session = client.create_session(&CreateSession {
     model_config: ModelConfig { provider: ProviderType::Openrouter,
         model: Model::new("your-provider/model")?, effort: Effort::Medium },
 }).await?;
-let definition = client.create_agent_definition(&CreateAgentDefinition {
-    name: "Assistant".into(),
+let config_id = ConfigId { config_group: ConfigGroup::Custom("examples".into()), name: "Assistant".into() };
+client.upsert_agent_configs(&[AgentConfig {
+    config_id: config_id.clone(),
+    description: "Example assistant".into(),
     selectable: true,
     bundles: vec![psa_api::BundleId::FileTools],
     tools: vec![],
@@ -105,12 +107,17 @@ let definition = client.create_agent_definition(&CreateAgentDefinition {
         after_request: vec![HookId::StopWithoutTools],
         ..Default::default()
     },
-    ..Default::default()
-}).await?;
-let agent = client.create_agent(session.id, &CreateAgent {
+    extra_system_prompt: String::new(),
+    models: vec![ModelSelection::Global],
+    default: true,
+    subagents: IncludedItems::default(),
+    skills: IncludedItems { groups: vec![ConfigGroup::Global], items: vec![] },
+}]).await?;
+let agent = client.create_agent(session.id, &NewConfiguredAgent {
+    config_id,
     subagent_parent_id: None,
     interactive: false,
-    definition_id: definition.id,
+    model: None,
     name: "Main".into(),
 }).await?;
 client.submit_request(session.id, agent.id, &AgentRequest::Message {
@@ -121,9 +128,9 @@ client.submit_request(session.id, agent.id, &AgentRequest::Message {
 # }
 ```
 
-Routes are defined in `psa_api::routes`: create/list/get/update agent definitions,
-create/list/get/update/fork sessions, create/list/get agents, submit requests,
-and query session or agent events. Event
+Routes are defined in `psa_api::routes`: batch upsert/list/lookup agent configs,
+read immutable agent snapshots, upload/list skills, create/list/get/update/fork
+sessions, create/list/get agents, submit requests, and query session or agent events. Event
 GETs return paged JSON or SSE with `stream=true`. `after` is an exclusive agent
 EventId on an agent route, or shared session position on a session route;
 `through` is inclusive. `limit` accepts 1–10,000. JSON pages expose `head`,
@@ -141,18 +148,33 @@ The client intentionally leaves reconnect policy to callers: after EOF or
 `ResyncRequired`, open another stream using that durable ID. Headers are supported
 by using `Client::with_http_client` with a configured reqwest client.
 
-### Definitions and hook bindings
+### Configurations, snapshots, and hook bindings
 
-This development schema requires a fresh database; existing databases and clients
-using the former per-agent model/tools creation fields are not migrated.
+`POST /agent-configs` takes a JSON array of `AgentConfig`, upserting mutable
+configuration by `ConfigId { config_group, name }`. `GET /agent-configs` lists
+`AgentConfigStatus`; `POST /agent-configs/lookup` takes a `ConfigId` body and reads
+its current configuration/status. `GET /agent-snapshots/{definition_id}` reads an
+immutable `ResolvedAgentConfig` snapshot (JSON `null` when absent). Existing
+agents and forks keep their pinned snapshots when current configurations change.
+There is no compatibility API: `/agent-definitions` CRUD routes and client
+methods are removed.
 
-`POST /agent-definitions` creates a definition; `GET /agent-definitions` lists
-all immutable versions and `GET /agent-definitions/{definition_id}` fetches one.
-`PUT /agent-definitions/{definition_id}` takes a full replacement, returning HTTP
-201 with a new ID, incremented `version`, and `previous_version_id` pointing to
-the source. `Client::update_agent_definition` wraps that operation. Omitted
-optional/defaulted fields are cleared, not merged. Existing agents and forks
-remain pinned to their original definition ID; edits do not reconfigure them.
+`POST /sessions/{session_id}/agents` takes `NewConfiguredAgent` with `config_id`
+and a name, not a `definition_id`. Its optional `model` chooses a configured
+provider/model string, `"global"`, or `"parent"`. A single allowed model is chosen
+automatically; otherwise omitted model uses the first choice only when the
+config's `default` is true. Models and effort inheritance resolve at creation.
+
+`POST /skills` uploads `NewSkill { config_id, tar_data }`, a complete skill tar
+archive represented as JSON bytes. `GET /skills` and `GET /agent-configs` refresh
+source metadata before listing; optional `?session_id=...` also refreshes that
+session's selected project. Global files live in `<data_dir>/{agents,skills}`;
+projects use the nearest probe-local `.agents/{agents,skills}`. Server-owned
+skills are synchronized to managed probe caches before agent creation; skill
+records remain mutable even when agents retain immutable definition snapshots.
+For full types, enum encodings, TOML discovery, missing-component warnings,
+selection rules and library storage configuration, see
+[`../docs/AGENT_DEF_SCHEMA.md`](../docs/AGENT_DEF_SCHEMA.md).
 
 Agent creation accepts `interactive`, defaulting to `false` when omitted from
 JSON. It is creation-time metadata available to tools and hooks, not a runtime
@@ -160,12 +182,16 @@ behavior switch. The opt-in Goal bundle uses it to enable goal tools and policy.
 Agent responses expose it, and forks inherit the source flag.
 
 Sessions require `model_config`, which can be changed with `UpdateSession`.
-A definition's optional `model_config` overrides the session model. Definitions
-also store `description`, `selectable`, `skills`, `permitted_subagents`, and
-`extra_system_prompt`. Skills locations are consumed only when `SkillsHook` is
-explicitly configured. Metadata does not automatically select agents or inject
-extra system prompts. The opt-in Subagents tool checks `permitted_subagents` when
-creating children; the trusted-client administration API remains unrestricted. Unknown extra JSON fields are rejected, not treated as configuration.
+Each `AgentConfig` supplies a nonempty `models` policy list (`Global`, `Parent`,
+or `Fixed` with an effort policy), plus `description`, `selectable`, inclusions,
+and `extra_system_prompt`. Resolution produces an internal executable
+`AgentDefinition` with `model_config`, probe-local skill paths, and
+`permitted_subagents` snapshot IDs; `ResolvedAgentConfig.references` separately
+stores `SkillId` and subagent IDs. Skill paths are consumed only when `SkillsHook`
+is explicitly configured. Metadata does not automatically select agents or inject
+extra system prompts. The opt-in Subagents tool checks pinned permitted IDs when
+creating children; trusted-client config-based creation remains unrestricted.
+Unknown extra configuration/creation JSON fields are rejected.
 
 Definitions also persist ordered `bundles`, defaulting to `[]`.
 `BundleId::FileTools` installs `Read`, `Edit`, and `Write`; `BundleId::Bash`
@@ -182,8 +208,9 @@ Shared session resources do not share tool instances or mutable hooks across
 agents. Shutdown interrupts all workers, closes query/session coordination
 services, then joins workers and cleans per-agent bundles in reverse order under
 bounded timeouts. Probes stay
-connected until cleanup finishes. See `../docs/BASH_TOOLS.md` for process tools. Migration 0009 defaults existing definitions to
-`[]`; omitting bundles in a full replacement clears only the new version's list.
+connected until cleanup finishes. See `../docs/BASH_TOOLS.md` for process tools.
+Omitting bundles during a config upsert clears the current configuration's list;
+existing executable snapshots are not changed.
 
 Each definition explicitly binds ordered `HookId` lists at `agent_create`,
 `session_update`, `before_request`, and `after_request`. All lists default empty;
@@ -280,10 +307,11 @@ interrupts without inference if the probe is missing. A mid-iteration disconnect
 is reported through probe-operation errors; tools/hooks decide whether to change
 status. Operations are never automatically retried.
 
-`agents::sessions::Sessions` is the shared async facade for definition create/
-query/version updates, session create/query/update/fork, agent create/query,
-request submission, steering, resume, interrupt, and busy queries. `Runtime::handle` and `AgentContext::sessions()` expose it.
-Definitions use `psa_api::AgentDefinition` directly. Session/agent operations
+`agents::sessions::Sessions` is the shared async facade for config batch upsert,
+lookup/list and snapshot reads, skill upload/list, session create/query/update/fork,
+configured agent create/query, request submission, steering, resume, interrupt,
+and busy queries. `Runtime::handle` and `AgentContext::sessions()` expose it.
+Configs use `psa_api::AgentConfig`; executable snapshots use `psa_api::AgentDefinition`. Session/agent operations
 return server-native `Session`, `Agent`, and `ForkedSession` values, including
 internal event/position metadata; HTTP handlers convert these to wire types and
 query busy status separately. Request queues and worker lifecycles
@@ -348,14 +376,19 @@ let session = cursor.create_session(NewSession {
         effort: Effort::High,
     },
 }).await?;
-let definition = cursor.create_agent_definition(psa_api::CreateAgentDefinition {
-    name: "Manual replay example".into(),
-    ..Default::default()
-}).await?;
+let config: psa_api::AgentConfig = serde_json::from_value(serde_json::json!({
+    "config_id": {"config_group": {"Custom": "examples"}, "name": "manual-replay"},
+    "models": ["Global"]
+}))?;
+let config_id = config.config_id.clone();
+cursor.upsert_agent_configs(vec![config]).await?;
+let resolved = cursor.resolve_agent_config(
+    &config_id, &std::collections::HashMap::new(), &std::collections::HashMap::new(),
+).await?;
 let agent = cursor.create_agent(session.id, NewAgent {
     subagent_parent_id: None,
     interactive: false,
-    definition_id: definition.id,
+    definition_id: resolved.definition.id,
     name: "Main".into(),
 }).await?;
 // Direct cursor operations do not execute lifecycle hooks; seed events explicitly.

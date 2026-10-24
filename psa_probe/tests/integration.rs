@@ -20,6 +20,8 @@ use tokio_tungstenite::{
 mod bash_bundle;
 #[path = "integration/bash_interaction.rs"]
 mod bash_interaction;
+#[path = "integration/discovery.rs"]
+mod discovery;
 
 struct Harness {
     dir: tempfile::TempDir,
@@ -44,12 +46,13 @@ impl Harness {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let registry = ProbeRegistry::start("test-probe-key".into());
         let (server_stop, stopped) = oneshot::channel();
-        let server = tokio::spawn(psa_server::server::serve_with_probe_registry(
+        let server = tokio::spawn(psa_server::server::serve_with_configuration(
             listener,
             database,
             ProviderRegistry::default()
                 .with_catalog_source(psa_server::models::CatalogSource::new(&base).unwrap()),
             registry.clone(),
+            psa_server::config_registry::ConfigRegistry::new(dir.path().join("global")),
             async {
                 let _ = stopped.await;
             },
@@ -169,9 +172,9 @@ async fn registration_auth_sessions_and_reconnect() {
             harness.metadata.data_dir
         );
         for (key, version, expected) in [
-            ("bad-key", 1, 401),
-            ("test-probe-key", 2, 400),
-            ("test-probe-key", 1, 409),
+            ("bad-key", psa_api::probes::PROTOCOL_VERSION, 401),
+            ("test-probe-key", 1, 400),
+            ("test-probe-key", psa_api::probes::PROTOCOL_VERSION, 409),
         ] {
             let result = connect_async(harness.request(key, version)).await;
             match result {
@@ -185,7 +188,7 @@ async fn registration_auth_sessions_and_reconnect() {
             .client
             .create_session(&psa_api::CreateSession {
                 name: "remote".into(),
-                working_directory: "/not/on/server".into(),
+                working_directory: harness.dir.path().to_owned(),
                 probe_id: harness.id,
                 model_config: serde_json::from_value(serde_json::json!({
                     "model": { "api_name": "test-model" },
@@ -235,25 +238,27 @@ async fn registration_auth_sessions_and_reconnect() {
 }
 
 #[tokio::test]
-async fn startup_reads_remote_skill_metadata_in_configured_order() {
+async fn startup_reads_remote_skill_metadata_from_configured_references() {
     use psa_api::events::{EventType, MessageType};
 
     tokio::time::timeout(Duration::from_secs(30), async {
         let harness = Harness::start().await;
         let handle = harness.handle().await;
         let cwd = harness.dir.path().join("remote<&>");
-        handle.create_dir(cwd.join("skills/review")).await.unwrap();
+        for skill in ["review", "direct", "hidden"] {
+            handle.create_dir(cwd.join(".agents/skills").join(skill)).await.unwrap();
+        }
         for (path, contents) in [
             (
-                "skills/review/SKILL.md",
+                ".agents/skills/review/SKILL.md",
                 "---\nname: 'review<&>'\ndescription: 'Review <code> & tests'\n---\nSECRET DIRECTORY SKILL BODY\n",
             ),
             (
-                "skills/direct.md",
+                ".agents/skills/direct/SKILL.md",
                 "---\nname: direct\ndescription: A direct file\n---\nSECRET DIRECT SKILL BODY\n",
             ),
             (
-                "skills/hidden.md",
+                ".agents/skills/hidden/SKILL.md",
                 "---\nname: hidden-skill\ndescription: hidden description\ndisable-model-invocation: true\n---\nSECRET HIDDEN SKILL BODY\n",
             ),
         ] {
@@ -262,30 +267,6 @@ async fn startup_reads_remote_skill_metadata_in_configured_order() {
             call.sender.close_stdin().await.unwrap();
             collect(call).await;
         }
-        let definition = harness
-            .client
-            .create_agent_definition(&psa_api::CreateAgentDefinition {
-                name: "remote skills".into(),
-                tools: vec![psa_api::ToolId::Noop],
-                hooks: psa_api::HookIds {
-                    agent_create: vec![
-                        psa_api::HookId::DefaultStartup,
-                        psa_api::HookId::ToolDefinitions,
-                        psa_api::HookId::Cwd,
-                        psa_api::HookId::Skills,
-                    ],
-                    ..Default::default()
-                },
-                skills: vec![
-                    "skills/review".into(),
-                    "skills/direct.md".into(),
-                    "skills/hidden.md".into(),
-                    "skills/missing".into(),
-                ],
-                ..Default::default()
-            })
-            .await
-            .unwrap();
         let session = harness
             .client
             .create_session(&psa_api::CreateSession {
@@ -301,15 +282,51 @@ async fn startup_reads_remote_skill_metadata_in_configured_order() {
             })
             .await
             .unwrap();
+        let config_id = psa_api::ConfigId {
+            config_group: psa_api::ConfigGroup::Custom("test".into()),
+            name: "remote skills".into(),
+        };
+        let project = psa_api::ConfigGroup::Project {
+            path: cwd.join(".agents").to_str().unwrap().into(),
+            probe_id: harness.id,
+        };
+        harness.client.upsert_agent_configs(&[psa_api::AgentConfig {
+            config_id: config_id.clone(),
+            description: String::new(),
+            selectable: true,
+            bundles: vec![],
+            tools: vec![psa_api::ToolId::Noop],
+            hooks: psa_api::HookIds {
+                agent_create: vec![
+                    psa_api::HookId::DefaultStartup,
+                    psa_api::HookId::ToolDefinitions,
+                    psa_api::HookId::Cwd,
+                    psa_api::HookId::Skills,
+                ],
+                ..Default::default()
+            },
+            extra_system_prompt: String::new(),
+            models: vec![psa_api::ModelSelection::Global],
+            default: true,
+            subagents: Default::default(),
+            skills: psa_api::IncludedItems {
+                groups: vec![],
+                items: ["review<&>", "direct", "hidden-skill"].into_iter().map(|name| psa_api::ConfigId {
+                    config_group: project.clone(),
+                    name: name.into(),
+                }).collect(),
+            },
+        }]).await.unwrap();
         let agent = harness
             .client
             .create_agent(
                 session.id,
-                &psa_api::CreateAgent {
+                &psa_api::NewConfiguredAgent {
                     subagent_parent_id: None,
                     interactive: false,
                     name: "remote reader".into(),
-                    definition_id: definition.id,
+                    config_id,
+                    model: None,
                 },
             )
             .await
@@ -323,7 +340,7 @@ async fn startup_reads_remote_skill_metadata_in_configured_order() {
             .await
             .unwrap();
         let events: Vec<_> = page.events.iter().map(|event| &event.event.kind).collect();
-        assert_eq!(events.len(), 7, "unexpected startup events: {events:#?}");
+        assert_eq!(events.len(), 6, "unexpected startup events: {events:#?}");
         assert!(matches!(events[0], EventType::NewContext));
         assert!(matches!(events[1], EventType::Model(_)));
         assert!(matches!(events[2], EventType::Message(message) if message.message_type == MessageType::System));
@@ -337,7 +354,6 @@ async fn startup_reads_remote_skill_metadata_in_configured_order() {
             serde_json::to_value(&cwd_message.content).unwrap(),
             serde_json::to_value(psa_server::prompts::text(format!("<cwd>\n{escaped_cwd}\n</cwd>"))).unwrap()
         );
-        assert!(events[5..].iter().any(|event| matches!(event, EventType::Log(log) if !log.error && log.message.contains("missing"))));
         let catalogue = events[5..].iter().find_map(|event| match event {
             EventType::Message(message) if message.message_type == MessageType::System => Some(message),
             _ => None,
@@ -348,9 +364,10 @@ async fn startup_reads_remote_skill_metadata_in_configured_order() {
         assert!(text.contains("<available_skills>"));
         assert!(text.contains("review&lt;&amp;&gt;"));
         assert!(text.contains("Review &lt;code&gt; &amp; tests"));
-        assert!(text.contains(&format!("{escaped_cwd}/skills/review/SKILL.md")));
-        assert!(text.contains(&format!("{escaped_cwd}/skills/direct.md")));
-        assert!(text.find("review&lt;&amp;&gt;").unwrap() < text.find("<name>direct</name>").unwrap());
+        assert!(text.contains(&format!("{escaped_cwd}/.agents/skills/review/SKILL.md")));
+        assert!(text.contains(&format!("{escaped_cwd}/.agents/skills/direct/SKILL.md")));
+        // Named configuration references resolve in deterministic name order.
+        assert!(text.find("<name>direct</name>").unwrap() < text.find("review&lt;&amp;&gt;").unwrap());
         assert!(!text.contains("hidden-skill"));
         assert!(!text.contains("SECRET"), "catalogue must not load skill bodies into context");
         harness.stop().await;
@@ -462,6 +479,89 @@ async fn disconnect_and_handle_drop_kill_owned_processes() {
                 harness.wait_active().await;
             }
         }
+        harness.stop().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn sync_directory_publishes_only_after_eof_and_cleans_cancellation() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let harness = Harness::start().await;
+        let handle = harness.handle().await;
+        let source = harness.dir.path().join("sync-source");
+        tokio::fs::create_dir(&source).await.unwrap();
+        tokio::fs::write(source.join("new"), b"new").await.unwrap();
+        let archive = collect(handle.download_dir(&source).await.unwrap()).await.0;
+        let destination = harness.dir.path().join("sync-target");
+        handle.create_dir(&destination).await.unwrap();
+        tokio::fs::write(destination.join("old"), b"old")
+            .await
+            .unwrap();
+
+        let call = handle.sync_dir(&destination).await.unwrap();
+        call.sender.write(0, &archive).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            tokio::fs::read(destination.join("old")).await.unwrap(),
+            b"old"
+        );
+        assert!(!destination.join("new").exists());
+        call.sender.close_stdin().await.unwrap();
+        collect(call).await;
+        assert!(!destination.join("old").exists());
+        assert_eq!(
+            tokio::fs::read(destination.join("new")).await.unwrap(),
+            b"new"
+        );
+
+        let call = handle.sync_dir(&destination).await.unwrap();
+        call.sender.write(0, &[0; 256]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if std::fs::read_dir(harness.dir.path()).unwrap().any(|entry| {
+                    entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".psa-upload-")
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(call);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if !std::fs::read_dir(harness.dir.path()).unwrap().any(|entry| {
+                    entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".psa-upload-")
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            tokio::fs::read(destination.join("new")).await.unwrap(),
+            b"new"
+        );
+
+        let missing = harness.dir.path().join("sync-created");
+        let call = handle.sync_dir(&missing).await.unwrap();
+        call.sender.write(0, &archive).await.unwrap();
+        call.sender.close_stdin().await.unwrap();
+        collect(call).await;
+        assert_eq!(tokio::fs::read(missing.join("new")).await.unwrap(), b"new");
         harness.stop().await;
     })
     .await

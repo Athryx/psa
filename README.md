@@ -226,12 +226,23 @@ resume or replay operations; a disconnected mutation may have an unknown outcome
 
 ## Clients and further documentation
 
-Use `psa_api::Client` for agent definitions, sessions, agents, probe discovery,
-and JSON/SSE event queries. Every session requires a registered probe ID and
-`model_config`; its working directory is a path on that probe. Create an agent
-with a `definition_id` and name. Definitions are immutable versions: updating
-one creates a new ID without changing existing agents. Their optional model
-configuration overrides the session model.
+Use `psa_api::Client` for agent configs, skills, immutable snapshots, sessions,
+agents, probe discovery, and JSON/SSE event queries. Every session requires a
+registered probe ID and `model_config`; its working directory is on that probe.
+Batch-upsert `AgentConfig` values with `upsert_agent_configs`, then create an agent
+with `NewConfiguredAgent { config_id, name, subagent_parent_id, interactive, model }`.
+`config_id` is a `(config_group, name)` identity, not an immutable definition ID.
+Creation resolves the config's allowed model/effort policies and pins an immutable
+snapshot; later config upserts do not change existing agents. Optional `model`
+chooses an allowed provider/model string, `"global"`, or `"parent"`.
+
+The HTTP API uses `/agent-configs` (batch POST/list GET),
+`POST /agent-configs/lookup`, `/skills` (upload POST/list GET), and
+`GET /agent-snapshots/{definition_id}`. Legacy `/agent-definitions` CRUD is removed,
+not retained as a compatibility API. Global discovery reads
+`<server-data-dir>/{agents,skills}`; project discovery selects the nearest
+probe-local `.agents/{agents,skills}`. See
+[configuration types, JSON/TOML examples, and snapshot semantics](docs/AGENT_DEF_SCHEMA.md).
 
 Hook bindings default empty. For ordinary execution, explicitly bind
 `[DefaultStartup, ToolDefinitions, Cwd, Skills]` to `agent_create` in that order,
@@ -240,11 +251,14 @@ see the server client example below. `DefaultStartup` initializes root context,
 model, and base assistant identity; `ToolDefinitions` separately snapshots tools.
 Both skip forks to preserve inherited context. `Cwd` emits the XML-escaped session
 working directory, including on forks, and can also bind to `session_update`.
-`Skills` reads explicitly listed skill locations on the session probe and emits
-an XML-escaped catalogue of names, descriptions, and paths, not skill bodies.
-Skills paths are consumed only when `SkillsHook` is configured. `selectable`,
-`permitted_subagents`, and `extra_system_prompt` remain literal metadata, not
-automatic selection, permission enforcement, or prompt injection. There is no
+`Skills` reads the snapshot's resolved probe-local skill paths and emits an
+XML-escaped catalogue of names, descriptions, and paths, not skill bodies.
+Server-owned skills are copied to managed probe caches before agent creation;
+probe-owned skills remain in place. Mutable `SkillId` references are stored
+separately from executable skill paths. Skill paths are consumed only when
+`SkillsHook` is configured. `selectable` and `extra_system_prompt` do not
+automatically select agents or inject prompts; the opt-in Subagents tool enforces
+the snapshot's `permitted_subagents` IDs when spawning children. There is no
 remote-operation HTTP API yet; use `psa_server::probes::ProbeRegistry` handles
 inside server-side integrations.
 

@@ -23,6 +23,9 @@ struct CreateAgentArgs {
     task: String,
     /// Pinned permitted definition name. Required; there is no default.
     agent_template: Option<String>,
+    /// Allowed provider/model slug, or "global" / "parent". May be omitted when
+    /// the template has a default model (or only one allowed model).
+    model: Option<String>,
 }
 #[derive(Default)]
 pub struct CreateAgent {
@@ -37,7 +40,7 @@ impl CreateAgent {
     pub(crate) fn definition() -> ToolDefinition {
         ToolDefinition::for_type::<CreateAgentArgs>(
             "create_agent",
-            "Start a named child asynchronously in this session. agent_template must name a permitted template; no default is configured. Names must be session-unique.",
+            "Start a named child asynchronously in this session. agent_template must name a permitted template. model optionally selects an allowed provider/model slug, global, or parent; templates without a default require a model choice. Names must be session-unique.",
             Some(false),
         )
     }
@@ -55,6 +58,7 @@ impl CreateAgent {
             name,
             task,
             agent_template: template,
+            model,
         } = args;
         if name.trim().is_empty() || task.trim().is_empty() {
             return ToolOutput::error(prompts::text("name and task must be nonempty"));
@@ -74,7 +78,7 @@ impl CreateAgent {
             let selected = resolve_template(context, &template).await?;
             let agent = context
                 .sessions()
-                .create_agent(
+                .create_agent_with_model(
                     context.session().id,
                     psa_api::CreateAgent {
                         subagent_parent_id: Some(caller),
@@ -82,6 +86,7 @@ impl CreateAgent {
                         name,
                         interactive: false,
                     },
+                    model,
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -165,6 +170,7 @@ mod tests {
             json!({"name":"worker","task":"work"}),
             json!({"name":"worker","task":"work","agent_template":null}),
             json!({"name":"worker","task":"work","agent_template":"rust"}),
+            json!({"name":"worker","task":"work","agent_template":"rust","model":"global"}),
         ] {
             assert!(parse_tool_arguments::<CreateAgentArgs>(value).is_ok());
         }
@@ -173,6 +179,7 @@ mod tests {
             json!({"name":2,"task":"work"}),
             json!({"name":"worker","task":"work","extra":true}),
             json!({"name":"worker","task":"work","agent_template":false}),
+            json!({"name":"worker","task":"work","model":12}),
         ] {
             assert!(parse_tool_arguments::<CreateAgentArgs>(value).is_err());
         }

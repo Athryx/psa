@@ -48,7 +48,16 @@ pub async fn start(config: ResolvedConfig) -> Result<(), ServerError> {
         "server ready"
     );
 
-    serve_with_probe_key(listener, database, providers, probe_key, shutdown_signal()).await
+    let probes = crate::probes::ProbeRegistry::start(probe_key);
+    serve_with_configuration(
+        listener,
+        database,
+        providers,
+        probes,
+        crate::config_registry::ConfigRegistry::new(config.data_dir),
+        shutdown_signal(),
+    )
+    .await
 }
 
 /// Injectable listener and shutdown future permit isolated startup tests.
@@ -95,6 +104,30 @@ pub async fn serve_with_probe_registry(
     probes: crate::probes::ProbeRegistry,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
+    let data_dir = directories::ProjectDirs::from("", "", "psa")
+        .ok_or_else(|| std::io::Error::other("cannot determine PSA data directory"))?
+        .data_local_dir()
+        .to_path_buf();
+    serve_with_configuration(
+        listener,
+        database,
+        providers,
+        probes,
+        crate::config_registry::ConfigRegistry::new(data_dir),
+        shutdown,
+    )
+    .await
+}
+
+/// Serve with explicit file-discovery and uploaded-skill storage roots.
+pub async fn serve_with_configuration(
+    listener: TcpListener,
+    database: Database,
+    providers: ProviderRegistry,
+    probes: crate::probes::ProbeRegistry,
+    configuration: crate::config_registry::ConfigRegistry,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), ServerError> {
     let mut catalog = crate::models::ModelCatalogRuntime::start(
         database.clone(),
         &providers,
@@ -103,11 +136,12 @@ pub async fn serve_with_probe_registry(
     .await?;
     let providers = providers.with_catalog(catalog.handle.clone());
     let publication = Publication::default();
-    let runtime = Runtime::start(
+    let runtime = Runtime::start_with_configuration(
         database.clone(),
         publication.clone(),
         providers,
         probes.clone(),
+        Some(configuration),
     )
     .await?;
     let accepting = Arc::new(AtomicBool::new(true));

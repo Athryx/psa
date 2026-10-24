@@ -10,6 +10,8 @@ pub enum DbError {
     NotFound { entity: &'static str, id: u64 },
     #[error("probe {0} does not exist")]
     ProbeNotFound(psa_api::ProbeId),
+    #[error("agent configuration {0:?} does not exist")]
+    ConfigNotFound(psa_api::ConfigId),
     #[error("invalid input: {0}")]
     InvalidInput(String),
     #[error("invalid stored data: {0}")]

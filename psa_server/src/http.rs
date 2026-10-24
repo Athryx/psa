@@ -138,9 +138,10 @@ impl IntoResponse for HttpError {
                 self.to_string(),
             ),
             Self::Database(DbError::ProbeNotFound(_))
+            | Self::Database(DbError::ConfigNotFound(_))
             | Self::Database(DbError::NotFound { .. })
             | Self::Runtime(RuntimeError::Database(
-                DbError::NotFound { .. } | DbError::ProbeNotFound(_),
+                DbError::NotFound { .. } | DbError::ProbeNotFound(_) | DbError::ConfigNotFound(_),
             )) => (StatusCode::NOT_FOUND, "not_found", self.to_string()),
             Self::Invalid(_)
             | Self::Database(DbError::InvalidInput(_))
@@ -187,12 +188,18 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok\n" }))
         .route(
-            routes::AGENT_DEFINITIONS,
-            post(create_agent_definition).get(list_agent_definitions),
+            routes::AGENT_CONFIGS,
+            post(upsert_agent_configs).get(list_agent_configs),
         )
+        .route(routes::AGENT_CONFIG_LOOKUP, post(get_agent_config))
+        .route(routes::AGENT_SNAPSHOT, get(get_resolved_agent_config))
         .route(
-            routes::AGENT_DEFINITION,
-            get(get_agent_definition).put(update_agent_definition),
+            routes::SKILLS,
+            post(upload_skill).get(list_skills).layer(
+                // A 64 MiB archive encoded as a JSON byte array uses up to
+                // four bytes per element, plus configuration metadata.
+                axum::extract::DefaultBodyLimit::max(256 * 1024 * 1024 + 64 * 1024),
+            ),
         )
         .route(routes::SESSIONS, post(create_session).get(list_sessions))
         .route(routes::SESSION, get(get_session).patch(update_session))
@@ -264,46 +271,56 @@ async fn resync_models(
     ))
 }
 
-async fn create_agent_definition(
+async fn upsert_agent_configs(
     State(state): State<AppState>,
-    ApiJson(request): ApiJson<api::CreateAgentDefinition>,
-) -> Result<impl IntoResponse, HttpError> {
+    ApiJson(configs): ApiJson<Vec<api::AgentConfig>>,
+) -> Result<Json<Vec<api::AgentConfigStatus>>, HttpError> {
     state.require_accepting()?;
-
-    let definition = state.runtime.create_agent_definition(request).await?;
-    Ok((StatusCode::CREATED, Json(definition)))
+    Ok(Json(state.runtime.upsert_agent_configs(configs).await?))
 }
 
-async fn list_agent_definitions(
+async fn list_agent_configs(
     State(state): State<AppState>,
-) -> Result<Json<Vec<api::AgentDefinition>>, HttpError> {
-    Ok(Json(state.runtime.list_agent_definitions().await?))
+    ApiQuery(query): ApiQuery<api::ListAgentConfigs>,
+) -> Result<Json<Vec<api::AgentConfigStatus>>, HttpError> {
+    Ok(Json(
+        state.runtime.list_agent_configs(query.session_id).await?,
+    ))
 }
 
-async fn get_agent_definition(
+async fn get_agent_config(
+    State(state): State<AppState>,
+    ApiJson(id): ApiJson<api::ConfigId>,
+) -> Result<Json<api::AgentConfigStatus>, HttpError> {
+    Ok(Json(state.runtime.get_agent_config(id).await?))
+}
+
+async fn get_resolved_agent_config(
     State(state): State<AppState>,
     ApiPath(id): ApiPath<u64>,
-) -> Result<Json<api::AgentDefinition>, HttpError> {
+) -> Result<Json<Option<api::ResolvedAgentConfig>>, HttpError> {
     Ok(Json(
         state
             .runtime
-            .get_agent_definition(api::AgentDefinitionId(id))
+            .get_resolved_agent_config(api::AgentDefinitionId(id))
             .await?,
     ))
 }
 
-async fn update_agent_definition(
+async fn upload_skill(
     State(state): State<AppState>,
-    ApiPath(id): ApiPath<u64>,
-    ApiJson(request): ApiJson<api::UpdateAgentDefinition>,
+    ApiJson(request): ApiJson<api::NewSkill>,
 ) -> Result<impl IntoResponse, HttpError> {
     state.require_accepting()?;
+    let skill = state.runtime.upload_skill(request).await?;
+    Ok((StatusCode::CREATED, Json(skill)))
+}
 
-    let definition = state
-        .runtime
-        .update_agent_definition(api::AgentDefinitionId(id), request)
-        .await?;
-    Ok((StatusCode::CREATED, Json(definition)))
+async fn list_skills(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<api::ListSkills>,
+) -> Result<Json<Vec<api::Skill>>, HttpError> {
+    Ok(Json(state.runtime.list_skills(query.session_id).await?))
 }
 
 async fn create_session(
@@ -373,13 +390,13 @@ async fn fork_session(
 async fn create_agent(
     State(state): State<AppState>,
     ApiPath(session): ApiPath<u64>,
-    ApiJson(request): ApiJson<api::CreateAgent>,
+    ApiJson(request): ApiJson<api::NewConfiguredAgent>,
 ) -> Result<impl IntoResponse, HttpError> {
     state.require_accepting()?;
 
     let agent = state
         .runtime
-        .create_agent(SessionId(session), request)
+        .create_configured_agent(SessionId(session), request)
         .await?;
     Ok((StatusCode::CREATED, Json(api::Agent::from(agent))))
 }
@@ -731,6 +748,92 @@ mod tests {
     use super::*;
     use crate::agents::{NewAgent, session_manager::Runtime};
     use crate::{providers::ProviderRegistry, sessions};
+
+    #[tokio::test]
+    async fn config_routes_and_client_replace_legacy_definition_crud() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(dir.path().join("test.sqlite3"))
+            .await
+            .unwrap();
+        let publication = Publication::default();
+        let probes = crate::probes::ProbeRegistry::start("test".into());
+        let runtime = Runtime::start(
+            db.clone(),
+            publication.clone(),
+            ProviderRegistry::default(),
+            probes.clone(),
+        )
+        .await
+        .unwrap();
+        let state = AppState {
+            database: db.clone(),
+            publication,
+            runtime: runtime.handle.clone(),
+            accepting: Arc::new(AtomicBool::new(true)),
+            probes,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server =
+            tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
+        let client = api::Client::new(&base).unwrap();
+        let config: api::AgentConfig = serde_json::from_value(serde_json::json!({
+            "config_id": {"config_group": {"Custom": "http-test"}, "name": "worker"},
+            "models": ["Global"]
+        }))
+        .unwrap();
+        let id = config.config_id.clone();
+        let upserted = client.upsert_agent_configs(&[config]).await.unwrap();
+        assert_eq!(upserted.len(), 1);
+        assert_eq!(upserted[0].config.config_id, id);
+
+        let listed = client.list_agent_configs(None).await.unwrap();
+        assert!(listed.iter().any(|config| config.config.config_id == id));
+        let found = client.get_agent_config(&id).await.unwrap();
+        assert_eq!(found.config.config_id, id);
+        let mut updated = found.config;
+        updated.description = "updated".into();
+        let upserted = client.upsert_agent_configs(&[updated]).await.unwrap();
+        assert_eq!(upserted[0].config.description, "updated");
+        assert_eq!(
+            client.list_agent_configs(None).await.unwrap().len(),
+            listed.len()
+        );
+        let snapshot = client
+            .get_resolved_agent_config(api::AgentDefinitionId(999_999))
+            .await
+            .unwrap();
+        assert!(snapshot.is_none());
+        assert!(client.list_skills(None).await.unwrap().is_empty());
+
+        let http = reqwest::Client::new();
+        let legacy_creation = http
+            .post(format!("{base}/sessions/1/agents"))
+            .json(&serde_json::json!({"definition_id": 1, "name": "legacy"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(legacy_creation.status(), StatusCode::BAD_REQUEST);
+        for path in ["/agent-definitions", "/agent-definitions/1"] {
+            for method in [
+                reqwest::Method::GET,
+                reqwest::Method::POST,
+                reqwest::Method::PUT,
+            ] {
+                let response = http
+                    .request(method, format!("{base}{path}"))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            }
+        }
+
+        server.abort();
+        let _ = server.await;
+        runtime.shutdown().await.unwrap();
+        db.close().await;
+    }
 
     #[tokio::test]
     async fn lagged_subscriber_is_told_to_resync_instead_of_silently_skipping() {

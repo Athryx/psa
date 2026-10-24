@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use time::OffsetDateTime;
 pub use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const CHUNK_SIZE: usize = 64 * 1024;
 pub const MAX_OPERATIONS: usize = 128;
 
@@ -150,13 +150,32 @@ impl Command {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Operation {
-    ReadFile { path: PathBuf },
-    WriteFile { path: PathBuf, append: bool },
-    ListDir { path: PathBuf },
-    CreateDir { path: PathBuf },
-    UploadDir { path: PathBuf },
-    DownloadDir { path: PathBuf },
-    Spawn { command: Command },
+    ReadFile {
+        path: PathBuf,
+    },
+    WriteFile {
+        path: PathBuf,
+        append: bool,
+    },
+    ListDir {
+        path: PathBuf,
+    },
+    CreateDir {
+        path: PathBuf,
+    },
+    UploadDir {
+        path: PathBuf,
+    },
+    /// Atomically publish a tar directory, replacing an existing directory if present.
+    SyncDir {
+        path: PathBuf,
+    },
+    DownloadDir {
+        path: PathBuf,
+    },
+    Spawn {
+        command: Command,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

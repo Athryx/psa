@@ -134,7 +134,7 @@ rejected. Regenerate the UUID when deliberately creating another installation.
 Retain a `psa_server::probes::ProbeRegistry` and pass it to
 `serve_with_probe_registry`. Obtain a connection-specific handle with
 `registry.handle(probe_id).await`. The handle exposes `read_file`, `write_file`,
-`list_dir`, `create_dir`, `upload_dir`, `download_dir`, and `spawn`.
+`list_dir`, `create_dir`, `upload_dir`, `sync_dir`, `download_dir`, and `spawn`.
 
 File and archive methods return a `Call`. Its `sender.write(0, bytes)` sends input,
 `sender.close_stdin()` ends input, and `next_event()` yields binary output chunks,
@@ -167,12 +167,30 @@ cancellation, disconnect, or shutdown, including descendants left behind by an
 exited group leader. Programs deliberately escaping their group are outside this
 lifecycle guarantee.
 
-Directory transfers stream uncompressed tar archives. Supported entries are
+Filesystem operation paths must be absolute UTF-8 paths. Directory transfers
+stream uncompressed tar archives. Supported entries are
 regular files and directories, preserving permissions; links, special files, and
 escaping paths are rejected. Upload targets must not exist and their parent must
 exist. Uploads are staged beside the target and published with a non-replacing
-rename after stream EOF. Cancelled uploads remove staging data. Ordinary file
-writes are incremental: failure can leave a partial file.
+rename after stream EOF. `sync_dir` (wire operation `sync_dir`, with `path`) uses
+that same streaming tar input and validation, but replaces the entire destination
+tree, removing stale files. Its parent must exist. Missing targets are created
+with a non-replacing rename; existing directories are atomically exchanged using
+Linux `renameat2(RENAME_EXCHANGE)`. Files and symlink targets are rejected. Staging
+is on the same filesystem, beside the target; there is no delete-then-rename gap
+or non-atomic fallback. Unsupported exchange operations fail without replacing
+the target. After exchange, the old tree is removed before completion (including
+read-only directories, without following symlinks). Probe archive publications
+are serialized per destination (including parent path aliases); archive reception
+and extraction remain concurrent. Mutations by external processes, and renames
+of a destination's parent, are not coordinated. Failed or cancelled transfers before publication leave the
+old destination intact and remove staging data. Cancellation/disconnection at
+publication can leave the new tree installed; a cleanup failure after publication
+is reported as an error but does not roll back the swap. Ordinary file writes are
+incremental: failure can leave a partial file.
+
+Probe protocol version 2 includes `sync_dir`; version 1 probes are rejected at
+connection time. Upgrade the server and probes together.
 
 Connections heartbeat every 10 seconds and expire after 30 seconds without a
 pong. After cleanup, the probe retries network failures and duplicate UUID

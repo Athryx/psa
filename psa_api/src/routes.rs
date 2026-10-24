@@ -6,8 +6,10 @@ pub const MODEL_LOOKUP: &str = "/models/lookup";
 pub const MODEL_PIN: &str = "/models/pin";
 pub const MODELS_RESYNC: &str = "/models/resync";
 
-pub const AGENT_DEFINITIONS: &str = "/agent-definitions";
-pub const AGENT_DEFINITION: &str = "/agent-definitions/{definition_id}";
+pub const AGENT_CONFIGS: &str = "/agent-configs";
+pub const AGENT_CONFIG_LOOKUP: &str = "/agent-configs/lookup";
+pub const AGENT_SNAPSHOT: &str = "/agent-snapshots/{definition_id}";
+pub const SKILLS: &str = "/skills";
 
 pub const SESSIONS: &str = "/sessions";
 pub const SESSION: &str = "/sessions/{session_id}";
@@ -31,8 +33,8 @@ pub fn agent_path(route: &str, session: SessionId, agent: AgentId) -> String {
     session_path(route, session).replace("{agent_id}", &agent.0.to_string())
 }
 
-pub fn agent_definition_path(id: AgentDefinitionId) -> String {
-    AGENT_DEFINITION.replace("{definition_id}", &id.0.to_string())
+pub fn agent_snapshot_path(id: AgentDefinitionId) -> String {
+    AGENT_SNAPSHOT.replace("{definition_id}", &id.0.to_string())
 }
 
 pub fn client_query_response_path(

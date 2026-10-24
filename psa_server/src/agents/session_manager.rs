@@ -77,6 +77,16 @@ impl Runtime {
         providers: ProviderRegistry,
         probes: ProbeRegistry,
     ) -> Result<Self, RuntimeError> {
+        Self::start_with_configuration(db, publication, providers, probes, None).await
+    }
+
+    pub async fn start_with_configuration(
+        db: Database,
+        publication: Publication,
+        providers: ProviderRegistry,
+        probes: ProbeRegistry,
+        configuration: Option<crate::config_registry::ConfigRegistry>,
+    ) -> Result<Self, RuntimeError> {
         let mut cursor = db.cursor().await?;
         let agents = cursor.list_all_agents().await?;
         cursor.rollback().await?;
@@ -95,7 +105,8 @@ impl Runtime {
             commands.clone(),
             client_queries.handle(),
         )
-        .with_catalog(providers.catalog().cloned());
+        .with_catalog(providers.catalog().cloned())
+        .with_configuration(configuration, probes.clone());
         let manager = SessionManager {
             db,
             publication,
