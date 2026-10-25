@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn client_helpers_construct_raw_and_typed_result_futures_without_io() {
         fn returns<T>(_: impl std::future::Future<Output = Result<T, crate::ClientError>>) {}
-        let client = crate::Client::new("http://example.invalid").unwrap();
+        let client = crate::Client::new("http://example.invalid", "test-client-key").unwrap();
         let session = SessionId(3);
         let agent = AgentId(5);
         returns::<Vec<ResultRecord>>(client.results(session, agent, 5));

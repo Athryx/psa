@@ -2,6 +2,20 @@
 
 Http endpoints, with server side events streaming to client. streams in agent events and partial completed events.
 
+## Client authentication
+
+All client HTTP/SSE endpoints, including `GET /health`, require
+`Authorization: Bearer <client_key>` using `[psa].client_key` from the server's
+`auth.toml`. Missing or invalid credentials return HTTP 401. The separate
+`GET /probes/connect` route uses `[psa].probe_key`, not the client key. Keys grant
+their respective trusted access; there is no per-user authorization.
+
+Construct the async Rust client with `Client::new(base_url, client_key)`, or
+`Client::with_http_client(base_url, client_key, http)` for a custom reqwest
+transport. Both constructors require the client key; all requests, including SSE,
+send it as a bearer token, overriding any default Authorization header on the
+transport. Use TLS or a trusted encrypted tunnel for remote connections.
+
 ## Session and Agent
 
 /sessions/{id}
@@ -205,7 +219,7 @@ snapshot for both metadata edits and busy-state changes. There is no separate
 projection share the publication gate, preventing stale busy values from
 overwriting newer transitions. Apply snapshots in stream order; activity-only
 changes do not advance the persisted `updated_at` timestamp.
-Agent views include state and cumulative token usage. See `../psa_server/README.md` for startup, `auth.toml`, client examples,
+Agent views include state and cumulative token usage. See `../runtime/psa_server/README.md` for startup, `auth.toml`, client examples,
 queue/shutdown semantics, and the trusted-client-only security boundary.
 
 ## Client queries
@@ -273,13 +287,20 @@ after eviction, later responses receive 404 instead of 409/410. See
 
 `GET /probes` lists registered systems; `GET /probes/{probe_id}` fetches one UUID.
 Both return flattened probe metadata (`id`, `hostname`, `os`, `architecture`,
-optional `label`, absolute `data_dir`), timestamps, and live `is_active`.
+optional `label`, absolute `data_dir`, boolean `host`), timestamps, and live `is_active`.
 `Client::list_probes` and `Client::get_probe` wrap these endpoints.
 
 Probes authenticate `GET /probes/connect` with `Authorization: Bearer <probe_key>`.
-Query parameters are `version=1` and the metadata fields above; success upgrades
+Query parameters are `version=2` and the metadata fields above; success upgrades
 to WebSocket. Invalid auth returns 401, incompatible versions/metadata return
 400, and an already-connected UUID returns 409. Offline records persist.
+
+`host` defaults to false for legacy metadata. A probe reads it from root
+`host = true` in the server's `config.toml` beside its selected `probe.toml`.
+At most one registered probe may be host; reconnecting the same UUID is allowed.
+The flag asserts a shared server filesystem: server-owned skills use their
+original paths without cache synchronization on host probes. Remote probes
+continue receiving synchronized skill copies.
 
 Session creation requires `probe_id`, referencing a registered probe. It is
 returned in session responses, remains fixed, and is inherited on fork. No

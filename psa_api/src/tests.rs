@@ -680,9 +680,9 @@ fn paths_and_client_base_urls_are_validated() {
         "https://example.com/?secret=x",
         "https://example.com/#x",
     ] {
-        assert!(Client::new(invalid).is_err());
+        assert!(Client::new(invalid, "test-client-key").is_err());
     }
-    assert!(Client::new("http://localhost:8080/prefix/").is_ok());
+    assert!(Client::new("http://localhost:8080/prefix/", "test-client-key").is_ok());
 }
 
 #[test]

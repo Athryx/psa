@@ -1,6 +1,6 @@
 # Event loop and client API
 
-Implemented in `psa_api` and `psa_server`; see `psa_server/README.md` for startup,
+Implemented in `psa_api` and `psa_server`; see `runtime/psa_server/README.md` for startup,
 credentials, routes, client usage, and storage/query semantics. Compaction remains
 unimplemented and pending requests remain memory-only as specified below.
 
@@ -212,7 +212,7 @@ Failure or interrupt preserves available output and transitions to Interrupted.
 - Validate a cloned context with proposed persisted events, commit SQLite, then
   swap live state and publish. Current `save_events` mutates context before
   commit; fix that so projection/commit failures cannot diverge memory and disk.
-- Centralize all harness-authored model-facing text in `psa_server/src/prompts.rs`
+- Centralize all harness-authored model-facing text in `runtime/psa_server/src/prompts.rs`
   as named text/content-building functions, not scattered literals or string
   constants. This includes system/hook/compaction prompts, tool descriptions,
   context-summary wrappers, and tool error results. Use builders such as

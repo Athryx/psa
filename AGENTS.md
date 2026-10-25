@@ -9,7 +9,9 @@ The codebase uses async code, not blocking sync.
 
 # Crates
 
-The following crates are present in the workspace:
+The following crates are present in the workspace. Runtime crates live under
+`runtime/` (`psa_server`, `psa_shared`, `psa_probe`), reusable libraries under `lib/`
+(`llm_api`, `actors`, `actors_macros`), and `psa_api` remains at the workspace root:
 - `llm_api`: a generic wrapper over different llm api types, like OpenAI responses and completions, low level close to the api.
 - `psa_server`: main server managing sessions and calling into `llm_api` to make inference requests.
 - `psa_api`: defines common types and endpoints clients and probes use to communicate to psa server, and provides a thin client library for making the requests.
@@ -43,7 +45,7 @@ instead of expanding the harness to support the tool.
   - Avoid extracting helpers that require many arguments merely to pass local context around. Reconsider the extraction boundary; keep the operation inline when that is clearer. Don’t introduce a state struct solely to reduce argument count.
 - Prefer early returns for invalid inputs and exceptional cases. Aim for no more than about three nested control-flow levels.
 - Keep straightforward sequences, builders, dispatch matches, and linear tests together when splitting them would obscure their flow.
-- Run `cargo fmt --all` and relevant tests after changes. Workspace builds require prepared static probe tools; see `psa_probe/README.md`.
+- Run `cargo fmt --all` and relevant tests after changes. Workspace builds require prepared static probe tools; see `runtime/psa_probe/README.md`.
 
 ## Naming
 

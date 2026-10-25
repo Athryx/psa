@@ -53,23 +53,31 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, ClientError
 ///
 /// Methods return [`ClientError`] for transport failures, non-success HTTP
 /// responses, or invalid response bodies. Streaming may also fail while polled.
-/// This wrapper adds no retries or automatic SSE reconnections.
+/// Every request, including SSE connections, sends the supplied client key as a
+/// bearer token. This wrapper adds no retries or automatic SSE reconnections.
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
     base: reqwest::Url,
+    client_key: String,
 }
 
 impl Client {
     /// Create a client for an HTTP(S) server URL, optionally including a path prefix.
+    /// Authenticates with `[psa].client_key` from the server's `auth.toml`.
     /// Rejects malformed URLs, unsupported schemes, queries, and fragments.
-    pub fn new(base: &str) -> Result<Self, ClientError> {
-        Self::with_http_client(base, reqwest::Client::new())
+    pub fn new(base: &str, client_key: &str) -> Result<Self, ClientError> {
+        Self::with_http_client(base, client_key, reqwest::Client::new())
     }
 
     /// Create a client using a configured HTTP transport, such as one with custom
-    /// headers or timeouts. Uses the same base-URL validation as [`Self::new`].
-    pub fn with_http_client(base: &str, http: reqwest::Client) -> Result<Self, ClientError> {
+    /// headers or timeouts. The supplied client key overrides any default
+    /// Authorization header. Uses the same base-URL validation as [`Self::new`].
+    pub fn with_http_client(
+        base: &str,
+        client_key: &str,
+        http: reqwest::Client,
+    ) -> Result<Self, ClientError> {
         let base = reqwest::Url::parse(base).map_err(|_| ClientError::InvalidBaseUrl)?;
         if !matches!(base.scheme(), "http" | "https")
             || base.query().is_some()
@@ -78,7 +86,11 @@ impl Client {
             return Err(ClientError::InvalidBaseUrl);
         }
 
-        Ok(Self { http, base })
+        Ok(Self {
+            http,
+            base,
+            client_key: client_key.to_owned(),
+        })
     }
 
     fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
@@ -89,7 +101,7 @@ impl Client {
             path
         ));
 
-        self.http.request(method, url)
+        self.http.request(method, url).bearer_auth(&self.client_key)
     }
 
     async fn send<T: DeserializeOwned>(
@@ -552,4 +564,56 @@ pub fn parse_probe_server_url(value: &str) -> Result<String, ClientError> {
         routes::PROBES_CONNECT
     ));
     Ok(url.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_requests_include_bearer_key_and_preserve_base_prefix() {
+        let client = Client::new("https://example.invalid/prefix/", "test-client-key").unwrap();
+        let client = client.clone();
+
+        for (method, path) in [
+            (Method::GET, routes::PROVIDERS.to_owned()),
+            (Method::POST, routes::SESSIONS.to_owned()),
+            (
+                Method::PATCH,
+                routes::session_path(routes::SESSION, SessionId(1)),
+            ),
+            (Method::GET, events_path(SessionId(1), None)),
+            (Method::GET, events_path(SessionId(1), Some(AgentId(2)))),
+        ] {
+            let request = client.request(method.clone(), &path).build().unwrap();
+            assert_eq!(request.method(), method);
+            assert_eq!(
+                request.url().as_str(),
+                format!("https://example.invalid/prefix{path}")
+            );
+            assert_eq!(request.headers()["authorization"], "Bearer test-client-key");
+        }
+    }
+
+    #[test]
+    fn configured_transport_uses_supplied_client_key_for_json_and_sse() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("authorization", "Bearer different-key".parse().unwrap());
+        let http = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()
+            .unwrap();
+        let client =
+            Client::with_http_client("https://example.invalid", "test-client-key", http).unwrap();
+
+        for accept in ["application/json", "text/event-stream"] {
+            let request = client
+                .request(Method::GET, &events_path(SessionId(1), None))
+                .header("accept", accept)
+                .build()
+                .unwrap();
+            assert_eq!(request.headers()["authorization"], "Bearer test-client-key");
+            assert_eq!(request.headers()["accept"], accept);
+        }
+    }
 }

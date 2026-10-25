@@ -1,0 +1,1450 @@
+//! Trusted-client HTTP/SSE API. Transcript mutations share the publication gate.
+
+use crate::{
+    agents::{
+        client_queries::ClientQueryError, publication::Publication, session_manager::RuntimeError,
+        sessions::Sessions,
+    },
+    db::{Database, DbError},
+};
+use axum::{
+    Json, Router,
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode},
+    response::{
+        IntoResponse, Response, Sse,
+        sse::{Event as SseEvent, KeepAlive},
+    },
+    routing::{get, post},
+};
+use psa_api::{self as api, AgentId, SessionId, events::*, routes};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use tokio::sync::{broadcast, watch};
+
+struct ApiJson<T>(T);
+pub(crate) struct ApiQuery<T>(pub(crate) T);
+pub(crate) struct ApiPath<T>(pub(crate) T);
+
+impl<S: Send + Sync, T: serde::de::DeserializeOwned> axum::extract::FromRequest<S> for ApiJson<T> {
+    type Rejection = HttpError;
+    async fn from_request(
+        request: axum::extract::Request,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Json::<T>::from_request(request, state)
+            .await
+            .map(|Json(value)| Self(value))
+            .map_err(|error| HttpError::Invalid(error.body_text()))
+    }
+}
+
+impl<S: Send + Sync, T: serde::de::DeserializeOwned + Send> axum::extract::FromRequestParts<S>
+    for ApiQuery<T>
+{
+    type Rejection = HttpError;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Query::<T>::from_request_parts(parts, state)
+            .await
+            .map(|Query(value)| Self(value))
+            .map_err(|error| HttpError::Invalid(error.body_text()))
+    }
+}
+
+impl<S: Send + Sync, T: serde::de::DeserializeOwned + Send> axum::extract::FromRequestParts<S>
+    for ApiPath<T>
+{
+    type Rejection = HttpError;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Path::<T>::from_request_parts(parts, state)
+            .await
+            .map(|Path(value)| Self(value))
+            .map_err(|error| HttpError::Invalid(error.body_text()))
+    }
+}
+
+#[derive(Clone)]
+pub struct AppState {
+    pub database: Database,
+    pub publication: Publication,
+    pub runtime: Sessions,
+    pub accepting: Arc<AtomicBool>,
+    pub probes: crate::probes::ProbeRegistry,
+    pub client_key: Arc<str>,
+}
+
+impl AppState {
+    fn require_accepting(&self) -> Result<(), HttpError> {
+        if self.accepting.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(HttpError::Runtime(RuntimeError::Unavailable))
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum HttpError {
+    #[error(transparent)]
+    Database(#[from] DbError),
+    #[error(transparent)]
+    Runtime(#[from] RuntimeError),
+    #[error(transparent)]
+    Agent(#[from] crate::agents::AgentError),
+    #[error(transparent)]
+    ClientQuery(#[from] ClientQueryError),
+    #[error("{0}")]
+    Invalid(String),
+    #[error(transparent)]
+    Catalog(#[from] crate::models::CatalogError),
+}
+
+impl IntoResponse for HttpError {
+    fn into_response(self) -> Response {
+        let (status, code, message) = match &self {
+            Self::Catalog(crate::models::CatalogError::NotFound) => {
+                (StatusCode::NOT_FOUND, "not_found", self.to_string())
+            }
+            Self::Catalog(crate::models::CatalogError::Invalid(_)) => {
+                (StatusCode::BAD_REQUEST, "invalid_input", self.to_string())
+            }
+            Self::Catalog(crate::models::CatalogError::SyncFailed(_)) => (
+                StatusCode::BAD_GATEWAY,
+                "catalog_sync_failed",
+                self.to_string(),
+            ),
+            Self::Catalog(crate::models::CatalogError::Unavailable) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                self.to_string(),
+            ),
+            Self::ClientQuery(
+                ClientQueryError::InvalidRequest(_) | ClientQueryError::InvalidResponse(_),
+            ) => (StatusCode::BAD_REQUEST, "invalid_input", self.to_string()),
+            Self::ClientQuery(ClientQueryError::NotFound) => {
+                (StatusCode::NOT_FOUND, "not_found", self.to_string())
+            }
+            Self::ClientQuery(ClientQueryError::AlreadyResolved) => {
+                (StatusCode::CONFLICT, "already_resolved", self.to_string())
+            }
+            Self::ClientQuery(ClientQueryError::Cancelled) => {
+                (StatusCode::GONE, "cancelled", self.to_string())
+            }
+            Self::ClientQuery(ClientQueryError::Unavailable | ClientQueryError::Overloaded) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                self.to_string(),
+            ),
+            Self::Database(DbError::ProbeNotFound(_))
+            | Self::Database(DbError::ConfigNotFound(_))
+            | Self::Database(DbError::NotFound { .. })
+            | Self::Runtime(RuntimeError::Database(
+                DbError::NotFound { .. } | DbError::ProbeNotFound(_) | DbError::ConfigNotFound(_),
+            )) => (StatusCode::NOT_FOUND, "not_found", self.to_string()),
+            Self::Invalid(_)
+            | Self::Database(DbError::InvalidInput(_))
+            | Self::Runtime(RuntimeError::Invalid(_))
+            | Self::Runtime(RuntimeError::Database(DbError::InvalidInput(_))) => {
+                (StatusCode::BAD_REQUEST, "invalid_input", self.to_string())
+            }
+            Self::Runtime(RuntimeError::Cancelled) => {
+                (StatusCode::GONE, "cancelled", self.to_string())
+            }
+            Self::Runtime(RuntimeError::InvalidResume) => {
+                (StatusCode::CONFLICT, "invalid_state", self.to_string())
+            }
+            Self::Runtime(
+                RuntimeError::Unavailable
+                | RuntimeError::MissingProvider
+                | RuntimeError::Overloaded,
+            ) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                self.to_string(),
+            ),
+            _ => {
+                tracing::error!(%self, "API operation failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error".into(),
+                )
+            }
+        };
+        (
+            status,
+            Json(api::ApiError {
+                code: code.into(),
+                message,
+            }),
+        )
+            .into_response()
+    }
+}
+
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(|| async { "ok\n" }))
+        .route(
+            routes::AGENT_CONFIGS,
+            post(upsert_agent_configs).get(refresh_and_list_agent_configs),
+        )
+        .route(routes::AGENT_CONFIG_LOOKUP, post(get_agent_config))
+        .route(routes::AGENT_SNAPSHOT, get(get_resolved_agent_config))
+        .route(
+            routes::SKILLS,
+            post(upload_skill).get(refresh_and_list_skills).layer(
+                // A 64 MiB archive encoded as a JSON byte array uses up to
+                // four bytes per element, plus configuration metadata.
+                axum::extract::DefaultBodyLimit::max(256 * 1024 * 1024 + 64 * 1024),
+            ),
+        )
+        .route(routes::SESSIONS, post(create_session).get(list_sessions))
+        .route(routes::SESSION, get(get_session).patch(update_session))
+        .route(routes::FORK, post(fork_session))
+        .route(routes::AGENTS, post(create_agent).get(list_agents))
+        .route(routes::AGENT, get(get_agent))
+        .route(routes::AGENT_RESULTS, get(get_agent_results))
+        .route(routes::REQUESTS, post(submit_request))
+        .route(routes::CLIENT_QUERY_RESPONSE, post(respond_to_client_query))
+        .route(routes::SESSION_EVENTS, get(session_events))
+        .route(routes::AGENT_EVENTS, get(agent_events))
+        .route(routes::PROVIDERS, get(list_providers))
+        .route(routes::MODELS, get(list_models))
+        .route(routes::MODEL_LOOKUP, get(lookup_model))
+        .route(routes::MODEL_PIN, axum::routing::put(pin_model))
+        .route(routes::MODELS_RESYNC, post(resync_models))
+        .merge(crate::probes::client_router())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_client_key,
+        ))
+        .merge(crate::probes::connection_router())
+        .with_state(state)
+}
+
+async fn require_client_key(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !crate::auth::has_bearer_key(request.headers(), &state.client_key) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(axum::http::header::WWW_AUTHENTICATE, "Bearer")],
+            Json(api::ApiError {
+                code: "unauthorized".into(),
+                message: "invalid client credentials".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    next.run(request).await
+}
+
+fn require_catalog(state: &AppState) -> Result<&crate::models::ModelCatalog, HttpError> {
+    state
+        .runtime
+        .model_catalog()
+        .ok_or_else(|| crate::models::CatalogError::Unavailable.into())
+}
+
+async fn list_providers(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<api::ProviderInfo>>, HttpError> {
+    Ok(Json(require_catalog(&state)?.providers()))
+}
+
+async fn list_models(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<api::ListModels>,
+) -> Result<Json<Vec<api::ModelInfo>>, HttpError> {
+    Ok(Json(require_catalog(&state)?.list_models(query).await?))
+}
+
+async fn lookup_model(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<api::ModelLookup>,
+) -> Result<Json<api::ModelInfo>, HttpError> {
+    let model = llm_api::providers::Model::new(query.provider, query.model)
+        .map_err(|error| HttpError::Invalid(error.to_string()))?;
+    Ok(Json(
+        require_catalog(&state)?
+            .model_info(&model)
+            .await?
+            .ok_or(crate::models::CatalogError::NotFound)?,
+    ))
+}
+
+async fn pin_model(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<api::PinModel>,
+) -> Result<Json<Option<api::ModelInfo>>, HttpError> {
+    state.require_accepting()?;
+    Ok(Json(require_catalog(&state)?.set_pinned(request).await?))
+}
+
+async fn resync_models(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<api::ResyncModels>,
+) -> Result<StatusCode, HttpError> {
+    state.require_accepting()?;
+    require_catalog(&state)?.resync(request.provider).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn upsert_agent_configs(
+    State(state): State<AppState>,
+    ApiJson(configs): ApiJson<Vec<api::AgentConfigInput>>,
+) -> Result<Json<Vec<api::AgentConfigStatus>>, HttpError> {
+    state.require_accepting()?;
+    Ok(Json(state.runtime.upsert_agent_configs(configs).await?))
+}
+
+async fn refresh_and_list_agent_configs(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<api::RefreshAndListAgentConfigs>,
+) -> Result<Json<Vec<api::AgentConfigStatus>>, HttpError> {
+    Ok(Json(
+        state
+            .runtime
+            .refresh_and_list_agent_configs(query.refresh_session_id)
+            .await?,
+    ))
+}
+
+async fn get_agent_config(
+    State(state): State<AppState>,
+    ApiJson(id): ApiJson<api::ConfigId>,
+) -> Result<Json<api::AgentConfigStatus>, HttpError> {
+    Ok(Json(state.runtime.get_agent_config(id).await?))
+}
+
+async fn get_resolved_agent_config(
+    State(state): State<AppState>,
+    ApiPath(id): ApiPath<u64>,
+) -> Result<Json<Option<api::ResolvedAgentConfig>>, HttpError> {
+    Ok(Json(
+        state
+            .runtime
+            .get_resolved_agent_config(api::AgentDefinitionId(id))
+            .await?,
+    ))
+}
+
+async fn upload_skill(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<api::NewSkill>,
+) -> Result<impl IntoResponse, HttpError> {
+    state.require_accepting()?;
+    let skill = state.runtime.upload_skill(request).await?;
+    Ok((StatusCode::CREATED, Json(skill)))
+}
+
+async fn refresh_and_list_skills(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<api::RefreshAndListSkills>,
+) -> Result<Json<Vec<api::Skill>>, HttpError> {
+    Ok(Json(
+        state
+            .runtime
+            .refresh_and_list_skills(query.refresh_session_id)
+            .await?,
+    ))
+}
+
+async fn create_session(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<api::CreateSession>,
+) -> Result<impl IntoResponse, HttpError> {
+    state.require_accepting()?;
+
+    let session = state.runtime.create_session(request).await?;
+    Ok((StatusCode::CREATED, Json(session.into_api(false))))
+}
+
+async fn list_sessions(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<api::ListSessions>,
+) -> Result<Json<Vec<api::Session>>, HttpError> {
+    let sessions = state.runtime.list_sessions(query).await?;
+    let mut views = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        let busy = state.runtime.is_busy(session.id).await?;
+        views.push(session.into_api(busy));
+    }
+    Ok(Json(views))
+}
+
+async fn get_session(
+    State(state): State<AppState>,
+    ApiPath(id): ApiPath<u64>,
+) -> Result<Json<api::Session>, HttpError> {
+    let session = state.runtime.get_session(SessionId(id)).await?;
+    let busy = state.runtime.is_busy(session.id).await?;
+    Ok(Json(session.into_api(busy)))
+}
+
+async fn update_session(
+    State(state): State<AppState>,
+    ApiPath(id): ApiPath<u64>,
+    ApiJson(request): ApiJson<api::UpdateSession>,
+) -> Result<Json<api::Session>, HttpError> {
+    state.require_accepting()?;
+
+    let session = state.runtime.update_session(SessionId(id), request).await?;
+    let busy = state.runtime.is_busy(session.id).await?;
+    Ok(Json(session.into_api(busy)))
+}
+
+async fn fork_session(
+    State(state): State<AppState>,
+    ApiPath(id): ApiPath<u64>,
+    ApiJson(request): ApiJson<api::ForkSession>,
+) -> Result<impl IntoResponse, HttpError> {
+    state.require_accepting()?;
+
+    let fork = state.runtime.fork_session(SessionId(id), request).await?;
+    let busy = state.runtime.is_busy(fork.session.id).await?;
+    let view = api::ForkedSession {
+        session: fork.session.into_api(busy),
+        agents: fork.agents.into_iter().map(Into::into).collect(),
+    };
+    Ok((StatusCode::CREATED, Json(view)))
+}
+
+async fn create_agent(
+    State(state): State<AppState>,
+    ApiPath(session): ApiPath<u64>,
+    ApiJson(request): ApiJson<api::NewConfiguredAgent>,
+) -> Result<impl IntoResponse, HttpError> {
+    state.require_accepting()?;
+
+    let agent = state
+        .runtime
+        .create_configured_agent(SessionId(session), request)
+        .await?;
+    Ok((StatusCode::CREATED, Json(api::Agent::from(agent))))
+}
+
+async fn list_agents(
+    State(state): State<AppState>,
+    ApiPath(session): ApiPath<u64>,
+) -> Result<Json<Vec<api::Agent>>, HttpError> {
+    let agents = state.runtime.list_agents(SessionId(session)).await?;
+    Ok(Json(agents.into_iter().map(Into::into).collect()))
+}
+
+async fn get_agent(
+    State(state): State<AppState>,
+    ApiPath((session, agent)): ApiPath<(u64, u64)>,
+) -> Result<Json<api::Agent>, HttpError> {
+    let agent = state
+        .runtime
+        .get_agent(SessionId(session), AgentId(agent))
+        .await?;
+    Ok(Json(agent.into()))
+}
+
+async fn get_agent_results(
+    State(state): State<AppState>,
+    ApiPath((session, agent)): ApiPath<(u64, u64)>,
+    ApiQuery(query): ApiQuery<api::ResultsQuery>,
+) -> Result<Json<Vec<api::ResultRecord>>, HttpError> {
+    let results = state
+        .runtime
+        .load_last_results(SessionId(session), AgentId(agent), query.limit)
+        .await?;
+    Ok(Json(results))
+}
+
+async fn submit_request(
+    State(state): State<AppState>,
+    ApiPath((session, agent)): ApiPath<(u64, u64)>,
+    ApiJson(request): ApiJson<api::AgentRequest>,
+) -> Result<impl IntoResponse, HttpError> {
+    state.require_accepting()?;
+
+    let accepted = state
+        .runtime
+        .submit(SessionId(session), AgentId(agent), request)
+        .await?;
+
+    Ok((StatusCode::ACCEPTED, Json(accepted)))
+}
+
+async fn respond_to_client_query(
+    State(state): State<AppState>,
+    ApiPath((session, agent, query)): ApiPath<(u64, u64, api::ClientQueryId)>,
+    response: Result<Json<api::ClientQueryResponse>, axum::extract::rejection::JsonRejection>,
+) -> Result<StatusCode, HttpError> {
+    state.require_accepting()?;
+    // Serde rejections can include submitted answer values; keep this boundary private.
+    let Json(response) =
+        response.map_err(|_| HttpError::Invalid("invalid client query response body".into()))?;
+
+    state
+        .runtime
+        .respond_to_client_query(SessionId(session), AgentId(agent), query, response)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn session_events(
+    State(state): State<AppState>,
+    ApiPath(session): ApiPath<u64>,
+    ApiQuery(query): ApiQuery<api::EventsQuery>,
+    headers: HeaderMap,
+) -> Result<Response, HttpError> {
+    events_response(state, SessionId(session), None, query, headers).await
+}
+
+async fn agent_events(
+    State(state): State<AppState>,
+    ApiPath((session, agent)): ApiPath<(u64, u64)>,
+    ApiQuery(query): ApiQuery<api::EventsQuery>,
+    headers: HeaderMap,
+) -> Result<Response, HttpError> {
+    events_response(
+        state,
+        SessionId(session),
+        Some(AgentId(agent)),
+        query,
+        headers,
+    )
+    .await
+}
+
+async fn load_page(
+    state: &AppState,
+    session: SessionId,
+    agent: Option<AgentId>,
+    query: &api::EventsQuery,
+) -> Result<api::EventsPage, HttpError> {
+    if query.limit == 0
+        || query.limit > 10_000
+        || query.through.is_some_and(|through| through < query.after)
+    {
+        return Err(HttpError::Invalid(
+            "invalid event range or page limit".into(),
+        ));
+    }
+
+    let mut cursor = state.database.cursor().await?;
+    let (head, events) = match agent {
+        Some(agent) => {
+            let head = cursor
+                .require_agent_session(session, agent)
+                .await?
+                .next_event_id
+                .0
+                - 1;
+            let range = EventRange {
+                after: EventId(query.after),
+                through: query.through.map(EventId),
+                limit: query.limit,
+            };
+            let events = if query.results_only {
+                cursor
+                    .load_agent_result_envelopes(session, agent, range)
+                    .await?
+            } else {
+                cursor.load_agent_envelopes(session, agent, range).await?
+            };
+            (head, events)
+        }
+        None => {
+            let head = cursor.get_session(session).await?.next_position - 1;
+            let events = if query.results_only {
+                cursor
+                    .load_session_result_events(session, query.after, query.through, query.limit)
+                    .await?
+            } else {
+                cursor
+                    .load_session_events(session, query.after, query.through, query.limit)
+                    .await?
+            };
+            (head, events)
+        }
+    };
+    cursor.rollback().await?;
+
+    let head = query.through.unwrap_or(head).min(head);
+    let last_cursor = events
+        .last()
+        .map_or(query.after, |event| event_cursor(event, agent));
+    let has_more = events.len() == query.limit as usize && last_cursor < head;
+
+    Ok(api::EventsPage {
+        events,
+        pending: Vec::new(),
+        queries: Vec::new(),
+        next_after: if has_more {
+            last_cursor
+        } else {
+            head.max(query.after)
+        },
+        head,
+        has_more,
+    })
+}
+
+async fn events_response(
+    state: AppState,
+    session: SessionId,
+    agent: Option<AgentId>,
+    mut query: api::EventsQuery,
+    headers: HeaderMap,
+) -> Result<Response, HttpError> {
+    state.require_accepting()?;
+
+    // JSON is the default; SSE requires an explicitly accepted event-stream MIME type.
+    let stream_events = headers
+        .get_all("accept")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
+        });
+
+    if stream_events && let Some(id) = headers.get("last-event-id") {
+        query.after = decode_cursor(
+            id.to_str()
+                .map_err(|_| HttpError::Invalid("invalid Last-Event-ID".into()))?,
+            session,
+            agent,
+        )?;
+    }
+
+    // Subscribe, capture a head, and snapshot drafts and queries under the same gate used by
+    // every commit and provisional publication. Buffered notifications are newer.
+    let publication = state.publication.lock().await;
+    let mut received = publication.subscribe();
+    let mut page = load_page(&state, session, agent, &query).await?;
+    let pending = if query.include_pending && !query.results_only {
+        publication.pending(session, agent)
+    } else {
+        Vec::new()
+    };
+    let queries = publication.queries(session, agent);
+    drop(publication);
+
+    if !stream_events {
+        page.pending = pending;
+        page.queries = queries;
+        return Ok(Json(page).into_response());
+    }
+
+    let mut shutdown = state.publication.shutdown_receiver();
+    let head = page.head;
+    let finite = query.through.is_some();
+    let stream = async_stream::stream! {
+        loop {
+            for event in page.events {
+                let cursor = event_cursor(&event, agent);
+                yield encode_sse(
+                    api::StreamMessage::Committed {
+                        event,
+                        pending_id: None,
+                    },
+                    Some(encode_cursor(session, agent, cursor)),
+                );
+            }
+            if !page.has_more {
+                break;
+            }
+
+            query.after = page.next_after;
+            query.through = Some(head);
+            match load_page(&state, session, agent, &query).await {
+                Ok(next) => page = next,
+                Err(_) => {
+                    yield encode_sse(api::StreamMessage::ResyncRequired, None);
+                    return;
+                }
+            }
+        }
+
+        yield encode_sse(
+            api::StreamMessage::Snapshot { cursor: head, pending, queries },
+            Some(encode_cursor(session, agent, head)),
+        );
+        if finite || *shutdown.borrow() {
+            return;
+        }
+
+        while let Some(message) = next_stream_message(&mut received, &mut shutdown).await {
+            let message = match message {
+                Ok(message) => message,
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    yield encode_sse(api::StreamMessage::ResyncRequired, None);
+                    break;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            };
+            if !matches_scope(&message, session, agent, query.include_pending)
+                || !matches_result_filter(&message, query.results_only)
+            {
+                continue;
+            }
+
+            let id = if let api::StreamMessage::Committed { event, .. } = &message {
+                let cursor = event_cursor(event, agent);
+                if cursor <= head {
+                    continue;
+                }
+                Some(encode_cursor(session, agent, cursor))
+            } else {
+                None
+            };
+            yield encode_sse(message, id);
+        }
+    };
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response())
+}
+
+async fn next_stream_message(
+    received: &mut broadcast::Receiver<api::StreamMessage>,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Option<Result<api::StreamMessage, broadcast::error::RecvError>> {
+    tokio::select! {
+        biased;
+        message = received.recv() => Some(message),
+        _ = shutdown.changed() => None,
+    }
+}
+
+fn event_cursor(event: &api::EventEnvelope, agent: Option<AgentId>) -> u64 {
+    if agent.is_some() {
+        event.event.id.0
+    } else {
+        event.position
+    }
+}
+
+fn matches_result_filter(message: &api::StreamMessage, results_only: bool) -> bool {
+    if !results_only {
+        return true;
+    }
+    match message {
+        api::StreamMessage::Committed { event, .. } => {
+            matches!(event.event.kind, EventType::Result(_))
+        }
+        api::StreamMessage::Upsert { .. } | api::StreamMessage::Removed { .. } => false,
+        // Snapshot/cursor recovery and runtime control messages retain their normal scope.
+        _ => true,
+    }
+}
+
+fn matches_scope(
+    message: &api::StreamMessage,
+    session: SessionId,
+    agent: Option<AgentId>,
+    include_pending: bool,
+) -> bool {
+    let (owner, stream) = match message {
+        api::StreamMessage::Committed { event, .. } => (event.session_id, Some(event.agent_id)),
+        api::StreamMessage::Upsert { pending } => {
+            if !include_pending {
+                return false;
+            }
+            (pending.session_id, Some(pending.agent_id))
+        }
+        api::StreamMessage::Removed {
+            session_id,
+            agent_id,
+            ..
+        } => {
+            if !include_pending {
+                return false;
+            }
+            (*session_id, Some(*agent_id))
+        }
+        api::StreamMessage::ClientQueryRequested { query } => {
+            (query.session_id, Some(query.agent_id))
+        }
+        api::StreamMessage::ClientQueryRemoved {
+            session_id,
+            agent_id,
+            ..
+        } => (*session_id, Some(*agent_id)),
+        api::StreamMessage::AgentUpdated { agent } => (agent.session_id, Some(agent.id)),
+        api::StreamMessage::RequestFailed {
+            session_id,
+            agent_id,
+            ..
+        } => (*session_id, Some(*agent_id)),
+        api::StreamMessage::SessionUpdated { session } => (session.id, None),
+        _ => return false,
+    };
+    owner == session && (stream.is_none() || agent.is_none() || stream == agent)
+}
+
+fn encode_cursor(session: SessionId, agent: Option<AgentId>, cursor: u64) -> String {
+    format!("{}:{}:{cursor}", session.0, agent.map_or(0, |id| id.0))
+}
+
+fn decode_cursor(id: &str, session: SessionId, agent: Option<AgentId>) -> Result<u64, HttpError> {
+    let parts: Vec<_> = id.split(':').collect();
+    if parts.len() != 3
+        || parts[0] != session.0.to_string()
+        || parts[1] != agent.map_or(0, |id| id.0).to_string()
+    {
+        return Err(HttpError::Invalid(
+            "Last-Event-ID belongs to a different stream".into(),
+        ));
+    }
+
+    parts[2]
+        .parse()
+        .map_err(|_| HttpError::Invalid("invalid Last-Event-ID".into()))
+}
+
+fn encode_sse(message: api::StreamMessage, id: Option<String>) -> Result<SseEvent, axum::Error> {
+    let event = SseEvent::default().json_data(message)?;
+    Ok(match id {
+        Some(id) => event.id(id),
+        None => event,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents::{NewAgent, session_manager::Runtime};
+    use crate::{providers::ProviderRegistry, sessions};
+
+    #[test]
+    fn probe_connection_query_decodes_host_and_legacy_metadata() {
+        let base = format!(
+            "/probes/connect?version={}&id={}&hostname=test&os=linux&architecture=x86_64&data_dir=%2Ftmp",
+            api::probes::PROTOCOL_VERSION,
+            api::probes::Uuid::nil()
+        );
+        for (suffix, host) in [("", false), ("&host=false", false), ("&host=true", true)] {
+            let uri = format!("{base}{suffix}").parse().unwrap();
+            let Query(query) = Query::<api::probes::ConnectProbe>::try_from_uri(&uri).unwrap();
+            assert_eq!(query.metadata.host, host);
+        }
+        for value in ["invalid", "1", "", "TRUE"] {
+            let uri = format!("{base}&host={value}").parse().unwrap();
+            assert!(Query::<api::probes::ConnectProbe>::try_from_uri(&uri).is_err());
+        }
+    }
+
+    async fn assert_client_authentication(base: &str) {
+        let http = reqwest::Client::new();
+        let endpoints = [
+            ("GET", "/health"),
+            ("GET", routes::PROVIDERS),
+            ("GET", routes::MODELS),
+            ("GET", routes::MODEL_LOOKUP),
+            ("PUT", routes::MODEL_PIN),
+            ("POST", routes::MODELS_RESYNC),
+            ("GET", routes::PROBES),
+            ("GET", routes::PROBE),
+            ("GET", routes::AGENT_CONFIGS),
+            ("POST", routes::AGENT_CONFIGS),
+            ("POST", routes::AGENT_CONFIG_LOOKUP),
+            ("GET", routes::AGENT_SNAPSHOT),
+            ("GET", routes::SKILLS),
+            ("POST", routes::SKILLS),
+            ("GET", routes::SESSIONS),
+            ("POST", routes::SESSIONS),
+            ("GET", routes::SESSION),
+            ("PATCH", routes::SESSION),
+            ("POST", routes::FORK),
+            ("GET", routes::AGENTS),
+            ("POST", routes::AGENTS),
+            ("GET", routes::AGENT),
+            ("POST", routes::REQUESTS),
+            ("POST", routes::CLIENT_QUERY_RESPONSE),
+            ("GET", routes::SESSION_EVENTS),
+            ("GET", routes::AGENT_EVENTS),
+            ("GET", routes::AGENT_RESULTS),
+        ];
+        for (method, route) in endpoints {
+            let path = route
+                .replace("{session_id}", "1")
+                .replace("{agent_id}", "1")
+                .replace("{definition_id}", "1")
+                .replace("{probe_id}", "00000000-0000-0000-0000-000000000000")
+                .replace("{query_id}", "00000000-0000-0000-0000-000000000000");
+            for credentials in [None, Some("Bearer wrong-key"), Some("Bearer test")] {
+                let mut request = http.request(method.parse().unwrap(), format!("{base}{path}"));
+                if let Some(credentials) = credentials {
+                    request = request.header("authorization", credentials);
+                }
+                // Authentication precedes payload/path parsing and SSE setup.
+                let response = request
+                    .header("accept", "text/event-stream")
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::UNAUTHORIZED,
+                    "{method} {path}"
+                );
+                assert_eq!(response.headers()["www-authenticate"], "Bearer");
+                let error: api::ApiError = response.json().await.unwrap();
+                assert_eq!(error.code, "unauthorized");
+            }
+        }
+        for credentials in [
+            "Basic test-client-key",
+            "Bearer ",
+            "Bearer test-client-key-extra",
+        ] {
+            let response = http
+                .get(format!("{base}/health"))
+                .header("authorization", credentials)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        let response = http
+            .get(format!("{base}/health"))
+            .bearer_auth("test-client-key")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn config_routes_and_client_replace_legacy_definition_crud() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(dir.path().join("test.sqlite3"))
+            .await
+            .unwrap();
+        let publication = Publication::default();
+        let probes = crate::probes::ProbeRegistry::start("test".into());
+        let defaults = api::AgentDefaults {
+            bundles: vec![
+                api::BundleConfig::FileTools { read_only: false },
+                api::BundleConfig::Noop,
+            ],
+            hooks: api::HookConfigs {
+                agent_create: vec![api::HookConfig::DefaultStartup],
+                after_request: vec![api::HookConfig::StopWithoutTools],
+                ..Default::default()
+            },
+        };
+        let runtime = Runtime::start_with_configuration(
+            db.clone(),
+            publication.clone(),
+            ProviderRegistry::default(),
+            probes.clone(),
+            Some(
+                crate::config_registry::ConfigRegistry::new(dir.path().join("config"))
+                    .with_agent_defaults(defaults.clone()),
+            ),
+            crate::config::default_model_config(),
+        )
+        .await
+        .unwrap();
+        let state = AppState {
+            database: db.clone(),
+            publication,
+            runtime: runtime.handle.clone(),
+            accepting: Arc::new(AtomicBool::new(true)),
+            client_key: "test-client-key".into(),
+            probes,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server =
+            tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
+        assert_client_authentication(&base).await;
+        let client = api::Client::new(&base, "test-client-key").unwrap();
+        let config: api::AgentConfig = serde_json::from_value(serde_json::json!({
+            "config_id": {"config_group": {"Custom": "http-test"}, "name": "worker"},
+            "models": ["Global"]
+        }))
+        .unwrap();
+        let id = config.config_id.clone();
+        let upserted = client.upsert_agent_configs(&[config]).await.unwrap();
+        assert_eq!(upserted.len(), 1);
+        assert_eq!(upserted[0].config.config_id, id);
+
+        let listed = client.refresh_and_list_agent_configs(None).await.unwrap();
+        assert!(listed.iter().any(|config| config.config.config_id == id));
+        let found = client.get_agent_config(&id).await.unwrap();
+        assert_eq!(found.config.config_id, id);
+        let mut updated = found.config;
+        updated.description = "updated".into();
+        let upserted = client.upsert_agent_configs(&[updated]).await.unwrap();
+        assert_eq!(upserted[0].config.description, "updated");
+        assert_eq!(
+            client
+                .refresh_and_list_agent_configs(None)
+                .await
+                .unwrap()
+                .len(),
+            listed.len()
+        );
+        let snapshot = client
+            .get_resolved_agent_config(api::AgentDefinitionId(999_999))
+            .await
+            .unwrap();
+        assert!(snapshot.is_none());
+        assert!(
+            client
+                .refresh_and_list_skills(None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // The typed input preserves omissions over the client wire, while a
+        // normalized AgentConfig (as above) remains fully explicit.
+        assert!(upserted[0].config.bundles.is_empty());
+        let inherited_id = api::ConfigId {
+            config_group: api::ConfigGroup::Custom("http-test".into()),
+            name: "inherited".into(),
+        };
+        let inherited = client
+            .upsert_agent_configs(&[api::AgentConfigInput::new(
+                inherited_id.clone(),
+                vec![api::ModelSelection::Global],
+            )])
+            .await
+            .unwrap();
+        assert_eq!(inherited[0].config.bundles, defaults.bundles);
+        assert_eq!(inherited[0].config.hooks, defaults.hooks);
+
+        let http = reqwest::Client::new();
+        let response = http
+            .post(format!("{base}/agent-configs"))
+            .bearer_auth("test-client-key")
+            .json(&serde_json::json!([{
+                "config_id": inherited_id,
+                "models": ["Global"],
+                "bundles": [],
+                "hooks": {"agent_create": []}
+            }]))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let explicit: Vec<api::AgentConfigStatus> = response.json().await.unwrap();
+        assert!(explicit[0].config.bundles.is_empty());
+        assert!(explicit[0].config.hooks.agent_create.is_empty());
+        assert_eq!(
+            explicit[0].config.hooks.after_request,
+            defaults.hooks.after_request
+        );
+        assert_eq!(
+            client
+                .get_agent_config(&inherited_id)
+                .await
+                .unwrap()
+                .config
+                .hooks,
+            explicit[0].config.hooks
+        );
+
+        for tools in [serde_json::json!([]), serde_json::json!(["Noop"])] {
+            let response = http.post(format!("{base}/agent-configs"))
+                .bearer_auth("test-client-key")
+                .json(&serde_json::json!([{"config_id": inherited_id, "models": ["Global"], "tools": tools}]))
+                .send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+
+        let legacy_creation = http
+            .post(format!("{base}/sessions/1/agents"))
+            .bearer_auth("test-client-key")
+            .json(&serde_json::json!({"definition_id": 1, "name": "legacy"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(legacy_creation.status(), StatusCode::BAD_REQUEST);
+        for path in ["/agent-definitions", "/agent-definitions/1"] {
+            for method in [
+                reqwest::Method::GET,
+                reqwest::Method::POST,
+                reqwest::Method::PUT,
+            ] {
+                let response = http
+                    .request(method, format!("{base}{path}"))
+                    .bearer_auth("test-client-key")
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            }
+        }
+
+        server.abort();
+        let _ = server.await;
+        runtime.shutdown().await.unwrap();
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn accept_headers_select_transport_and_lagged_subscribers_are_told_to_resync() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(dir.path().join("test.sqlite3"))
+            .await
+            .unwrap();
+        crate::test_support::register_probe(&db).await;
+        let mut cursor = db.cursor().await.unwrap();
+        let session = cursor
+            .create_session(sessions::NewSession {
+                probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+                name: "test".into(),
+                working_directory: "/work".into(),
+                model_config: crate::test_support::model_config(),
+            })
+            .await
+            .unwrap();
+        cursor
+            .create_agent(
+                session.id,
+                NewAgent {
+                    subagent_parent_id: None,
+                    interactive: false,
+                    hidden: false,
+                    name: "test".into(),
+                    definition_id: api::AgentDefinitionId(1),
+                },
+            )
+            .await
+            .unwrap();
+        cursor.commit().await.unwrap();
+        let publication = Publication::default();
+        let runtime = Runtime::start(
+            db.clone(),
+            publication.clone(),
+            ProviderRegistry::default(),
+            crate::probes::ProbeRegistry::start("test".into()),
+        )
+        .await
+        .unwrap();
+        let state = AppState {
+            database: db.clone(),
+            publication: publication.clone(),
+            runtime: runtime.handle.clone(),
+            accepting: Arc::new(AtomicBool::new(true)),
+            client_key: "test-client-key".into(),
+            probes: crate::probes::ProbeRegistry::start("test".into()),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let app = router(state.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        for legacy in ["true", "false"] {
+            let response = reqwest::Client::new()
+                .get(format!(
+                    "{base}/sessions/{}/events?stream={legacy}",
+                    session.id.0
+                ))
+                .header("accept", "text/event-stream")
+                .bearer_auth("test-client-key")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        server.abort();
+        let _ = server.await;
+
+        // Last-Event-ID is ignored in JSON mode, including the default Accept behavior.
+        for accept in [None, Some("application/json"), Some("*/*")] {
+            let mut headers = HeaderMap::new();
+            if let Some(accept) = accept {
+                headers.insert("accept", accept.parse().unwrap());
+            }
+            headers.insert("last-event-id", "invalid-cursor".parse().unwrap());
+            let response = events_response(
+                state.clone(),
+                session.id,
+                None,
+                api::EventsQuery::default(),
+                headers,
+            )
+            .await
+            .unwrap();
+            assert!(
+                response.headers()["content-type"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("application/json")
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), 1_000_000)
+                .await
+                .unwrap();
+            serde_json::from_slice::<api::EventsPage>(&bytes).unwrap();
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "accept",
+            "application/json, text/event-stream; charset=utf-8"
+                .parse()
+                .unwrap(),
+        );
+        headers.insert("last-event-id", "invalid-cursor".parse().unwrap());
+        assert!(matches!(
+            events_response(
+                state.clone(),
+                session.id,
+                None,
+                api::EventsQuery::default(),
+                headers.clone(),
+            )
+            .await,
+            Err(HttpError::Invalid(_))
+        ));
+        headers.insert(
+            "last-event-id",
+            encode_cursor(session.id, None, 0).parse().unwrap(),
+        );
+        let mut repeated = HeaderMap::new();
+        repeated.append("accept", "application/json".parse().unwrap());
+        repeated.append(
+            "accept",
+            "text/event-stream; charset=utf-8".parse().unwrap(),
+        );
+        repeated.insert(
+            "last-event-id",
+            encode_cursor(session.id, None, 0).parse().unwrap(),
+        );
+        for accepted in [headers.clone(), repeated] {
+            let finite = events_response(
+                state.clone(),
+                session.id,
+                None,
+                api::EventsQuery {
+                    through: Some(0),
+                    ..Default::default()
+                },
+                accepted,
+            )
+            .await
+            .unwrap();
+            assert!(
+                finite.headers()["content-type"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("text/event-stream")
+            );
+            let bytes = axum::body::to_bytes(finite.into_body(), 1_000_000)
+                .await
+                .unwrap();
+            assert!(std::str::from_utf8(&bytes).unwrap().contains("snapshot"));
+        }
+
+        let response = events_response(
+            state,
+            session.id,
+            None,
+            api::EventsQuery::default(),
+            headers,
+        )
+        .await
+        .unwrap();
+        // Do not poll the response body yet, simulating a slow connection.
+        for _ in 0..1100 {
+            publication
+                .lock()
+                .await
+                .publish(api::StreamMessage::SessionUpdated {
+                    session: session.clone().into_api(true),
+                });
+        }
+        let bytes = axum::body::to_bytes(response.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        assert!(
+            std::str::from_utf8(&bytes)
+                .unwrap()
+                .contains("resync_required")
+        );
+        runtime.shutdown().await.unwrap();
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn facade_errors_preserve_http_status_codes_and_messages() {
+        let cases = [
+            (RuntimeError::Cancelled, StatusCode::GONE, "cancelled"),
+            (
+                RuntimeError::Invalid("message content must not be empty".into()),
+                StatusCode::BAD_REQUEST,
+                "invalid_input",
+            ),
+            (
+                RuntimeError::Database(DbError::InvalidInput("invalid name".into())),
+                StatusCode::BAD_REQUEST,
+                "invalid_input",
+            ),
+            (
+                RuntimeError::Database(DbError::NotFound {
+                    entity: "agent",
+                    id: 7,
+                }),
+                StatusCode::NOT_FOUND,
+                "not_found",
+            ),
+            (
+                RuntimeError::Database(DbError::ProbeNotFound(psa_api::ProbeId(
+                    psa_api::probes::Uuid::nil(),
+                ))),
+                StatusCode::NOT_FOUND,
+                "not_found",
+            ),
+            (
+                RuntimeError::InvalidResume,
+                StatusCode::CONFLICT,
+                "invalid_state",
+            ),
+            (
+                RuntimeError::MissingProvider,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+            ),
+            (
+                RuntimeError::Unavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+            ),
+            (
+                RuntimeError::Overloaded,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+            ),
+        ];
+        for (error, status, code) in cases {
+            let message = error.to_string();
+            let response = HttpError::from(error).into_response();
+            assert_eq!(response.status(), status);
+            let body = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let error: api::ApiError = serde_json::from_slice(&body).unwrap();
+            assert_eq!(error.code, code);
+            assert_eq!(error.message, message);
+        }
+    }
+
+    #[tokio::test]
+    async fn client_query_errors_preserve_http_status_codes_and_messages() {
+        let cases = [
+            (
+                ClientQueryError::InvalidRequest("invalid query".into()),
+                StatusCode::BAD_REQUEST,
+                "invalid_input",
+            ),
+            (
+                ClientQueryError::InvalidResponse("invalid response".into()),
+                StatusCode::BAD_REQUEST,
+                "invalid_input",
+            ),
+            (
+                ClientQueryError::NotFound,
+                StatusCode::NOT_FOUND,
+                "not_found",
+            ),
+            (
+                ClientQueryError::AlreadyResolved,
+                StatusCode::CONFLICT,
+                "already_resolved",
+            ),
+            (ClientQueryError::Cancelled, StatusCode::GONE, "cancelled"),
+            (
+                ClientQueryError::Unavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+            ),
+            (
+                ClientQueryError::Overloaded,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+            ),
+        ];
+        for (error, status, code) in cases {
+            let message = error.to_string();
+            let response = HttpError::from(error).into_response();
+            assert_eq!(response.status(), status);
+            let body = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let error: api::ApiError = serde_json::from_slice(&body).unwrap();
+            assert_eq!(error.code, code);
+            assert_eq!(error.message, message);
+        }
+    }
+
+    #[test]
+    fn client_query_notifications_are_scoped_independently_of_pending_events() {
+        let query = api::ClientQueryRequest {
+            id: api::ClientQueryId::new(),
+            session_id: SessionId(1),
+            agent_id: AgentId(2),
+            payload: api::ClientQuery::AskQuestion(api::AskQuestionRequest {
+                questions: vec![api::ClientQuestion {
+                    question: "Question?".into(),
+                    choices: vec![],
+                }],
+            }),
+        };
+        let removed = api::StreamMessage::ClientQueryRemoved {
+            session_id: query.session_id,
+            agent_id: query.agent_id,
+            query_id: query.id,
+        };
+        for message in [api::StreamMessage::ClientQueryRequested { query }, removed] {
+            for include_pending in [false, true] {
+                assert!(matches_scope(&message, SessionId(1), None, include_pending));
+                assert!(matches_scope(
+                    &message,
+                    SessionId(1),
+                    Some(AgentId(2)),
+                    include_pending
+                ));
+                assert!(!matches_scope(
+                    &message,
+                    SessionId(9),
+                    None,
+                    include_pending
+                ));
+                assert!(!matches_scope(
+                    &message,
+                    SessionId(1),
+                    Some(AgentId(9)),
+                    include_pending
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn resume_cursors_cannot_be_reused_for_another_session_or_agent() {
+        let id = encode_cursor(SessionId(1), Some(AgentId(2)), 3);
+        assert_eq!(
+            decode_cursor(&id, SessionId(1), Some(AgentId(2))).unwrap(),
+            3
+        );
+        assert!(decode_cursor(&id, SessionId(1), None).is_err());
+        assert!(decode_cursor(&id, SessionId(2), Some(AgentId(2))).is_err());
+    }
+}

@@ -28,9 +28,9 @@ to introduce new general-purpose capabilities.
 ## Files and required structure
 
 - Each concrete tool goes in its OWN snake_case file under
-  `psa_server/src/components/tools/`, e.g. `read_file.rs`. Keep its argument struct,
+  `runtime/psa_server/src/components/tools/`, e.g. `read_file.rs`. Keep its argument struct,
   concrete tool struct, inherent implementation, and `impl Tool` together.
-- Agent components live under `psa_server/src/components/`: `bundles/`, `tools/`,
+- Agent components live under `runtime/psa_server/src/components/`: `bundles/`, `tools/`,
   and `hooks/` hold their respective implementations. Shared invocation
   cancellation lives in `components/cancellation.rs`.
 - `tools/mod.rs` owns common infrastructure and dispatch, not concrete tool logic.
@@ -111,7 +111,7 @@ an owner through their bundle. Tools cannot be configured individually. Keep
 each concrete tool in its own file; typed invocation arguments and the execution
 macro are unchanged.
 
-- Put the bundle owner/assembly logic in `psa_server/src/components/bundles/<feature>.rs`.
+- Put the bundle owner/assembly logic in `runtime/psa_server/src/components/bundles/<feature>.rs`.
   Register its `BundleConfig` in `psa_api` and dispatch construction through
   `BundleKind::from_config(&BundleConfig, Option<&SessionBundleHandle>)` in the
   server, returning `Result<Self, InstallError>`. The runtime supplies session
@@ -243,7 +243,7 @@ macro are unchanged.
   validation belong to `llm_api`, not individual tools.
 - Keep tool-specific descriptions, directions, rules, errors, and response-formatting
   strings directly in the tool's own file. They do NOT have to go in
-  `psa_server/src/prompts/`. Inline strings in trait methods are fine; use local
+  `runtime/psa_server/src/prompts/`. Inline strings in trait methods are fine; use local
   helpers only when they clarify formatting or avoid meaningful duplication.
   Field doc comments are the schema's local field documentation. Reserve the
   shared `prompts` module for genuinely shared harness text and utilities such as
@@ -259,7 +259,7 @@ macro are unchanged.
 Inspect the actual definitions before use; these are capabilities, not permission
 to reach around their ownership or lifecycle rules.
 
-### `AgentContext` (`psa_server/src/agents/agent_context.rs`)
+### `AgentContext` (`runtime/psa_server/src/agents/agent_context.rs`)
 
 - `agent()`, `session()`, `definition()`: the invocation's snapshots. Session
   metadata includes the working directory, model, and probe identity. Definitions
@@ -298,7 +298,7 @@ to reach around their ownership or lifecycle rules.
   `load_last_inference_result()`, and `load_agent_envelopes(range)`. These are
   scoped to the agent, including inherited fork history. Use them rather than SQL.
 
-### `Sessions` (`psa_server/src/agents/sessions.rs`)
+### `Sessions` (`runtime/psa_server/src/agents/sessions.rs`)
 
 Existing async operations cover agent-definition create/get/list/update;
 session create/get/list/update/fork; agent create/get/list (including immutable
@@ -314,7 +314,7 @@ Agent creation accepts `hidden` visibility metadata; the server does not filter 
 before scoped cross-agent trace reads. Use these facade methods for persistence,
 publication, and runtime coordination rather than manipulating their internals.
 
-### `ProbeHandle` (`psa_server/src/probes.rs`)
+### `ProbeHandle` (`runtime/psa_server/src/probes.rs`)
 
 Existing remote operations are `read_file`, `write_file`, `list_dir`, `create_dir`,
 `upload_dir`, `download_dir`, and `spawn`. `list_dir` returns collected directory
@@ -377,4 +377,4 @@ input; cancellation; probe failures; and byte-bounded Unicode output following
 its specified truncation policy (retaining both ends for middle truncation).
 Use the existing probe/context fixtures rather than new harness features. Add regression tests for provider serialization when changing
 schema behavior. Run `cargo fmt --all` and relevant tests. Workspace builds need
-prepared probe assets as documented in `psa_probe/README.md`.
+prepared probe assets as documented in `runtime/psa_probe/README.md`.

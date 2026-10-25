@@ -42,6 +42,25 @@ pub struct ProbeMetadata {
     pub label: Option<String>,
     /// Absolute UTF-8 probe data directory, at most 4096 bytes.
     pub data_dir: PathBuf,
+    /// Whether this probe shares the server's filesystem (advertised from config.toml).
+    /// Host probes use server-owned skills in place instead of synchronizing copies.
+    #[serde(default, deserialize_with = "deserialize_host")]
+    pub host: bool,
+}
+
+// Flattened URL query metadata arrives as strings, unlike stored/API JSON.
+fn deserialize_host<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Host {
+        Boolean(bool),
+        Query(String),
+    }
+
+    match Host::deserialize(deserializer)? {
+        Host::Boolean(host) => Ok(host),
+        Host::Query(host) => host.parse().map_err(serde::de::Error::custom),
+    }
 }
 
 impl ProbeMetadata {

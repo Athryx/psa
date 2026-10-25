@@ -3,9 +3,9 @@
 ## Implemented API and identity
 
 The configuration API is implemented in `psa_api/src/definitions.rs` and `psa_api/src/agent_defaults.rs`, with HTTP
-routes in `psa_server/src/http.rs` and a thin `psa_api::Client`. Discovery is in
-`psa_server/src/config_registry`; registration and immutable graph resolution are
-in `psa_server/src/db/configurations.rs`.
+routes in `runtime/psa_server/src/http.rs` and a thin `psa_api::Client`. Discovery is in
+`runtime/psa_server/src/config_registry`; registration and immutable graph resolution are
+in `runtime/psa_server/src/db/configurations.rs`.
 
 - External identity is `ConfigId { config_group, name }`, separately namespaced
   for agents and skills. Upsert replaces the current configuration for that ID.
@@ -434,8 +434,11 @@ agent. `GET /skills` and `GET /agent-configs` use the same refresh pipeline; a
 session-scoped list refreshes its selected project as well as globals, while an
 unscoped list refreshes globals only. Listing does not copy content to probes.
 
-Server-owned skills materialize to `<probe_data_dir>/skill-cache/<SkillId>`.
-Change detection hashes the complete directory's paths, types, modes and file
+For remote probes, server-owned skills materialize to
+`<probe_data_dir>/skill-cache/<SkillId>`. A probe advertising `host: true` shares
+the server filesystem and instead uses the original server-owned `SKILL.md`
+paths, without synchronization, hashing, cache writes, or source replacement.
+For remote copies, change detection hashes the complete directory's paths, types, modes and file
 bytes, not only `SKILL.md` or timestamps. A sibling SHA-256 marker records a
 successful sync; an existing unchanged managed copy can be reused. Project
 skills stay at their probe-owned source path. Copies never target those sources.

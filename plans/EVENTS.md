@@ -114,7 +114,7 @@ Fork S through A event 2 (@5) -> session T
 
 ## SQLite schema and migrations
 
-Put SQL migrations in `psa_server/migrations/`. Start with a migration creating
+Put SQL migrations in `runtime/psa_server/migrations/`. Start with a migration creating
 the session/agent trees, event envelope, all current payload tables, constraints,
 and indexes. Keep the migration as the authoritative DDL; do not also maintain
 a duplicate schema SQL file. Put low-level Rust row schemas in `db/schema.rs`.
@@ -245,13 +245,13 @@ migrated scratch database in CI. See
 [SQLx query macros and offline mode](https://docs.rs/sqlx/latest/sqlx/macro.query.html).
 
 Embed migrations with `sqlx::migrate!` and run them before exposing the server.
-Add `psa_server/build.rs` to watch the migration directory so adding a migration
+Add `runtime/psa_server/build.rs` to watch the migration directory so adding a migration
 rebuilds the embedded migrator, as described in
 [SQLx migration recompilation](https://docs.rs/sqlx/latest/sqlx/macro.migrate.html).
 
 ## High-level asynchronous database API
 
-Keep SQL, transactions, and low-level row types private under `psa_server/src/db/`:
+Keep SQL, transactions, and low-level row types private under `runtime/psa_server/src/db/`:
 
 ```text
 db/

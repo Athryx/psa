@@ -18,7 +18,7 @@ a completion mode and works with Goal, StopWithoutTools, and TypedResult.
 The implementation follows Pi's compaction prompts and conversation rendering:
 `packages/coding-agent/src/core/compaction/{compaction,utils}.ts` in
 `earendil-works/pi` (MIT). Prompts are kept in
-`psa_server/src/components/hooks/compaction/prompts.rs`.
+`runtime/psa_server/src/components/hooks/compaction/prompts.rs`.
 
 The trigger is `context_tokens > context_window - reserve_tokens`. Accounting uses
 the latest valid response's usage plus estimated trailing messages, falling back

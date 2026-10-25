@@ -108,7 +108,8 @@ unknown IDs return 404; recent answered IDs return 409; recent cancelled IDs
 return 410. Unavailable or overloaded service returns 503. After tombstone
 eviction or server restart, old IDs return 404.
 
-As with the rest of the HTTP API, this is trusted-client transport, not a new
-client authentication or exclusive-controller/claim protocol. Any client with
-access to the correctly scoped endpoint may submit the first valid answer.
+As with the rest of the HTTP API, this endpoint requires the server's
+`[psa].client_key` as a bearer token. It does not add per-client authorization or
+an exclusive-controller/claim protocol. Any authenticated client with access to
+the correctly scoped endpoint may submit the first valid answer.
 Wire examples and error codes are in `psa_api/API_OVERVIEW.md`.

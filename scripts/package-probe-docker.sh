@@ -33,7 +33,7 @@ output_root="${2:-$probe_root/target/probe-package}"
 for architecture in "${architectures[@]}"; do
   output_path="$output_root/$architecture"
   docker buildx build \
-    --file "$probe_root/psa_probe/Dockerfile" \
+    --file "$probe_root/runtime/psa_probe/Dockerfile" \
     --platform "linux/$architecture" \
     --output "type=local,dest=$output_path" \
     "$probe_root"

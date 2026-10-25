@@ -1,6 +1,6 @@
 # Typed actor mailboxes
 
-Implemented in `actors/` (runtime) and `actors_macros/` (proc macro).
+Implemented in `lib/actors/` (runtime) and `lib/actors_macros/` (proc macro).
 
 The enum is the protocol. The macro generates a typed client, not an actor,
 dispatcher, task, or lifecycle framework. Servers still receive and match enums,
