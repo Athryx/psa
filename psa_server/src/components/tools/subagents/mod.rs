@@ -22,14 +22,11 @@ fn deserialize_present<'de, T: serde::Deserialize<'de>, D: serde::Deserializer<'
 }
 
 fn require_coordinator(
-    handle: &Option<SubagentCoordinator>,
+    handle: &SubagentCoordinator,
     context: &AgentContext<'_>,
 ) -> Result<SubagentCoordinator, String> {
-    let handle = handle
-        .clone()
-        .ok_or_else(|| "Subagents requires its session bundle".to_string())?;
     handle.require_session(context.session().id)?;
-    Ok(handle)
+    Ok(handle.clone())
 }
 
 fn format_tool_output(result: Result<serde_json::Value, String>) -> ToolOutput {

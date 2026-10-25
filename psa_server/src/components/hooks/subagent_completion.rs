@@ -47,7 +47,11 @@ impl SubagentCompletion {
             .get_agent_definition(parent_agent.definition_id)
             .await
             .map_err(|error| error.to_string())?;
-        if !definition.bundles.contains(&BundleId::Subagents) {
+        if !definition
+            .bundles
+            .iter()
+            .any(|config| config.id() == BundleId::Subagents)
+        {
             return Ok(());
         }
 

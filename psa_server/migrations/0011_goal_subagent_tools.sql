@@ -1,10 +1,11 @@
--- Native goal and agent-group tools use the existing tool-definition payload.
+-- Native goal, subagent, and client-question tools use the existing tool-definition payload.
 CREATE TABLE event_tool_definition_components (
     event_pk INTEGER PRIMARY KEY,
     kind TEXT NOT NULL DEFAULT 'tool_definition' CHECK (kind = 'tool_definition'),
     tool_id TEXT NOT NULL CHECK (tool_id IN (
         'noop', 'read', 'edit', 'write', 'bash', 'interact_bash', 'close_bash',
-        'set_goal', 'set_goal_status', 'create_agent', 'send_message', 'wait_message', 'list_agents'
+        'set_goal', 'set_goal_status', 'create_agent', 'send_message', 'wait_message', 'list_agents',
+        'ask_question', 'record_result'
     )),
     name TEXT NOT NULL,
     description TEXT NOT NULL,

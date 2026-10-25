@@ -1,10 +1,10 @@
 use super::*;
-use wire::{AgentConfig, BundleId, HookId, HookIds, NewConfiguredAgent};
+use wire::{AgentConfig, BundleConfig, HookConfig, HookConfigs, NewConfiguredAgent};
 
-fn hooks() -> HookIds {
-    HookIds {
-        agent_create: vec![HookId::DefaultStartup, HookId::ToolDefinitions],
-        after_request: vec![HookId::StopWithoutTools],
+fn hooks() -> HookConfigs {
+    HookConfigs {
+        agent_create: vec![HookConfig::DefaultStartup, HookConfig::ToolDefinitions],
+        after_request: vec![HookConfig::StopWithoutTools],
         ..Default::default()
     }
 }
@@ -57,8 +57,13 @@ async fn goal_continues_after_a_final_answer_and_stops_after_explicit_completion
     .await;
     let definition = harness
         .upsert_config(AgentConfig {
-            bundles: vec![BundleId::Goal],
-            hooks: hooks(),
+            bundles: vec![BundleConfig::Goal {
+                interactive_only: true,
+            }],
+            hooks: HookConfigs {
+                after_request: vec![],
+                ..hooks()
+            },
             ..agent_config("goal agent")
         })
         .await;
@@ -118,6 +123,13 @@ async fn goal_continues_after_a_final_answer_and_stops_after_explicit_completion
             .state,
         AgentState::Idle
     );
+    let results = harness
+        .client
+        .results(session.id, agent.id, 10)
+        .await
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].value, wire::AgentResult::Text("hello".into()));
     for _ in 0..4 {
         tokio::time::timeout(Duration::from_secs(5), harness.requests.recv())
             .await
@@ -145,14 +157,14 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
     .await;
     let worker = harness
         .upsert_config(AgentConfig {
-            bundles: vec![BundleId::Subagents],
+            bundles: vec![BundleConfig::Subagents],
             hooks: hooks(),
             ..agent_config("worker")
         })
         .await;
     let definition = harness
         .upsert_config(AgentConfig {
-            bundles: vec![BundleId::Subagents],
+            bundles: vec![BundleConfig::Subagents],
             subagents: wire::IncludedItems {
                 items: vec![worker.config_id.clone()],
                 ..Default::default()
@@ -341,7 +353,7 @@ async fn subagent_creation_checks_permitted_definitions_without_creating_a_child
         .await;
     let definition = harness
         .upsert_config(AgentConfig {
-            bundles: vec![BundleId::Subagents],
+            bundles: vec![BundleConfig::Subagents],
             subagents: wire::IncludedItems {
                 items: vec![worker.config_id.clone()],
                 ..Default::default()
@@ -402,7 +414,7 @@ async fn subagent_tools_list_and_message_unrelated_roots_in_the_same_session() {
     .await;
     let definition = harness
         .upsert_config(AgentConfig {
-            bundles: vec![BundleId::Subagents],
+            bundles: vec![BundleConfig::Subagents],
             hooks: hooks(),
             ..agent_config("messenger")
         })

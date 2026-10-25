@@ -1,20 +1,23 @@
 use super::{Hook, HookError};
-use crate::{
-    agents::{Agent, agent_context::AgentContext},
-    components::cancellation::Cancellation,
-    sessions::Session,
-};
+use crate::{agents::agent_context::AgentContext, components::cancellation::Cancellation};
 use psa_api::events::{EventType, Message, MessageType, NewEvent};
 use std::time::Duration;
 
-/// Adds the pinned definition's extra system prompt to the model context.
-pub struct ExtraSystemPromptHook;
+#[cfg(test)]
+mod tests;
+
+/// Adds its configured extra system prompt to the model context.
+pub struct ExtraSystemPromptHook {
+    prompt: String,
+}
+
+impl ExtraSystemPromptHook {
+    pub fn new(prompt: String) -> Self {
+        Self { prompt }
+    }
+}
 
 impl Hook for ExtraSystemPromptHook {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self
-    }
-
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(3)
     }
@@ -24,7 +27,7 @@ impl Hook for ExtraSystemPromptHook {
         context: &mut AgentContext<'_>,
         _cancellation: Cancellation,
     ) -> Result<(), HookError> {
-        let prompt = &context.definition().extra_system_prompt;
+        let prompt = &self.prompt;
         if prompt.is_empty() {
             return Ok(());
         }

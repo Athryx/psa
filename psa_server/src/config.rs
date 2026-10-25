@@ -22,8 +22,7 @@ effort = "Medium"
 # Fallbacks for omitted fields in agent files and API registrations.
 # Explicit empty arrays override these defaults; hook stages inherit separately.
 [agent_defaults]
-tools = []
-bundles = ["FileTools", "Bash", "Subagents"]
+bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents"]
 
 [agent_defaults.hooks]
 agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
@@ -108,6 +107,8 @@ pub enum ConfigError {
     },
     #[error("database path must not be empty")]
     EmptyDatabasePath,
+    #[error("invalid agent defaults: {0}")]
+    AgentDefaults(#[from] psa_api::CompletionConfigurationError),
 }
 
 impl StartOptions {
@@ -146,6 +147,11 @@ impl StartOptions {
         if config.database.path.as_os_str().is_empty() {
             return Err(ConfigError::EmptyDatabasePath);
         }
+
+        psa_api::validate_completion_config(
+            &config.agent_defaults.bundles,
+            &config.agent_defaults.hooks,
+        )?;
 
         let database_path = data_dir.join(config.database.path);
         Ok(ResolvedConfig {

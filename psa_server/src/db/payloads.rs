@@ -25,6 +25,7 @@ pub(super) fn event_kind(event: &EventType) -> &'static str {
         EventType::ToolResult(_) => "tool_result",
         EventType::Compaction(_) => "compaction",
         EventType::Log(_) => "log",
+        EventType::Result(_) => "result",
         // Stable on-disk tags from migration 0001; the payload tables were renamed.
         EventType::InferenceResultStart(_) => "inference_start",
         EventType::InferenceResultEnd(_) => "inference_end",
@@ -128,6 +129,16 @@ pub(super) async fn insert_payload(
     event: &EventType,
 ) -> Result<(), DbError> {
     match event {
+        EventType::Result(value) => {
+            let value = serialize_json(value)?;
+            sqlx::query!(
+                "INSERT INTO event_result (event_pk,value) VALUES (?,?)",
+                pk,
+                value
+            )
+            .execute(&mut *conn)
+            .await?;
+        }
         EventType::StatusChange(value) => {
             let status = encode_agent_state(value.new_status);
             sqlx::query!(
@@ -221,6 +232,8 @@ pub(super) async fn insert_payload(
                 ToolId::SendMessage => "send_message",
                 ToolId::WaitMessage => "wait_message",
                 ToolId::ListAgents => "list_agents",
+                ToolId::AskQuestion => "ask_question",
+                ToolId::RecordResult => "record_result",
             };
             let def = &value.definition;
             let parameters = serialize_json(&def.parameters)?;
@@ -416,6 +429,10 @@ pub(super) async fn load_payloads(
         };
     }
     load!(
+        "SELECT p.event_pk, p.value FROM event_result p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+        |r| EventType::Result(parse_json(&r.value)?)
+    );
+    load!(
         "SELECT p.event_pk, p.status, p.reason FROM event_status_change p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
         |r| EventType::StatusChange(StatusChange {
             new_status: parse_agent_state(&r.status)?,
@@ -474,6 +491,8 @@ pub(super) async fn load_payloads(
                 "send_message" => ToolId::SendMessage,
                 "wait_message" => ToolId::WaitMessage,
                 "list_agents" => ToolId::ListAgents,
+                "ask_question" => ToolId::AskQuestion,
+                "record_result" => ToolId::RecordResult,
                 s => return Err(invalid(s)),
             },
             definition: api::ToolDefinition {

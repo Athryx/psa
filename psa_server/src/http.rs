@@ -211,6 +211,7 @@ pub fn router(state: AppState) -> Router {
         .route(routes::FORK, post(fork_session))
         .route(routes::AGENTS, post(create_agent).get(list_agents))
         .route(routes::AGENT, get(get_agent))
+        .route(routes::AGENT_RESULTS, get(get_agent_results))
         .route(routes::REQUESTS, post(submit_request))
         .route(routes::CLIENT_QUERY_RESPONSE, post(respond_to_client_query))
         .route(routes::SESSION_EVENTS, get(session_events))
@@ -428,6 +429,18 @@ async fn get_agent(
     Ok(Json(agent.into()))
 }
 
+async fn get_agent_results(
+    State(state): State<AppState>,
+    ApiPath((session, agent)): ApiPath<(u64, u64)>,
+    ApiQuery(query): ApiQuery<api::ResultsQuery>,
+) -> Result<Json<Vec<api::ResultRecord>>, HttpError> {
+    let results = state
+        .runtime
+        .load_last_results(SessionId(session), AgentId(agent), query.limit)
+        .await?;
+    Ok(Json(results))
+}
+
 async fn submit_request(
     State(state): State<AppState>,
     ApiPath((session, agent)): ApiPath<(u64, u64)>,
@@ -509,24 +522,31 @@ async fn load_page(
                 .next_event_id
                 .0
                 - 1;
-            let events = cursor
-                .load_agent_envelopes(
-                    session,
-                    agent,
-                    EventRange {
-                        after: EventId(query.after),
-                        through: query.through.map(EventId),
-                        limit: query.limit,
-                    },
-                )
-                .await?;
+            let range = EventRange {
+                after: EventId(query.after),
+                through: query.through.map(EventId),
+                limit: query.limit,
+            };
+            let events = if query.results_only {
+                cursor
+                    .load_agent_result_envelopes(session, agent, range)
+                    .await?
+            } else {
+                cursor.load_agent_envelopes(session, agent, range).await?
+            };
             (head, events)
         }
         None => {
             let head = cursor.get_session(session).await?.next_position - 1;
-            let events = cursor
-                .load_session_events(session, query.after, query.through, query.limit)
-                .await?;
+            let events = if query.results_only {
+                cursor
+                    .load_session_result_events(session, query.after, query.through, query.limit)
+                    .await?
+            } else {
+                cursor
+                    .load_session_events(session, query.after, query.through, query.limit)
+                    .await?
+            };
             (head, events)
         }
     };
@@ -588,7 +608,7 @@ async fn events_response(
     let publication = state.publication.lock().await;
     let mut received = publication.subscribe();
     let mut page = load_page(&state, session, agent, &query).await?;
-    let pending = if query.include_pending {
+    let pending = if query.include_pending && !query.results_only {
         publication.pending(session, agent)
     } else {
         Vec::new()
@@ -649,7 +669,9 @@ async fn events_response(
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             };
-            if !matches_scope(&message, session, agent, query.include_pending) {
+            if !matches_scope(&message, session, agent, query.include_pending)
+                || !matches_result_filter(&message, query.results_only)
+            {
                 continue;
             }
 
@@ -686,6 +708,20 @@ fn event_cursor(event: &api::EventEnvelope, agent: Option<AgentId>) -> u64 {
         event.event.id.0
     } else {
         event.position
+    }
+}
+
+fn matches_result_filter(message: &api::StreamMessage, results_only: bool) -> bool {
+    if !results_only {
+        return true;
+    }
+    match message {
+        api::StreamMessage::Committed { event, .. } => {
+            matches!(event.event.kind, EventType::Result(_))
+        }
+        api::StreamMessage::Upsert { .. } | api::StreamMessage::Removed { .. } => false,
+        // Snapshot/cursor recovery and runtime control messages retain their normal scope.
+        _ => true,
     }
 }
 
@@ -776,11 +812,13 @@ mod tests {
         let publication = Publication::default();
         let probes = crate::probes::ProbeRegistry::start("test".into());
         let defaults = api::AgentDefaults {
-            bundles: vec![api::BundleId::FileTools],
-            tools: vec![api::ToolId::Noop],
-            hooks: api::HookIds {
-                agent_create: vec![api::HookId::DefaultStartup],
-                after_request: vec![api::HookId::StopWithoutTools],
+            bundles: vec![
+                api::BundleConfig::FileTools { read_only: false },
+                api::BundleConfig::Noop,
+            ],
+            hooks: api::HookConfigs {
+                agent_create: vec![api::HookConfig::DefaultStartup],
+                after_request: vec![api::HookConfig::StopWithoutTools],
                 ..Default::default()
             },
         };
@@ -850,7 +888,7 @@ mod tests {
 
         // The typed input preserves omissions over the client wire, while a
         // normalized AgentConfig (as above) remains fully explicit.
-        assert!(upserted[0].config.tools.is_empty());
+        assert!(upserted[0].config.bundles.is_empty());
         let inherited_id = api::ConfigId {
             config_group: api::ConfigGroup::Custom("http-test".into()),
             name: "inherited".into(),
@@ -862,7 +900,6 @@ mod tests {
             )])
             .await
             .unwrap();
-        assert_eq!(inherited[0].config.tools, defaults.tools);
         assert_eq!(inherited[0].config.bundles, defaults.bundles);
         assert_eq!(inherited[0].config.hooks, defaults.hooks);
 
@@ -872,7 +909,7 @@ mod tests {
             .json(&serde_json::json!([{
                 "config_id": inherited_id,
                 "models": ["Global"],
-                "tools": [],
+                "bundles": [],
                 "hooks": {"agent_create": []}
             }]))
             .send()
@@ -880,8 +917,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let explicit: Vec<api::AgentConfigStatus> = response.json().await.unwrap();
-        assert!(explicit[0].config.tools.is_empty());
-        assert_eq!(explicit[0].config.bundles, defaults.bundles);
+        assert!(explicit[0].config.bundles.is_empty());
         assert!(explicit[0].config.hooks.agent_create.is_empty());
         assert_eq!(
             explicit[0].config.hooks.after_request,
@@ -896,6 +932,13 @@ mod tests {
                 .hooks,
             explicit[0].config.hooks
         );
+
+        for tools in [serde_json::json!([]), serde_json::json!(["Noop"])] {
+            let response = http.post(format!("{base}/agent-configs"))
+                .json(&serde_json::json!([{"config_id": inherited_id, "models": ["Global"], "tools": tools}]))
+                .send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
 
         let legacy_creation = http
             .post(format!("{base}/sessions/1/agents"))

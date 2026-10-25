@@ -1,9 +1,10 @@
 //! Async HTTP/SSE client, transport errors, and probe connection URL parsing.
 use crate::{
-    Agent, AgentConfigInput, AgentConfigStatus, AgentDefinitionId, AgentId, AgentRequest, ApiError,
-    ClientQueryId, ClientQueryResponse, ConfigId, CreateSession, EventsPage, EventsQuery,
-    ForkSession, ForkedSession, ListSessions, NewConfiguredAgent, NewSkill, RequestAccepted,
-    ResolvedAgentConfig, Session, SessionId, Skill, StreamMessage, UpdateSession, routes,
+    Agent, AgentConfigInput, AgentConfigStatus, AgentDefinitionId, AgentId, AgentRequest,
+    AgentResult, ApiError, ClientQueryId, ClientQueryResponse, ConfigId, CreateSession, EventsPage,
+    EventsQuery, ForkSession, ForkedSession, ListSessions, NewConfiguredAgent, NewSkill,
+    RequestAccepted, ResolvedAgentConfig, ResultRecord, ResultsQuery, Session, SessionId, Skill,
+    StreamMessage, UpdateSession, routes,
 };
 use eventsource_stream::Eventsource;
 use futures_util::{Stream, StreamExt};
@@ -25,7 +26,7 @@ pub enum ClientError {
         /// Structured server error, or a fallback if its body was invalid.
         error: ApiError,
     },
-    /// An SSE message contained invalid JSON for the wire event type.
+    /// An SSE message or typed result payload could not be decoded into its target type.
     #[error("invalid API response: {0}")]
     Json(#[from] serde_json::Error),
     /// The response was not SSE or the SSE framing/transport failed.
@@ -380,6 +381,64 @@ impl Client {
             response,
         )
         .await
+    }
+
+    /// Fetch up to `limit` raw durable results, newest first, from an agent's lineage.
+    /// Retains each result's text-or-JSON tag and durable event provenance.
+    pub async fn results(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        limit: u32,
+    ) -> Result<Vec<ResultRecord<AgentResult>>, ClientError> {
+        self.get(
+            &routes::agent_path(routes::AGENT_RESULTS, session, agent),
+            &ResultsQuery { limit },
+        )
+        .await
+    }
+
+    /// Fetch the newest raw durable result, or `None` if the agent has no results.
+    /// Use this rather than a typed helper to preserve the [`AgentResult`] wire tag.
+    pub async fn last_result_raw(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+    ) -> Result<Option<ResultRecord<AgentResult>>, ClientError> {
+        Ok(self.results(session, agent, 1).await?.into_iter().next())
+    }
+
+    /// Fetch the newest durable result and decode its inner payload into `T`.
+    /// Text results decode as strings, not JSON source. A type mismatch returns
+    /// [`ClientError::Json`]; no result returns `None`. Provenance is retained.
+    /// Use [`Self::last_result_raw`] to retain the original text-or-JSON tag.
+    pub async fn last_result<T: DeserializeOwned>(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+    ) -> Result<Option<ResultRecord<T>>, ClientError> {
+        self.last_result_raw(session, agent)
+            .await?
+            .map(|record| record.decode::<T>())
+            .transpose()
+            .map_err(ClientError::from)
+    }
+
+    /// Fetch up to `limit` durable results newest first and decode their payloads.
+    /// Retains provenance and returns [`ClientError::Json`] if any payload does not
+    /// match `T`, rather than skipping that result. Text results decode as strings.
+    /// Use [`Self::results`] to retrieve the raw text-or-JSON representations.
+    pub async fn last_results<T: DeserializeOwned>(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        limit: u32,
+    ) -> Result<Vec<ResultRecord<T>>, ClientError> {
+        self.results(session, agent, limit)
+            .await?
+            .into_iter()
+            .map(|record| record.decode::<T>().map_err(ClientError::from))
+            .collect()
     }
 
     /// Fetch one event page for a session or, with `Some(agent)`, one agent.

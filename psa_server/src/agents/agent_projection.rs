@@ -56,6 +56,8 @@ pub struct AgentProjection {
     tools: Vec<ToolDefinition>,
     open: Option<OpenInferenceResult>,
     last_response: Option<ModelResponse>,
+    completed_result: bool,
+    result_producer_call_id: Option<String>,
 }
 
 impl Default for AgentProjection {
@@ -69,6 +71,8 @@ impl Default for AgentProjection {
             tools: Vec::new(),
             open: None,
             last_response: None,
+            completed_result: false,
+            result_producer_call_id: None,
         }
     }
 }
@@ -93,6 +97,16 @@ impl AgentProjection {
 
     pub fn last_response(&self) -> Option<&ModelResponse> {
         self.last_response.as_ref()
+    }
+
+    /// Whether the current logical run has already committed its terminal artifact.
+    pub fn has_completed_result(&self) -> bool {
+        self.completed_result
+    }
+
+    /// The sequential tool invocation that produced the current run's JSON artifact.
+    pub fn result_producer_call_id(&self) -> Option<&str> {
+        self.result_producer_call_id.as_deref()
     }
 
     pub fn open_inference_result(&self) -> Option<&InferenceResultStart> {
@@ -150,6 +164,10 @@ impl AgentProjection {
 
         match &event.kind {
             EventType::StatusChange(change) => {
+                if change.new_status == AgentState::Running && self.status != AgentState::Running {
+                    self.completed_result = false;
+                    self.result_producer_call_id = None;
+                }
                 self.status = change.new_status;
                 self.status_reason = change.reason.clone();
             }
@@ -254,6 +272,23 @@ impl AgentProjection {
                 };
                 self.items.push(item);
             }
+            EventType::Result(result) => {
+                if self.open.is_some() {
+                    return Err(invalid(
+                        "agent results cannot appear inside an inference block",
+                    ));
+                }
+                // The artifact itself closes the logical run, including when a
+                // fork checkpoint falls before its paired Idle status event.
+                self.status = AgentState::Idle;
+                self.status_reason = None;
+                self.completed_result = true;
+                self.result_producer_call_id = if matches!(result, psa_api::AgentResult::Json(_)) {
+                    self.pending_result_producer()
+                } else {
+                    None
+                };
+            }
             EventType::Log(_) => {}
             EventType::InferenceResultStart(start) => {
                 if self.open.is_some() {
@@ -301,6 +336,30 @@ impl AgentProjection {
 
         self.last_event_id = event.id;
         Ok(())
+    }
+
+    fn pending_result_producer(&self) -> Option<String> {
+        let resolved: HashSet<_> = self
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                HistoryItemKind::ToolResult(result) => Some(result.call_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        self.items.iter().find_map(|item| match &item.kind {
+            HistoryItemKind::ToolCall(call)
+                if call.name == "record_result"
+                    && !resolved.contains(call.call_id.as_str())
+                    && !matches!(
+                        item.metadata.item_status.as_deref(),
+                        Some("in_progress" | "incomplete")
+                    ) =>
+            {
+                Some(call.call_id.clone())
+            }
+            _ => None,
+        })
     }
 
     fn append_item(&mut self, item: HistoryItem) {

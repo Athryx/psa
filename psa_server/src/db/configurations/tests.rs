@@ -13,9 +13,7 @@ fn config(name: &str, children: &[&str]) -> AgentConfig {
         description: name.into(),
         selectable: true,
         bundles: vec![],
-        tools: vec![],
-        hooks: HookIds::default(),
-        extra_system_prompt: String::new(),
+        hooks: HookConfigs::default(),
         models: vec![ModelSelection::Global],
         default: true,
         subagents: IncludedItems {
@@ -242,6 +240,78 @@ async fn missing_prunes_restoration_and_mutable_skill_identity() {
         1
     );
     cursor.commit().await.unwrap();
+    reopened.close().await;
+}
+
+#[tokio::test]
+async fn hook_prompt_payload_roundtrips_and_changes_snapshot_identity() {
+    let (directory, db) = database().await;
+    let mut cursor = db.cursor().await.unwrap();
+    let mut initial = config("prompt-payload", &[]);
+    initial.hooks.agent_create = vec![psa_api::HookConfig::ExtraSystemPrompt {
+        prompt: "  Original instructions.\n<literal> & text\n".into(),
+    }];
+    cursor
+        .upsert_agent_configs(vec![initial.clone()])
+        .await
+        .unwrap();
+    let first = cursor
+        .resolve_agent_config(&initial.config_id, &HashMap::new(), &HashMap::new())
+        .await
+        .unwrap();
+    let cached = cursor
+        .resolve_agent_config(&initial.config_id, &HashMap::new(), &HashMap::new())
+        .await
+        .unwrap();
+    assert_eq!(cached.definition.id, first.definition.id);
+    assert_eq!(first.definition.hooks, initial.hooks);
+    assert_eq!(first.config.hooks, initial.hooks);
+
+    let mut changed = initial.clone();
+    changed.hooks.agent_create = vec![psa_api::HookConfig::ExtraSystemPrompt {
+        prompt: "Different instructions.".into(),
+    }];
+    cursor
+        .upsert_agent_configs(vec![changed.clone()])
+        .await
+        .unwrap();
+    let second = cursor
+        .resolve_agent_config(&changed.config_id, &HashMap::new(), &HashMap::new())
+        .await
+        .unwrap();
+    assert_ne!(second.definition.id, first.definition.id);
+    assert_eq!(second.definition.hooks, changed.hooks);
+    let retained = cursor
+        .get_resolved_agent_config(first.definition.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.definition.hooks, initial.hooks);
+    assert_eq!(retained.config.hooks, initial.hooks);
+    cursor.commit().await.unwrap();
+    db.close().await;
+
+    let reopened = Database::open(directory.path().join("registry.sqlite3"))
+        .await
+        .unwrap();
+    let mut cursor = reopened.cursor().await.unwrap();
+    assert_eq!(
+        cursor
+            .get_agent_definition(first.definition.id)
+            .await
+            .unwrap()
+            .hooks,
+        initial.hooks
+    );
+    assert_eq!(
+        cursor
+            .get_agent_definition(second.definition.id)
+            .await
+            .unwrap()
+            .hooks,
+        changed.hooks
+    );
+    cursor.rollback().await.unwrap();
     reopened.close().await;
 }
 

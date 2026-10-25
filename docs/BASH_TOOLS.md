@@ -3,7 +3,7 @@
 Enable the group on an agent definition:
 
 ```json
-{"bundles": ["FileTools", "Bash"]}
+{"bundles": [{"FileTools": {"read_only": false}}, "Bash"]}
 ```
 
 `Bash` installs the model-facing `bash`, `interact_bash`, and `close_bash` tools

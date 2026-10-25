@@ -5,7 +5,8 @@ and assembly, `tools/` implements model-facing tools, and `hooks/` implements
 lifecycle callbacks. Shared invocation cancellation lives in
 `src/components/cancellation.rs`. Tools and hooks can request typed client input
 through `AgentContext::query_client`; see `../docs/CLIENT_QUERIES.md` for the
-runtime-owned query registry, SSE snapshots, and response endpoint. Native Goal
+runtime-owned query registry, SSE snapshots, response endpoint, and opt-in native
+`AskQuestion { interactive_only }` bundle (one `ask_question` tool, no hook). Native Goal
 and Subagents bundles are documented in `../docs/GOALS_AND_SUBAGENTS.md`.
 
 Provider discovery and model metadata are available through `/providers` and
@@ -49,11 +50,10 @@ effort = "Medium"
 
 # Optional fallbacks for omitted API/TOML agent component fields.
 [agent_defaults]
-bundles = ["FileTools", "Bash"]
-tools = []
+bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents"]
 
 [agent_defaults.hooks]
-agent_create = ["DefaultStartup", "ToolDefinitions", "Cwd", "Skills"]
+agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
 after_request = ["StopWithoutTools"]
 ```
 
@@ -66,7 +66,7 @@ configurations override it. The concrete chosen configuration is persisted and
 returned in session responses; reloads, updates, and forks do not reapply defaults.
 Changing creation defaults requires a server restart.
 
-Omitted `tools`/`bundles` inherit the whole default list; explicit lists replace
+Omitted `bundles` inherit the whole default list; explicit lists replace
 it, and `[]` disables it. Hook stages inherit independently: an omitted stage
 inherits, while `after_request = []` disables only that stage. No
 `[agent_defaults]` means all fallbacks are empty. Defaults apply during API
@@ -116,7 +116,7 @@ not necessarily persisted or executed at the time HTTP 202 is returned.
 
 ```rust,no_run
 use psa_api::{Client, CreateSession, NewConfiguredAgent, AgentConfigInput, AgentRequest,
-    ConfigGroup, ConfigId, HookId, HookOverrides, IncludedItems, MessageDelivery, ModelSelection};
+    ConfigGroup, ConfigId, HookConfig, HookOverrides, IncludedItems, MessageDelivery, ModelSelection};
 use llm_api::{api::{ContentBlock, TextBlock}, providers::{Effort, Model, ModelConfig, ProviderType}};
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let client = Client::new("http://127.0.0.1:8080")?;
@@ -133,14 +133,13 @@ let config_id = ConfigId { config_group: ConfigGroup::Custom("examples".into()),
 let mut config = AgentConfigInput::new(config_id.clone(), vec![ModelSelection::Global]);
 config.description = "Example assistant".into();
 config.selectable = true;
-config.bundles = Some(vec![psa_api::BundleId::FileTools]); // Replace the default bundles.
-config.tools = Some(vec![]); // Disable default tools; the bundle still installs its tools.
+config.bundles = Some(vec![psa_api::BundleConfig::FileTools { read_only: false }]); // Replace defaults.
 config.hooks = HookOverrides {
     agent_create: Some(vec![
-        HookId::DefaultStartup, HookId::ToolDefinitions, HookId::Cwd, HookId::Skills,
+        HookConfig::DefaultStartup, HookConfig::ToolDefinitions, HookConfig::Cwd, HookConfig::Skills,
     ]),
-    session_update: Some(vec![HookId::SessionModelUpdate]),
-    after_request: Some(vec![HookId::StopWithoutTools]),
+    session_update: Some(vec![HookConfig::SessionModelUpdate]),
+    after_request: Some(vec![HookConfig::StopWithoutTools]),
     ..Default::default() // Omitted before_request inherits its server default.
 };
 config.skills = IncludedItems { groups: vec![ConfigGroup::Global], items: vec![] };
@@ -189,6 +188,30 @@ and the supervisor's published activity projection share the publication gate,
 preventing stale busy values from overwriting newer transitions. Apply these
 snapshots in stream order: activity-only changes do not advance `updated_at`.
 
+### Durable completion results
+
+Runs can produce one durable `EventType::Result`: text through ordinary
+`StopWithoutTools` or inactive Goal completion, or JSON through
+`TypedResult { schema: ToolSchema, max_retries }`. These completion modes are
+mutually incompatible, including inherited default hooks. Configuring none is
+allowed but provides no automatic completion or Result, as does a skipped
+interactive-only Goal bundle. Results are metadata excluded from model history.
+Failure/cancellation does not synthesize results; accepted database saves cannot
+be revoked and can complete after cancellation. Running goals continue even at
+token limits. Non-running includes Blocked: a blocked goal stays retained/paused
+while the current run settles Idle with a text Result.
+
+TypedResult installs sequential `record_result` plus a require-result hook. Its
+whole argument object must match the explicit object-root Draft 2020-12 schema
+(local references only). Valid data atomically saves Result and Idle; invalid or
+missing completion consumes correction retries (default three, then interrupt).
+Clear an inherited `after_request` StopWithoutTools list when selecting the
+bundle. See [durable result configuration and retrieval](../docs/AGENT_RESULTS.md).
+
+`GET /sessions/{sid}/agents/{aid}/results?limit=1` returns newest-first artifact
+records over logical fork history. `EventsQuery.results_only` filters durable
+Results before database pagination and during SSE durable delivery.
+
 ### Configurations, snapshots, and hook bindings
 
 `POST /agent-configs` takes a JSON array of omission-aware `AgentConfigInput`,
@@ -225,7 +248,8 @@ selection rules and library storage configuration, see
 
 Agent creation accepts `interactive`, defaulting to `false` when omitted from
 JSON. It is creation-time metadata available to tools and hooks, not a runtime
-behavior switch. The opt-in Goal bundle uses it to enable goal tools and policy.
+behavior switch. Opt-in Goal and AskQuestion bundles consult it only when their
+`interactive_only` construction flag is true; false enables them on any agent.
 Agent responses expose it, and forks inherit the source flag.
 
 `CreateSession.model_config: Option<ModelConfig>` is optional: omitted/null uses
@@ -233,8 +257,9 @@ server `session_defaults`, while an explicit configuration wins. Session respons
 always contain the concrete persisted configuration, which `UpdateSession` can
 replace explicitly. Reloading, updating, or forking never resets it to defaults.
 Each input/normalized config supplies a nonempty `models` policy list (`Global`, `Parent`,
-or `Fixed` with an effort policy), plus `description`, `selectable`, inclusions,
-and `extra_system_prompt`. Resolution produces an internal executable
+or `Fixed` with an effort policy), plus `description`, `selectable`, and inclusions.
+Extra prompts are explicit `HookConfig::ExtraSystemPrompt { prompt }` payloads,
+not a separate agent/config field. Resolution produces an internal executable
 `AgentDefinition` with `model_config`, probe-local skill paths, and
 `permitted_subagents` snapshot IDs; `ResolvedAgentConfig.references` separately
 stores `SkillId` and subagent IDs. Skill paths are consumed only when `SkillsHook`
@@ -245,13 +270,27 @@ Unknown extra configuration/creation JSON fields are rejected.
 
 Normalized configs and snapshots persist ordered `bundles`; omitted input
 inherits server defaults, while explicit `[]` selects no bundles.
-`BundleId::FileTools` installs `Read`, `Edit`, and `Write`; `BundleId::Bash`
-installs `Bash`, `InteractBash`, and `CloseBash`. `Goal` installs interactive
-`SetGoal`/`SetGoalStatus` plus stopping policy. `Subagents` installs child creation,
+`BundleConfig::Noop` installs Noop. `BundleConfig::FileTools { read_only: false }`
+installs Read, Edit, and Write; true installs only Read. FileTools requires a
+payload, with `read_only` defaulting to false inside it; bare `"FileTools"` is
+invalid. JSON uses `{"FileTools":{"read_only":true}}`, and TOML bundle entries
+use `{ FileTools = { read_only = true } }`. `BundleConfig::Bash`
+installs `Bash`, `InteractBash`, and `CloseBash`.
+`{"Goal":{"interactive_only":true}}` installs `SetGoal`/`SetGoalStatus` plus stopping
+policy; `{"AskQuestion":{"interactive_only":true}}` installs only `ask_question`,
+with no hooks. These variants require payloads, not bare unit strings. The flag
+defaults to true inside the payload and skips all bundle tools/hooks for
+noninteractive agents. False fully enables the bundle, including Goal state
+persistence and continuation on noninteractive agents. Neither bundle is a
+server default. TOML bundle entries use `{ Goal = { interactive_only = true } }`
+or `{ AskQuestion = { interactive_only = true } }`. Low-level `query_client`
+remains available to any agent independently of these installation flags.
+`Subagents` installs child creation,
 messaging, waiting, and listing backed by session-shared actor resources. These
 tool groups require their bundle. See `../docs/GOALS_AND_SUBAGENTS.md` for setup,
-core ancestry, append-only goal semantics, and delivery/recovery limitations. Bundles install in list order before explicit tools/hooks; independent
-explicit configuration remains supported. Duplicate bundle IDs, tool IDs, or tool
+core ancestry, append-only goal semantics, and delivery/recovery limitations.
+Bundles install in list order before explicit hooks. There is no standalone tool
+configuration or agent/config/defaults `tools` field; every tool requires a bundle. Duplicate bundle IDs, tool IDs, or tool
 names are rejected during component installation. The session manager retains
 owners and instances by agent ID across worker retirement/failure. Forked agents
 have independent resources; server restart does not restore runtime resources.
@@ -263,7 +302,7 @@ connected until cleanup finishes. See `../docs/BASH_TOOLS.md` for process tools.
 Omitting bundles during an omission-aware upsert uses the server default list;
 explicit `[]` clears it. Existing executable snapshots are not changed.
 
-Each normalized config binds ordered `HookId` lists at `agent_create`,
+Each normalized config uses `HookConfigs` with ordered `HookConfig` lists at `agent_create`,
 `session_update`, `before_request`, and `after_request`. Omitted input stages
 inherit independently from `[agent_defaults.hooks]`; explicit empty stages disable
 those defaults. Without server defaults, all lists are empty. Selected bundles
@@ -279,6 +318,10 @@ can additionally supply their own hooks. Built-ins:
   tool-provided directions. Empty sections are omitted. Normally bound after
   `DefaultStartup` on `agent_create`; it also skips forks to preserve inherited
   tool definitions and prompt sections.
+- `ExtraSystemPrompt { prompt }`: opt-in hook configuration that appends its
+  explicit prompt as a separate `System` message (unless empty), including on
+  forks. JSON uses `{"ExtraSystemPrompt":{"prompt":"Follow project conventions."}}`;
+  no agent-level prompt field or empty default prompt hook is installed.
 - `Cwd`: emits a `System` message containing `<cwd>\nSESSION_CWD\n</cwd>`, with the
   session working directory XML-escaped. It does not skip forks. Bind it to
   `agent_create` and optionally `session_update` to reflect directory changes.
@@ -295,8 +338,10 @@ can additionally supply their own hooks. Built-ins:
 - `SessionModelUpdate`: normally bound to `session_update`; saves a changed
   session model unless the definition has its own model override. It does not
   emit `NewContext` or clear inherited history.
-- `StopWithoutTools`: normally bound to `after_request`; saves Idle for responses
-  without tool calls.
+- `StopWithoutTools`: ordinary completion mode, normally bound to `after_request`;
+  records a durable text Result and Idle for no-tool completion, including
+  token-limited text. It is incompatible with Goal and TypedResult completion,
+  including when inherited from defaults.
 - `Noop`: does nothing.
 
 One global session-manager task supervises lazy per-agent workers. Creation
@@ -343,11 +388,18 @@ Markdown is retained and multiline list items are indented. Both sections are
 saved as separate `MessageType::System` events after the tool schemas.
 
 Hooks implement `Hook` and return `Result<(), HookError>`. Tools implement `Tool`
-and return `ToolOutput { content, error }`. Both have synchronous, IO-free
-`new(&Agent, &Session)` constructors. `HookKind` and `ToolKind` are runtime
-instances, distinct from wire `HookId` and `ToolId`; a worker constructs its own
-instances from the pinned definition when loaded. Instances live for that worker,
-not globally or durably, and are reconstructed on reload. Hook invocation uses
+and return `ToolOutput { content, error }`. Neither trait requires `new`.
+Construct stateless unit structs directly; stateful bundle components receive
+explicit shared handles from their owner. Tools are constructed only by bundles;
+`HookKind::from_config(&HookConfig)` and `Hooks::from_configs(&HookConfigs)`
+dispatch construction from payload-ready configurations.
+`BundleKind::from_config(&BundleConfig, Option<&SessionBundleHandle>)` returns
+`Result<Self, InstallError>` and requires session resources for `Subagents`;
+there is no unbound fallback. Runtime-owned resources are supplied by the runtime,
+not serialized as configuration arguments. `ToolId` remains an identity enum;
+there is no standalone tool configuration type.
+The manager retains installed instances and bundle owners across worker retirement
+and failure; resources are not globally shared or durably restored. Hook invocation uses
 `&mut self`, allowing agent-runtime hook state across worker generations. The output flag is model-facing,
 not an agent control signal. The worker persists each tool response separately. To interrupt,
 a tool/hook explicitly saves an `Interrupted` status event. Both interfaces retain

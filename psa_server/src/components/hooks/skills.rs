@@ -1,10 +1,9 @@
 use super::{Hook, HookError};
 use crate::{
-    agents::{Agent, agent_context::AgentContext},
+    agents::agent_context::AgentContext,
     components::cancellation::Cancellation,
     probes::ProbeHandle,
     prompts::skills::{SkillDescription, format_skills},
-    sessions::Session,
 };
 use psa_api::{
     events::{EventType, Log, Message, MessageType, NewEvent},
@@ -22,10 +21,6 @@ const MAX_SKILL_BYTES: usize = 1024 * 1024;
 pub struct SkillsHook;
 
 impl Hook for SkillsHook {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self
-    }
-
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(3)
     }

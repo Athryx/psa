@@ -40,6 +40,8 @@ pub const CLIENT_QUERY_RESPONSE: &str =
 pub const SESSION_EVENTS: &str = "/sessions/{session_id}/events";
 /// GET agent event pages or SSE, using agent-event-ID cursors.
 pub const AGENT_EVENTS: &str = "/sessions/{session_id}/agents/{agent_id}/events";
+/// GET durable result records newest first; `limit` defaults to one.
+pub const AGENT_RESULTS: &str = "/sessions/{session_id}/agents/{agent_id}/results";
 /// GET registered probes and live activity state.
 pub const PROBES: &str = "/probes";
 /// GET one registered probe by UUID.

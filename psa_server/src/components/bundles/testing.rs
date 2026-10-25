@@ -185,14 +185,6 @@ impl Drop for SharedTool {
 struct SharedArgs {}
 
 impl Tool for SharedTool {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self {
-            state: Arc::default(),
-            id: ToolId::Noop,
-            name: "probe_first".into(),
-        }
-    }
-
     fn tool_definition(&self) -> ToolDefinition {
         ToolDefinition::for_type::<SharedArgs>(&self.name, "Bundle test state", Some(true))
     }
@@ -221,12 +213,6 @@ impl Drop for SharedHook {
 }
 
 impl Hook for SharedHook {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self {
-            state: Arc::default(),
-        }
-    }
-
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(1)
     }

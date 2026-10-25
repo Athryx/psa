@@ -76,7 +76,7 @@ pub enum ClientQueryResponse {
 }
 
 /// Nonempty ordered list of questions to present to the client.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AskQuestionRequest {
     /// Questions whose order determines the response answer order.
@@ -84,7 +84,7 @@ pub struct AskQuestionRequest {
 }
 
 /// A question with optional suggested answers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClientQuestion {
     /// Nonblank text to present to the client.
@@ -154,6 +154,39 @@ impl ClientQuery {
                 }
                 Ok(())
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn question_request_schema_preserves_the_closed_wire_contract() {
+        let schema = serde_json::to_value(schemars::schema_for!(AskQuestionRequest)).unwrap();
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["required"], json!(["questions"]));
+        assert_eq!(schema["properties"]["questions"]["type"], "array");
+
+        let question = serde_json::to_value(schemars::schema_for!(ClientQuestion)).unwrap();
+        assert_eq!(question["additionalProperties"], false);
+        assert_eq!(question["required"], json!(["question"]));
+        assert_eq!(question["properties"]["question"]["type"], "string");
+        assert_eq!(question["properties"]["choices"]["type"], "array");
+        assert_eq!(question["properties"]["choices"]["default"], json!([]));
+
+        let request: AskQuestionRequest = serde_json::from_value(json!({
+            "questions": [{"question": "Which option?"}],
+        }))
+        .unwrap();
+        assert!(request.questions[0].choices.is_empty());
+        for invalid in [
+            json!({"questions": [], "unknown": true}),
+            json!({"questions": [{"question": "Which option?", "unknown": true}]}),
+        ] {
+            assert!(serde_json::from_value::<AskQuestionRequest>(invalid).is_err());
         }
     }
 }

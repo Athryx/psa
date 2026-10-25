@@ -1,13 +1,12 @@
 use super::{format_tool_output, require_coordinator};
 use crate::{
-    agents::{Agent, agent_context::AgentContext},
+    agents::agent_context::AgentContext,
     components::{
         bundles::subagents::SubagentCoordinator,
         cancellation::Cancellation,
         tools::{Tool, ToolOutput, typed_tool_execute},
     },
     prompts,
-    sessions::Session,
 };
 use llm_api::api::ToolDefinition;
 use psa_api::{AgentMessageSource, ModelSelection};
@@ -27,15 +26,12 @@ struct CreateAgentArgs {
     /// May be omitted when the template enables a default or has only one choice.
     model: Option<ModelSelection>,
 }
-#[derive(Default)]
 pub struct CreateAgent {
-    handle: Option<SubagentCoordinator>,
+    handle: SubagentCoordinator,
 }
 impl CreateAgent {
     pub fn with_handle(handle: SubagentCoordinator) -> Self {
-        Self {
-            handle: Some(handle),
-        }
+        Self { handle }
     }
     pub(crate) fn definition() -> ToolDefinition {
         ToolDefinition::for_type::<CreateAgentArgs>(
@@ -73,7 +69,7 @@ impl CreateAgent {
         }
 
         let caller = context.agent().id;
-        let operation = async {
+        let result = async {
             let _guard = handle.begin_operation()?;
             let selected = resolve_template(context, &template).await?;
             let agent = context
@@ -91,7 +87,7 @@ impl CreateAgent {
                 .await
                 .map_err(|error| error.to_string())?;
 
-            context
+            let submitted = context
                 .sessions()
                 .send_subagent_message(
                     context.session().id,
@@ -102,20 +98,37 @@ impl CreateAgent {
                     }),
                     crate::prompts::text(task),
                 )
-                .await
-                .map_err(|error| {
-                    format!(
-                        "Agent {} created but task submission failed: {error}",
-                        agent.id.0
-                    )
-                })?;
+                .await;
+
+            // Finish creation and initial submission within the cancellation
+            // grace period instead of abandoning an already-created child.
+            // The runner can still force-drop this future when grace expires.
+            if cancellation.is_cancelled() {
+                context
+                    .sessions()
+                    .interrupt(context.session().id, agent.id)
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "Agent {} ({}) created but cancellation interruption failed: {error}",
+                            agent.id.0, agent.name
+                        )
+                    })?;
+                return Err(format!(
+                    "Agent creation cancelled after creating agent {} ({}); interruption requested",
+                    agent.id.0, agent.name
+                ));
+            }
+
+            submitted.map_err(|error| {
+                format!(
+                    "Agent {} created but task submission failed: {error}",
+                    agent.id.0
+                )
+            })?;
             Ok(json!({"agent_id": agent.id, "name": agent.name, "status": "started"}))
-        };
-        let result = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => Err("Agent creation cancelled".into()),
-            result = operation => result,
-        };
+        }
+        .await;
         format_tool_output(result)
     }
 }
@@ -148,9 +161,6 @@ async fn resolve_template(
 }
 
 impl Tool for CreateAgent {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self::default()
-    }
     fn tool_definition(&self) -> ToolDefinition {
         Self::definition()
     }
@@ -159,6 +169,10 @@ impl Tool for CreateAgent {
     }
     typed_tool_execute!(CreateAgentArgs, execute_typed);
 }
+#[cfg(test)]
+#[path = "create_agent_tests.rs"]
+mod cancellation_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -325,7 +325,13 @@ impl AgentManagerState {
             None => {}
         }
 
-        let successful = matches!(response.outcome, Outcome::Completed { .. });
+        let successful = matches!(
+            response.outcome,
+            Outcome::Completed { .. }
+                | Outcome::Incomplete {
+                    reason: api::StopReason::TokenLimit
+                }
+        );
         let id = self.agent.next_event_id.0;
         let mut events = vec![NewEvent::new(EventType::InferenceResultStart(
             InferenceResultStart {
@@ -439,6 +445,7 @@ pub(crate) fn build_recovery_events(
             kind: events[0].kind.clone(),
         })?;
     }
+    let completed_result = agent.state == AgentState::Idle && context.has_completed_result();
     for item in context.items() {
         let HistoryItemKind::ToolCall(call) = &item.kind else {
             continue;
@@ -450,13 +457,33 @@ pub(crate) fn build_recovery_events(
             continue;
         }
 
-        events.push(NewEvent::new(EventType::ToolResult(failed_tool_result(
-            call.call_id.clone(),
-            prompts::tool_interrupted(),
-        ))));
+        let result = if completed_result
+            && context.result_producer_call_id() == Some(call.call_id.as_str())
+        {
+            // Result is the durable effect. A crash/fork can omit its later tool
+            // acknowledgement; repair the first unresolved sequential producer,
+            // not the artifact or any later calls that never ran.
+            let output = crate::components::tools::RecordResult::recorded_output();
+            ToolResult {
+                call_id: call.call_id.clone(),
+                content: output.content,
+                error: output.error,
+                metadata: Default::default(),
+            }
+        } else {
+            failed_tool_result(
+                call.call_id.clone(),
+                if completed_result {
+                    prompts::tool_not_run()
+                } else {
+                    prompts::tool_interrupted()
+                },
+            )
+        };
+        events.push(NewEvent::new(EventType::ToolResult(result)));
     }
 
-    if !events.is_empty() || agent.state == AgentState::Running {
+    if !completed_result && (!events.is_empty() || agent.state == AgentState::Running) {
         events.push(status_event(AgentState::Interrupted));
     }
 

@@ -1,15 +1,14 @@
 use super::*;
-use psa_api::{HookId, HookIds};
+use psa_api::{HookConfig, HookConfigs};
 
 fn configured_defaults() -> AgentDefaults {
     AgentDefaults {
-        tools: vec![ToolId::Read],
-        bundles: vec![BundleId::FileTools],
-        hooks: HookIds {
-            agent_create: vec![HookId::Skills],
-            session_update: vec![HookId::SessionModelUpdate],
-            before_request: vec![HookId::Noop],
-            after_request: vec![HookId::StopWithoutTools],
+        bundles: vec![BundleConfig::FileTools { read_only: true }],
+        hooks: HookConfigs {
+            agent_create: vec![HookConfig::Skills],
+            session_update: vec![HookConfig::SessionModelUpdate],
+            before_request: vec![HookConfig::Noop],
+            after_request: vec![HookConfig::StopWithoutTools],
         },
     }
 }
@@ -34,7 +33,6 @@ fn omitted_components_inherit_configured_defaults() {
     let registry =
         ConfigRegistry::new(PathBuf::from("/tmp/defaults")).with_agent_defaults(defaults.clone());
     let config = lower_config("name = 'example'", registry.agent_defaults());
-    assert_eq!(config.tools, defaults.tools);
     assert_eq!(config.bundles, defaults.bundles);
     assert_eq!(config.hooks, defaults.hooks);
 }
@@ -43,12 +41,11 @@ fn omitted_components_inherit_configured_defaults() {
 fn explicit_empty_components_disable_configured_defaults() {
     let defaults = configured_defaults();
     let config = lower_config(
-        "name = 'example'\ntools = []\nbundles = []\n[hooks]\nagent_create = []\nsession_update = []\nbefore_request = []\nafter_request = []",
+        "name = 'example'\nbundles = []\n[hooks]\nagent_create = []\nsession_update = []\nbefore_request = []\nafter_request = []",
         &defaults,
     );
-    assert!(config.tools.is_empty());
     assert!(config.bundles.is_empty());
-    assert_eq!(config.hooks, HookIds::default());
+    assert_eq!(config.hooks, HookConfigs::default());
 }
 
 #[test]
@@ -61,9 +58,128 @@ fn hook_stages_inherit_and_override_independently() {
     assert!(config.hooks.agent_create.is_empty());
     assert_eq!(config.hooks.session_update, defaults.hooks.session_update);
     assert_eq!(config.hooks.before_request, defaults.hooks.before_request);
-    assert_eq!(config.hooks.after_request, vec![HookId::Noop]);
-    assert_eq!(config.tools, defaults.tools);
+    assert_eq!(config.hooks.after_request, vec![HookConfig::Noop]);
     assert_eq!(config.bundles, defaults.bundles);
+}
+
+#[test]
+fn parameterized_hook_configuration_is_local_to_each_stage() {
+    let config = lower_config(
+        "name = 'example'\n[hooks]\nagent_create = ['DefaultStartup', { ExtraSystemPrompt = { prompt = 'First prompt' } }]\nbefore_request = [{ ExtraSystemPrompt = { prompt = 'Second prompt' } }]",
+        &AgentDefaults::default(),
+    );
+    assert_eq!(
+        config.hooks.agent_create,
+        vec![
+            HookConfig::DefaultStartup,
+            HookConfig::ExtraSystemPrompt {
+                prompt: "First prompt".into()
+            }
+        ]
+    );
+    assert_eq!(
+        config.hooks.before_request,
+        vec![HookConfig::ExtraSystemPrompt {
+            prompt: "Second prompt".into()
+        }]
+    );
+    for invalid in [
+        "extra_system_prompt = 'legacy agent field'",
+        "[hooks]\nagent_create = ['ExtraSystemPrompt']",
+        "[hooks]\nagent_create = [{ ExtraSystemPrompt = {} }]",
+        "[hooks]\nagent_create = [{ ExtraSystemPrompt = { prompt = 'text', unknown = true } }]",
+        "tools = []",
+        "tools = ['Bash']",
+        "tools = ['CreateAgent']",
+    ] {
+        assert!(
+            toml::from_str::<AgentDefinitionConfig>(&format!("name = 'example'\n{invalid}"))
+                .is_err(),
+            "accepted invalid component config: {invalid}"
+        );
+    }
+}
+
+#[test]
+fn bundle_flag_payloads_parse_from_toml_and_default_to_interactive_only() {
+    let config = lower_config(
+        "name = 'example'\nbundles = [{ Goal = { interactive_only = false } }, { AskQuestion = {} }]",
+        &AgentDefaults::default(),
+    );
+    assert_eq!(
+        config.bundles,
+        vec![
+            BundleConfig::Goal {
+                interactive_only: false
+            },
+            BundleConfig::AskQuestion {
+                interactive_only: true
+            }
+        ]
+    );
+    let config = lower_config(
+        "name = 'example'\nbundles = [{ Goal = {} }, { AskQuestion = { interactive_only = false } }]",
+        &AgentDefaults::default(),
+    );
+    assert_eq!(
+        config.bundles,
+        vec![
+            BundleConfig::Goal {
+                interactive_only: true
+            },
+            BundleConfig::AskQuestion {
+                interactive_only: false
+            }
+        ]
+    );
+    for bundles in [
+        "['Goal']",
+        "['AskQuestion']",
+        "[{ Goal = { unknown = true } }]",
+        "[{ AskQuestion = { interactive_only = 'yes' } }]",
+    ] {
+        assert!(
+            toml::from_str::<AgentDefinitionConfig>(&format!(
+                "name = 'example'\nbundles = {bundles}"
+            ))
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn file_tools_payloads_parse_read_only_and_noop_bundle_selection() {
+    let config = lower_config(
+        "name = 'example'\nbundles = [{ FileTools = {} }, 'Noop']",
+        &AgentDefaults::default(),
+    );
+    assert_eq!(
+        config.bundles,
+        vec![
+            BundleConfig::FileTools { read_only: false },
+            BundleConfig::Noop
+        ]
+    );
+    let config = lower_config(
+        "name = 'example'\nbundles = [{ FileTools = { read_only = true } }]",
+        &AgentDefaults::default(),
+    );
+    assert_eq!(
+        config.bundles,
+        vec![BundleConfig::FileTools { read_only: true }]
+    );
+    for bundles in [
+        "['FileTools']",
+        "[{ FileTools = { read_only = 'yes' } }]",
+        "[{ FileTools = { unknown = true } }]",
+    ] {
+        assert!(
+            toml::from_str::<AgentDefinitionConfig>(&format!(
+                "name = 'example'\nbundles = {bundles}"
+            ))
+            .is_err()
+        );
+    }
 }
 
 #[test]
@@ -161,6 +277,43 @@ async fn relative_additional_paths_metadata_and_failed_scans_are_atomic() {
     assert!(cursor.list_skills().await.unwrap().is_empty());
     cursor.rollback().await.unwrap();
     database.close().await;
+}
+
+#[tokio::test]
+async fn goal_source_must_explicitly_clear_inherited_ordinary_completion() {
+    let directory = tempfile::tempdir().unwrap();
+    let global = directory.path().join("global");
+    tokio::fs::create_dir_all(global.join("agents"))
+        .await
+        .unwrap();
+    let path = global.join("agents/goal.toml");
+    let base = "name = 'goal'\nbundles = [{ Goal = { interactive_only = false } }]\n";
+    tokio::fs::write(&path, base).await.unwrap();
+    let db = Database::open(directory.path().join("registry.sqlite3"))
+        .await
+        .unwrap();
+    let registry = ConfigRegistry::new(global).with_agent_defaults(configured_defaults());
+    assert!(registry.refresh(&db, None).await.is_err());
+    let mut cursor = db.cursor().await.unwrap();
+    assert!(cursor.list_agent_configs().await.unwrap().is_empty());
+    cursor.rollback().await.unwrap();
+
+    tokio::fs::write(&path, format!("{base}\n[hooks]\nafter_request = []\n"))
+        .await
+        .unwrap();
+    registry.refresh(&db, None).await.unwrap();
+    let mut cursor = db.cursor().await.unwrap();
+    let configs = cursor.list_agent_configs().await.unwrap();
+    assert_eq!(configs.len(), 1);
+    assert!(configs[0].config.hooks.after_request.is_empty());
+    assert_eq!(
+        configs[0].config.bundles,
+        vec![BundleConfig::Goal {
+            interactive_only: false
+        }]
+    );
+    cursor.rollback().await.unwrap();
+    db.close().await;
 }
 
 #[tokio::test]

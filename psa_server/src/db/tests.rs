@@ -18,6 +18,7 @@ mod definitions;
 mod file_tools;
 mod interactive;
 mod models;
+mod results;
 mod subagents;
 mod usage;
 
@@ -119,7 +120,7 @@ async fn round_trips_all_payloads_and_reopens_database() {
             metadata: HistoryItemMetadata::default(),
         }),
         EventType::ProviderItem(native()),
-        EventType::ToolDefinition(ToolDefinition::for_tool(ToolId::Noop)),
+        EventType::ToolDefinition(ToolDefinition::for_tool(ToolId::Noop).unwrap()),
         EventType::ToolCall(ToolCall {
             call_id: "call".into(),
             tool_name: "noop".into(),
@@ -500,7 +501,7 @@ async fn forks_inherit_state_at_the_selected_event_boundary() {
     let child = fork
         .agents
         .iter()
-        .find(|agent| agent.parent_id == Some(agent.id))
+        .find(|copy| copy.parent_id == Some(agent.id))
         .unwrap()
         .clone();
     let empty_child = fork
@@ -551,7 +552,7 @@ async fn forks_inherit_state_at_the_selected_event_boundary() {
     let head_child = head
         .agents
         .iter()
-        .find(|agent| agent.parent_id == Some(agent.id))
+        .find(|copy| copy.parent_id == Some(agent.id))
         .unwrap();
     assert_eq!(head_child.state, AgentState::Interrupted);
     assert_eq!(
@@ -977,7 +978,7 @@ async fn create_legacy_database(path: &std::path::Path) -> sqlx::SqlitePool {
         .run(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO agent_definitions (id,version,name,description,selectable,tools,agent_create_hooks,session_update_hooks,before_request_hooks,after_request_hooks,skills,permitted_subagents,extra_system_prompt) VALUES (1,1,'test','',1,'[]','[]','[]','[]','[]','[]','[]','')")
+    sqlx::query("INSERT INTO agent_definitions (id,version,name,description,selectable,agent_create_hooks,session_update_hooks,before_request_hooks,after_request_hooks,skills,permitted_subagents) VALUES (1,1,'test','',1,'[]','[]','[]','[]','[]','[]')")
         .execute(&pool)
         .await
         .unwrap();

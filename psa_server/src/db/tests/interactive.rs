@@ -64,7 +64,7 @@ async fn interactive_round_trips_reloads_and_is_inherited_by_forks() {
         let child = fork
             .agents
             .iter()
-            .find(|agent| agent.parent_id == Some(agent.id))
+            .find(|copy| copy.parent_id == Some(agent.id))
             .unwrap();
         assert_eq!(child.interactive, agent.interactive);
         assert_eq!(

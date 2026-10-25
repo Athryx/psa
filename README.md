@@ -7,7 +7,11 @@ operations across machines or sandboxes.
 
 Agent creation accepts an `interactive` boolean (JSON default: `false`). It is
 metadata available to tools and hooks, not a runtime behavior switch; agent
-responses expose it and forks inherit it.
+responses expose it and forks inherit it. Opt-in `Goal { interactive_only }` and
+`AskQuestion { interactive_only }` bundles consult the flag only when their
+construction policy is true (the default inside each payload). False enables
+those bundles on noninteractive agents too; low-level client queries remain
+available independently.
 
 **Current limitations:** the client HTTP API has no authentication layer. Keep it
 on loopback or behind a trusted authenticated transport. Probe operations are
@@ -184,11 +188,10 @@ effort = "Medium"
 
 # Optional fallbacks for omitted component fields in API/TOML agent configs.
 [agent_defaults]
-bundles = ["FileTools", "Bash"]
-tools = []
+bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents"]
 
 [agent_defaults.hooks]
-agent_create = ["DefaultStartup", "ToolDefinitions", "Cwd", "Skills"]
+agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
 after_request = ["StopWithoutTools"]
 ```
 
@@ -200,7 +203,7 @@ required. An explicit API model override wins. The resolved concrete model is
 persisted and returned in session responses; reloads, updates, and forks do not
 reset it to these defaults. Restart the server to change creation defaults.
 
-Omitted tools/bundles inherit the entire server default list; explicit lists
+Omitted bundles inherit the entire server default list; explicit lists
 replace it, and `[]` disables it. Hook stages inherit independently. Without
 `[agent_defaults]`, all fallback lists are empty. Defaults resolve during API
 registration/file refresh, not additively or against existing snapshots. Restart
@@ -300,8 +303,14 @@ XML-escaped catalogue of names, descriptions, and paths, not skill bodies.
 Server-owned skills are copied to managed probe caches before agent creation;
 probe-owned skills remain in place. Mutable `SkillId` references are stored
 separately from executable skill paths. Skill paths are consumed only when
-`SkillsHook` is configured. `selectable` and `extra_system_prompt` do not
-automatically select agents or inject prompts; the opt-in Subagents tool enforces
+`SkillsHook` is configured. `selectable` does not automatically select agents.
+Extra prompts require an explicit `HookConfig::ExtraSystemPrompt { prompt }`;
+there is no agent-level prompt field. Components use `HookConfig`/`HookConfigs`
+and `BundleConfig`, not identity IDs. Tools are installed only by bundles;
+there is no standalone tool configuration or agent/defaults `tools` field.
+`FileTools` requires a payload, such as `{"FileTools":{"read_only":false}}`;
+true installs only Read, while false (the payload default) installs Read/Edit/Write. The opt-in
+Subagents tool enforces
 the snapshot's `permitted_subagents` IDs when spawning children. There is no
 remote-operation HTTP API yet; use `psa_server::probes::ProbeRegistry` handles
 inside server-side integrations.
@@ -309,6 +318,7 @@ inside server-side integrations.
 - [Server setup, client examples, storage, and SQLx workflow](psa_server/README.md)
 - [Probe operations, archive handling, and connection lifecycle](psa_probe/README.md)
 - [HTTP API overview](psa_api/API_OVERVIEW.md)
+- [Durable text/JSON results, completion modes, and typed retrieval](docs/AGENT_RESULTS.md)
 - [Actor mailbox API](actors/README.md)
 - [Architecture](ARCHITECTURE.md)
 

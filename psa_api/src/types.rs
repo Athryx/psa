@@ -1,7 +1,7 @@
 //! Shared API identifiers, configuration, requests, responses, and stream messages.
 
 use crate::events::{Event, EventId, EventType};
-use crate::{ClientQueryId, ClientQueryRequest};
+use crate::{BundleConfig, ClientQueryId, ClientQueryRequest, HookConfigs};
 use llm_api::{api::ContentBlock, providers::ModelConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -31,16 +31,17 @@ pub struct AgentDefinitionId(
     pub u64,
 );
 
-/// Built-in hook that can be installed at a lifecycle stage.
+/// Identity of a built-in lifecycle hook, without its construction data.
+/// Use [`crate::HookConfig`] when selecting and configuring an installation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HookId {
     /// Performs no work.
     Noop,
-    /// Stops after a response without tool calls, unless interactive goal policy applies.
+    /// Stops after a response without tool calls, unless installed goal policy applies.
     StopWithoutTools,
     /// Initializes a root agent's model and system context.
     DefaultStartup,
-    /// Appends the definition's extra system prompt.
+    /// Appends the system prompt supplied by its hook configuration.
     ExtraSystemPrompt,
     /// Loads project instructions from the working directory hierarchy.
     ProjectContext,
@@ -54,31 +55,24 @@ pub enum HookId {
     SessionModelUpdate,
 }
 
-/// Ordered hook installations for each lifecycle stage.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct HookIds {
-    /// Hooks run when an agent is first created, not when its worker is reloaded.
-    pub agent_create: Vec<HookId>,
-    /// Hooks run for session updates, including while the agent is idle.
-    pub session_update: Vec<HookId>,
-    /// Hooks run before an inference request.
-    pub before_request: Vec<HookId>,
-    /// Hooks run after an inference request.
-    pub after_request: Vec<HookId>,
-}
-
-/// Ordered tool and hook installations selected by a definition.
+/// Identity of a built-in feature bundle, without its construction data.
+/// Use [`BundleConfig`] when selecting a bundle installation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BundleId {
-    /// Installs the Read, Edit, and Write tools.
+    /// Installs a tool that performs no work.
+    Noop,
+    /// Installs Read and, unless read-only, Edit and Write.
     FileTools,
     /// Installs the Bash, InteractBash, and CloseBash tools with shared sessions.
     Bash,
-    /// Installs interactive goal tools and a goal-aware stopping policy.
+    /// Installs goal tools and a goal-aware stopping policy.
     Goal,
+    /// Installs the tool for requesting structured client input.
+    AskQuestion,
     /// Installs session-wide agent tools backed by core ancestry and steering.
     Subagents,
+    /// Installs schema-validated result recording and its completion policy.
+    TypedResult,
 }
 
 /// An immutable, versioned agent configuration.
@@ -96,21 +90,17 @@ pub struct AgentDefinition {
     pub description: String,
     /// Whether this definition is offered for selection.
     pub selectable: bool,
-    /// Ordered feature bundles to install.
+    /// Ordered feature bundle construction configurations.
     #[serde(default)]
-    pub bundles: Vec<BundleId>,
-    /// Additional native tools to install.
-    pub tools: Vec<ToolId>,
-    /// Ordered hooks for each lifecycle stage.
-    pub hooks: HookIds,
+    pub bundles: Vec<BundleConfig>,
+    /// Ordered hook construction configurations for each lifecycle stage.
+    pub hooks: HookConfigs,
     /// Pinned model configuration; absent to follow the session model.
     pub model_config: Option<ModelConfig>,
     /// Paths to skill files or directories.
     pub skills: Vec<PathBuf>,
     /// Definition versions this agent may use for subagents.
     pub permitted_subagents: Vec<AgentDefinitionId>,
-    /// Additional system prompt supplied to the extra-system-prompt hook.
-    pub extra_system_prompt: String,
 }
 
 /// Configuration for creating an immutable agent definition version.
@@ -125,15 +115,12 @@ pub struct CreateAgentDefinition {
     /// Whether this definition is offered for selection; defaults to false.
     #[serde(default)]
     pub selectable: bool,
-    /// Ordered feature bundles to install; defaults to empty.
+    /// Ordered feature bundle configurations; defaults to empty.
     #[serde(default)]
-    pub bundles: Vec<BundleId>,
-    /// Additional native tools to install; defaults to empty.
+    pub bundles: Vec<BundleConfig>,
+    /// Ordered lifecycle hook configurations; defaults to no hooks.
     #[serde(default)]
-    pub tools: Vec<ToolId>,
-    /// Ordered lifecycle hooks; defaults to no hooks.
-    #[serde(default)]
-    pub hooks: HookIds,
+    pub hooks: HookConfigs,
     /// Pinned model configuration; absent to follow the session model.
     pub model_config: Option<ModelConfig>,
     /// Paths to skill files or directories; defaults to empty.
@@ -142,9 +129,6 @@ pub struct CreateAgentDefinition {
     /// Allowed subagent definition versions; defaults to empty.
     #[serde(default)]
     pub permitted_subagents: Vec<AgentDefinitionId>,
-    /// Additional system prompt; defaults to empty.
-    #[serde(default)]
-    pub extra_system_prompt: String,
 }
 
 /// A complete replacement that creates a new immutable definition version.
@@ -161,7 +145,8 @@ pub enum AgentState {
     Running,
 }
 
-/// Identifier of a built-in native agent tool.
+/// Identity of an installed native agent tool, independent of construction data.
+/// Tools are installed through their owning [`BundleConfig`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolId {
     /// Performs no work.
@@ -178,10 +163,12 @@ pub enum ToolId {
     InteractBash,
     /// Stops a running shell command.
     CloseBash,
-    /// Sets the agent's interactive goal.
+    /// Sets the agent's goal when goal mode is installed.
     SetGoal,
     /// Updates the status of the agent's goal.
     SetGoalStatus,
+    /// Requests structured input from a connected client.
+    AskQuestion,
     /// Creates a subagent from a permitted definition.
     CreateAgent,
     /// Sends an attributed message to another agent.
@@ -190,6 +177,8 @@ pub enum ToolId {
     WaitMessage,
     /// Lists agents visible to the subagent tools.
     ListAgents,
+    /// Records a structured result validated against the installed result schema.
+    RecordResult,
 }
 
 /// Content blocks returned by a native tool.
@@ -428,6 +417,10 @@ pub struct EventsQuery {
     pub limit: u32,
     /// Whether to include provisional events; defaults to false.
     pub include_pending: bool,
+    /// Restrict event payloads to durable result artifacts; defaults to false.
+    /// Cursors still refer to the full event sequence, not a separate result sequence.
+    #[serde(default)]
+    pub results_only: bool,
 }
 
 impl Default for EventsQuery {
@@ -437,6 +430,7 @@ impl Default for EventsQuery {
             through: None,
             limit: 1000,
             include_pending: false,
+            results_only: false,
         }
     }
 }

@@ -16,16 +16,16 @@ pub mod session_manager;
 pub mod sessions;
 
 /// Server-only convenience for taking a tool definition snapshot.
-pub trait ToolDefinitionExt {
-    fn for_tool(id: crate::components::tools::ToolId) -> Self;
+pub trait ToolDefinitionExt: Sized {
+    fn for_tool(id: crate::components::tools::ToolId) -> Option<Self>;
 }
 
 impl ToolDefinitionExt for ToolDefinition {
-    fn for_tool(id: crate::components::tools::ToolId) -> Self {
-        Self {
+    fn for_tool(id: crate::components::tools::ToolId) -> Option<Self> {
+        Some(Self {
             id,
-            definition: crate::components::tools::tool_definition(id),
-        }
+            definition: crate::components::tools::tool_definition(id)?,
+        })
     }
 }
 

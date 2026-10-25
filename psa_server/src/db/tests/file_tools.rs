@@ -16,10 +16,17 @@ async fn native_tool_definitions_round_trip_through_persistence_and_reopen() {
         ToolId::SendMessage,
         ToolId::WaitMessage,
         ToolId::ListAgents,
+        ToolId::AskQuestion,
     ];
+    assert!(crate::components::tools::tool_definition(ToolId::RecordResult).is_none());
+    assert!(ToolDefinition::for_tool(ToolId::RecordResult).is_none());
     let events: Vec<_> = ids
         .iter()
-        .map(|id| NewEvent::new(EventType::ToolDefinition(ToolDefinition::for_tool(*id))))
+        .map(|id| {
+            NewEvent::new(EventType::ToolDefinition(
+                ToolDefinition::for_tool(*id).unwrap(),
+            ))
+        })
         .collect();
     let mut cursor = db.cursor().await.unwrap();
     cursor.add_events(agent.id, &events).await.unwrap();
@@ -39,7 +46,7 @@ async fn native_tool_definitions_round_trip_through_persistence_and_reopen() {
         assert_eq!(snapshot.id, id);
         assert_eq!(
             serde_json::to_value(&snapshot.definition).unwrap(),
-            serde_json::to_value(crate::components::tools::tool_definition(id)).unwrap(),
+            serde_json::to_value(crate::components::tools::tool_definition(id).unwrap()).unwrap(),
         );
     }
     cursor.rollback().await.unwrap();

@@ -15,7 +15,7 @@ impl Fixture {
         Self::with_bundles(Vec::new()).await
     }
 
-    async fn with_bundles(bundles: Vec<psa_api::BundleId>) -> Self {
+    async fn with_bundles(bundles: Vec<psa_api::BundleConfig>) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let db = Database::open(directory.path().join("signals.sqlite3"))
             .await
@@ -676,7 +676,7 @@ async fn background_reports_cannot_restart_parent_even_if_interrupted_after_acce
 #[tokio::test]
 async fn completion_hook_reports_children_without_bundle_and_preserves_outcomes() {
     use crate::components::hooks::subagent_completion::SubagentCompletion;
-    let mut fixture = Fixture::with_bundles(vec![psa_api::BundleId::Subagents]).await;
+    let mut fixture = Fixture::with_bundles(vec![psa_api::BundleConfig::Subagents]).await;
     let mut cursor = fixture.manager.db.cursor().await.unwrap();
     let definition = cursor
         .create_agent_definition(psa_api::CreateAgentDefinition {
@@ -754,7 +754,7 @@ async fn completion_hook_reports_children_without_bundle_and_preserves_outcomes(
 
 #[tokio::test]
 async fn starting_plain_child_restores_parent_bundle_lifecycle_callbacks() {
-    let mut fixture = Fixture::with_bundles(vec![psa_api::BundleId::Subagents]).await;
+    let mut fixture = Fixture::with_bundles(vec![psa_api::BundleConfig::Subagents]).await;
     let mut cursor = fixture.manager.db.cursor().await.unwrap();
     let definition = cursor
         .create_agent_definition(psa_api::CreateAgentDefinition {

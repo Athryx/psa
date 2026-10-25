@@ -1,10 +1,7 @@
 use super::{Hook, HookError};
 use crate::{
-    agents::{Agent, agent_context::AgentContext},
-    components::cancellation::Cancellation,
-    db::DbError,
+    agents::agent_context::AgentContext, components::cancellation::Cancellation, db::DbError,
     probes::ProbeHandle,
-    sessions::Session,
 };
 use psa_api::{
     events::{EventType, Log, Message, MessageType, NewEvent},
@@ -30,10 +27,6 @@ const MAX_CONTEXT_BYTES: usize = 4 * MAX_FILE_BYTES;
 pub struct ProjectContextHook;
 
 impl Hook for ProjectContextHook {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self
-    }
-
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(3)
     }

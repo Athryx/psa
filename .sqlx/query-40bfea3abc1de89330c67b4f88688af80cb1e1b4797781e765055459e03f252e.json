@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT e.agent_id, e.event_seq, e.session_position, e.timestamp_us, p.value FROM events e JOIN event_result p ON p.event_pk=e.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ? AND e.kind='result' ORDER BY e.event_seq ASC LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "agent_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "agent_id"
+          }
+        }
+      },
+      {
+        "name": "event_seq",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "event_seq"
+          }
+        }
+      },
+      {
+        "name": "session_position",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "session_position"
+          }
+        }
+      },
+      {
+        "name": "timestamp_us",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "timestamp_us"
+          }
+        }
+      },
+      {
+        "name": "value",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_result",
+            "name": "value"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "40bfea3abc1de89330c67b4f88688af80cb1e1b4797781e765055459e03f252e"
+}

@@ -1,6 +1,6 @@
 //! Omission-aware configuration input and shared component default resolution.
 use crate::{
-    AgentConfig, BundleId, ConfigId, HookId, HookIds, IncludedItems, ModelSelection, ToolId,
+    AgentConfig, BundleConfig, ConfigId, HookConfig, HookConfigs, IncludedItems, ModelSelection,
 };
 use serde::{Deserialize, Serialize};
 
@@ -8,12 +8,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentDefaults {
-    /// Ordered fallback bundles; defaults to empty.
-    pub bundles: Vec<BundleId>,
-    /// Ordered fallback explicit tools; defaults to empty.
-    pub tools: Vec<ToolId>,
-    /// Per-stage fallback hooks; all stages default to empty.
-    pub hooks: HookIds,
+    /// Ordered fallback bundle configurations; defaults to empty.
+    pub bundles: Vec<BundleConfig>,
+    /// Per-stage fallback hook configurations; all stages default to empty.
+    pub hooks: HookConfigs,
 }
 
 /// Each absent stage inherits independently; Some([]) disables that stage.
@@ -22,22 +20,22 @@ pub struct AgentDefaults {
 pub struct HookOverrides {
     /// Creation hooks; omission inherits defaults and an empty list disables them.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_create: Option<Vec<HookId>>,
+    pub agent_create: Option<Vec<HookConfig>>,
     /// Session-update hooks; omission inherits defaults and an empty list disables them.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_update: Option<Vec<HookId>>,
+    pub session_update: Option<Vec<HookConfig>>,
     /// Before-request hooks; omission inherits defaults and an empty list disables them.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub before_request: Option<Vec<HookId>>,
+    pub before_request: Option<Vec<HookConfig>>,
     /// After-request hooks; omission inherits defaults and an empty list disables them.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub after_request: Option<Vec<HookId>>,
+    pub after_request: Option<Vec<HookConfig>>,
 }
 
 impl HookOverrides {
     /// Replace absent stages with defaults, preserving explicit lists unchanged.
-    pub fn resolve(self, defaults: &HookIds) -> HookIds {
-        HookIds {
+    pub fn resolve(self, defaults: &HookConfigs) -> HookConfigs {
+        HookConfigs {
             agent_create: self
                 .agent_create
                 .unwrap_or_else(|| defaults.agent_create.clone()),
@@ -54,8 +52,8 @@ impl HookOverrides {
     }
 }
 
-impl From<HookIds> for HookOverrides {
-    fn from(hooks: HookIds) -> Self {
+impl From<HookConfigs> for HookOverrides {
+    fn from(hooks: HookConfigs) -> Self {
         Self {
             agent_create: Some(hooks.agent_create),
             session_update: Some(hooks.session_update),
@@ -80,16 +78,10 @@ pub struct AgentConfigInput {
     pub selectable: bool,
     /// Omission/null inherits server bundles; explicit lists replace them, even empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bundles: Option<Vec<BundleId>>,
-    /// Omission/null inherits server tools; explicit lists replace them, even empty.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<ToolId>>,
+    pub bundles: Option<Vec<BundleConfig>>,
     /// Per-stage overrides; absent stages independently inherit server defaults.
     #[serde(default)]
     pub hooks: HookOverrides,
-    /// Prompt consumed only by the corresponding hook; defaults to empty.
-    #[serde(default)]
-    pub extra_system_prompt: String,
     /// Required nonempty ordered list of allowed model policies.
     pub models: Vec<ModelSelection>,
     /// Select the first model when no choice is supplied; defaults to true.
@@ -119,9 +111,7 @@ impl AgentConfigInput {
             description: String::new(),
             selectable: false,
             bundles: None,
-            tools: None,
             hooks: HookOverrides::default(),
-            extra_system_prompt: String::new(),
             default: true,
             subagents: IncludedItems::default(),
             skills: IncludedItems::default(),
@@ -136,9 +126,7 @@ impl AgentConfigInput {
             description: self.description,
             selectable: self.selectable,
             bundles: self.bundles.unwrap_or_else(|| defaults.bundles.clone()),
-            tools: self.tools.unwrap_or_else(|| defaults.tools.clone()),
             hooks: self.hooks.resolve(&defaults.hooks),
-            extra_system_prompt: self.extra_system_prompt,
             models: self.models,
             default: self.default,
             subagents: self.subagents,
@@ -155,9 +143,7 @@ impl From<AgentConfig> for AgentConfigInput {
             description: config.description,
             selectable: config.selectable,
             bundles: Some(config.bundles),
-            tools: Some(config.tools),
             hooks: config.hooks.into(),
-            extra_system_prompt: config.extra_system_prompt,
             models: config.models,
             default: config.default,
             subagents: config.subagents,
@@ -169,15 +155,23 @@ impl From<AgentConfig> for AgentConfigInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HookConfig;
     use serde_json::json;
 
     fn defaults() -> AgentDefaults {
         AgentDefaults {
-            bundles: vec![BundleId::FileTools],
-            tools: vec![ToolId::Noop],
-            hooks: HookIds {
-                agent_create: vec![HookId::DefaultStartup],
-                after_request: vec![HookId::StopWithoutTools],
+            bundles: vec![
+                BundleConfig::FileTools { read_only: false },
+                BundleConfig::Noop,
+            ],
+            hooks: HookConfigs {
+                agent_create: vec![
+                    HookConfig::DefaultStartup,
+                    HookConfig::ExtraSystemPrompt {
+                        prompt: "Inherited prompt".into(),
+                    },
+                ],
+                after_request: vec![HookConfig::StopWithoutTools],
                 ..Default::default()
             },
         }
@@ -190,17 +184,36 @@ mod tests {
             serde_json::from_value(json!({"config_id": id, "models": ["Global"]})).unwrap();
         let resolved = input.clone().resolve(&defaults());
         assert_eq!(resolved.bundles, defaults().bundles);
-        assert_eq!(resolved.tools, defaults().tools);
         assert_eq!(resolved.hooks, defaults().hooks);
         let wire = serde_json::to_value(&input).unwrap();
         assert!(wire.get("bundles").is_none());
         assert!(wire.get("tools").is_none());
-        let input: AgentConfigInput = serde_json::from_value(json!({"config_id": id, "models": ["Global"], "bundles": [], "tools": [], "hooks": {"agent_create": []}})).unwrap();
+        let input: AgentConfigInput = serde_json::from_value(json!({"config_id": id, "models": ["Global"], "bundles": [], "hooks": {"agent_create": []}})).unwrap();
         let resolved = input.resolve(&defaults());
         assert!(resolved.bundles.is_empty());
-        assert!(resolved.tools.is_empty());
         assert!(resolved.hooks.agent_create.is_empty());
         assert_eq!(resolved.hooks.after_request, defaults().hooks.after_request);
+    }
+
+    #[test]
+    fn explicit_hook_payloads_replace_only_their_stage() {
+        let input: AgentConfigInput = serde_json::from_value(json!({
+            "config_id": {"config_group": "Global", "name": "agent"},
+            "models": ["Global"],
+            "hooks": {"agent_create": [{"ExtraSystemPrompt": {"prompt": "Local prompt"}}]},
+        }))
+        .unwrap();
+        let serialized = serde_json::to_value(&input).unwrap();
+        assert!(serialized["hooks"].get("after_request").is_none());
+        let resolved = input.resolve(&defaults());
+        assert_eq!(
+            resolved.hooks.agent_create,
+            vec![HookConfig::ExtraSystemPrompt {
+                prompt: "Local prompt".into(),
+            }]
+        );
+        assert_eq!(resolved.hooks.after_request, defaults().hooks.after_request);
+        assert_eq!(resolved.bundles, defaults().bundles);
     }
 
     #[test]
@@ -217,7 +230,6 @@ mod tests {
         let roundtrip: AgentConfigInput = serde_json::from_value(serialized).unwrap();
         let resolved = roundtrip.resolve(&defaults());
         assert!(resolved.bundles.is_empty());
-        assert!(resolved.tools.is_empty());
-        assert_eq!(resolved.hooks, HookIds::default());
+        assert_eq!(resolved.hooks, HookConfigs::default());
     }
 }

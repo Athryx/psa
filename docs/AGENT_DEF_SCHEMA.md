@@ -63,10 +63,8 @@ struct AgentConfig {
     config_id: ConfigId,
     description: String,
     selectable: bool,
-    bundles: Vec<BundleId>,
-    tools: Vec<ToolId>,
-    hooks: HookIds,
-    extra_system_prompt: String,
+    bundles: Vec<BundleConfig>,
+    hooks: HookConfigs,
     models: Vec<ModelSelection>,
     default: bool,
     subagents: IncludedItems,
@@ -78,6 +76,24 @@ enum ModelSelection {
     Parent,
 }
 enum EffortSelection { Fixed(Effort), Parent, Global }
+
+enum BundleConfig {
+    Noop, Bash, Subagents,
+    FileTools { read_only: bool },
+    Goal { interactive_only: bool },
+    AskQuestion { interactive_only: bool },
+    TypedResult { schema: ToolSchema, max_retries: u32 },
+}
+enum HookConfig {
+    Noop, StopWithoutTools, DefaultStartup, ToolDefinitions, Cwd, Skills,
+    ExtraSystemPrompt { prompt: String }, ProjectContext, SessionModelUpdate,
+}
+struct HookConfigs {
+    agent_create: Vec<HookConfig>,
+    session_update: Vec<HookConfig>,
+    before_request: Vec<HookConfig>,
+    after_request: Vec<HookConfig>,
+}
 
 struct Skill {
     id: SkillId,
@@ -108,6 +124,54 @@ Links, special files, escaping and
 duplicate archive paths are rejected. Metadata uses the same parser as discovery;
 its name must match `config_id.name`. `disable-model-invocation` is preserved.
 
+### Component construction configurations
+
+All tools are installed by bundles: there is no standalone tool configuration
+or `tools` field on agent configs, stored definitions, or server defaults.
+`ToolId` remains a tool identity enum, not a construction selector.
+`Noop` is a unit bundle installing the Noop tool. `FileTools { read_only }`
+requires a payload: `{"FileTools":{"read_only":true}}` installs only Read;
+false or omission inside the payload installs Read, Edit, and Write.
+Bare `"FileTools"` is invalid. TOML uses
+`{ FileTools = { read_only = true } }` in the bundle array.
+`BundleConfig` also selects `Bash`, `Subagents`,
+`Goal { interactive_only }`, and `AskQuestion { interactive_only }`.
+The latter two require payload objects: `{"Goal":{"interactive_only":true}}` or
+`{"AskQuestion":{"interactive_only":true}}`. An omitted flag inside either payload
+defaults to true (for example `{"Goal":{}}`); bare `"Goal"` is invalid. TOML uses
+`{ Goal = { interactive_only = true } }` or
+`{ AskQuestion = { interactive_only = true } }` in the bundle array.
+With true, noninteractive agents install neither the bundle's tools nor hooks;
+false fully enables the bundle regardless of the agent flag. Both remain opt-in.
+`AskQuestion` installs only its tool, with no hook. `Goal` retains its goal state,
+persistence, and continuation policy even for noninteractive agents when false.
+`TypedResult { schema, max_retries }` installs a sequential JSON result tool and
+completion hook. The schema is a raw, explicit object-root `ToolSchema` (Draft
+2020-12, local references only); retries default to three. It is incompatible
+with Goal and `StopWithoutTools`, including default-inherited hooks. Override
+`hooks.after_request` with `[]` to disable an inherited ordinary completion hook.
+See [durable results](AGENT_RESULTS.md) for validation, retry limits, typed
+configuration helpers, and retrieval.
+
+`HookConfigs` contains four ordered `Vec<HookConfig>` stages. Unit hook and bundle
+variants remain JSON/TOML strings. The `ExtraSystemPrompt` hook instead carries
+its own prompt; there is no agent/config `extra_system_prompt` field:
+
+```json
+{"hooks":{"agent_create":["DefaultStartup",{"ExtraSystemPrompt":{"prompt":"Follow the project conventions."}},"ToolDefinitions"]}}
+```
+
+The equivalent file hook stage is:
+
+```toml
+[hooks]
+agent_create = ["DefaultStartup", { ExtraSystemPrompt = { prompt = "Follow the project conventions." } }, "ToolDefinitions"]
+```
+
+Prompt hooks are opt-in; ordinary startup lists omit `ExtraSystemPrompt` unless
+an explicit prompt payload is provided. Definitions, defaults, API input, and
+TOML discovery all store construction configurations rather than identity IDs.
+
 ### Batch JSON example
 
 `POST /agent-configs` takes an array of `AgentConfigInput`, even for one config:
@@ -117,7 +181,7 @@ its name must match `config_id.name`. `disable-model-invocation` is preserved.
   {
     "config_id": {"config_group": {"Custom": "examples"}, "name": "worker"},
     "description": "Example worker",
-    "bundles": ["FileTools", "Bash"],
+    "bundles": [{"FileTools": {"read_only": false}}, "Bash"],
     "models": ["Global", {"Fixed": {"model": "openrouter/example/model", "effort": {"Fixed": "High"}}}],
     "default": false,
     "subagents": {"groups": [], "items": []},
@@ -140,23 +204,22 @@ The server's `config.toml` can supply fallbacks shared by TOML files and API inp
 
 ```toml
 [agent_defaults]
-bundles = ["FileTools", "Bash"]
-tools = []
+bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents"]
 
 [agent_defaults.hooks]
-agent_create = ["DefaultStartup", "ToolDefinitions", "Cwd", "Skills"]
+agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
 after_request = ["StopWithoutTools"]
 ```
 
-An omitted `tools` or `bundles` field inherits its entire configured default
+An omitted `bundles` field inherits its entire configured default
 list; an explicit list replaces it, and `[]` disables it. Hook stages inherit
 independently: omitted `hooks.after_request` inherits, while
 `hooks.after_request = []` disables that stage without affecting other stages.
 An omitted `[agent_defaults]` means all fallback lists are empty. Defaults are
 not appended to explicit lists.
 
-`AgentConfigInput` represents `tools`/`bundles` as `Option<Vec<_>>` and `hooks` as
-`HookOverrides` whose four stages are `Option<Vec<HookId>>`.
+`AgentConfigInput` represents `bundles` as `Option<Vec<BundleConfig>>` and `hooks` as
+`HookOverrides` whose four stages are `Option<Vec<HookConfig>>`.
 `AgentConfigInput::new(config_id, models)` leaves components omitted, inheriting
 server defaults. Converting a normalized `AgentConfig` into input makes every
 component list explicit, including empty lists; resubmitting a returned config
@@ -257,7 +320,7 @@ For session/global inheritance alone, omit `models` or write `models = ["Global"
 `Effort` variants (`Off`, `Minimal`, `Low`, `Medium`, `High`, `Xhigh`, `Max`);
 inherited effort can instead be `effort = "Parent"` or `effort = "Global"` inside
 `Fixed`. Other optional file fields include `description`, `selectable`,
-`bundles`, `tools`, `extra_system_prompt`, and `[hooks]`; hooks contain the
+`bundles` and `[hooks]`; hooks contain the
 `agent_create`, `session_update`, `before_request`, and `after_request` arrays.
 Omitted component fields inherit `[agent_defaults]`; for example, `bundles = []`
 and `[hooks]` with `after_request = []` explicitly disable those defaults.

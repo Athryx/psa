@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    agents::{Agent, agent_context::AgentContext},
+    agents::agent_context::AgentContext,
     components::{
         cancellation::Cancellation,
         hooks::{Hook, HookError},
@@ -38,12 +38,6 @@ pub struct RecordLifecycle {
 }
 
 impl Hook for RecordLifecycle {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self {
-            name: "unconfigured",
-        }
-    }
-
     fn cancellation_timeout(&self) -> Duration {
         WAIT
     }
@@ -239,14 +233,14 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
             psa_api::CreateAgentDefinition {
                 name: "explicit".into(),
                 model_config: Some(explicit_model.clone()),
-                tools: vec![psa_api::ToolId::Noop],
-                hooks: psa_api::HookIds {
+                bundles: vec![psa_api::BundleConfig::Noop],
+                hooks: psa_api::HookConfigs {
                     agent_create: vec![
-                        psa_api::HookId::DefaultStartup,
-                        psa_api::HookId::ToolDefinitions,
+                        psa_api::HookConfig::DefaultStartup,
+                        psa_api::HookConfig::ToolDefinitions,
                     ],
-                    session_update: vec![psa_api::HookId::SessionModelUpdate],
-                    after_request: vec![psa_api::HookId::StopWithoutTools],
+                    session_update: vec![psa_api::HookConfig::SessionModelUpdate],
+                    after_request: vec![psa_api::HookConfig::StopWithoutTools],
                     ..Default::default()
                 },
                 ..Default::default()

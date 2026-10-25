@@ -177,6 +177,25 @@ impl<'a> AgentContext<'a> {
         }
     }
 
+    /// Load this agent's newest durable result, following its complete logical history.
+    pub async fn load_last_result(
+        &self,
+    ) -> Result<Option<psa_api::ResultRecord>, super::session_manager::RuntimeError> {
+        self.sessions
+            .load_last_result(self.session().id, self.agent().id)
+            .await
+    }
+
+    /// Load this agent's newest `limit` durable results, including visible ancestry.
+    pub async fn load_last_results(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<psa_api::ResultRecord>, super::session_manager::RuntimeError> {
+        self.sessions
+            .load_last_results(self.session().id, self.agent().id, limit)
+            .await
+    }
+
     pub async fn load_events(&self, range: EventRange) -> Result<Vec<Event>, DbError> {
         let mut cursor = self.database().cursor().await?;
         let events = cursor.load_events(self.agent().id, range).await?;

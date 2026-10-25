@@ -1,36 +1,29 @@
-//! Goal-aware replacement for StopWithoutTools on interactive Goal agents.
-use super::{Hook, HookError};
+//! Goal-aware replacement for StopWithoutTools on agents with Goal installed.
+use super::{Hook, HookError, stop_without_tools::build_text_completion_events};
 use crate::{
-    agents::{Agent, AgentState, agent_context::AgentContext, publication::status_event},
+    agents::{AgentState, agent_context::AgentContext},
     components::{
         bundles::goal::{GoalHandle, GoalState},
         cancellation::Cancellation,
     },
-    sessions::Session,
 };
 use llm_api::api::{Outcome, StopReason};
 use psa_api::events::{EventType, Message, MessageType, NewEvent};
 use std::time::Duration;
 
-#[derive(Default)]
 pub struct GoalHook {
-    handle: Option<GoalHandle>,
+    handle: GoalHandle,
 }
 
 impl GoalHook {
     pub(crate) fn with_handle(handle: GoalHandle) -> Self {
-        Self {
-            handle: Some(handle),
-        }
+        Self { handle }
     }
 
     async fn after_request(&self, context: &mut AgentContext<'_>) -> Result<(), HookError> {
-        if !context.agent().interactive || context.agent().state != AgentState::Running {
+        if context.agent().state != AgentState::Running {
             return Ok(());
         }
-        let Some(handle) = &self.handle else {
-            return Ok(());
-        };
         let Some(response) = context.load_last_inference_result().await? else {
             return Ok(());
         };
@@ -47,17 +40,10 @@ impl GoalHook {
             return Ok(());
         }
 
-        let Some(lease) = handle.lease(context).await? else {
+        let Some(lease) = self.handle.lease(context).await? else {
             return Ok(());
         };
-        if lease.state.is_running()
-            && matches!(
-                end.outcome,
-                Outcome::Completed {
-                    reason: StopReason::EndTurn
-                }
-            )
-        {
+        if lease.state.is_running() {
             // Append only: reminders retain their original goal/generation in history.
             // Queued user policy intentionally waits until the goal is finished;
             // Steer and cancellation still intervene through the ordinary worker loop.
@@ -69,7 +55,7 @@ impl GoalHook {
                 .await?;
         } else {
             context
-                .save_events(&[status_event(AgentState::Idle)])
+                .save_events(&build_text_completion_events(&response.items))
                 .await?;
         }
         Ok(())
@@ -77,7 +63,14 @@ impl GoalHook {
 }
 
 fn can_settle(outcome: &Outcome, has_tools: bool) -> bool {
-    !has_tools && matches!(outcome, Outcome::Completed { .. })
+    !has_tools
+        && matches!(
+            outcome,
+            Outcome::Completed { .. }
+                | Outcome::Incomplete {
+                    reason: StopReason::TokenLimit
+                }
+        )
 }
 
 fn format_reminder(state: &GoalState) -> String {
@@ -90,9 +83,6 @@ fn format_reminder(state: &GoalState) -> String {
 }
 
 impl Hook for GoalHook {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self::default()
-    }
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(3)
     }
@@ -112,7 +102,7 @@ impl Hook for GoalHook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::bundles::goal::GoalStatus;
+    use crate::{agents::publication::status_event, components::bundles::goal::GoalStatus};
     #[test]
     fn completed_without_tools_is_always_eligible_to_settle() {
         for reason in [
@@ -129,18 +119,30 @@ mod tests {
             ));
             assert!(!can_settle(&Outcome::Completed { reason }, true));
         }
+        assert!(can_settle(
+            &Outcome::Incomplete {
+                reason: StopReason::TokenLimit
+            },
+            false,
+        ));
+        assert!(!can_settle(
+            &Outcome::Incomplete {
+                reason: StopReason::TokenLimit
+            },
+            true,
+        ));
         for outcome in [
             Outcome::Cancelled,
             Outcome::InProgress,
             Outcome::Incomplete {
-                reason: StopReason::TokenLimit,
+                reason: StopReason::ContentFilter,
             },
         ] {
             assert!(!can_settle(&outcome, false));
         }
     }
     #[tokio::test]
-    async fn context_settles_non_end_turn_but_only_normal_end_turn_continues_running_goal() {
+    async fn installed_goal_policy_completes_only_without_an_active_goal() {
         use crate::{
             agents::{
                 NewAgent, agent_manager::AgentManagerState, publication::Publication,
@@ -173,142 +175,251 @@ mod tests {
         .await
         .unwrap();
 
-        // Exercise persisted agent status, not just a continuation predicate.
-        for (reason, active, interrupted, cancelled, expected) in [
-            (StopReason::EndTurn, true, false, false, AgentState::Running),
-            (
-                StopReason::StopSequence,
-                true,
-                false,
-                false,
-                AgentState::Idle,
-            ),
-            (StopReason::TokenLimit, true, false, false, AgentState::Idle),
-            (StopReason::EndTurn, false, false, false, AgentState::Idle),
-            (
-                StopReason::EndTurn,
-                true,
-                true,
-                false,
-                AgentState::Interrupted,
-            ),
-            (StopReason::EndTurn, true, false, true, AgentState::Running),
-        ] {
-            let mut cursor = database.cursor().await.unwrap();
-            let definition = cursor
-                .create_agent_definition(psa_api::CreateAgentDefinition {
-                    name: format!("goal-{reason:?}-{active}-{interrupted}-{cancelled}"),
-                    bundles: vec![psa_api::BundleId::Goal],
-                    ..Default::default()
-                })
-                .await
-                .unwrap();
-            let session = cursor
-                .create_session(NewSession {
-                    name: "goal hook".into(),
-                    working_directory: "/work".into(),
-                    probe_id: support::probe_metadata().id,
-                    model_config: support::model_config(),
-                })
-                .await
-                .unwrap();
-            let agent = cursor
-                .create_agent(
-                    session.id,
-                    NewAgent {
-                        subagent_parent_id: None,
-                        interactive: true,
-                        definition_id: definition.id,
-                        name: "goal agent".into(),
-                    },
+        // Exercise installed policy, persisted state, and conventional stopper
+        // precedence for interactive, opted-in, and skipped noninteractive agents.
+        for (interactive, interactive_only) in [(true, true), (false, false), (false, true)] {
+            let installed = interactive || !interactive_only;
+            for (reason, active, completed, interrupted, cancelled, expected) in [
+                (
+                    StopReason::EndTurn,
+                    true,
+                    false,
+                    false,
+                    false,
+                    AgentState::Running,
+                ),
+                (
+                    StopReason::StopSequence,
+                    true,
+                    false,
+                    false,
+                    false,
+                    AgentState::Running,
+                ),
+                (
+                    StopReason::TokenLimit,
+                    true,
+                    false,
+                    false,
+                    false,
+                    AgentState::Running,
+                ),
+                (
+                    StopReason::EndTurn,
+                    false,
+                    false,
+                    false,
+                    false,
+                    AgentState::Idle,
+                ),
+                (
+                    StopReason::TokenLimit,
+                    false,
+                    false,
+                    false,
+                    false,
+                    AgentState::Idle,
+                ),
+                (
+                    StopReason::EndTurn,
+                    true,
+                    true,
+                    false,
+                    false,
+                    AgentState::Idle,
+                ),
+                (
+                    StopReason::EndTurn,
+                    true,
+                    false,
+                    true,
+                    false,
+                    AgentState::Interrupted,
+                ),
+                (
+                    StopReason::EndTurn,
+                    true,
+                    false,
+                    false,
+                    true,
+                    AgentState::Running,
+                ),
+            ] {
+                let mut cursor = database.cursor().await.unwrap();
+                let name = format!(
+                    "goal-{interactive}-{interactive_only}-{reason:?}-{active}-{completed}-{interrupted}-{cancelled}"
+                );
+                let definition = cursor
+                    .create_agent_definition(psa_api::CreateAgentDefinition {
+                        name,
+                        bundles: vec![psa_api::BundleConfig::Goal { interactive_only }],
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+                let session = cursor
+                    .create_session(NewSession {
+                        name: "goal hook".into(),
+                        working_directory: "/work".into(),
+                        probe_id: support::probe_metadata().id,
+                        model_config: support::model_config(),
+                    })
+                    .await
+                    .unwrap();
+                let agent = cursor
+                    .create_agent(
+                        session.id,
+                        NewAgent {
+                            subagent_parent_id: None,
+                            interactive,
+                            definition_id: definition.id,
+                            name: "goal agent".into(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                cursor.commit().await.unwrap();
+                let mut state = AgentManagerState::load_persisted(
+                    database.clone(),
+                    publication.clone(),
+                    agent.id,
                 )
                 .await
                 .unwrap();
-            cursor.commit().await.unwrap();
-            let mut state =
-                AgentManagerState::load_persisted(database.clone(), publication.clone(), agent.id)
-                    .await
-                    .unwrap();
-            let mut components = InstalledComponents::install(&definition, &agent, &session)
-                .await
-                .unwrap();
-            let mut context = AgentContext::with_optional_probe(&mut state, None, &runtime.handle);
-            context
-                .save_events(&[status_event(AgentState::Running)])
-                .await
-                .unwrap();
-            if active {
-                let (_sender, cancellation) = Cancellation::channel();
-                let output = components
-                    .tools
-                    .iter()
-                    .find(|tool| tool.id() == psa_api::ToolId::SetGoal)
-                    .unwrap()
-                    .execute(
-                        serde_json::json!({"goal":"prove the goal"}),
-                        &mut context,
-                        cancellation,
-                    )
-                    .await;
-                assert!(!output.error);
-                assert!(load_goal_state(&context).await.unwrap().is_running());
-            }
-            context
-                .save_events(&[
-                    NewEvent::new(EventType::Model(support::model_config())),
-                    NewEvent::new(EventType::InferenceResultStart(InferenceResultStart {
-                        id: 1,
-                        model_config: support::model_config(),
-                        request_config: Default::default(),
-                    })),
-                    NewEvent::new(EventType::Message(Message::text(
-                        MessageType::Agent,
-                        "answer",
-                    ))),
-                    NewEvent::new(EventType::InferenceResultEnd(InferenceResultEnd {
-                        id: 1,
-                        outcome: Outcome::Completed {
-                            reason: reason.clone(),
-                        },
-                        usage: Default::default(),
-                        request_time: Duration::ZERO,
-                        response_id: None,
-                        provider_metadata: Default::default(),
-                    })),
-                ])
-                .await
-                .unwrap();
-            if interrupted {
+                let shared_components = std::sync::Arc::new(tokio::sync::Mutex::new(
+                    InstalledComponents::install(&definition, &agent, &session)
+                        .await
+                        .unwrap(),
+                ));
+                state.attach_components(shared_components.clone()).await;
+                let mut components = shared_components.lock().await;
+                assert_eq!(components.hooks.after_request.len(), usize::from(installed));
+                let mut context =
+                    AgentContext::with_optional_probe(&mut state, None, &runtime.handle);
                 context
-                    .save_events(&[status_event(AgentState::Interrupted)])
+                    .save_events(&[status_event(AgentState::Running)])
                     .await
                     .unwrap();
+                if active && installed {
+                    let (_sender, cancellation) = Cancellation::channel();
+                    let output = components
+                        .tools
+                        .iter()
+                        .find(|tool| tool.id() == psa_api::ToolId::SetGoal)
+                        .unwrap()
+                        .execute(
+                            serde_json::json!({"goal":"prove the goal"}),
+                            &mut context,
+                            cancellation,
+                        )
+                        .await;
+                    assert!(!output.error);
+                    if completed {
+                        let (_sender, cancellation) = Cancellation::channel();
+                        let output = components
+                            .tools
+                            .iter()
+                            .find(|tool| tool.id() == psa_api::ToolId::SetGoalStatus)
+                            .unwrap()
+                            .execute(
+                                serde_json::json!({"status":"completed", "reason":"verified"}),
+                                &mut context,
+                                cancellation,
+                            )
+                            .await;
+                        assert!(!output.error);
+                    }
+                }
+                assert_eq!(
+                    load_goal_state(&context).await.unwrap().is_running(),
+                    active && installed && !completed,
+                );
+                context
+                    .save_events(&[
+                        NewEvent::new(EventType::Model(support::model_config())),
+                        NewEvent::new(EventType::InferenceResultStart(InferenceResultStart {
+                            id: 1,
+                            model_config: support::model_config(),
+                            request_config: Default::default(),
+                        })),
+                        NewEvent::new(EventType::Message(Message::text(
+                            MessageType::Agent,
+                            "answer",
+                        ))),
+                        NewEvent::new(EventType::InferenceResultEnd(InferenceResultEnd {
+                            id: 1,
+                            outcome: if reason == StopReason::TokenLimit {
+                                Outcome::Incomplete {
+                                    reason: reason.clone(),
+                                }
+                            } else {
+                                Outcome::Completed {
+                                    reason: reason.clone(),
+                                }
+                            },
+                            usage: Default::default(),
+                            request_time: Duration::ZERO,
+                            response_id: None,
+                            provider_metadata: Default::default(),
+                        })),
+                    ])
+                    .await
+                    .unwrap();
+                if interrupted {
+                    context
+                        .save_events(&[status_event(AgentState::Interrupted)])
+                        .await
+                        .unwrap();
+                }
+                let (sender, cancellation) = Cancellation::channel();
+                if cancelled {
+                    let _ = sender.send(());
+                }
+                if let Some(hook) = components.hooks.after_request.first_mut() {
+                    hook.run(&mut context, cancellation).await.unwrap();
+                } else {
+                    super::super::StopWithoutTools
+                        .run(&mut context, cancellation)
+                        .await
+                        .unwrap();
+                }
+                let expected = if !installed && !interrupted && !cancelled {
+                    AgentState::Idle
+                } else {
+                    expected
+                };
+                assert_eq!(
+                    context.agent().state,
+                    expected,
+                    "{reason:?}, interactive={interactive}, interactive_only={interactive_only}, active={active}, completed={completed}, interrupted={interrupted}, cancelled={cancelled}"
+                );
+                let events = context.load_all_events().await.unwrap();
+                let reminders = events.iter().filter(|event| matches!(&event.kind, EventType::Message(message) if message.message_type == MessageType::Harness)).count();
+                assert_eq!(
+                    reminders,
+                    usize::from(installed && active && !completed && !interrupted && !cancelled)
+                );
+                let results: Vec<_> = events
+                    .iter()
+                    .filter(|event| matches!(event.kind, EventType::Result(_)))
+                    .collect();
+                assert_eq!(results.len(), usize::from(expected == AgentState::Idle));
+                if let Some(result) = results.first() {
+                    assert!(
+                        matches!(&result.kind, EventType::Result(psa_api::AgentResult::Text(text)) if text == "answer")
+                    );
+                    assert!(events.windows(2).any(|pair| {
+                        pair[0].id == result.id
+                            && matches!(&pair[1].kind, EventType::StatusChange(status) if status.new_status == AgentState::Idle)
+                    }));
+                }
+                let mut cursor = database.cursor().await.unwrap();
+                assert_eq!(cursor.get_agent(agent.id).await.unwrap().state, expected);
+                cursor.rollback().await.unwrap();
+                drop(context);
+                drop(state);
+                components.cleanup().await.unwrap();
             }
-            let (sender, cancellation) = Cancellation::channel();
-            if cancelled {
-                let _ = sender.send(());
-            }
-            components.hooks.after_request[0]
-                .run(&mut context, cancellation)
-                .await
-                .unwrap();
-            assert_eq!(
-                context.agent().state,
-                expected,
-                "{reason:?}, active={active}, interrupted={interrupted}, cancelled={cancelled}"
-            );
-            let events = context.load_all_events().await.unwrap();
-            let reminders = events.iter().filter(|event| matches!(&event.kind, EventType::Message(message) if message.message_type == MessageType::Harness)).count();
-            assert_eq!(
-                reminders,
-                usize::from(reason == StopReason::EndTurn && active && !interrupted && !cancelled)
-            );
-            let mut cursor = database.cursor().await.unwrap();
-            assert_eq!(cursor.get_agent(agent.id).await.unwrap().state, expected);
-            cursor.rollback().await.unwrap();
-            drop(context);
-            drop(state);
-            components.cleanup().await.unwrap();
         }
         runtime.shutdown().await.unwrap();
         probes.shutdown().await;

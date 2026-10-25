@@ -1,11 +1,10 @@
 use super::{
     super::{Tool, ToolOutput, ToolSystemPrompt, typed_tool_execute},
-    bash::{ResultMode, backend_error, format_result, uninstalled},
+    bash::{ResultMode, backend_error, format_result},
 };
 use crate::{
-    agents::{Agent, agent_context::AgentContext},
+    agents::agent_context::AgentContext,
     components::{bundles::bash::BashHandle, cancellation::Cancellation},
-    sessions::Session,
 };
 use llm_api::api::ToolDefinition;
 use schemars::JsonSchema;
@@ -19,16 +18,21 @@ struct CloseBashArgs {
     session_name: String,
 }
 
-#[derive(Default)]
 pub struct CloseBash {
-    handle: Option<BashHandle>,
+    handle: BashHandle,
 }
 
 impl CloseBash {
+    pub(crate) fn definition() -> ToolDefinition {
+        ToolDefinition::for_type::<CloseBashArgs>(
+            "close_bash",
+            "Kill a background bash session and its process tree. Returns output since the last poll (last 2000 lines / 50KB); its full output log is retained.",
+            Some(false),
+        )
+    }
+
     pub(crate) fn with_handle(handle: BashHandle) -> Self {
-        Self {
-            handle: Some(handle),
-        }
+        Self { handle }
     }
 
     async fn execute_typed(
@@ -37,9 +41,7 @@ impl CloseBash {
         _context: &mut AgentContext<'_>,
         _cancellation: Cancellation,
     ) -> ToolOutput {
-        let Some(handle) = &self.handle else {
-            return uninstalled();
-        };
+        let handle = &self.handle;
         match handle.close(arguments.session_name).await {
             Ok(result) => format_result(result, ResultMode::Close),
             Err(error) => backend_error(error),
@@ -48,16 +50,8 @@ impl CloseBash {
 }
 
 impl Tool for CloseBash {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self::default()
-    }
-
     fn tool_definition(&self) -> ToolDefinition {
-        ToolDefinition::for_type::<CloseBashArgs>(
-            "close_bash",
-            "Kill a background bash session and its process tree. Returns output since the last poll (last 2000 lines / 50KB); its full output log is retained.",
-            Some(false),
-        )
+        Self::definition()
     }
 
     fn system_prompt(&self) -> ToolSystemPrompt {
@@ -82,7 +76,7 @@ mod tests {
 
     #[test]
     fn schema_and_arguments_match_reference() {
-        let definition = CloseBash::default().tool_definition();
+        let definition = CloseBash::definition();
         let schema = serde_json::to_value(definition.parameters).unwrap();
         assert_eq!(schema["required"], json!(["session_name"]));
         assert_eq!(schema["additionalProperties"], false);

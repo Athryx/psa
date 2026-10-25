@@ -73,6 +73,48 @@ fn events(kinds: Vec<EventType>) -> Vec<Event> {
         .collect()
 }
 
+#[test]
+fn durable_results_complete_the_run_without_entering_model_history() {
+    let base = vec![
+        EventType::Model(config()),
+        EventType::StatusChange(StatusChange {
+            new_status: AgentState::Running,
+            reason: None,
+        }),
+        message(MessageType::Human, "question"),
+        start(1),
+        message(MessageType::Agent, "answer"),
+        end(1, StopReason::EndTurn),
+    ];
+    let before = AgentProjection::replay(&events(base.clone()))
+        .unwrap()
+        .prepare_request(RequestConfig::default())
+        .unwrap();
+    for value in [
+        psa_api::AgentResult::Text("artifact".into()),
+        psa_api::AgentResult::Json(serde_json::json!({"artifact":true})),
+    ] {
+        let mut transcript = base.clone();
+        transcript.push(EventType::Result(value));
+        transcript.push(EventType::StatusChange(StatusChange {
+            new_status: AgentState::Idle,
+            reason: None,
+        }));
+        let state = AgentProjection::replay(&events(transcript)).unwrap();
+        assert_eq!(state.status, AgentState::Idle);
+        let after = state.prepare_request(RequestConfig::default()).unwrap();
+        assert_eq!(after.history.config, before.history.config);
+        assert_eq!(
+            serde_json::to_value(&after.history.items).unwrap(),
+            serde_json::to_value(&before.history.items).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&after.history.tools).unwrap(),
+            serde_json::to_value(&before.history.tools).unwrap()
+        );
+    }
+}
+
 fn start(id: u64) -> EventType {
     EventType::InferenceResultStart(InferenceResultStart {
         id,
@@ -116,7 +158,7 @@ fn thinking() -> EventType {
 fn renders_flat_context_and_tracks_the_latest_response_separately() {
     let transcript = events(vec![
         EventType::Model(config()),
-        EventType::ToolDefinition(ToolDefinition::for_tool(ToolId::Noop)),
+        EventType::ToolDefinition(ToolDefinition::for_tool(ToolId::Noop).unwrap()),
         message(MessageType::Human, "question"),
         start(1),
         thinking(),
@@ -283,7 +325,7 @@ fn preserves_rich_content_and_checks_snapshotted_tools() {
             ..Default::default()
         },
     };
-    let mut tool = ToolDefinition::for_tool(ToolId::Noop);
+    let mut tool = ToolDefinition::for_tool(ToolId::Noop).unwrap();
     tool.definition.description = "stored definition".into();
     let transcript = events(vec![
         EventType::Model(config()),

@@ -1,7 +1,7 @@
 //! Mutable named configuration and metadata for immutable definition snapshots.
 //! Executable snapshot fields are defined by `AgentDefinition`.
 use crate::{
-    AgentDefinition, AgentDefinitionId, AgentId, BundleId, HookIds, ProbeId, SessionId, ToolId,
+    AgentDefinition, AgentDefinitionId, AgentId, BundleConfig, HookConfigs, ProbeId, SessionId,
 };
 use llm_api::providers::Effort;
 use serde::{Deserialize, Serialize};
@@ -85,18 +85,12 @@ pub struct AgentConfig {
     /// Selection metadata; defaults to false and does not install tools or hooks.
     #[serde(default)]
     pub selectable: bool,
-    /// Ordered bundle installations; omitted lists are empty, not inherited.
+    /// Ordered bundle construction configurations; omitted lists are empty, not inherited.
     #[serde(default)]
-    pub bundles: Vec<BundleId>,
-    /// Explicit tool installations after bundles; defaults to empty.
+    pub bundles: Vec<BundleConfig>,
+    /// Explicit lifecycle hook configurations; omitted stages are empty.
     #[serde(default)]
-    pub tools: Vec<ToolId>,
-    /// Explicit lifecycle hook lists; omitted stages are empty.
-    #[serde(default)]
-    pub hooks: HookIds,
-    /// Prompt consumed only by the corresponding hook; defaults to empty.
-    #[serde(default)]
-    pub extra_system_prompt: String,
+    pub hooks: HookConfigs,
     /// Required nonempty ordered list of allowed model policies.
     pub models: Vec<ModelSelection>,
     /// Allow the first model when no choice is supplied; defaults to true.

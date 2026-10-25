@@ -19,18 +19,20 @@ use crate::{
 
 /// A retained owner, not cloned when workers retire or agents fork.
 pub struct GoalBundle {
+    interactive_only: bool,
     runtime: state::Runtime,
 }
 
 impl Default for GoalBundle {
     fn default() -> Self {
-        Self::new()
+        Self::new(true)
     }
 }
 
 impl GoalBundle {
-    pub fn new() -> Self {
+    pub fn new(interactive_only: bool) -> Self {
         Self {
+            interactive_only,
             runtime: state::Runtime::new(),
         }
     }
@@ -43,7 +45,7 @@ impl Bundle for GoalBundle {
         _session: &Session,
         installer: &mut Installer,
     ) -> Result<(), InstallError> {
-        if !agent.interactive {
+        if self.interactive_only && !agent.interactive {
             return Ok(());
         }
         let handle = self.runtime.handle();

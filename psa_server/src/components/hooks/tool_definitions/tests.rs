@@ -17,7 +17,7 @@ fn system_text(event: &NewEvent) -> &str {
 fn snapshots_are_followed_by_two_separate_system_prompt_events() {
     let events = build_tool_events([(
         ToolId::Noop,
-        tool_definition(ToolId::Noop),
+        tool_definition(ToolId::Noop).unwrap(),
         ToolSystemPrompt {
             tools: Some("Do nothing.".into()),
             rules: vec!["Keep changes focused.".into(), "Use absolute paths.".into()],
@@ -55,7 +55,8 @@ fn rules_and_tool_directions_are_independent() {
             "<tools>\n- noop: A tool direction.\n</tools>",
         ),
     ] {
-        let events = build_tool_events([(ToolId::Noop, tool_definition(ToolId::Noop), prompt)]);
+        let events =
+            build_tool_events([(ToolId::Noop, tool_definition(ToolId::Noop).unwrap(), prompt)]);
         assert_eq!(events.len(), 2);
         assert_eq!(system_text(&events[1]), expected);
     }
@@ -65,7 +66,7 @@ fn rules_and_tool_directions_are_independent() {
 fn default_guidance_keeps_only_the_tool_snapshot() {
     let events = build_tool_events([(
         ToolId::Noop,
-        tool_definition(ToolId::Noop),
+        tool_definition(ToolId::Noop).unwrap(),
         ToolSystemPrompt::default(),
     )]);
     assert_eq!(events.len(), 1);

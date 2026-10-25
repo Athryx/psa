@@ -1,13 +1,17 @@
 # Native file tools
 
-Add `Read`, `Edit`, and `Write` to an agent definition's `tools` list to enable the
-model-facing `read`, `edit`, and `write` tools. They are not installed implicitly.
+Select the `FileTools { read_only }` bundle to enable file tools. False installs
+model-facing `read`, `edit`, and `write`; true installs only `read`. The flag
+defaults to false inside the required payload. Bare `"FileTools"` is invalid.
+Tools have no standalone configuration or agent/defaults `tools` field.
 Pi's behavior/prompt attribution notice is retained in `docs/PI_LICENSE.txt`.
 For example:
 
 ```json
-{"tools": ["Read", "Edit", "Write"]}
+{"bundles": [{"FileTools": {"read_only": false}}]}
 ```
+
+For TOML, use `bundles = [{ FileTools = { read_only = false } }]`.
 
 Tool definitions, directions, and rules are snapshotted by the configured
 `ToolDefinitions` hook. Files are accessed on the session's probe, never on the

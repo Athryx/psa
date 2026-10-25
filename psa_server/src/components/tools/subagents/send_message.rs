@@ -1,13 +1,12 @@
 use super::{format_tool_output, require_coordinator};
 use crate::{
-    agents::{Agent, agent_context::AgentContext},
+    agents::agent_context::AgentContext,
     components::{
         bundles::subagents::SubagentCoordinator,
         cancellation::Cancellation,
         tools::{Tool, ToolOutput, typed_tool_execute},
     },
     prompts,
-    sessions::Session,
 };
 use llm_api::api::ToolDefinition;
 use psa_api::AgentMessageSource;
@@ -21,15 +20,12 @@ struct SendMessageArgs {
     agent_name: String,
     message: String,
 }
-#[derive(Default)]
 pub struct SendMessage {
-    handle: Option<SubagentCoordinator>,
+    handle: SubagentCoordinator,
 }
 impl SendMessage {
     pub fn with_handle(handle: SubagentCoordinator) -> Self {
-        Self {
-            handle: Some(handle),
-        }
+        Self { handle }
     }
     pub(crate) fn definition() -> ToolDefinition {
         ToolDefinition::for_type::<SendMessageArgs>(
@@ -99,9 +95,6 @@ impl SendMessage {
     }
 }
 impl Tool for SendMessage {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self::default()
-    }
     fn tool_definition(&self) -> ToolDefinition {
         Self::definition()
     }

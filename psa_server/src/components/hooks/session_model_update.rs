@@ -1,9 +1,5 @@
 use super::{Hook, HookError};
-use crate::{
-    agents::{Agent, agent_context::AgentContext},
-    components::cancellation::Cancellation,
-    sessions::Session,
-};
+use crate::{agents::agent_context::AgentContext, components::cancellation::Cancellation};
 use psa_api::events::{EventType, NewEvent};
 use std::time::Duration;
 
@@ -11,10 +7,6 @@ use std::time::Duration;
 pub struct SessionModelUpdateHook;
 
 impl Hook for SessionModelUpdateHook {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self
-    }
-
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(3)
     }

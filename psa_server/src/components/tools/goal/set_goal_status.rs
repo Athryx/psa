@@ -1,12 +1,11 @@
 use crate::{
-    agents::{Agent, agent_context::AgentContext},
+    agents::agent_context::AgentContext,
     components::{
         bundles::goal::{GoalHandle, GoalOperation, GoalStatus},
         cancellation::Cancellation,
         tools::{ExecutionMode, Tool, ToolOutput, ToolSystemPrompt, typed_tool_execute},
     },
     prompts,
-    sessions::Session,
 };
 use llm_api::api::ToolDefinition;
 use schemars::JsonSchema;
@@ -30,16 +29,21 @@ fn optional_reason<'de, D: serde::Deserializer<'de>>(
     String::deserialize(deserializer).map(Some)
 }
 
-#[derive(Default)]
 pub struct SetGoalStatus {
-    handle: Option<GoalHandle>,
+    handle: GoalHandle,
 }
 
 impl SetGoalStatus {
+    pub(crate) fn definition() -> ToolDefinition {
+        ToolDefinition::for_type::<SetGoalStatusArgs>(
+            "set_goal_status",
+            "Update an existing goal. For completed or blocked, supply a reason explaining strong evidence for that status; never invent evidence. Use running only when the user asks to resume a blocked/interrupted goal. Completed clears the goal.",
+            Some(false),
+        )
+    }
+
     pub(crate) fn with_handle(handle: GoalHandle) -> Self {
-        Self {
-            handle: Some(handle),
-        }
+        Self { handle }
     }
 
     async fn execute_typed(
@@ -48,9 +52,7 @@ impl SetGoalStatus {
         context: &mut AgentContext<'_>,
         cancellation: Cancellation,
     ) -> ToolOutput {
-        let Some(handle) = &self.handle else {
-            return ToolOutput::error(prompts::text("set_goal_status requires the Goal bundle"));
-        };
+        let handle = &self.handle;
         match handle
             .execute(
                 GoalOperation::Status {
@@ -69,15 +71,8 @@ impl SetGoalStatus {
 }
 
 impl Tool for SetGoalStatus {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self::default()
-    }
     fn tool_definition(&self) -> ToolDefinition {
-        ToolDefinition::for_type::<SetGoalStatusArgs>(
-            "set_goal_status",
-            "Update an existing goal. For completed or blocked, supply a reason explaining strong evidence for that status; never invent evidence. Use running only when the user asks to resume a blocked/interrupted goal. Completed clears the goal.",
-            Some(false),
-        )
+        Self::definition()
     }
     fn system_prompt(&self) -> ToolSystemPrompt {
         ToolSystemPrompt { tools: None, rules: vec![
@@ -101,7 +96,7 @@ mod tests {
     use serde_json::json;
     #[test]
     fn schema_and_typed_arguments_match_pi() {
-        let definition = SetGoalStatus::default().tool_definition();
+        let definition = SetGoalStatus::definition();
         let schema = serde_json::to_value(&definition.parameters).unwrap();
         assert_eq!(definition.name, "set_goal_status");
         assert_eq!(schema["additionalProperties"], false);
@@ -126,9 +121,5 @@ mod tests {
         ] {
             assert!(parse_tool_arguments::<SetGoalStatusArgs>(args).is_err());
         }
-        assert!(matches!(
-            SetGoalStatus::default().execution_mode(),
-            ExecutionMode::Sequential
-        ));
     }
 }

@@ -13,28 +13,32 @@ ID substituted for `42`:
 ```json
 {
   "name": "worker",
-  "bundles": ["FileTools", "Bash", "Subagents"],
+  "bundles": [{"FileTools": {"read_only": false}}, "Bash", "Subagents"],
   "hooks": {
-    "agent_create": ["DefaultStartup", "ToolDefinitions", "ExtraSystemPrompt"],
+    "agent_create": ["DefaultStartup", "ToolDefinitions", {"ExtraSystemPrompt": {"prompt": "Complete the assigned task and report to your parent."}}],
     "after_request": ["StopWithoutTools"]
-  },
-  "extra_system_prompt": "Complete the assigned task and report to your parent."
+  }
 }
 ```
 
 ```json
 {
   "name": "coordinator",
-  "bundles": ["FileTools", "Bash", "Goal", "Subagents"],
+  "bundles": [{"FileTools": {"read_only": false}}, "Bash", {"Goal": {"interactive_only": true}}, "Subagents"],
   "permitted_subagents": [42],
   "hooks": {
     "agent_create": ["DefaultStartup", "ToolDefinitions"],
-    "after_request": ["StopWithoutTools"]
+    "after_request": []
   }
 }
 ```
 
-Create the coordinator agent with `interactive: true` to enable Goal tools.
+Create the coordinator agent with `interactive: true` for the Goal configuration
+above. `Goal` requires a payload object; bare `"Goal"` is invalid. Omitted
+`interactive_only` inside that object defaults to true. With true, noninteractive
+agents install neither Goal tools nor hooks. Set it to false to fully enable Goal
+on noninteractive agents, including state persistence and continuation policy.
+TOML uses `{ Goal = { interactive_only = true } }` in the bundle array.
 Subagent tools are independent of this flag. `create_agent` is installed only
 when the definition permits at least one child template. Definitions without
 permitted children still get messaging, waiting, and listing tools.
@@ -56,7 +60,8 @@ multiple choices with `default = false` require explicit selection.
 
 ## Goal mode
 
-The interactive Goal bundle installs sequential `set_goal` and `set_goal_status`
+When enabled by its `interactive_only` policy, the Goal bundle installs
+sequential `set_goal` and `set_goal_status`
 tools plus a goal-aware stopping hook. State includes goal, status, optional
 reason, and generation. Setting/replacing a goal starts it. Only blocked goals
 can be resumed; blocked/completed transitions require a nonblank reason.
@@ -72,15 +77,20 @@ For a normal no-tool final response, a running goal appends an authoritative
 current-goal/generation reminder and continues. Reminders remain append-only;
 old reminders are history, not current goal state. Normal queued user messages
 wait until the active goal stops; steering is delivered at the next worker
-boundary. Explicit interruption still interrupts the agent. When no goal is
-running, the hook settles normally. Other completed no-tool stop reasons settle
-without generating another goal reminder; failed/incomplete inference retains
-the runtime's interruption behavior.
+boundary. Explicit interruption still interrupts the agent. Active goals continue
+even on token-limited output and do not record a completion Result. When the goal
+is not running (`!GoalState::is_running()`), completion records a durable text
+Result and settles Idle. This includes Blocked as well as completed/unset goals:
+a blocked goal stays retained and paused, even though the current run settles.
+Failure/cancellation does not synthesize results; a result save already accepted
+by the database can still complete despite cancellation.
 
-`StopWithoutTools` defers to this policy when an interactive Goal bundle is
-present, so it can remain in explicit hook configuration without overriding the
-goal hook. There are no Pi footer widgets, slash-command control endpoints, or
-request-history filtering in this port.
+Goal, ordinary `StopWithoutTools`, and `TypedResult` are mutually incompatible
+completion modes. Do not retain `StopWithoutTools` with Goal, including through
+server defaults: an explicit `after_request: []` disables inherited completion
+hooks while the bundle supplies its own. See [durable results](AGENT_RESULTS.md)
+for JSON completion, retries, and fork-aware retrieval. There are no Pi footer
+widgets, slash-command control endpoints, or request-history filtering in this port.
 
 ## Subagent tools and core ancestry
 
@@ -93,6 +103,10 @@ not imported; preexisting agents default to no subagent parent.
 - `create_agent(name, task, agent_template?)` starts a fresh noninteractive child
   using an explicitly permitted definition. Missing/null templates are rejected.
   Creation establishes parentage atomically and rejects duplicate session names.
+  Cooperative cancellation lets creation and initial task submission finish within
+  the tool's grace period, then requests child interruption and reports its ID.
+  This is not rollback or an atomic startup guarantee; forced timeout can still
+  cut the sequence short.
 - `send_message(agent_name, message)` sends typed, attributed steering to any
   other agent in the session. Blank messages, self-send, and ambiguous names fail.
 - `wait_message(timeout?)` waits for core steering availability without consuming
@@ -116,7 +130,9 @@ user-role context. The Rust client exposes `send_subagent_message`.
 A session lifecycle callback installed by the bundle sends completion/error/
 interruption reports to a child's parent when the parent has the bundle, even
 if the child does not. Logical run IDs prevent duplicate reports across worker
-generations. Background reports cannot restart interrupted/failed parents;
+generations. Completion reports prefer the actual durable Result artifact over
+an assistant preamble; JSON artifacts are serialized as text for the report.
+Background reports cannot restart interrupted/failed parents;
 explicit messages retain ordinary steering behavior. Reports are middle-truncated
 to 30,000 bytes. Queued requests and report delivery are best effort across crashes.
 

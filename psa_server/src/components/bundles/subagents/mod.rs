@@ -16,18 +16,14 @@ use crate::{
     sessions::Session,
 };
 
-#[derive(Default)]
 pub struct SubagentsBundle {
-    handle: Option<SubagentCoordinator>,
+    handle: SubagentCoordinator,
     allow_create: bool,
 }
 impl SubagentsBundle {
-    pub fn new() -> Self {
-        Self::default()
-    }
     pub fn with_session(session: &SessionBundleHandle) -> Self {
         Self {
-            handle: Some(session.subagents()),
+            handle: session.subagents(),
             allow_create: false,
         }
     }
@@ -43,10 +39,7 @@ impl Bundle for SubagentsBundle {
         _session: &Session,
         installer: &mut Installer,
     ) -> Result<(), InstallError> {
-        let handle = self
-            .handle
-            .clone()
-            .ok_or_else(|| InstallError::new("Subagents requires session bundle resources"))?;
+        let handle = self.handle.clone();
         if self.allow_create {
             installer.add_tool(ToolKind::CreateAgent(CreateAgent::with_handle(
                 handle.clone(),

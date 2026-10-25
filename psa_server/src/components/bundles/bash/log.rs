@@ -1,5 +1,5 @@
 use super::{BashError, ProbeHandle};
-use psa_api::probes::{Command, Event};
+use psa_api::probes::{Command, Event, ExitStatus};
 use psa_shared::probe_transport::Call;
 use std::{
     path::{Path, PathBuf},
@@ -7,6 +7,7 @@ use std::{
 };
 
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_HELPER_OUTPUT_BYTES: usize = 8192;
 
 /// All interpolated data is positional argv, never shell source.
 async fn run_shell_helper(
@@ -29,22 +30,14 @@ async fn run_shell_helper(
         loop {
             match call.next_event().await? {
                 Event::Data { bytes, .. } => {
-                    if output.len() + bytes.len() > 8192 {
+                    if output.len() + bytes.len() > MAX_HELPER_OUTPUT_BYTES {
                         return Err(BashError::Other(
                             "log helper returned excessive output".into(),
                         ));
                     }
                     output.extend(bytes);
                 }
-                Event::Complete { status } => {
-                    if status.is_some_and(|s| s.code.is_some_and(|code| code != 0)) {
-                        return Err(BashError::Other(format!(
-                            "remote log operation failed: {}",
-                            String::from_utf8_lossy(&output)
-                        )));
-                    }
-                    return Ok(output);
-                }
+                Event::Complete { status } => return complete_shell_helper(status, output),
                 Event::Cancelled => return Err(BashError::Unavailable),
                 _ => {}
             }
@@ -53,6 +46,24 @@ async fn run_shell_helper(
     tokio::time::timeout(IO_TIMEOUT, operation)
         .await
         .map_err(|_| BashError::Other("remote log operation timed out".into()))?
+}
+
+fn complete_shell_helper(
+    status: Option<ExitStatus>,
+    output: Vec<u8>,
+) -> Result<Vec<u8>, BashError> {
+    if status
+        .as_ref()
+        .is_some_and(|status| status.code == Some(0) && status.signal.is_none())
+    {
+        return Ok(output);
+    }
+
+    let text = String::from_utf8_lossy(&output);
+    let text = crate::prompts::truncate_middle(&text, MAX_HELPER_OUTPUT_BYTES);
+    Err(BashError::Other(format!(
+        "remote log operation failed (status: {status:?}): {text}"
+    )))
 }
 
 pub(super) async fn require_working_directory(
@@ -98,6 +109,13 @@ pub(super) async fn delete(probe: &ProbeHandle, path: &Path) -> Result<(), BashE
     Ok(())
 }
 
+/// Disposable log cleanup must not replace a command's result with a deletion error.
+pub(super) async fn delete_best_effort(probe: &ProbeHandle, path: &Path) {
+    if let Err(error) = delete(probe, path).await {
+        tracing::warn!(path = %path.display(), %error, "could not delete disposable bash log");
+    }
+}
+
 /// A completed write-file operation acknowledges sync_all, not just stream credit.
 /// Each bounded process chunk is durably appended before its preview is exposed.
 pub(super) async fn append(
@@ -139,4 +157,66 @@ pub(super) fn resolve_shell(mut command: Command) -> Command {
         command.args.extend(original);
     }
     command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_helper_requires_an_explicit_normal_zero_exit() {
+        let output = b"helper output".to_vec();
+        let status = Some(ExitStatus {
+            code: Some(0),
+            signal: None,
+        });
+        assert_eq!(
+            complete_shell_helper(status, output.clone()).unwrap(),
+            output
+        );
+
+        for status in [
+            None,
+            Some(ExitStatus {
+                code: None,
+                signal: None,
+            }),
+            Some(ExitStatus {
+                code: Some(1),
+                signal: None,
+            }),
+            Some(ExitStatus {
+                code: Some(-1),
+                signal: None,
+            }),
+            Some(ExitStatus {
+                code: None,
+                signal: Some(9),
+            }),
+            Some(ExitStatus {
+                code: Some(0),
+                signal: Some(9),
+            }),
+        ] {
+            let expected_status = format!("{status:?}");
+            let error = complete_shell_helper(status, output.clone())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(&expected_status), "{error}");
+            assert!(error.ends_with("helper output"), "{error}");
+        }
+    }
+
+    #[test]
+    fn shell_helper_failure_bounds_lossy_output_and_preserves_both_ends() {
+        let mut output = b"head-".to_vec();
+        output.resize(MAX_HELPER_OUTPUT_BYTES - 5, 0xff);
+        output.extend_from_slice(b"-tail");
+        let error = complete_shell_helper(None, output).unwrap_err().to_string();
+
+        assert!(error.contains("status: None"));
+        assert!(error.contains("head-"));
+        assert!(error.ends_with("-tail"));
+        assert!(error.len() <= MAX_HELPER_OUTPUT_BYTES + 128);
+    }
 }

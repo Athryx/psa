@@ -38,14 +38,18 @@ The async client exposes matching `create_agent_definition`,
 `list_agent_definitions`, `get_agent_definition`, and `update_agent_definition`
 methods.
 
-Definitions contain `name`, `description`, `selectable`, `bundles`, `tools`, `hooks`, an
-optional `model_config` override, `skills` paths, `permitted_subagents` IDs, and
-`extra_system_prompt`. Hook lists (`agent_create`, `session_update`,
-`before_request`, `after_request`) default to empty. Supported hook IDs are
+Definitions contain `name`, `description`, `selectable`, `bundles`, `hooks`, an
+optional `model_config` override, `skills` paths, and `permitted_subagents` IDs.
+Components use `Vec<BundleConfig>` and `HookConfigs` stage lists of `HookConfig`,
+not identity enums. Tools are installed only by bundles; there is no standalone
+tool configuration or `tools` field on configs, definitions, or defaults.
+`ToolId` remains a runtime tool identity.
+Hook lists (`agent_create`, `session_update`, `before_request`, `after_request`)
+default to empty in normalized definitions. Supported hook configurations are
 `Noop`, `StopWithoutTools`, `DefaultStartup`, `ToolDefinitions`, `Cwd`, `Skills`,
 `ExtraSystemPrompt`, `ProjectContext`, and `SessionModelUpdate`. For ordinary
 execution, explicitly configure
-`agent_create: [DefaultStartup, ExtraSystemPrompt, ToolDefinitions, Cwd, ProjectContext, Skills]` in that order,
+`agent_create: [DefaultStartup, ToolDefinitions, Cwd, ProjectContext, Skills]` in that order,
 `session_update: [SessionModelUpdate]`, and `after_request: [StopWithoutTools]`.
 No global hooks are installed by default; explicit bundles may supply their own hooks.
 
@@ -56,8 +60,12 @@ inherited context. `Cwd` emits a `System` message containing
 `<cwd>\nSESSION_CWD\n</cwd>` with the session working directory XML-escaped; it
 does not skip forks and can also be bound to `session_update`.
 
-`ExtraSystemPrompt` emits the pinned definition's `extra_system_prompt` verbatim
-as a separate `System` message, unless empty. Like `Cwd`, it does not skip forks;
+`ExtraSystemPrompt { prompt: String }` emits its own configured prompt verbatim
+as a separate `System` message, unless empty. It is opt-in with a payload, not an
+empty startup hook or an agent-level `extra_system_prompt` field. JSON uses
+`{"ExtraSystemPrompt":{"prompt":"Follow the project conventions."}}`; a TOML
+stage entry is `{ ExtraSystemPrompt = { prompt = "Follow the project conventions." } }`.
+Other unit hook variants remain strings. Like `Cwd`, it does not skip forks;
 configure it only at stages where another copy of the prompt is wanted.
 
 `ProjectContext` discovers instruction files on the session's probe, from the
@@ -90,22 +98,32 @@ warning `Log` events and are skipped. An empty catalogue emits no system message
 a nonempty skills list with a disconnected probe errors. `selectable` remains
 selection metadata. `permitted_subagents` is preserved literally and is enforced
 by the Subagents tool when creating children, not as a global trusted-client API
-permission boundary. `extra_system_prompt` is injected only by the explicitly
-configured `ExtraSystemPrompt` hook.
+permission boundary. Extra system text comes only from explicitly configured
+`ExtraSystemPrompt` hook payloads.
 
-`bundles` is an ordered list of `BundleId` values, defaulting to `[]` in both
-requests and responses. `FileTools` installs `Read`, `Edit`, and `Write` in that
-order. `Bash` installs `Bash`, `InteractBash`, and `CloseBash`. `Goal` installs
-interactive goal tools and stopping policy; `Subagents` installs group tools with
+`bundles` is an ordered list of `BundleConfig` values, defaulting to `[]` in both
+requests and responses. `Noop` installs the Noop tool.
+`{"FileTools":{"read_only":false}}` installs Read, Edit, and Write in that order;
+true installs only Read. The flag defaults to false inside the required payload;
+bare `"FileTools"` is invalid. TOML uses `{ FileTools = { read_only = true } }`. `Bash` installs `Bash`, `InteractBash`, and `CloseBash`.
+`{"Goal":{"interactive_only":true}}` installs goal tools and stopping policy;
+`{"AskQuestion":{"interactive_only":true}}` installs only `ask_question`, with no
+hooks. Both require payload objects (bare `"Goal"` is invalid). Omitting the flag
+inside either payload defaults to true: noninteractive agents skip that bundle's
+tools and hooks. False fully enables the bundle on noninteractive agents,
+including Goal persistence and continuation. Both remain opt-in, not defaults.
+TOML uses `{ Goal = { interactive_only = true } }` or
+`{ AskQuestion = { interactive_only = true } }` in the bundle list.
+`Subagents` installs group tools with
 session-shared coordination resources. See `../docs/GOALS_AND_SUBAGENTS.md` for
 configuration, fixed limits, and persistence/fork behavior. For example:
 
 ```json
-{"name": "File assistant", "bundles": ["FileTools"], "hooks": {"agent_create": ["DefaultStartup", "ToolDefinitions"]}}
+{"name": "File assistant", "bundles": [{"FileTools": {"read_only": false}}], "hooks": {"agent_create": ["DefaultStartup", "ToolDefinitions"]}}
 ```
 
-Bundles are installed in list order before explicitly configured tools and hooks;
-explicit `tools` and `hooks` remain supported. Duplicate bundle IDs, tool IDs, or
+Bundles are installed in list order before explicitly configured hooks.
+Tools have no independent configuration path. Duplicate bundle IDs, tool IDs, or
 tool names across bundle and explicit installations are rejected at component
 installation, not normalized or silently deduplicated. The session manager keeps
 installed owners/components by agent ID across idle worker retirement and worker
@@ -120,11 +138,10 @@ agents pinned to it. Migration 0009 gives existing definitions an empty list.
 
 Supported tool IDs are `Noop`, `Read`, `Edit`, `Write`, `Bash`, `InteractBash`,
 `CloseBash`, `SetGoal`, `SetGoalStatus`, `CreateAgent`, `SendMessage`, `WaitMessage`,
-and `ListAgents`. Bash, Goal, and Subagents IDs require their corresponding
+`ListAgents`, `AskQuestion`, and `RecordResult`. All tools require their corresponding
 bundles; configuring them as standalone tools is rejected. See `../docs/BASH_TOOLS.md` for names, waits, logs,
-and environment behavior. Alternatively add independent file tools
-explicitly, for example `"tools": ["Read", "Edit", "Write"]`, without also
-selecting `FileTools`. Native file
+and environment behavior. Use `{"FileTools":{"read_only":false}}` for full file
+operations or `{"FileTools":{"read_only":true}}` for Read alone. Native file
 tools operate on the session probe and port Pi's model-facing prompts and
 text/image results; they do not add Pi's UI/programmatic result metadata.
 `Read` uses Pi's line/byte head truncation and default image limits. See
@@ -148,8 +165,8 @@ typed selector, and its allowed-template identity prompt includes full selectors
 
 Agent responses include the exact definition ID and `interactive` flag. The flag
 is creation-time metadata available to tools and hooks, not an automatic UI or
-permission mode. The explicitly selected Goal bundle uses it to enable goal tools
-and its stopping policy. Forked agents inherit it. `CreateSession.model_config`
+permission mode. Explicit Goal and AskQuestion bundles use it only when their
+`interactive_only` construction flag is true; false enables them on any agent. Forked agents inherit it. `CreateSession.model_config`
 is optional: omission or null uses server `session_defaults`, and an explicit
 `ModelConfig` overrides that default. Session responses always include the concrete
 persisted configuration; session updates can replace it explicitly. Reloads,
@@ -166,7 +183,9 @@ TODO: probe api
 Exact route templates/builders are in `src/routes.rs`; wire types are in
 `src/types.rs` and `src/events.rs`. `src/client.rs` provides the async `Client`,
 including typed JSON requests and SSE decoding. `EventsQuery` uses `after`,
-`through`, `limit`, and `include_pending`; it has no `stream` field. Event endpoints
+`through`, `limit`, `include_pending`, and `results_only`; it has no `stream` field.
+`results_only=true` filters durable Result events before the database limit and
+filters SSE durable events as well. Event endpoints
 select SSE with `Accept: text/event-stream`, or JSON with
 `Accept: application/json` (JSON is the default). `Client::events()` requests JSON;
 `Client::stream_events()` requests SSE. Only the streaming method accepts a
@@ -229,8 +248,9 @@ Errors use the usual `ApiError`: invalid input/response is 400 `invalid_input`,
 unknown or incorrectly scoped query is 404 `not_found`, already answered is 409
 `already_resolved`, cancelled is 410 `cancelled`, and unavailable/overloaded is
 503 `unavailable`. Queries are runtime-only and are not restored after a server
-restart or copied by session forks. There is no separate query stream or native
-AskQuestion tool implied by this API.
+restart or copied by session forks. There is no separate query stream. The opt-in
+`AskQuestion { interactive_only }` bundle exposes a native `ask_question` tool
+using this API; its installation policy does not gate low-level query calls.
 
 First valid response wins; invalid responses leave the query pending. Cancelling
 or dropping the calling future removes the pending query and notifies clients.
@@ -256,6 +276,45 @@ to WebSocket. Invalid auth returns 401, incompatible versions/metadata return
 Session creation requires `probe_id`, referencing a registered probe. It is
 returned in session responses, remains fixed, and is inherited on fork. No
 remote-operation HTTP endpoints are exposed yet: use server-side probe handles.
+
+## Durable results
+
+`EventType::Result(AgentResult::Text(String) | AgentResult::Json(Value))` stores a
+completion artifact, excluded from model history. Completion policies produce
+at most one per run. Failure/cancellation does not synthesize one; a database
+save already accepted can still finish after cancellation. Completion modes are
+ordinary `StopWithoutTools` (text), Goal (text only once inactive), or
+`TypedResult { schema: ToolSchema, max_retries }` (JSON). They are mutually
+incompatible, including inherited default hooks. No policy or a skipped
+interactive-only Goal bundle is allowed, but provides no automatic completion or
+Result. Token-limited ordinary text can complete; running Goal continuation never
+treats a token limit as completion. Non-running Goal states include Blocked: the
+goal remains retained/paused while the current run settles Idle with a text Result.
+
+TypedResult requires an explicit object-root Draft 2020-12 schema with local
+references, validated offline by shared `CompiledToolSchema`. It installs
+sequential `record_result` and a require-result hook. Whole tool arguments are
+the result, without a wrapper. Validation success atomically saves Result and
+Idle, acknowledging only `Result recorded.`; invalid data is a tool error and
+missing normal completion reprompts. Three retries are allowed by default after
+the initial violation; the fourth interrupts without a fake result. Zero fails
+immediately. The budget resets only at a new non-Running to Running transition,
+not midrun steering. Recovery after a committed artifact but before its tool
+acknowledgment restores only the producing call acknowledgment, without another
+Result or an Interrupted status. `BundleConfig::typed_result::<T>()` and
+`typed_result_with_retries::<T>(n)` generate typed configuration.
+
+`GET /sessions/{sid}/agents/{aid}/results?limit=1` returns `Vec<ResultRecord>`
+newest first across the full logical fork history, respecting fork checkpoints.
+`ResultRecord<T = AgentResult>` contains `session_id`, `agent_id`, `event_id`,
+`source_agent_id`, `position`, `timestamp`, and `value`. The source ID is physical
+storage provenance only. `AgentResult::decode::<T>()` decodes the payload, and
+record `decode::<T>()` preserves the metadata. Event consumers can also use
+`EventEnvelope::into_result_record()` or `EventEnvelope::decode_result::<T>()`.
+Text decodes as a string, not
+parsed JSON source. Client methods are `results`, `last_result_raw`,
+`last_result::<T>`, and `last_results::<T>`; typed mismatches return errors.
+See [durable result examples and semantics](../docs/AGENT_RESULTS.md).
 
 ## Providers and models
 

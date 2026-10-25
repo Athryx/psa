@@ -112,9 +112,6 @@ impl ExecutionProbe {
 }
 
 impl Tool for ExecutionProbe {
-    fn new(_: &Agent, _: &Session) -> Self {
-        unreachable!()
-    }
     fn tool_definition(&self) -> api::ToolDefinition {
         let name = match self.id {
             ToolId::Noop => "parallel",

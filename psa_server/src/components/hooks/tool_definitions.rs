@@ -1,12 +1,11 @@
 use super::{Hook, HookError};
 use crate::{
-    agents::{Agent, agent_context::AgentContext},
+    agents::agent_context::AgentContext,
     components::{
         cancellation::Cancellation,
         tools::{Tool, ToolSystemPrompt},
     },
     prompts,
-    sessions::Session,
 };
 use llm_api::api::ToolDefinition as ApiToolDefinition;
 use psa_api::{
@@ -19,10 +18,6 @@ use std::time::Duration;
 pub struct ToolDefinitionsHook;
 
 impl Hook for ToolDefinitionsHook {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self
-    }
-
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(3)
     }

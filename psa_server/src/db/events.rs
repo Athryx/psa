@@ -39,6 +39,8 @@ impl DatabaseCursor {
             });
         }
 
+        validate_result_transitions(stream.state, events)?;
+
         let session = get_session(&mut savepoint, stream.session_id).await?;
         let count = i64::try_from(events.len())
             .map_err(|_| DbError::InvalidInput("too many events".into()))?;
@@ -188,6 +190,33 @@ impl DatabaseCursor {
     }
 }
 
+fn validate_result_transitions(mut state: AgentState, events: &[NewEvent]) -> Result<(), DbError> {
+    for (index, event) in events.iter().enumerate() {
+        match &event.kind {
+            EventType::Result(_) => {
+                if state != AgentState::Running {
+                    return Err(DbError::InvalidInput(
+                        "a result requires a running agent".into(),
+                    ));
+                }
+                if !matches!(
+                    events.get(index + 1).map(|event| &event.kind),
+                    Some(EventType::StatusChange(change)) if change.new_status == AgentState::Idle
+                ) {
+                    return Err(DbError::InvalidInput(
+                        "a result must be immediately followed by an idle status in the same batch"
+                            .into(),
+                    ));
+                }
+                state = AgentState::Idle;
+            }
+            EventType::StatusChange(change) => state = change.new_status,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn load_event_rows(
     conn: &mut SqliteConnection,
     agent: AgentId,
@@ -232,7 +261,7 @@ pub(super) async fn agent_state_at(
     let segments = load_segments(conn, agent, EventId(0), Some(through)).await?;
     for (owner, lower, upper) in segments.into_iter().rev() {
         let row = sqlx::query!(
-            "SELECT s.status FROM events e JOIN event_status_change s ON s.event_pk = e.event_pk WHERE e.agent_id = ? AND e.event_seq BETWEEN ? AND ? ORDER BY e.event_seq DESC LIMIT 1",
+            "SELECT CASE WHEN e.kind = 'result' THEN 'idle' ELSE s.status END AS \"status!: String\" FROM events e LEFT JOIN event_status_change s ON s.event_pk = e.event_pk WHERE e.agent_id = ? AND e.event_seq BETWEEN ? AND ? AND e.kind IN ('status_change', 'result') ORDER BY e.event_seq DESC LIMIT 1",
             owner,
             lower,
             upper

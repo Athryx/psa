@@ -34,15 +34,19 @@ to introduce new general-purpose capabilities.
   and `hooks/` hold their respective implementations. Shared invocation
   cancellation lives in `components/cancellation.rs`.
 - `tools/mod.rs` owns common infrastructure and dispatch, not concrete tool logic.
-- Use `tools/noop.rs` as the working reference. Follow the existing `ToolId`,
-  `ToolKind`, constructors, definition dispatch, and hook snapshot registration;
-  do not create a second registry or execution path.
+- Use `tools/noop.rs` and the Noop bundle as working references. `ToolId`
+  identifies tools; every tool is installed by a bundle. There is no standalone
+  tool configuration type, agent/defaults `tools` field, or tool config factory.
+  Follow bundle installation and existing definition dispatch; do not create a
+  second registry or execution path.
 - Adjacent tools run concurrently by default (`ExecutionMode::Parallel`). Override
   `execution_mode()` with `Sequential` when an operation must be a barrier before
   and after its invocation; Goal setters are the working example. Do not depend
   on declaration-order results or on another parallel invocation's side effects.
-- Every production concrete tool MUST use a typed argument struct and
-  `typed_tool_execute!`. Do not handwrite JSON field extraction or a separate
+- Ordinary production concrete tools MUST use a typed argument struct and
+  `typed_tool_execute!`. The schema-configured `record_result` tool is the
+  deliberate dynamic-schema exception, using shared `CompiledToolSchema`
+  validation rather than a fixed Rust argument schema. Do not handwrite JSON field extraction or a separate
   JSON-valued implementation of `Tool::execute`.
 
 The pattern is:
@@ -72,8 +76,10 @@ impl Example {
     // ) -> ToolOutput
 }
 
+// Construct the unit struct directly: let tool = Example;
+// Tool/Hook traits have no required `new` constructor. Stateful components use
+// inherent constructors with explicit shared handles supplied by their bundle.
 // In impl Tool for Example:
-// - new constructs agent-local state, without IO.
 // - tool_definition directly returns ToolDefinition::for_type::<ExampleArgs>(
 //       "example", "Tool-specific description kept in this file.", Some(false),
 //   ). Use the argument type as the single source of the schema.
@@ -97,24 +103,68 @@ inputs must not execute logic or cause side effects. Serde reports the first
 invalid field, including nested field/array paths; do not replace these errors
 with a generic success or dump the input payload into the response.
 
-## Related tools and shared state: use a bundle
+## Every tool requires a bundle
 
-When two or more tools come together as one feature, define a Rust bundle rather
-than asking callers to list each component separately. Also use a bundle when a
-tool and a hook need shared state. Unrelated standalone tools may still be
-configured individually. Keep each concrete tool in its own file.
+Define a Rust bundle for every tool feature, even an unrelated single unit tool;
+the Noop bundle is the minimal working example. Related tools and hooks share
+an owner through their bundle. Tools cannot be configured individually. Keep
+each concrete tool in its own file; typed invocation arguments and the execution
+macro are unchanged.
 
 - Put the bundle owner/assembly logic in `psa_server/src/components/bundles/<feature>.rs`.
-  Register its `BundleId` in `psa_api` and its `BundleKind` dispatch in the server.
+  Register its `BundleConfig` in `psa_api` and dispatch construction through
+  `BundleKind::from_config(&BundleConfig, Option<&SessionBundleHandle>)` in the
+  server, returning `Result<Self, InstallError>`. The runtime supplies session
+  resources, not serialized configuration arguments. `Subagents` requires those
+  resources to construct its owner; do not add an unbound fallback.
   `components/bundles/file_tools.rs` is the basic working example; bundle lifecycle tests
   demonstrate state shared by two constructed tools and a hook.
-- Agent definitions select ordered bundle IDs, e.g.
-  `"bundles": ["FileTools", "Bash"]`. `FileTools` installs `Read`, `Edit`, and
-  `Write`; `Bash` installs `Bash`, `InteractBash`, and `CloseBash`. The Bash tools
-  require their bundle and cannot be independently configured in `tools`.
-  `Goal` adds interactive goal tools/hooks; `Subagents` adds session-wide tools using
-  session-shared resources. Their component tool IDs also require their bundle.
-  Bundles install in definition order, then explicit tools/hooks are appended.
+- Agent definitions select ordered bundle configurations, e.g.
+  `"bundles": [{"FileTools":{"read_only":false}}, "Bash"]`.
+  `Noop` is a unit bundle installing Noop. `FileTools { read_only }` requires a
+  payload: false or omission inside that payload installs Read, Edit, and Write;
+  true installs only Read. Bare `"FileTools"` is invalid. TOML uses
+  `{ FileTools = { read_only = true } }` in the bundle array.
+  `Bash` installs Bash, InteractBash, and CloseBash. All tools require bundles;
+  there is no explicit tool list on definitions, configs, or defaults.
+  `Goal { interactive_only }` adds goal tools/hooks;
+  `AskQuestion { interactive_only }` adds only the native `ask_question` tool, using
+  existing `context.query_client`, with no hook. Both require payload objects:
+  `{"Goal":{"interactive_only":true}}` and
+  `{"AskQuestion":{"interactive_only":true}}`; bare `"Goal"` is invalid. TOML uses
+  `{ Goal = { interactive_only = true } }` (or `AskQuestion`) in the bundle array.
+  The flag defaults to true inside the payload: noninteractive agents skip all
+  tools/hooks of that bundle. False fully enables it regardless of interactivity,
+  including Goal persistence and continuation. Both bundles remain opt-in;
+  do not add them to default lists. This installation gate never restricts the
+  low-level `query_client` API, which any agent can use, including offline probes.
+  `Subagents` adds session-wide tools using session-shared resources. These
+  component tool IDs also require their corresponding bundle.
+  Unit configuration variants serialize as strings; variants with construction
+  arguments carry typed payloads. Definitions, defaults, and TOML use
+  `HookConfig`, `HookConfigs`, and `BundleConfig`, not identity IDs.
+  Hooks dispatch through `HookKind::from_config(&HookConfig)` and
+  `Hooks::from_configs(&HookConfigs)`. `ExtraSystemPrompt { prompt: String }`
+  owns its prompt; there is no agent-level `extra_system_prompt` field.
+  `TypedResult { schema: ToolSchema, max_retries }` installs sequential
+  `record_result` and a require-result completion hook. Its schema is a raw,
+  explicit object-root Draft 2020-12 schema with local references, validated
+  offline by shared `CompiledToolSchema`. The whole argument object is the
+  result, without a wrapper. Do not generate a separate fixed schema for it.
+  Valid data atomically saves Result and Idle; acknowledgment is only
+  `Result recorded.`. Invalid data yields an error, never a Result.
+  TypedResult, Goal, and ordinary StopWithoutTools are incompatible completion
+  modes, including inherited defaults; explicit hook overrides must remove the
+  ordinary default completion hook when selecting a bundle completion mode.
+  At most one policy may be configured; none (or a skipped interactive-only Goal)
+  is allowed but provides no automatic completion or Result. Non-running Goal
+  includes Blocked: retain the paused goal while settling this run with a text
+  Result. Completion reports prefer Result artifacts, serializing JSON as text.
+  Three retries after the initial invalid/missing completion are allowed by
+  default; the fourth violation interrupts with a reason, not a fake result.
+  Zero fails immediately. Reset only on a new non-Running to Running transition,
+  never on midrun steering. See `docs/AGENT_RESULTS.md` for full semantics.
+  Bundles install in definition order, then explicit hooks are appended.
   Duplicate bundle IDs, tool IDs, or model-facing tool names fail installation.
   Hooks preserve their configured stage/order and are not silently deduplicated.
 - Implement `Bundle::install(&mut self, agent, session, &mut Installer)` without
@@ -126,8 +176,8 @@ configured individually. Keep each concrete tool in its own file.
   lists: that would construct its state independently for each component.
 - Keep mutable long-lived shared state in an actor using the workspace `actors`
   crate when ownership/lifecycle warrants it. Bundle owners are not cloned;
-  components clone only handles. Do not install the same components again in the
-  definition's explicit `tools` list.
+  components clone only handles. Do not install duplicate components through
+  multiple bundles; there is no definition-level explicit tool list.
 - Implement async `Bundle::cleanup(&mut self) -> Result<(), CleanupError>` for
   graceful resource shutdown. It should be idempotent. Cleanup callbacks run in
   reverse installation order after the worker releases its tool/hook references,
@@ -183,6 +233,9 @@ configured individually. Keep each concrete tool in its own file.
   provider. Pass `Some(true)` only for a schema that passes the
   shared strict checks, including closed nested objects and all properties
   required. Verify strict support rather than stripping constraints.
+- Static `tool_definition(ToolId)` returns `Option<ToolDefinition>`; it returns
+  None for `RecordResult`, whose installed instance carries the exact configured
+  schema. Expose instance definitions rather than inventing a static fallback.
 - Use `ToolSchema::from(serde_json::Value)` only as a deliberate raw-schema escape
   hatch, not the normal tool-authoring pattern. Provider serialization and schema
   validation belong to `llm_api`, not individual tools.
@@ -231,6 +284,13 @@ to reach around their ownership or lifecycle rules.
 - `save_events(&[NewEvent]).await`: persists and publishes auxiliary events and
   updates the projection. The worker separately persists returned `ToolOutput` as
   the tool result; do NOT duplicate that response as an auxiliary event.
+  Durable `EventType::Result` completion artifacts are separate metadata excluded
+  from model history, not ordinary tool responses. Never synthesize one merely
+  because a run failed/cancelled, or duplicate a completion within a run.
+  Cancellation before commit produces no result, but an accepted database save
+  cannot be revoked and may complete after cancellation. Recovery after a typed
+  artifact commit but before its acknowledgment restores only the producing
+  call acknowledgment, with no duplicate Result or Interrupted status.
 - Async trace queries: `load_events(range)`, `load_all_events()`,
   `load_context_window()`, `load_events_since_last_inference()`,
   `load_last_inference_result()`, and `load_agent_envelopes(range)`. These are

@@ -5,21 +5,27 @@
 //! concrete `Drop` implementations are the fallback: Drop cannot await. Bundles
 //! owning resources must therefore still provide cancellation-safe concrete Drop.
 
+mod ask_question;
 pub mod bash;
 mod file_tools;
 pub mod goal;
+mod noop;
 pub mod session;
 pub mod subagents;
 #[cfg(test)]
 pub(crate) mod testing;
 #[cfg(test)]
 mod tests;
+pub(crate) mod typed_result;
 
+pub use ask_question::AskQuestionBundle;
 pub use bash::BashBundle;
 pub use file_tools::FileToolsBundle;
 pub use goal::GoalBundle;
-pub use psa_api::BundleId;
+pub use noop::NoopBundle;
+pub use psa_api::BundleConfig;
 pub use subagents::SubagentsBundle;
+pub use typed_result::TypedResultBundle;
 
 use crate::{
     agents::{Agent, AgentDefinition},
@@ -54,38 +60,56 @@ pub trait Bundle: Send + Sync {
 
 /// Static Rust dispatch, not a dynamic registry or a second tool execution path.
 pub enum BundleKind {
+    Noop(NoopBundle),
     FileTools(FileToolsBundle),
     Bash(BashBundle),
     Goal(GoalBundle),
+    AskQuestion(AskQuestionBundle),
+    TypedResult(TypedResultBundle),
     Subagents(SubagentsBundle),
     #[cfg(test)]
     Probe(testing::ProbeBundle),
 }
 
 impl BundleKind {
-    pub fn new(id: BundleId) -> Self {
-        match id {
-            BundleId::FileTools => Self::FileTools(FileToolsBundle::new()),
-            BundleId::Bash => Self::Bash(BashBundle::new()),
-            BundleId::Goal => Self::Goal(GoalBundle::new()),
-            BundleId::Subagents => Self::Subagents(SubagentsBundle::new()),
-        }
-    }
-
-    fn with_session(id: BundleId, resources: Option<&session::SessionBundleHandle>) -> Self {
-        match (id, resources) {
-            (BundleId::Subagents, Some(resources)) => {
+    pub fn from_config(
+        config: &BundleConfig,
+        resources: Option<&session::SessionBundleHandle>,
+    ) -> Result<Self, InstallError> {
+        let bundle = match config {
+            BundleConfig::Noop => Self::Noop(NoopBundle),
+            BundleConfig::FileTools { read_only } => {
+                Self::FileTools(FileToolsBundle::new(*read_only))
+            }
+            BundleConfig::Bash => Self::Bash(BashBundle::new()),
+            BundleConfig::Goal { interactive_only } => {
+                Self::Goal(GoalBundle::new(*interactive_only))
+            }
+            BundleConfig::AskQuestion { interactive_only } => {
+                Self::AskQuestion(AskQuestionBundle::new(*interactive_only))
+            }
+            BundleConfig::TypedResult {
+                schema,
+                max_retries,
+            } => Self::TypedResult(TypedResultBundle::new(schema.clone(), *max_retries)?),
+            BundleConfig::Subagents => {
+                let resources = resources.ok_or_else(|| {
+                    InstallError::new("Subagents requires session bundle resources")
+                })?;
                 Self::Subagents(SubagentsBundle::with_session(resources))
             }
-            _ => Self::new(id),
-        }
+        };
+        Ok(bundle)
     }
 
     fn label(&self) -> String {
         match self {
+            Self::Noop(_) => "Noop".into(),
             Self::FileTools(_) => "FileTools".into(),
             Self::Bash(_) => "Bash".into(),
             Self::Goal(_) => "Goal".into(),
+            Self::AskQuestion(_) => "AskQuestion".into(),
+            Self::TypedResult(_) => "TypedResult".into(),
             Self::Subagents(_) => "Subagents".into(),
             #[cfg(test)]
             Self::Probe(bundle) => bundle.name.clone(),
@@ -101,9 +125,12 @@ impl Bundle for BundleKind {
         installer: &mut Installer,
     ) -> Result<(), InstallError> {
         match self {
+            Self::Noop(bundle) => bundle.install(agent, session, installer),
             Self::FileTools(bundle) => bundle.install(agent, session, installer),
             Self::Bash(bundle) => bundle.install(agent, session, installer),
             Self::Goal(bundle) => bundle.install(agent, session, installer),
+            Self::AskQuestion(bundle) => bundle.install(agent, session, installer),
+            Self::TypedResult(bundle) => bundle.install(agent, session, installer),
             Self::Subagents(bundle) => bundle.install(agent, session, installer),
             #[cfg(test)]
             Self::Probe(bundle) => bundle.install(agent, session, installer),
@@ -112,9 +139,12 @@ impl Bundle for BundleKind {
 
     async fn cleanup(&mut self) -> Result<(), CleanupError> {
         match self {
+            Self::Noop(bundle) => bundle.cleanup().await,
             Self::FileTools(bundle) => bundle.cleanup().await,
             Self::Bash(bundle) => bundle.cleanup().await,
             Self::Goal(bundle) => bundle.cleanup().await,
+            Self::AskQuestion(bundle) => bundle.cleanup().await,
+            Self::TypedResult(bundle) => bundle.cleanup().await,
             Self::Subagents(bundle) => bundle.cleanup().await,
             #[cfg(test)]
             Self::Probe(bundle) => bundle.cleanup().await,
@@ -123,9 +153,12 @@ impl Bundle for BundleKind {
 
     fn cleanup_timeout(&self) -> Duration {
         match self {
+            Self::Noop(bundle) => bundle.cleanup_timeout(),
             Self::FileTools(bundle) => bundle.cleanup_timeout(),
             Self::Bash(bundle) => bundle.cleanup_timeout(),
             Self::Goal(bundle) => bundle.cleanup_timeout(),
+            Self::AskQuestion(bundle) => bundle.cleanup_timeout(),
+            Self::TypedResult(bundle) => bundle.cleanup_timeout(),
             Self::Subagents(bundle) => bundle.cleanup_timeout(),
             #[cfg(test)]
             Self::Probe(bundle) => bundle.cleanup_timeout(),
@@ -200,16 +233,19 @@ impl InstalledComponents {
         session: &Session,
         resources: Option<&session::SessionBundleHandle>,
     ) -> Result<Self, InstallError> {
+        psa_api::completion::validate_completion_modes(&definition.bundles, &definition.hooks)
+            .map_err(|error| InstallError::new(error.to_string()))?;
         let mut installer = Installer::default();
         let mut bundles = Vec::new();
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             let mut ids = HashSet::new();
-            for id in &definition.bundles {
-                if !ids.insert(*id) {
+            for config in &definition.bundles {
+                let id = config.id();
+                if !ids.insert(id) {
                     return Err(InstallError::new(format!("duplicate bundle ID: {id:?}")));
                 }
                 // Retain even the failing owner, before it can register anything.
-                bundles.push(BundleKind::with_session(*id, resources));
+                bundles.push(BundleKind::from_config(config, resources)?);
                 if let BundleKind::Subagents(bundle) = bundles.last_mut().unwrap() {
                     bundle.set_allow_create(!definition.permitted_subagents.is_empty());
                 }
@@ -219,22 +255,14 @@ impl InstalledComponents {
                     .install(agent, session, &mut installer)?;
             }
 
-            for id in &definition.tools {
-                if let Some(bundle) = ToolKind::required_bundle(*id) {
-                    return Err(InstallError::new(format!(
-                        "tool {id:?} requires bundle {bundle:?}"
-                    )));
-                }
-                installer.add_tool(ToolKind::new(*id, agent, session))?;
-            }
             for (stage, ids) in [
                 (HookStage::AgentCreate, &definition.hooks.agent_create),
                 (HookStage::SessionUpdate, &definition.hooks.session_update),
                 (HookStage::BeforeRequest, &definition.hooks.before_request),
                 (HookStage::AfterRequest, &definition.hooks.after_request),
             ] {
-                for id in ids {
-                    installer.add_hook(stage, HookKind::new(*id, agent, session));
+                for config in ids {
+                    installer.add_hook(stage, HookKind::from_config(config));
                 }
             }
             Ok(())

@@ -1,6 +1,6 @@
 //! Immutable transcript events. Sequence numbers are local to an agent lineage.
 
-use crate::{AgentId, AgentState, ToolId};
+use crate::{AgentId, AgentResult, AgentState, ToolId};
 use llm_api::api::{
     ContentBlock, HistoryItem, HistoryItemMetadata, Outcome, ProviderMetadata, Reasoning,
     RequestConfig, TextBlock, ToolDefinition as ApiToolDefinition, Usage,
@@ -117,6 +117,11 @@ pub enum EventType {
     ToolResult(
         /// Output and error status for the matching call.
         ToolResult,
+    ),
+    /// Records a durable agent result artifact, separate from ordinary messages.
+    Result(
+        /// Result payload with its text-or-JSON representation.
+        AgentResult,
     ),
     /// Replaces model-facing history with a compacted summary.
     Compaction(

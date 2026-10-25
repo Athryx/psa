@@ -1,3 +1,4 @@
+use super::{Edit, Noop, Read, ToolId, ToolKind, Write, tool_definition};
 use llm_api::api::{ToolDefinition, parse_tool_arguments};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -13,6 +14,49 @@ struct NestedArgs {
 #[serde(deny_unknown_fields)]
 struct NestedEntry {
     count: u32,
+}
+
+#[test]
+fn concrete_unit_tools_have_their_registered_identities() {
+    for (tool, id) in [
+        (ToolKind::Noop(Noop), ToolId::Noop),
+        (ToolKind::Read(Read), ToolId::Read),
+        (ToolKind::Edit(Edit), ToolId::Edit),
+        (ToolKind::Write(Write), ToolId::Write),
+    ] {
+        assert_eq!(tool.id(), id);
+        assert_eq!(
+            tool.tool_definition().name,
+            tool_definition(id).unwrap().name
+        );
+    }
+}
+
+#[test]
+fn every_tool_identity_has_metadata_without_runtime_resources() {
+    for (id, name) in [
+        (ToolId::AskQuestion, "ask_question"),
+        (ToolId::Noop, "noop"),
+        (ToolId::Read, "read"),
+        (ToolId::Edit, "edit"),
+        (ToolId::Write, "write"),
+        (ToolId::Bash, "bash"),
+        (ToolId::InteractBash, "interact_bash"),
+        (ToolId::CloseBash, "close_bash"),
+        (ToolId::SetGoal, "set_goal"),
+        (ToolId::SetGoalStatus, "set_goal_status"),
+        (ToolId::CreateAgent, "create_agent"),
+        (ToolId::SendMessage, "send_message"),
+        (ToolId::WaitMessage, "wait_message"),
+        (ToolId::ListAgents, "list_agents"),
+    ] {
+        assert_eq!(tool_definition(id).unwrap().name, name);
+    }
+}
+
+#[test]
+fn configured_result_identity_has_no_schema_without_its_bundle() {
+    assert!(tool_definition(ToolId::RecordResult).is_none());
 }
 
 #[test]

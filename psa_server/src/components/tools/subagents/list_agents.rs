@@ -1,13 +1,12 @@
 use super::{format_tool_output, require_coordinator};
 use crate::{
-    agents::{Agent, agent_context::AgentContext},
+    agents::agent_context::AgentContext,
     components::{
         bundles::subagents::SubagentCoordinator,
         cancellation::Cancellation,
         tools::{Tool, ToolOutput, typed_tool_execute},
     },
     prompts,
-    sessions::Session,
 };
 use llm_api::api::ToolDefinition;
 use schemars::JsonSchema;
@@ -24,15 +23,12 @@ struct ListAgentsArgs {
 fn bool_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({"type":"boolean"})
 }
-#[derive(Default)]
 pub struct ListAgents {
-    handle: Option<SubagentCoordinator>,
+    handle: SubagentCoordinator,
 }
 impl ListAgents {
     pub fn with_handle(handle: SubagentCoordinator) -> Self {
-        Self {
-            handle: Some(handle),
-        }
+        Self { handle }
     }
     pub(crate) fn definition() -> ToolDefinition {
         ToolDefinition::for_type::<ListAgentsArgs>(
@@ -93,9 +89,6 @@ impl ListAgents {
     }
 }
 impl Tool for ListAgents {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self::default()
-    }
     fn tool_definition(&self) -> ToolDefinition {
         Self::definition()
     }

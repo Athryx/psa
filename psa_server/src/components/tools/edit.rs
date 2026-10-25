@@ -1,10 +1,5 @@
 use super::{Tool, ToolOutput, ToolSystemPrompt, file_ops, typed_tool_execute};
-use crate::{
-    agents::{Agent, agent_context::AgentContext},
-    components::cancellation::Cancellation,
-    prompts,
-    sessions::Session,
-};
+use crate::{agents::agent_context::AgentContext, components::cancellation::Cancellation, prompts};
 use llm_api::api::ToolDefinition;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, de::Error};
@@ -161,10 +156,6 @@ impl Edit {
 }
 
 impl Tool for Edit {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self
-    }
-
     fn tool_definition(&self) -> ToolDefinition {
         ToolDefinition::for_type::<EditArgs>(
             "edit",

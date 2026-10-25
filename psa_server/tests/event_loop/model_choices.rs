@@ -155,7 +155,7 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
             .await,
         Err(wire::ClientError::Api { status: 400, .. })
     ));
-    for (selection, expected) in [
+    for (index, (selection, expected)) in [
         (ModelSelection::Global, model()),
         (ModelSelection::Parent, parent_model),
         (
@@ -172,13 +172,16 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
                 effort: Effort::Medium,
             },
         ),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let child = harness
             .client
             .create_agent(
                 session.id,
                 &NewConfiguredAgent {
-                    name: "dynamic selection".into(),
+                    name: format!("dynamic selection {index}"),
                     config_id: dynamic.config_id.clone(),
                     model: Some(selection),
                     subagent_parent_id: Some(parent.id),

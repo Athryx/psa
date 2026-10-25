@@ -4,13 +4,16 @@ use schemars::{JsonSchema, generate::SchemaSettings};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
+mod validation;
+pub use validation::{CompiledToolSchema, SchemaValidationError};
+
 /// An owned JSON Schema, serialized exactly as the schema object in snapshots.
 ///
 /// Keeping JSON preserves dialect-specific keywords, references, and annotations
 /// without an incomplete second schema AST. `From<Value>` is the raw-schema escape
 /// hatch. Raw and generated schemas receive identical validation, including
 /// after snapshot round trips; strict mode supports a conservative common subset.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct ToolSchema {
     schema: Value,

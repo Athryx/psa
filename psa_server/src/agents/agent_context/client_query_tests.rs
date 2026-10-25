@@ -70,6 +70,175 @@ async fn start_query(
     (cancel, task, query)
 }
 
+fn native_question_arguments() -> serde_json::Value {
+    serde_json::json!({"questions":[{"question":"Which approach?","choices":["First","Second"]}]})
+}
+
+async fn start_native_question(
+    fixture: &Fixture,
+    agent: &Agent,
+) -> (
+    oneshot::Sender<()>,
+    JoinHandle<ToolOutput>,
+    ClientQueryRequest,
+) {
+    let mut received = fixture.publication.lock().await.subscribe();
+    let mut state = fixture.load_state(agent).await;
+    let sessions = fixture.runtime.handle.clone();
+    let (cancel, cancellation) = Cancellation::channel();
+    let task = tokio::spawn(async move {
+        let mut context = AgentContext::with_optional_probe(&mut state, None, &sessions);
+        crate::components::tools::AskQuestion
+            .execute(native_question_arguments(), &mut context, cancellation)
+            .await
+    });
+    let query = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let StreamMessage::ClientQueryRequested { query } = received.recv().await.unwrap() {
+                break query;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    (cancel, task, query)
+}
+
+#[tokio::test]
+async fn native_ask_question_roundtrips_structured_answers_without_probe_or_interactive_guard() {
+    let fixture = Fixture::new().await;
+    let agent = fixture.create_agent(&[]).await;
+    assert!(!agent.interactive);
+    let (_cancel, waiting, query) = start_native_question(&fixture, &agent).await;
+    assert_eq!(query.agent_id, agent.id);
+    assert_eq!(query.session_id, agent.session_id);
+    assert_eq!(query.payload, question());
+    assert!(!waiting.is_finished());
+    let page = fixture
+        .client
+        .events(agent.session_id, Some(agent.id), &EventsQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(page.queries, vec![query.clone()]);
+    assert!(
+        page.events.is_empty(),
+        "the question tool must not write auxiliary events"
+    );
+    fixture
+        .client
+        .respond_to_client_query(agent.session_id, agent.id, query.id, &answer())
+        .await
+        .unwrap();
+    let output = tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!output.error, "{}", native_tool_text(&output));
+    let decoded: AskQuestionResponse = serde_json::from_str(native_tool_text(&output)).unwrap();
+    let ClientQueryResponse::AskQuestion(expected) = answer();
+    assert_eq!(decoded, expected);
+    let page = fixture
+        .client
+        .events(agent.session_id, None, &EventsQuery::default())
+        .await
+        .unwrap();
+    assert!(page.queries.is_empty());
+    assert!(page.events.is_empty());
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn cancelling_native_ask_question_removes_its_pending_client_query() {
+    let fixture = Fixture::new().await;
+    let agent = fixture.create_agent(&[]).await;
+    let (cancel, waiting, query) = start_native_question(&fixture, &agent).await;
+    let mut received = fixture.publication.lock().await.subscribe();
+    cancel.send(()).unwrap();
+    let output = tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(output.error);
+    assert!(
+        native_tool_text(&output)
+            .to_lowercase()
+            .contains("interrupted")
+    );
+    let removed = tokio::time::timeout(Duration::from_secs(5), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(removed, StreamMessage::ClientQueryRemoved { session_id, agent_id, query_id }
+        if session_id == agent.session_id && agent_id == agent.id && query_id == query.id)
+    );
+    let page = fixture
+        .client
+        .events(agent.session_id, None, &EventsQuery::default())
+        .await
+        .unwrap();
+    assert!(page.queries.is_empty());
+    assert!(page.events.is_empty());
+    assert!(matches!(
+        fixture
+            .client
+            .respond_to_client_query(agent.session_id, agent.id, query.id, &answer())
+            .await,
+        Err(ClientError::Api { status: 410, .. })
+    ));
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn invalid_or_precancelled_native_questions_do_not_register_client_queries() {
+    let fixture = Fixture::new().await;
+    let agent = fixture.create_agent(&[]).await;
+    let mut state = fixture.load_state(&agent).await;
+    let mut received = fixture.publication.lock().await.subscribe();
+    for arguments in [
+        serde_json::json!({}),
+        serde_json::json!({"questions":[]}),
+        serde_json::json!({"questions":[{"question":" "}]}),
+        serde_json::json!({"questions":[{"question":4}]}),
+        serde_json::json!({"questions":[{"question":"Which?","choices":[""]}]}),
+        serde_json::json!({"questions":[{"question":"Which?","extra":true}]}),
+        serde_json::json!({"questions":[{"question":"Which?"}],"extra":true}),
+    ] {
+        let mut context =
+            AgentContext::with_optional_probe(&mut state, None, &fixture.runtime.handle);
+        let (_cancel, cancellation) = Cancellation::channel();
+        let output = crate::components::tools::AskQuestion
+            .execute(arguments, &mut context, cancellation)
+            .await;
+        assert!(output.error);
+        assert!(matches!(
+            received.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+    let mut context = AgentContext::with_optional_probe(&mut state, None, &fixture.runtime.handle);
+    let (cancel, cancellation) = Cancellation::channel();
+    cancel.send(()).unwrap();
+    let output = crate::components::tools::AskQuestion
+        .execute(native_question_arguments(), &mut context, cancellation)
+        .await;
+    assert!(output.error);
+    assert!(matches!(
+        received.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    assert!(
+        fixture
+            .publication
+            .lock()
+            .await
+            .queries(agent.session_id, Some(agent.id))
+            .is_empty()
+    );
+    assert!(context.load_all_events().await.unwrap().is_empty());
+    fixture.close().await;
+}
+
 #[tokio::test]
 async fn context_client_query_roundtrip_survives_sse_reconnect_and_validates_responses() {
     let fixture = Fixture::new().await;
@@ -346,10 +515,6 @@ async fn runtime_shutdown_releases_context_queries_without_a_client_response() {
 struct AskingHook;
 
 impl Hook for AskingHook {
-    fn new(_agent: &Agent, _session: &crate::sessions::Session) -> Self {
-        Self
-    }
-
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(1)
     }

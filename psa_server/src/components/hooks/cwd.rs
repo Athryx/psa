@@ -1,10 +1,5 @@
 use super::{Hook, HookError};
-use crate::{
-    agents::{Agent, agent_context::AgentContext},
-    components::cancellation::Cancellation,
-    prompts,
-    sessions::Session,
-};
+use crate::{agents::agent_context::AgentContext, components::cancellation::Cancellation, prompts};
 use psa_api::events::{EventType, Message, MessageType, NewEvent};
 use std::time::Duration;
 
@@ -12,10 +7,6 @@ use std::time::Duration;
 pub struct CwdHook;
 
 impl Hook for CwdHook {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self
-    }
-
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(3)
     }

@@ -59,11 +59,7 @@ struct StoredGoal {
 }
 
 /// Read the latest valid state on this agent's branch (including fork ancestry).
-/// Noninteractive agents must not inherit interactive goal behavior.
 pub async fn load_goal_state(context: &AgentContext<'_>) -> Result<GoalState, DbError> {
-    if !context.agent().interactive {
-        return Ok(GoalState::default());
-    }
     Ok(restore_state(&context.load_all_events().await?))
 }
 
@@ -360,9 +356,6 @@ impl GoalHandle {
         context: &mut AgentContext<'_>,
         mut cancellation: Cancellation,
     ) -> Result<String, String> {
-        if !context.agent().interactive {
-            return Err("Goal mode is only available to the interactive agent".into());
-        }
         let execute = async {
             let lease = self
                 .lease(context)

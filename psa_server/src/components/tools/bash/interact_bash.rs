@@ -1,11 +1,10 @@
 use super::{
     super::{Tool, ToolOutput, ToolSystemPrompt, typed_tool_execute},
-    bash::{ResultMode, backend_error, format_result, optional_value, uninstalled, yield_duration},
+    bash::{ResultMode, backend_error, format_result, optional_value, yield_duration},
 };
 use crate::{
-    agents::{Agent, agent_context::AgentContext},
+    agents::agent_context::AgentContext,
     components::{bundles::bash::BashHandle, cancellation::Cancellation},
-    sessions::Session,
 };
 use llm_api::api::ToolDefinition;
 use schemars::JsonSchema;
@@ -30,16 +29,21 @@ struct InteractBashArgs {
     yield_timeout_ms: Option<f64>,
 }
 
-#[derive(Default)]
 pub struct InteractBash {
-    handle: Option<BashHandle>,
+    handle: BashHandle,
 }
 
 impl InteractBash {
+    pub(crate) fn definition() -> ToolDefinition {
+        ToolDefinition::for_type::<InteractBashArgs>(
+            "interact_bash",
+            "Send text to a running bash session's stdin or poll for new stdout/stderr. Returns only output since the previous call (last 2000 lines / 50KB); full combined output stays in its log. Waits up to yield_time_ms (max 300000); defaults to 1000ms when sending stdin, 10000ms when polling.",
+            Some(false),
+        )
+    }
+
     pub(crate) fn with_handle(handle: BashHandle) -> Self {
-        Self {
-            handle: Some(handle),
-        }
+        Self { handle }
     }
 
     async fn execute_typed(
@@ -64,9 +68,7 @@ impl InteractBash {
             Ok(wait) => wait,
             Err(error) => return error,
         };
-        let Some(handle) = &self.handle else {
-            return uninstalled();
-        };
+        let handle = &self.handle;
         match handle
             .interact(arguments.session_name, arguments.stdin, wait, cancellation)
             .await
@@ -78,16 +80,8 @@ impl InteractBash {
 }
 
 impl Tool for InteractBash {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self::default()
-    }
-
     fn tool_definition(&self) -> ToolDefinition {
-        ToolDefinition::for_type::<InteractBashArgs>(
-            "interact_bash",
-            "Send text to a running bash session's stdin or poll for new stdout/stderr. Returns only output since the previous call (last 2000 lines / 50KB); full combined output stays in its log. Waits up to yield_time_ms (max 300000); defaults to 1000ms when sending stdin, 10000ms when polling.",
-            Some(false),
-        )
+        Self::definition()
     }
 
     fn system_prompt(&self) -> ToolSystemPrompt {
@@ -112,7 +106,7 @@ mod tests {
 
     #[test]
     fn schema_and_arguments_match_reference() {
-        let definition = InteractBash::default().tool_definition();
+        let definition = InteractBash::definition();
         let schema = serde_json::to_value(definition.parameters).unwrap();
         assert_eq!(schema["required"], json!(["session_name"]));
         assert_eq!(schema["additionalProperties"], false);

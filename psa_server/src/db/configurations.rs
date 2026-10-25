@@ -44,6 +44,8 @@ fn validate_batch(agents: &[AgentConfig], skills: &[SkillRegistration]) -> Resul
     let mut seen = HashSet::new();
     for config in agents {
         validate_id(&config.config_id)?;
+        validate_completion_config(&config.bundles, &config.hooks)
+            .map_err(|error| DbError::InvalidInput(error.to_string()))?;
         if !seen.insert(&config.config_id) {
             return Err(DbError::InvalidInput(
                 "duplicate agent config ID in batch".into(),
@@ -626,12 +628,10 @@ impl DatabaseCursor {
             description: pinned.definition.description.clone(),
             selectable: pinned.definition.selectable,
             bundles: pinned.definition.bundles.clone(),
-            tools: pinned.definition.tools.clone(),
             hooks: pinned.definition.hooks.clone(),
             model_config: pinned.definition.model_config.clone(),
             skills: pinned.definition.skills.clone(),
             permitted_subagents: pinned.definition.permitted_subagents.clone(),
-            extra_system_prompt: pinned.definition.extra_system_prompt.clone(),
         };
         let signature = format!(
             "pinned:{}",
@@ -734,12 +734,10 @@ fn snapshot_input(node: &SelectedNode, children: Vec<AgentDefinitionId>) -> Crea
         description: node.config.description.clone(),
         selectable: node.config.selectable,
         bundles: node.config.bundles.clone(),
-        tools: node.config.tools.clone(),
         hooks: node.config.hooks.clone(),
         model_config: node.model_config.clone(),
         skills: node.skill_paths.clone(),
         permitted_subagents: children,
-        extra_system_prompt: node.config.extra_system_prompt.clone(),
     }
 }
 

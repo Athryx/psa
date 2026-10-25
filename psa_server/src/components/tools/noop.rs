@@ -1,10 +1,5 @@
 use super::{Tool, ToolOutput, typed_tool_execute};
-use crate::{
-    agents::{Agent, agent_context::AgentContext},
-    components::cancellation::Cancellation,
-    prompts,
-    sessions::Session,
-};
+use crate::{agents::agent_context::AgentContext, components::cancellation::Cancellation, prompts};
 use llm_api::api::ToolDefinition;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -32,10 +27,6 @@ impl Noop {
 }
 
 impl Tool for Noop {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self
-    }
-
     fn tool_definition(&self) -> ToolDefinition {
         Self::definition()
     }

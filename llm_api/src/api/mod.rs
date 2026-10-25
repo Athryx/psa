@@ -59,7 +59,9 @@ pub use agent_history::{AgentHistory, validate_request};
 pub use openai_completions::{OpenAiCompletions, OpenAiCompletionsConfig, OpenAiCompletionsStream};
 pub use openai_responses::{OpenAiResponses, OpenAiResponsesStream};
 pub use provider::{Provider, ProviderStream};
-pub use tool_schema::{ToolArgumentError, ToolSchema, parse_tool_arguments};
+pub use tool_schema::{
+    CompiledToolSchema, SchemaValidationError, ToolArgumentError, ToolSchema, parse_tool_arguments,
+};
 pub use types::*;
 
 /// Per-request settings. The model comes from `AgentHistory::config`.

@@ -20,11 +20,27 @@ are valid even when choices were supplied. Empty questions, blank question or
 choice text, wrong answer counts, and blank answers are rejected. Validation
 errors do not echo question/answer contents.
 
-This feature supplies transport and runtime capabilities, NOT a native
-`ask_question` tool. Tool authors still define their typed tool arguments,
-format their model-facing result, and handle errors intentionally. Hooks can
-propagate query errors through `HookError::ClientQuery`; cooperative cancellation
-should be handled according to the hook's intended interruption behavior.
+## Native question tool
+
+The opt-in `AskQuestion` bundle installs the native `ask_question` tool, which
+uses this existing `context.query_client` capability. It installs no hooks and
+has no standalone tool configuration path. For example:
+
+```json
+{"bundles":[{"AskQuestion":{"interactive_only":true}}]}
+```
+
+In a TOML bundle array, use `{ AskQuestion = { interactive_only = true } }`.
+The flag defaults to true when omitted inside the payload: noninteractive agents
+then skip the tool. Set false to enable it on any agent. The bundle is not added
+to server defaults automatically. This installation policy does not restrict the
+low-level API: any tool or hook can still call `query_client` independently of
+`Agent.interactive`, probe availability, or whether the bundle is installed.
+
+Custom tool authors define their own typed arguments, model-facing result
+formatting, and error handling. Hooks can propagate query errors through
+`HookError::ClientQuery`; cooperative cancellation should follow the hook's
+intended interruption behavior.
 
 ## Ownership and cancellation
 

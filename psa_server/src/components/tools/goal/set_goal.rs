@@ -1,12 +1,11 @@
 use crate::{
-    agents::{Agent, agent_context::AgentContext},
+    agents::agent_context::AgentContext,
     components::{
         bundles::goal::{GoalHandle, GoalOperation},
         cancellation::Cancellation,
         tools::{ExecutionMode, Tool, ToolOutput, ToolSystemPrompt, typed_tool_execute},
     },
     prompts,
-    sessions::Session,
 };
 use llm_api::api::ToolDefinition;
 use schemars::JsonSchema;
@@ -20,16 +19,21 @@ struct SetGoalArgs {
     goal: String,
 }
 
-#[derive(Default)]
 pub struct SetGoal {
-    handle: Option<GoalHandle>,
+    handle: GoalHandle,
 }
 
 impl SetGoal {
+    pub(crate) fn definition() -> ToolDefinition {
+        ToolDefinition::for_type::<SetGoalArgs>(
+            "set_goal",
+            "Set or replace the current goal and start running it. Call only when the user explicitly requests setting a goal.",
+            Some(false),
+        )
+    }
+
     pub(crate) fn with_handle(handle: GoalHandle) -> Self {
-        Self {
-            handle: Some(handle),
-        }
+        Self { handle }
     }
 
     async fn execute_typed(
@@ -38,9 +42,7 @@ impl SetGoal {
         context: &mut AgentContext<'_>,
         cancellation: Cancellation,
     ) -> ToolOutput {
-        let Some(handle) = &self.handle else {
-            return ToolOutput::error(prompts::text("set_goal requires the Goal bundle"));
-        };
+        let handle = &self.handle;
         match handle
             .execute(GoalOperation::Set(arguments.goal), context, cancellation)
             .await
@@ -52,15 +54,8 @@ impl SetGoal {
 }
 
 impl Tool for SetGoal {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self::default()
-    }
     fn tool_definition(&self) -> ToolDefinition {
-        ToolDefinition::for_type::<SetGoalArgs>(
-            "set_goal",
-            "Set or replace the current goal and start running it. Call only when the user explicitly requests setting a goal.",
-            Some(false),
-        )
+        Self::definition()
     }
     fn system_prompt(&self) -> ToolSystemPrompt {
         ToolSystemPrompt { tools: None, rules: vec!["Call set_goal only when the user explicitly asks to set a goal; do not turn ordinary requests into goals.".into()] }
@@ -81,7 +76,7 @@ mod tests {
     use serde_json::json;
     #[test]
     fn schema_and_typed_arguments_match_pi() {
-        let definition = SetGoal::default().tool_definition();
+        let definition = SetGoal::definition();
         let schema = serde_json::to_value(&definition.parameters).unwrap();
         assert_eq!(definition.name, "set_goal");
         assert_eq!(schema["additionalProperties"], false);
@@ -96,9 +91,5 @@ mod tests {
         ] {
             assert!(parse_tool_arguments::<SetGoalArgs>(args).is_err());
         }
-        assert!(matches!(
-            SetGoal::default().execution_mode(),
-            ExecutionMode::Sequential
-        ));
     }
 }

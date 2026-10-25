@@ -2,8 +2,8 @@ use super::{testing::*, *};
 use crate::{
     agents::{AgentState, AgentUsage},
     components::{
-        hooks::{HookId, HookIds},
-        tools::{Read, ToolId},
+        hooks::{HookConfig, HookConfigs},
+        tools::{ExecutionMode, Read, Tool, ToolId},
     },
 };
 use psa_api::{AgentDefinitionId, AgentId, SessionId, events::EventId};
@@ -52,12 +52,10 @@ fn definition() -> AgentDefinition {
         description: String::new(),
         selectable: false,
         bundles: Vec::new(),
-        tools: Vec::new(),
-        hooks: HookIds::default(),
+        hooks: HookConfigs::default(),
         model_config: None,
         skills: Vec::new(),
         permitted_subagents: Vec::new(),
-        extra_system_prompt: String::new(),
     }
 }
 
@@ -69,7 +67,7 @@ fn probe(name: &str, state: &Arc<ProbeState>, cleanup: CleanupBehavior) -> Bundl
 }
 
 #[tokio::test]
-async fn file_bundle_precedes_explicit_components_and_empty_is_supported() {
+async fn bundle_order_and_empty_component_configuration_are_preserved() {
     let (agent, session) = snapshots();
     let mut empty = InstalledComponents::install(&definition(), &agent, &session)
         .await
@@ -78,9 +76,11 @@ async fn file_bundle_precedes_explicit_components_and_empty_is_supported() {
     empty.cleanup().await.unwrap();
 
     let mut definition = definition();
-    definition.bundles.push(BundleId::FileTools);
-    definition.tools.push(ToolId::Noop);
-    definition.hooks.before_request = vec![HookId::Noop, HookId::Noop];
+    definition.bundles = vec![
+        BundleConfig::FileTools { read_only: false },
+        BundleConfig::Noop,
+    ];
+    definition.hooks.before_request = vec![HookConfig::Noop, HookConfig::Noop];
     let mut components = InstalledComponents::install(&definition, &agent, &session)
         .await
         .unwrap();
@@ -102,17 +102,7 @@ async fn file_bundle_precedes_explicit_components_and_empty_is_supported() {
 async fn bash_tools_are_installed_together_and_require_their_bundle() {
     let (agent, session) = snapshots();
     let mut definition = definition();
-    for tool in [ToolId::Bash, ToolId::InteractBash, ToolId::CloseBash] {
-        definition.tools = vec![tool];
-        let error = InstalledComponents::install(&definition, &agent, &session)
-            .await
-            .err()
-            .unwrap();
-        assert!(error.message.contains("requires bundle Bash"));
-    }
-
-    definition.tools.clear();
-    definition.bundles = vec![BundleId::Bash];
+    definition.bundles = vec![BundleConfig::Bash];
     let mut components = InstalledComponents::install(&definition, &agent, &session)
         .await
         .unwrap();
@@ -128,46 +118,38 @@ async fn bash_tools_are_installed_together_and_require_their_bundle() {
 }
 
 #[tokio::test]
-async fn goal_installation_is_interactive_and_feature_tools_require_bundles() {
+async fn goal_installation_respects_interactive_only_and_feature_tools_require_bundles() {
     let (mut agent, session) = snapshots();
     let mut definition = definition();
-    definition.bundles = vec![BundleId::Goal];
-    let mut hidden = InstalledComponents::install(&definition, &agent, &session)
-        .await
-        .unwrap();
-    assert!(hidden.tools.is_empty());
-    assert!(hidden.hooks.after_request.is_empty());
-    hidden.cleanup().await.unwrap();
-
-    agent.interactive = true;
-    let mut installed = InstalledComponents::install(&definition, &agent, &session)
-        .await
-        .unwrap();
-    assert_eq!(
-        installed.tools.iter().map(ToolKind::id).collect::<Vec<_>>(),
-        [ToolId::SetGoal, ToolId::SetGoalStatus]
-    );
-    assert_eq!(installed.hooks.after_request.len(), 1);
-    installed.cleanup().await.unwrap();
-
-    definition.bundles.clear();
-    for tool in [
-        ToolId::SetGoal,
-        ToolId::SetGoalStatus,
-        ToolId::CreateAgent,
-        ToolId::SendMessage,
-        ToolId::WaitMessage,
-        ToolId::ListAgents,
-    ] {
-        definition.tools = vec![tool];
-        let error = InstalledComponents::install(&definition, &agent, &session)
-            .await
-            .err()
-            .unwrap();
-        assert!(error.message.contains("requires bundle"));
+    for interactive in [false, true] {
+        agent.interactive = interactive;
+        for interactive_only in [false, true] {
+            definition.bundles = vec![BundleConfig::Goal { interactive_only }];
+            let mut installed = InstalledComponents::install(&definition, &agent, &session)
+                .await
+                .unwrap();
+            let enabled = interactive || !interactive_only;
+            let expected = if enabled {
+                vec![ToolId::SetGoal, ToolId::SetGoalStatus]
+            } else {
+                vec![]
+            };
+            assert_eq!(
+                installed.tools.iter().map(ToolKind::id).collect::<Vec<_>>(),
+                expected
+            );
+            assert!(
+                installed
+                    .tools
+                    .iter()
+                    .all(|tool| tool.execution_mode() == ExecutionMode::Sequential)
+            );
+            assert_eq!(installed.hooks.after_request.len(), usize::from(enabled));
+            installed.cleanup().await.unwrap();
+        }
     }
-    definition.tools.clear();
-    definition.bundles = vec![BundleId::Subagents];
+
+    definition.bundles = vec![BundleConfig::Subagents];
     let error = InstalledComponents::install(&definition, &agent, &session)
         .await
         .err()
@@ -176,29 +158,114 @@ async fn goal_installation_is_interactive_and_feature_tools_require_bundles() {
 }
 
 #[tokio::test]
-async fn duplicate_bundle_and_tool_ids_are_errors() {
+async fn ask_question_installation_respects_interactive_only_for_both_agent_modes() {
+    let (mut agent, session) = snapshots();
+    let mut definition = definition();
+    for interactive in [false, true] {
+        agent.interactive = interactive;
+        for interactive_only in [false, true] {
+            definition.bundles = vec![BundleConfig::AskQuestion { interactive_only }];
+            let mut installed = InstalledComponents::install(&definition, &agent, &session)
+                .await
+                .unwrap();
+            let expected = if interactive || !interactive_only {
+                vec![ToolId::AskQuestion]
+            } else {
+                vec![]
+            };
+            assert_eq!(
+                installed.tools.iter().map(ToolKind::id).collect::<Vec<_>>(),
+                expected
+            );
+            assert!(installed.hooks.agent_create.is_empty());
+            assert!(installed.hooks.session_update.is_empty());
+            assert!(installed.hooks.before_request.is_empty());
+            assert!(installed.hooks.after_request.is_empty());
+            installed.cleanup().await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn file_tools_read_only_selects_only_the_read_capability() {
+    let (agent, session) = snapshots();
+    for read_only in [false, true] {
+        let mut definition = definition();
+        definition.bundles = vec![BundleConfig::FileTools { read_only }];
+        let mut installed = InstalledComponents::install(&definition, &agent, &session)
+            .await
+            .unwrap();
+        let expected = if read_only {
+            vec![ToolId::Read]
+        } else {
+            vec![ToolId::Read, ToolId::Edit, ToolId::Write]
+        };
+        assert_eq!(
+            installed.tools.iter().map(ToolKind::id).collect::<Vec<_>>(),
+            expected
+        );
+        installed.cleanup().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn duplicate_bundle_ids_are_rejected_even_with_different_payloads() {
     let (agent, session) = snapshots();
     let mut definition = definition();
-    definition.bundles = vec![BundleId::FileTools, BundleId::FileTools];
+    definition.bundles = vec![
+        BundleConfig::FileTools { read_only: false },
+        BundleConfig::FileTools { read_only: true },
+    ];
     let error = InstalledComponents::install(&definition, &agent, &session)
         .await
         .err()
         .unwrap();
     assert!(error.message.contains("duplicate bundle ID"));
-    definition.bundles.truncate(1);
-    definition.tools = vec![ToolId::Read];
-    let error = InstalledComponents::install(&definition, &agent, &session)
-        .await
-        .err()
-        .unwrap();
-    assert!(error.message.contains("duplicate tool ID"));
-    definition.bundles.clear();
-    definition.tools = vec![ToolId::Noop, ToolId::Noop];
+    definition.bundles = vec![BundleConfig::Noop, BundleConfig::Noop];
     assert!(
         InstalledComponents::install(&definition, &agent, &session)
             .await
             .is_err()
     );
+}
+
+#[test]
+fn removed_tools_fields_are_rejected_even_when_empty() {
+    for tools in [
+        serde_json::json!([]),
+        serde_json::json!(["Noop"]),
+        serde_json::json!(["Read"]),
+        serde_json::json!(["Bash"]),
+        serde_json::json!(["AskQuestion"]),
+    ] {
+        assert!(
+            serde_json::from_value::<psa_api::CreateAgentDefinition>(
+                serde_json::json!({"name":"legacy", "tools":tools})
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<psa_api::AgentDefaults>(serde_json::json!({"tools":tools}))
+                .is_err()
+        );
+        let config = serde_json::json!({"config_id":{"config_group":"Global","name":"legacy"},"models":["Global"],"tools":tools});
+        assert!(serde_json::from_value::<psa_api::AgentConfig>(config.clone()).is_err());
+        assert!(serde_json::from_value::<psa_api::AgentConfigInput>(config).is_err());
+    }
+}
+
+#[test]
+fn duplicate_installed_tool_ids_are_rejected_independently_of_api_name() {
+    let mut installer = Installer::default();
+    installer.add_tool(ToolKind::Read(Read)).unwrap();
+    let error = installer
+        .add_tool(ToolKind::BundleProbe(SharedTool {
+            state: Arc::default(),
+            id: ToolId::Read,
+            name: "different-api-name".into(),
+        }))
+        .unwrap_err();
+    assert!(error.message.contains("duplicate tool ID"));
 }
 
 #[test]

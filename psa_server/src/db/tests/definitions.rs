@@ -4,7 +4,7 @@ use crate::{
     db::{Database, DbError},
     sessions::{ForkPoint, SessionFork, SessionUpdate},
 };
-use psa_api::{AgentDefinitionId, BundleId, CreateAgentDefinition, HookId, HookIds, ToolId};
+use psa_api::{AgentDefinitionId, BundleConfig, CreateAgentDefinition, HookConfig, HookConfigs};
 
 #[tokio::test]
 async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
@@ -14,13 +14,27 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
         name: " \n literal name \t".into(),
         description: "description\n\n".into(),
         selectable: false,
-        bundles: vec![BundleId::FileTools, BundleId::FileTools],
-        tools: vec![ToolId::Noop, ToolId::Noop],
-        hooks: HookIds {
-            agent_create: vec![HookId::Noop, HookId::DefaultStartup, HookId::Noop],
-            session_update: vec![HookId::SessionModelUpdate],
-            before_request: vec![HookId::Noop, HookId::Noop],
-            after_request: vec![HookId::StopWithoutTools, HookId::Noop],
+        bundles: vec![
+            BundleConfig::FileTools { read_only: false },
+            BundleConfig::FileTools { read_only: true },
+            BundleConfig::Noop,
+            BundleConfig::Noop,
+        ],
+        hooks: HookConfigs {
+            agent_create: vec![
+                HookConfig::Noop,
+                HookConfig::DefaultStartup,
+                HookConfig::Noop,
+            ],
+            session_update: vec![HookConfig::SessionModelUpdate],
+            before_request: vec![
+                HookConfig::Noop,
+                HookConfig::ExtraSystemPrompt {
+                    prompt: " \n literal prompt \n ".into(),
+                },
+                HookConfig::Noop,
+            ],
+            after_request: vec![HookConfig::StopWithoutTools, HookConfig::Noop],
         },
         model_config: Some(model()),
         skills: vec![
@@ -29,7 +43,6 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
             "relative/../skill".into(),
         ],
         permitted_subagents: vec![AgentDefinitionId(999999), AgentDefinitionId(999999)],
-        extra_system_prompt: " \n literal prompt \n ".into(),
     };
     let first = cursor
         .create_agent_definition(request.clone())
@@ -65,11 +78,10 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
     assert_ne!(first.id, next.id);
     assert_eq!(next.previous_version_id, Some(first.id));
     assert_eq!(next.version, 2);
-    assert!(next.tools.is_empty());
     assert!(next.bundles.is_empty());
     assert!(next.hooks.agent_create.is_empty());
     assert!(next.model_config.is_none());
-    assert!(next.extra_system_prompt.is_empty());
+    assert!(next.hooks.before_request.is_empty());
     assert_eq!(
         serde_json::to_value(cursor.get_agent_definition(first.id).await.unwrap()).unwrap(),
         expected

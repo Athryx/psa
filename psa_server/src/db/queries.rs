@@ -3,13 +3,13 @@
 use super::{
     DatabaseCursor, DbError,
     events::{add_usage, event_cutoff_at, load_event_rows, load_segments},
-    schema::{decode_integer, encode_integer},
+    schema::{decode_integer, decode_time, encode_integer},
 };
 use crate::{
     agents::{AgentId, AgentUsage},
     sessions::SessionId,
 };
-use psa_api::{EventEnvelope, events::*};
+use psa_api::{EventEnvelope, ResultRecord, events::*};
 use sqlx::SqliteConnection;
 
 #[derive(Debug, Clone)]
@@ -20,6 +20,70 @@ pub struct InferenceResultEvents {
 }
 
 impl DatabaseCursor {
+    pub async fn load_last_result(
+        &mut self,
+        session: SessionId,
+        agent: AgentId,
+    ) -> Result<Option<ResultRecord>, DbError> {
+        Ok(self
+            .load_last_results(session, agent, 1)
+            .await?
+            .into_iter()
+            .next())
+    }
+
+    /// Newest first, including results visible through every bounded fork ancestor.
+    pub async fn load_last_results(
+        &mut self,
+        session: SessionId,
+        agent: AgentId,
+        limit: u32,
+    ) -> Result<Vec<ResultRecord>, DbError> {
+        self.require_agent_session(session, agent).await?;
+        let envelopes = load_result_envelopes(
+            self.connection(),
+            session,
+            agent,
+            EventRange {
+                after: EventId(0),
+                through: None,
+                limit,
+            },
+            true,
+        )
+        .await?;
+        envelopes
+            .into_iter()
+            .map(|envelope| {
+                let EventType::Result(value) = envelope.event.kind else {
+                    return Err(DbError::Corrupt(
+                        "result query returned another event kind".into(),
+                    ));
+                };
+                Ok(ResultRecord {
+                    session_id: session,
+                    agent_id: agent,
+                    event_id: envelope.event.id,
+                    source_agent_id: envelope.event.source_agent_id,
+                    position: envelope.position,
+                    timestamp: envelope.event.timestamp,
+                    value,
+                })
+            })
+            .collect()
+    }
+
+    /// Filters before pagination; event IDs remain IDs in the full visible history.
+    pub async fn load_agent_result_envelopes(
+        &mut self,
+        session: SessionId,
+        agent: AgentId,
+        range: EventRange,
+    ) -> Result<Vec<EventEnvelope>, DbError> {
+        self.require_agent_session(session, agent).await?;
+        load_result_envelopes(self.connection(), session, agent, range, false).await
+    }
+
     /// Includes staged appends in this cursor. Never silently truncates a window.
     pub async fn load_all_events(&mut self, agent: AgentId) -> Result<Vec<Event>, DbError> {
         self.load_event_window(agent, EventId(0), None).await
@@ -173,6 +237,29 @@ impl DatabaseCursor {
         through: Option<u64>,
         limit: u32,
     ) -> Result<Vec<EventEnvelope>, DbError> {
+        self.load_session_event_page(session, after, through, limit, false)
+            .await
+    }
+
+    pub async fn load_session_result_events(
+        &mut self,
+        session: SessionId,
+        after: u64,
+        through: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<EventEnvelope>, DbError> {
+        self.load_session_event_page(session, after, through, limit, true)
+            .await
+    }
+
+    async fn load_session_event_page(
+        &mut self,
+        session: SessionId,
+        after: u64,
+        through: Option<u64>,
+        limit: u32,
+        results_only: bool,
+    ) -> Result<Vec<EventEnvelope>, DbError> {
         if limit == 0 || limit > 10_000 {
             return Err(DbError::InvalidInput(
                 "event page size must be between 1 and 10000".into(),
@@ -187,18 +274,18 @@ impl DatabaseCursor {
         for agent in self.list_agents(session).await? {
             let lower = event_cutoff_at(self.connection(), agent.id, after).await?;
             let upper = event_cutoff_at(self.connection(), agent.id, through).await?;
-            events.extend(
-                self.load_agent_envelopes(
-                    session,
-                    agent.id,
-                    EventRange {
-                        after: EventId(decode_integer(lower)?),
-                        through: Some(EventId(decode_integer(upper)?)),
-                        limit,
-                    },
-                )
-                .await?,
-            );
+            let range = EventRange {
+                after: EventId(decode_integer(lower)?),
+                through: Some(EventId(decode_integer(upper)?)),
+                limit,
+            };
+            let page = if results_only {
+                self.load_agent_result_envelopes(session, agent.id, range)
+                    .await?
+            } else {
+                self.load_agent_envelopes(session, agent.id, range).await?
+            };
+            events.extend(page);
         }
         events.sort_by_key(|event| event.position);
         events.truncate(limit as usize);
@@ -215,6 +302,66 @@ impl DatabaseCursor {
         }
         Ok(agents)
     }
+}
+
+struct ResultRow {
+    agent_id: i64,
+    event_seq: i64,
+    session_position: i64,
+    timestamp_us: i64,
+    value: String,
+}
+
+async fn load_result_envelopes(
+    conn: &mut SqliteConnection,
+    session: SessionId,
+    agent: AgentId,
+    range: EventRange,
+    newest_first: bool,
+) -> Result<Vec<EventEnvelope>, DbError> {
+    if range.limit == 0 || range.limit > 10_000 {
+        return Err(DbError::InvalidInput(
+            "result page size must be between 1 and 10000".into(),
+        ));
+    }
+    let mut segments = load_segments(conn, agent, range.after, range.through).await?;
+    if newest_first {
+        segments.reverse();
+    }
+    let mut rows = Vec::new();
+    for (owner, lower, upper) in segments {
+        let remaining = i64::from(range.limit) - rows.len() as i64;
+        if remaining == 0 {
+            break;
+        }
+        let page = if newest_first {
+            sqlx::query_as!(ResultRow,
+                "SELECT e.agent_id, e.event_seq, e.session_position, e.timestamp_us, p.value FROM events e JOIN event_result p ON p.event_pk=e.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ? AND e.kind='result' ORDER BY e.event_seq DESC LIMIT ?",
+                owner, lower, upper, remaining
+            ).fetch_all(&mut *conn).await?
+        } else {
+            sqlx::query_as!(ResultRow,
+                "SELECT e.agent_id, e.event_seq, e.session_position, e.timestamp_us, p.value FROM events e JOIN event_result p ON p.event_pk=e.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ? AND e.kind='result' ORDER BY e.event_seq ASC LIMIT ?",
+                owner, lower, upper, remaining
+            ).fetch_all(&mut *conn).await?
+        };
+        rows.extend(page);
+    }
+    rows.into_iter()
+        .map(|row| {
+            Ok(EventEnvelope {
+                session_id: session,
+                agent_id: agent,
+                position: decode_integer(row.session_position)?,
+                event: Event {
+                    id: EventId(decode_integer(row.event_seq)?),
+                    source_agent_id: AgentId(decode_integer(row.agent_id)?),
+                    timestamp: decode_time(row.timestamp_us)?,
+                    kind: EventType::Result(serde_json::from_str(&row.value)?),
+                },
+            })
+        })
+        .collect()
 }
 
 pub(super) async fn usage_at(

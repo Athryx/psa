@@ -599,12 +599,22 @@ impl SessionManager {
                             .collect();
                         summary.final_text = (!text.is_empty()).then_some(text);
                     }
+                    EventType::Result(result) => {
+                        summary.final_text = Some(match result {
+                            psa_api::AgentResult::Text(text) => text,
+                            psa_api::AgentResult::Json(value) => value.to_string(),
+                        });
+                        summary.inference_outcome = None;
+                    }
                     EventType::InferenceResultEnd(result) => {
                         summary.inference_outcome = match result.outcome {
                             llm_api::api::Outcome::Failed(_) => Some(AgentRunOutcome::Failed {
                                 message: "Agent execution failed; see server logs for details."
                                     .into(),
                             }),
+                            llm_api::api::Outcome::Incomplete {
+                                reason: llm_api::api::StopReason::TokenLimit,
+                            } => None,
                             llm_api::api::Outcome::Cancelled
                             | llm_api::api::Outcome::Incomplete { .. } => {
                                 Some(AgentRunOutcome::Interrupted)
@@ -976,14 +986,18 @@ impl SessionManager {
         let mut needs_subagents = state
             .definition()
             .bundles
-            .contains(&psa_api::BundleId::Subagents);
+            .iter()
+            .any(|bundle| bundle.id() == psa_api::BundleId::Subagents);
         if let Some(parent) = agent.subagent_parent_id {
             let parent = self.sessions.get_agent(agent.session_id, parent).await?;
             let definition = self
                 .sessions
                 .get_agent_definition(parent.definition_id)
                 .await?;
-            needs_subagents |= definition.bundles.contains(&psa_api::BundleId::Subagents);
+            needs_subagents |= definition
+                .bundles
+                .iter()
+                .any(|bundle| bundle.id() == psa_api::BundleId::Subagents);
         }
         let resources = needs_subagents.then(|| self.ensure_session_resources(agent.session_id));
 

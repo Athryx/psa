@@ -1,13 +1,12 @@
-use crate::{
-    agents::{Agent, agent_context::AgentContext, agent_projection::AgentProjection},
-    components::cancellation::Cancellation,
-    prompts,
-    sessions::Session,
-};
 #[cfg(test)]
 use crate::{
     agents::{AgentState, agent_manager::AgentManagerMessage},
     components::cancellation::run_cancellable,
+};
+use crate::{
+    agents::{agent_context::AgentContext, agent_projection::AgentProjection},
+    components::cancellation::Cancellation,
+    prompts,
 };
 #[cfg(test)]
 use actors::UnboundedMailbox;
@@ -15,20 +14,24 @@ use llm_api::api::{self, HistoryItemKind, ToolDefinition};
 use psa_api::events::ToolResult as ToolResultEvent;
 use std::time::Duration;
 
+mod ask_question;
 pub(crate) mod bash;
 mod edit;
 mod file_ops;
 pub(crate) mod goal;
 mod noop;
 mod read;
+mod record_result;
 pub(crate) mod subagents;
 mod write;
 
+pub use ask_question::AskQuestion;
 pub use bash::{Bash, CloseBash, InteractBash};
 pub use edit::Edit;
 pub use goal::{SetGoal, SetGoalStatus};
 pub use noop::Noop;
 pub use read::Read;
+pub use record_result::RecordResult;
 pub use subagents::{CreateAgent, ListAgents, SendMessage, WaitMessage};
 pub use write::Write;
 
@@ -103,22 +106,26 @@ impl ToolOutput {
     }
 }
 
-pub fn tool_definition(id: ToolId) -> ToolDefinition {
-    match id {
+/// Configuration-independent metadata. Dynamic tools require their installed
+/// instance to supply the actual schema; no permissive placeholder is returned.
+pub fn tool_definition(id: ToolId) -> Option<ToolDefinition> {
+    Some(match id {
+        ToolId::RecordResult => return None,
+        ToolId::AskQuestion => AskQuestion::definition(),
         ToolId::Noop => Noop::definition(),
         ToolId::Read => Read.tool_definition(),
         ToolId::Edit => Edit.tool_definition(),
         ToolId::Write => Write.tool_definition(),
-        ToolId::Bash => Bash::default().tool_definition(),
-        ToolId::InteractBash => InteractBash::default().tool_definition(),
-        ToolId::CloseBash => CloseBash::default().tool_definition(),
-        ToolId::SetGoal => SetGoal::default().tool_definition(),
-        ToolId::SetGoalStatus => SetGoalStatus::default().tool_definition(),
-        ToolId::CreateAgent => CreateAgent::default().tool_definition(),
-        ToolId::SendMessage => SendMessage::default().tool_definition(),
-        ToolId::WaitMessage => WaitMessage::default().tool_definition(),
-        ToolId::ListAgents => ListAgents::default().tool_definition(),
-    }
+        ToolId::Bash => Bash::definition(),
+        ToolId::InteractBash => InteractBash::definition(),
+        ToolId::CloseBash => CloseBash::definition(),
+        ToolId::SetGoal => SetGoal::definition(),
+        ToolId::SetGoalStatus => SetGoalStatus::definition(),
+        ToolId::CreateAgent => CreateAgent::definition(),
+        ToolId::SendMessage => SendMessage::definition(),
+        ToolId::WaitMessage => WaitMessage::definition(),
+        ToolId::ListAgents => ListAgents::definition(),
+    })
 }
 
 /// Whether an invocation may overlap adjacent tool calls.
@@ -213,6 +220,8 @@ pub(crate) fn failed_tool_result(call_id: String, content: ToolResult) -> ToolRe
 }
 
 pub enum ToolKind {
+    AskQuestion(AskQuestion),
+    RecordResult(RecordResult),
     Noop(Noop),
     Read(Read),
     Edit(Edit),
@@ -233,40 +242,10 @@ pub enum ToolKind {
 }
 
 impl ToolKind {
-    pub fn required_bundle(id: ToolId) -> Option<psa_api::BundleId> {
-        match id {
-            ToolId::Bash | ToolId::InteractBash | ToolId::CloseBash => {
-                Some(psa_api::BundleId::Bash)
-            }
-            ToolId::SetGoal | ToolId::SetGoalStatus => Some(psa_api::BundleId::Goal),
-            ToolId::CreateAgent
-            | ToolId::SendMessage
-            | ToolId::WaitMessage
-            | ToolId::ListAgents => Some(psa_api::BundleId::Subagents),
-            _ => None,
-        }
-    }
-
-    pub fn new(id: ToolId, agent: &Agent, session: &Session) -> Self {
-        match id {
-            ToolId::Noop => Self::Noop(Noop::new(agent, session)),
-            ToolId::Read => Self::Read(Read::new(agent, session)),
-            ToolId::Edit => Self::Edit(Edit::new(agent, session)),
-            ToolId::Write => Self::Write(Write::new(agent, session)),
-            ToolId::Bash => Self::Bash(Bash::new(agent, session)),
-            ToolId::InteractBash => Self::InteractBash(InteractBash::new(agent, session)),
-            ToolId::CloseBash => Self::CloseBash(CloseBash::new(agent, session)),
-            ToolId::SetGoal => Self::SetGoal(SetGoal::new(agent, session)),
-            ToolId::SetGoalStatus => Self::SetGoalStatus(SetGoalStatus::new(agent, session)),
-            ToolId::CreateAgent => Self::CreateAgent(CreateAgent::new(agent, session)),
-            ToolId::SendMessage => Self::SendMessage(SendMessage::new(agent, session)),
-            ToolId::WaitMessage => Self::WaitMessage(WaitMessage::new(agent, session)),
-            ToolId::ListAgents => Self::ListAgents(ListAgents::new(agent, session)),
-        }
-    }
-
     pub fn id(&self) -> ToolId {
         match self {
+            Self::AskQuestion(_) => ToolId::AskQuestion,
+            Self::RecordResult(_) => ToolId::RecordResult,
             Self::Noop(_) => ToolId::Noop,
             Self::Read(_) => ToolId::Read,
             Self::Edit(_) => ToolId::Edit,
@@ -289,6 +268,8 @@ impl ToolKind {
 
     pub fn tool_definition(&self) -> ToolDefinition {
         match self {
+            Self::AskQuestion(tool) => tool.tool_definition(),
+            Self::RecordResult(tool) => tool.tool_definition(),
             Self::Noop(tool) => tool.tool_definition(),
             Self::Read(tool) => tool.tool_definition(),
             Self::Edit(tool) => tool.tool_definition(),
@@ -311,16 +292,14 @@ impl ToolKind {
 }
 
 impl Tool for ToolKind {
-    fn new(agent: &Agent, session: &Session) -> Self {
-        Self::new(ToolId::Noop, agent, session)
-    }
-
     fn tool_definition(&self) -> ToolDefinition {
         Self::tool_definition(self)
     }
 
     fn system_prompt(&self) -> ToolSystemPrompt {
         match self {
+            Self::AskQuestion(tool) => tool.system_prompt(),
+            Self::RecordResult(tool) => tool.system_prompt(),
             Self::Noop(tool) => tool.system_prompt(),
             Self::Read(tool) => tool.system_prompt(),
             Self::Edit(tool) => tool.system_prompt(),
@@ -343,6 +322,8 @@ impl Tool for ToolKind {
 
     fn execution_mode(&self) -> ExecutionMode {
         match self {
+            Self::AskQuestion(tool) => tool.execution_mode(),
+            Self::RecordResult(tool) => tool.execution_mode(),
             Self::Noop(tool) => tool.execution_mode(),
             Self::Read(tool) => tool.execution_mode(),
             Self::Edit(tool) => tool.execution_mode(),
@@ -365,6 +346,8 @@ impl Tool for ToolKind {
 
     fn cancellation_timeout(&self) -> Duration {
         match self {
+            Self::AskQuestion(tool) => tool.cancellation_timeout(),
+            Self::RecordResult(tool) => tool.cancellation_timeout(),
             Self::Noop(tool) => tool.cancellation_timeout(),
             Self::Read(tool) => tool.cancellation_timeout(),
             Self::Edit(tool) => tool.cancellation_timeout(),
@@ -392,6 +375,8 @@ impl Tool for ToolKind {
         cancellation: Cancellation,
     ) -> ToolOutput {
         match self {
+            Self::AskQuestion(tool) => tool.execute(arguments, context, cancellation).await,
+            Self::RecordResult(tool) => tool.execute(arguments, context, cancellation).await,
             Self::Noop(tool) => tool.execute(arguments, context, cancellation).await,
             Self::Read(tool) => tool.execute(arguments, context, cancellation).await,
             Self::Edit(tool) => tool.execute(arguments, context, cancellation).await,
@@ -416,11 +401,6 @@ impl Tool for ToolKind {
 /// A native model tool. Persist auxiliary events through the context; the worker
 /// persists the returned content and error flag as a separate tool response.
 pub trait Tool: Send + Sync {
-    /// Builds an agent-local instance without performing IO.
-    fn new(agent: &Agent, session: &Session) -> Self
-    where
-        Self: Sized;
-
     fn tool_definition(&self) -> ToolDefinition;
 
     /// Additional system-prompt guidance, independent of the API tool schema.

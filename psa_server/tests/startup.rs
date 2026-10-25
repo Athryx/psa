@@ -53,28 +53,28 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
         .unwrap();
     assert!(generated.contains("[session_defaults]"));
     assert!(generated.contains("model = \"openai_codex/gpt-5\""));
-    assert!(config.agent_defaults.tools.is_empty());
+    assert!(!generated.contains("\ntools ="));
     assert_eq!(
         config.agent_defaults.bundles,
         vec![
-            psa_api::BundleId::FileTools,
-            psa_api::BundleId::Bash,
-            psa_api::BundleId::Subagents,
+            psa_api::BundleConfig::FileTools { read_only: false },
+            psa_api::BundleConfig::Bash,
+            psa_api::BundleConfig::Subagents,
         ]
     );
     assert_eq!(
         config.agent_defaults.hooks.agent_create,
         vec![
-            psa_api::HookId::DefaultStartup,
-            psa_api::HookId::ToolDefinitions,
-            psa_api::HookId::Skills,
+            psa_api::HookConfig::DefaultStartup,
+            psa_api::HookConfig::ToolDefinitions,
+            psa_api::HookConfig::Skills,
         ]
     );
     assert!(config.agent_defaults.hooks.session_update.is_empty());
     assert!(config.agent_defaults.hooks.before_request.is_empty());
     assert_eq!(
         config.agent_defaults.hooks.after_request,
-        vec![psa_api::HookId::StopWithoutTools]
+        vec![psa_api::HookConfig::StopWithoutTools]
     );
     tokio::fs::write(&config.config_path, "broken TOML [")
         .await
@@ -135,39 +135,54 @@ async fn config_parses_agent_defaults_and_preserves_explicit_empty_lists() {
         config: Some(path.clone()),
         ..Default::default()
     };
-    tokio::fs::write(&path, format!("{base}\n[agent_defaults]\ntools = [\"Read\", \"Write\"]\nbundles = [\"Bash\"]\n[agent_defaults.hooks]\nagent_create = [\"DefaultStartup\", \"Skills\"]\nbefore_request = [\"Noop\"]\n"))
+    tokio::fs::write(&path, format!("{base}\n[agent_defaults]\nbundles = [{{ FileTools = {{ read_only = false }} }}, \"Bash\"]\n[agent_defaults.hooks]\nagent_create = [\"DefaultStartup\", \"Skills\"]\nbefore_request = [\"Noop\"]\n"))
         .await.unwrap();
     let defaults = options().resolve().await.unwrap().agent_defaults;
     assert_eq!(
-        defaults.tools,
-        vec![psa_api::ToolId::Read, psa_api::ToolId::Write]
+        defaults.bundles,
+        vec![
+            psa_api::BundleConfig::FileTools { read_only: false },
+            psa_api::BundleConfig::Bash
+        ]
     );
-    assert_eq!(defaults.bundles, vec![psa_api::BundleId::Bash]);
     assert_eq!(
         defaults.hooks.agent_create,
-        vec![psa_api::HookId::DefaultStartup, psa_api::HookId::Skills]
+        vec![
+            psa_api::HookConfig::DefaultStartup,
+            psa_api::HookConfig::Skills
+        ]
     );
-    assert_eq!(defaults.hooks.before_request, vec![psa_api::HookId::Noop]);
+    assert_eq!(
+        defaults.hooks.before_request,
+        vec![psa_api::HookConfig::Noop]
+    );
     assert!(defaults.hooks.session_update.is_empty());
     assert!(defaults.hooks.after_request.is_empty());
 
-    tokio::fs::write(&path, format!("{base}\n[agent_defaults]\ntools = []\nbundles = []\n[agent_defaults.hooks]\nagent_create = []\n"))
-        .await.unwrap();
-    let defaults = options().resolve().await.unwrap().agent_defaults;
-    assert!(defaults.tools.is_empty());
-    assert!(defaults.bundles.is_empty());
-    assert!(defaults.hooks.agent_create.is_empty());
-
     tokio::fs::write(
         &path,
-        format!("{base}\n[agent_defaults]\ntools = [\"InvalidTool\"]\n"),
+        format!(
+            "{base}\n[agent_defaults]\nbundles = []\n[agent_defaults.hooks]\nagent_create = []\n"
+        ),
     )
     .await
     .unwrap();
-    assert!(matches!(
-        options().resolve().await,
-        Err(ConfigError::Parse { .. })
-    ));
+    let defaults = options().resolve().await.unwrap().agent_defaults;
+    assert!(defaults.bundles.is_empty());
+    assert!(defaults.hooks.agent_create.is_empty());
+
+    for tools in ["[]", "[\"Read\"]", "[\"InvalidTool\"]"] {
+        tokio::fs::write(
+            &path,
+            format!("{base}\n[agent_defaults]\ntools = {tools}\n"),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            options().resolve().await,
+            Err(ConfigError::Parse { .. })
+        ));
+    }
 }
 
 #[tokio::test]

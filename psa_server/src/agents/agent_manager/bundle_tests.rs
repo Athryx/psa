@@ -269,8 +269,10 @@ async fn replay_and_recovery_do_not_install_worker_bundles() {
     // on its persisted transcript without constructing bundle resources.
     let (_directory, database, agent) = create_agent_record(psa_api::CreateAgentDefinition {
         name: "duplicate file tool".into(),
-        bundles: vec![psa_api::BundleId::FileTools],
-        tools: vec![psa_api::ToolId::Read],
+        bundles: vec![
+            psa_api::BundleConfig::FileTools { read_only: false },
+            psa_api::BundleConfig::FileTools { read_only: true },
+        ],
         ..Default::default()
     })
     .await;

@@ -3,13 +3,12 @@ use super::{
     output::TruncationKind,
 };
 use crate::{
-    agents::{Agent, agent_context::AgentContext},
+    agents::agent_context::AgentContext,
     components::{
         bundles::bash::{BashError, BashHandle, CollectedOutput},
         cancellation::Cancellation,
     },
     prompts,
-    sessions::Session,
 };
 use llm_api::{api::ToolDefinition, providers::ProviderType};
 use psa_api::probes::Command;
@@ -54,16 +53,21 @@ pub(super) fn yield_duration(value: Option<f64>, fallback: u64) -> Result<Durati
     Ok(Duration::from_millis(ms as u64))
 }
 
-#[derive(Default)]
 pub struct Bash {
-    handle: Option<BashHandle>,
+    handle: BashHandle,
 }
 
 impl Bash {
+    pub(crate) fn definition() -> ToolDefinition {
+        ToolDefinition::for_type::<BashArgs>(
+            "bash",
+            "Execute a bash command in the current working directory. Returns stdout and stderr, truncated to the last 2000 lines or 50KB. Waits up to yield_time_ms (default 60000, max 300000); if still running, returns a named background session. Background output is continuously saved to a file.",
+            Some(false),
+        )
+    }
+
     pub(crate) fn with_handle(handle: BashHandle) -> Self {
-        Self {
-            handle: Some(handle),
-        }
+        Self { handle }
     }
 
     async fn execute_typed(
@@ -79,9 +83,7 @@ impl Bash {
             Ok(wait) => wait,
             Err(error) => return error,
         };
-        let Some(handle) = &self.handle else {
-            return uninstalled();
-        };
+        let handle = &self.handle;
         let probe = match context.probe() {
             Ok(probe) => probe.clone(),
             Err(error) => return ToolOutput::error(prompts::text(error.to_string())),
@@ -119,16 +121,8 @@ impl Bash {
 }
 
 impl Tool for Bash {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self::default()
-    }
-
     fn tool_definition(&self) -> ToolDefinition {
-        ToolDefinition::for_type::<BashArgs>(
-            "bash",
-            "Execute a bash command in the current working directory. Returns stdout and stderr, truncated to the last 2000 lines or 50KB. Waits up to yield_time_ms (default 60000, max 300000); if still running, returns a named background session. Background output is continuously saved to a file.",
-            Some(false),
-        )
+        Self::definition()
     }
 
     fn system_prompt(&self) -> ToolSystemPrompt {
@@ -143,10 +137,6 @@ impl Tool for Bash {
     }
 
     typed_tool_execute!(BashArgs, execute_typed);
-}
-
-pub(super) fn uninstalled() -> ToolOutput {
-    ToolOutput::error(prompts::text("Bash tools require the Bash bundle."))
 }
 
 pub(super) fn backend_error(error: BashError) -> ToolOutput {
@@ -304,7 +294,7 @@ mod tests {
 
     #[test]
     fn schema_and_arguments_match_reference() {
-        let definition = Bash::default().tool_definition();
+        let definition = Bash::definition();
         let schema = serde_json::to_value(definition.parameters).unwrap();
         assert_eq!(schema["required"], json!(["command"]));
         assert_eq!(schema["additionalProperties"], false);
@@ -349,7 +339,9 @@ mod tests {
         }
         assert_eq!(format_size(1280), "1.3KB");
         assert_eq!(
-            Bash::default().system_prompt().rules,
+            Bash::with_handle(crate::components::bundles::bash::BashBundle::new().handle())
+                .system_prompt()
+                .rules,
             ["You can inspect PI_* environment variables for current model and session details."]
         );
         let output = backend_error(BashError::Interrupted);

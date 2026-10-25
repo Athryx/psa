@@ -4,6 +4,7 @@ pub mod extra_system_prompt;
 pub mod goal;
 pub mod noop;
 pub mod project_context;
+pub mod require_result;
 pub mod session_model_update;
 pub mod skills;
 pub mod stop_without_tools;
@@ -20,6 +21,7 @@ pub use extra_system_prompt::ExtraSystemPromptHook;
 pub use goal::GoalHook;
 pub use noop::NoopHook;
 pub use project_context::ProjectContextHook;
+pub use require_result::RequireResult;
 pub use session_model_update::SessionModelUpdateHook;
 pub use skills::SkillsHook;
 pub use stop_without_tools::StopWithoutTools;
@@ -29,14 +31,13 @@ pub use tool_definitions::ToolDefinitionsHook;
 use super::cancellation::{Cancellation, run_cancellable};
 use crate::{
     agents::{
-        Agent, AgentError, agent_context::AgentContext, agent_manager::AgentManagerMessage,
+        AgentError, agent_context::AgentContext, agent_manager::AgentManagerMessage,
         session_manager::RuntimeError,
     },
     db::DbError,
-    sessions::Session,
 };
 use actors::UnboundedMailbox;
-pub use psa_api::{HookId, HookIds};
+pub use psa_api::{HookConfig, HookConfigs};
 use psa_shared::probe_transport::ProbeError;
 use std::time::Duration;
 
@@ -56,11 +57,6 @@ pub enum HookError {
 }
 
 pub trait Hook: Send {
-    /// Builds an agent-local instance without performing IO.
-    fn new(agent: &Agent, session: &Session) -> Self
-    where
-        Self: Sized;
-
     fn cancellation_timeout(&self) -> Duration;
     fn run(
         &mut self,
@@ -80,6 +76,7 @@ pub enum HookKind {
     Skills(SkillsHook),
     SessionModelUpdate(SessionModelUpdateHook),
     Goal(GoalHook),
+    RequireResult(RequireResult),
     SubagentIdentity(SubagentIdentity),
     #[cfg(test)]
     RecordLifecycle(crate::agents::session_manager::lifecycle_tests::RecordLifecycle),
@@ -88,34 +85,25 @@ pub enum HookKind {
 }
 
 impl HookKind {
-    pub fn new(id: HookId, agent: &Agent, session: &Session) -> Self {
-        match id {
-            HookId::Noop => Self::Noop(NoopHook::new(agent, session)),
-            HookId::StopWithoutTools => {
-                Self::StopWithoutTools(StopWithoutTools::new(agent, session))
+    /// Builds an agent-local instance from configuration without performing IO.
+    pub fn from_config(config: &HookConfig) -> Self {
+        match config {
+            HookConfig::Noop => Self::Noop(NoopHook),
+            HookConfig::StopWithoutTools => Self::StopWithoutTools(StopWithoutTools),
+            HookConfig::DefaultStartup => Self::DefaultStartup(DefaultStartupHook),
+            HookConfig::ExtraSystemPrompt { prompt } => {
+                Self::ExtraSystemPrompt(ExtraSystemPromptHook::new(prompt.clone()))
             }
-            HookId::DefaultStartup => Self::DefaultStartup(DefaultStartupHook::new(agent, session)),
-            HookId::ExtraSystemPrompt => {
-                Self::ExtraSystemPrompt(ExtraSystemPromptHook::new(agent, session))
-            }
-            HookId::ProjectContext => Self::ProjectContext(ProjectContextHook::new(agent, session)),
-            HookId::ToolDefinitions => {
-                Self::ToolDefinitions(ToolDefinitionsHook::new(agent, session))
-            }
-            HookId::Cwd => Self::Cwd(CwdHook::new(agent, session)),
-            HookId::Skills => Self::Skills(SkillsHook::new(agent, session)),
-            HookId::SessionModelUpdate => {
-                Self::SessionModelUpdate(SessionModelUpdateHook::new(agent, session))
-            }
+            HookConfig::ProjectContext => Self::ProjectContext(ProjectContextHook),
+            HookConfig::ToolDefinitions => Self::ToolDefinitions(ToolDefinitionsHook),
+            HookConfig::Cwd => Self::Cwd(CwdHook),
+            HookConfig::Skills => Self::Skills(SkillsHook),
+            HookConfig::SessionModelUpdate => Self::SessionModelUpdate(SessionModelUpdateHook),
         }
     }
 }
 
 impl Hook for HookKind {
-    fn new(agent: &Agent, session: &Session) -> Self {
-        Self::new(HookId::Noop, agent, session)
-    }
-
     fn cancellation_timeout(&self) -> Duration {
         match self {
             Self::Noop(hook) => hook.cancellation_timeout(),
@@ -128,6 +116,7 @@ impl Hook for HookKind {
             Self::Skills(hook) => hook.cancellation_timeout(),
             Self::SessionModelUpdate(hook) => hook.cancellation_timeout(),
             Self::Goal(hook) => hook.cancellation_timeout(),
+            Self::RequireResult(hook) => hook.cancellation_timeout(),
             Self::SubagentIdentity(hook) => hook.cancellation_timeout(),
             #[cfg(test)]
             Self::RecordLifecycle(hook) => hook.cancellation_timeout(),
@@ -152,6 +141,7 @@ impl Hook for HookKind {
             Self::Skills(hook) => hook.run(context, cancellation).await,
             Self::SessionModelUpdate(hook) => hook.run(context, cancellation).await,
             Self::Goal(hook) => hook.run(context, cancellation).await,
+            Self::RequireResult(hook) => hook.run(context, cancellation).await,
             Self::SubagentIdentity(hook) => hook.run(context, cancellation).await,
             #[cfg(test)]
             Self::RecordLifecycle(hook) => hook.run(context, cancellation).await,
@@ -223,18 +213,14 @@ pub struct Hooks {
 }
 
 impl Hooks {
-    pub fn new(ids: &HookIds, agent: &Agent, session: &Session) -> Self {
-        let build = |ids: &[HookId]| {
-            ids.iter()
-                .map(|id| HookKind::new(*id, agent, session))
-                .collect()
-        };
+    pub fn from_configs(configs: &HookConfigs) -> Self {
+        let build = |configs: &[HookConfig]| configs.iter().map(HookKind::from_config).collect();
 
         Self {
-            agent_create: build(&ids.agent_create),
-            session_update: build(&ids.session_update),
-            before_request: build(&ids.before_request),
-            after_request: build(&ids.after_request),
+            agent_create: build(&configs.agent_create),
+            session_update: build(&configs.session_update),
+            before_request: build(&configs.before_request),
+            after_request: build(&configs.after_request),
         }
     }
 }

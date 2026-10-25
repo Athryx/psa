@@ -242,15 +242,13 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
             description: String::new(),
             selectable: true,
             bundles: vec![],
-            tools: vec![],
-            extra_system_prompt: String::new(),
             models: vec![api::ModelSelection::Global],
             default: true,
             subagents: Default::default(),
             skills: Default::default(),
-            hooks: api::HookIds {
-                agent_create: vec![api::HookId::DefaultStartup],
-                after_request: vec![api::HookId::StopWithoutTools],
+            hooks: api::HookConfigs {
+                agent_create: vec![api::HookConfig::DefaultStartup],
+                after_request: vec![api::HookConfig::StopWithoutTools],
                 ..Default::default()
             },
         }])

@@ -375,6 +375,31 @@ impl Sessions {
         Ok(events)
     }
 
+    /// Load the newest durable result from an agent's complete logical history.
+    pub async fn load_last_result(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+    ) -> Result<Option<api::ResultRecord>, RuntimeError> {
+        let mut cursor = self.database.cursor().await?;
+        let result = cursor.load_last_result(session, agent).await?;
+        cursor.rollback().await?;
+        Ok(result)
+    }
+
+    /// Load up to `limit` durable results, newest first, including visible ancestry.
+    pub async fn load_last_results(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        limit: u32,
+    ) -> Result<Vec<api::ResultRecord>, RuntimeError> {
+        let mut cursor = self.database.cursor().await?;
+        let results = cursor.load_last_results(session, agent, limit).await?;
+        cursor.rollback().await?;
+        Ok(results)
+    }
+
     /// Wait until steering is queued without consuming it or changing agent state.
     /// Returns `Cancelled` on invocation cancellation, `Unavailable` on shutdown.
     pub async fn wait_for_steering(
@@ -713,7 +738,12 @@ mod tests {
                 description: "first version".into(),
                 selectable: true,
                 model_config: Some(crate::test_support::model_config()),
-                extra_system_prompt: "original instructions".into(),
+                hooks: api::HookConfigs {
+                    agent_create: vec![api::HookConfig::ExtraSystemPrompt {
+                        prompt: "original instructions".into(),
+                    }],
+                    ..Default::default()
+                },
                 ..Default::default()
             })
             .await
@@ -737,7 +767,7 @@ mod tests {
         assert!(updated.description.is_empty());
         assert!(!updated.selectable);
         assert!(updated.model_config.is_none());
-        assert!(updated.extra_system_prompt.is_empty());
+        assert!(updated.hooks.agent_create.is_empty());
         let original = sessions.get_agent_definition(initial.id).await.unwrap();
         assert_eq!(original.name, "custom");
         assert_eq!(original.description, "first version");
@@ -746,7 +776,12 @@ mod tests {
             original.model_config,
             Some(crate::test_support::model_config())
         );
-        assert_eq!(original.extra_system_prompt, "original instructions");
+        assert_eq!(
+            original.hooks.agent_create,
+            vec![api::HookConfig::ExtraSystemPrompt {
+                prompt: "original instructions".into()
+            }]
+        );
         let definitions = sessions.list_agent_definitions().await.unwrap();
         assert!(
             definitions

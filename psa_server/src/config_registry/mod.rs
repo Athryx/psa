@@ -12,9 +12,9 @@ use crate::{
 };
 use psa_api::probes::{DirectoryEntry, Event};
 use psa_api::{
-    AgentConfig, AgentConfigInput, AgentDefaults, BundleId, ConfigGroup, ConfigId, HookOverrides,
-    IncludedItems, ModelSelection, ProbeId, Skill, SkillId, SkillLocation, SkillRegistration,
-    ToolId,
+    AgentConfig, AgentConfigInput, AgentDefaults, BundleConfig, ConfigGroup, ConfigId,
+    HookOverrides, IncludedItems, ModelSelection, ProbeId, Skill, SkillId, SkillLocation,
+    SkillRegistration,
 };
 use psa_shared::probe_transport::ProbeError;
 use serde::Deserialize;
@@ -590,13 +590,9 @@ pub struct AgentDefinitionConfig {
     #[serde(default)]
     pub selectable: bool,
     #[serde(default)]
-    pub bundles: Option<Vec<BundleId>>,
-    #[serde(default)]
-    pub tools: Option<Vec<ToolId>>,
+    pub bundles: Option<Vec<BundleConfig>>,
     #[serde(default)]
     pub hooks: HookOverrides,
-    #[serde(default)]
-    pub extra_system_prompt: String,
     #[serde(default = "default_models")]
     pub models: Vec<ModelSelection>,
     #[serde(default = "yes")]
@@ -684,9 +680,7 @@ impl AgentDefinitionConfig {
             description: self.description,
             selectable: self.selectable,
             bundles: self.bundles,
-            tools: self.tools,
             hooks: self.hooks,
-            extra_system_prompt: self.extra_system_prompt,
             models: self.models,
             default: self.default,
             subagents,

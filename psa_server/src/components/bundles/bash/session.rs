@@ -140,7 +140,7 @@ async fn initialize(
     match spawn {
         Ok(call) => Ok((path, call)),
         Err(error) => {
-            let _ = log::delete(probe, &path).await;
+            log::delete_best_effort(probe, &path).await;
             Err(error)
         }
     }
@@ -350,7 +350,7 @@ impl Session {
         if let Some(closing) = self.closing.take() {
             match closing.reply {
                 ClosingReply::Interrupted(reply) => {
-                    let _ = log::delete(&self.probe, &self.log_path).await;
+                    log::delete_best_effort(&self.probe, &self.log_path).await;
                     self.notify_finished();
                     let _ = reply.send(Err(BashError::Interrupted));
                 }
@@ -383,7 +383,7 @@ impl Session {
             && output.exit_code == Some(0)
             && !output.was_truncated()
         {
-            let _ = log::delete(&self.probe, &self.log_path).await;
+            log::delete_best_effort(&self.probe, &self.log_path).await;
         }
         if !output.running {
             self.notify_finished();

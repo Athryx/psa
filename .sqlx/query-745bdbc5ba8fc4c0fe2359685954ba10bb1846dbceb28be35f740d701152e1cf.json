@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT CASE WHEN e.kind = 'result' THEN 'idle' ELSE s.status END AS \"status!: String\" FROM events e LEFT JOIN event_status_change s ON s.event_pk = e.event_pk WHERE e.agent_id = ? AND e.event_seq BETWEEN ? AND ? AND e.kind IN ('status_change', 'result') ORDER BY e.event_seq DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "status!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "745bdbc5ba8fc4c0fe2359685954ba10bb1846dbceb28be35f740d701152e1cf"
+}

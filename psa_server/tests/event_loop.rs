@@ -6,6 +6,8 @@ mod component_features;
 mod fake_probe;
 #[path = "event_loop/model_choices.rs"]
 mod model_choices;
+#[path = "event_loop/results.rs"]
+mod result_features;
 mod support;
 use axum::{
     Json, Router,
@@ -60,9 +62,7 @@ fn agent_config(name: &str) -> wire::AgentConfig {
         description: String::new(),
         selectable: true,
         bundles: vec![],
-        tools: vec![],
         hooks: Default::default(),
-        extra_system_prompt: String::new(),
         models: vec![wire::ModelSelection::Global],
         default: true,
         subagents: Default::default(),
@@ -74,6 +74,8 @@ fn agent_config(name: &str) -> wire::AgentConfig {
 enum Script {
     Text,
     Tools,
+    TextTools,
+    TokenLimit,
     Calls(&'static [(&'static str, &'static str, &'static str)]),
     Wait,
 }
@@ -93,8 +95,8 @@ async fn inference(State(mut fake): State<Fake>, Json(body): Json<Value>) -> Res
         .pop_front()
         .unwrap_or(Script::Text);
     fake.requests.send(body).unwrap();
-    let delta = match script {
-        Script::Tools => json!({"role":"assistant", "tool_calls":[
+    let mut delta = match script {
+        Script::Tools | Script::TextTools => json!({"role":"assistant", "tool_calls":[
             {"index":0,"id":"call-ok","type":"function","function":{"name":"noop","arguments":"{}"}},
             {"index":1,"id":"call-bad","type":"function","function":{"name":"noop","arguments":"{bad json"}}
         ]}),
@@ -105,11 +107,16 @@ async fn inference(State(mut fake): State<Fake>, Json(body): Json<Value>) -> Res
         }
         _ => json!({"role":"assistant", "content":"hello"}),
     };
+    if matches!(script, Script::TextTools) {
+        delta["content"] = json!("intermediate message");
+    }
     let first = format!(
         "data: {}\n\n",
         json!({"id":"fake-response","choices":[{"index":0,"delta":delta,"finish_reason":null}]})
     );
-    let finish = if matches!(script, Script::Tools | Script::Calls(_)) {
+    let finish = if matches!(script, Script::TokenLimit) {
+        "length"
+    } else if matches!(script, Script::Tools | Script::TextTools | Script::Calls(_)) {
         "tool_calls"
     } else {
         "stop"
@@ -134,6 +141,7 @@ struct Harness {
     _dir: tempfile::TempDir,
     db: Database,
     client: wire::Client,
+    address: std::net::SocketAddr,
     requests: mpsc::UnboundedReceiver<Value>,
     scripts: Arc<Mutex<VecDeque<Script>>>,
     stop: oneshot::Sender<()>,
@@ -225,11 +233,14 @@ impl Harness {
 
         let client = wire::Client::new(&format!("http://{address}")).unwrap();
         let mut default = agent_config("default");
-        default.tools = vec![ToolId::Noop];
-        default.hooks = wire::HookIds {
-            agent_create: vec![wire::HookId::DefaultStartup, wire::HookId::ToolDefinitions],
-            session_update: vec![wire::HookId::SessionModelUpdate],
-            after_request: vec![wire::HookId::StopWithoutTools],
+        default.bundles = vec![psa_api::BundleConfig::Noop];
+        default.hooks = wire::HookConfigs {
+            agent_create: vec![
+                wire::HookConfig::DefaultStartup,
+                wire::HookConfig::ToolDefinitions,
+            ],
+            session_update: vec![wire::HookConfig::SessionModelUpdate],
+            after_request: vec![wire::HookConfig::StopWithoutTools],
             ..Default::default()
         };
         client.upsert_agent_configs(&[default]).await.unwrap();
@@ -238,6 +249,7 @@ impl Harness {
             _dir: dir,
             db,
             client,
+            address,
             requests: received,
             scripts,
             stop,
@@ -504,14 +516,18 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
     let mut request = agent_config("custom");
     request.description = "An HTTP snapshot fixture".into();
     request.selectable = true;
-    request.tools = vec![ToolId::Noop];
-    request.hooks = wire::HookIds {
-        agent_create: vec![wire::HookId::Noop],
-        session_update: vec![wire::HookId::Noop],
-        before_request: vec![wire::HookId::Noop],
-        after_request: vec![wire::HookId::Noop],
+    request.bundles = vec![psa_api::BundleConfig::Noop];
+    request.hooks = wire::HookConfigs {
+        agent_create: vec![
+            wire::HookConfig::Noop,
+            wire::HookConfig::ExtraSystemPrompt {
+                prompt: "Review carefully.".into(),
+            },
+        ],
+        session_update: vec![wire::HookConfig::Noop],
+        before_request: vec![wire::HookConfig::Noop],
+        after_request: vec![wire::HookConfig::Noop],
     };
-    request.extra_system_prompt = "Review carefully.".into();
     harness.upsert_config(request.clone()).await;
     let loaded = harness
         .client
@@ -555,15 +571,24 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
         .events(session.id, Some(original.id), &wire::EventsQuery::default())
         .await
         .unwrap();
-    assert!(
-        events.events.is_empty(),
-        "explicit Noop hooks must not acquire default startup hooks"
+    assert_eq!(
+        events.events.len(),
+        1,
+        "explicit hooks must not acquire default startup hooks"
     );
+    assert!(matches!(&events.events[0].event.kind,
+        EventType::Message(message) if message.message_type == MessageType::System
+            && matches!(&message.content[..], [api::ContentBlock::Text(text)] if text.text == "Review carefully.")
+    ));
 
     let mut replacement = request.clone();
-    replacement.hooks.agent_create =
-        vec![wire::HookId::DefaultStartup, wire::HookId::ToolDefinitions];
-    replacement.extra_system_prompt = "Updated prompt.".into();
+    replacement.hooks.agent_create = vec![
+        wire::HookConfig::DefaultStartup,
+        wire::HookConfig::ExtraSystemPrompt {
+            prompt: "Updated prompt.".into(),
+        },
+        wire::HookConfig::ToolDefinitions,
+    ];
     harness.upsert_config(replacement.clone()).await;
     let updated = harness
         .client
@@ -607,8 +632,8 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        updated_snapshot.config.extra_system_prompt,
-        replacement.extra_system_prompt
+        updated_snapshot.config.hooks.agent_create,
+        replacement.hooks.agent_create
     );
     assert_eq!(updated_snapshot.definition.hooks, replacement.hooks);
     let configs = harness
@@ -630,8 +655,9 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
             .await
             .unwrap()
             .config
-            .extra_system_prompt,
-        replacement.extra_system_prompt
+            .hooks
+            .agent_create,
+        replacement.hooks.agent_create
     );
     harness.close().await;
 }
@@ -692,7 +718,12 @@ async fn config_batches_cycles_and_dependency_changes_pin_complete_graphs() {
     assert_eq!(child.config.config_id, second.config_id);
     assert_eq!(child.references.subagents, vec![original.definition_id]);
 
-    second.extra_system_prompt = "Changed dependency".into();
+    second
+        .hooks
+        .agent_create
+        .push(wire::HookConfig::ExtraSystemPrompt {
+            prompt: "Changed dependency".into(),
+        });
     harness.upsert_config(second.clone()).await;
     let changed = harness
         .client
@@ -713,7 +744,7 @@ async fn config_batches_cycles_and_dependency_changes_pin_complete_graphs() {
         .await
         .unwrap()
         .unwrap();
-    assert!(retained_child.config.extra_system_prompt.is_empty());
+    assert!(retained_child.config.hooks.agent_create.is_empty());
 
     let mut invalid = agent_config("invalid-batch");
     invalid.models.clear();
@@ -906,21 +937,21 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
 
     for (name, hooks) in [
         ("omitted", vec![]),
-        ("startup", vec![wire::HookId::DefaultStartup]),
-        ("tools", vec![wire::HookId::ToolDefinitions]),
+        ("startup", vec![wire::HookConfig::DefaultStartup]),
+        ("tools", vec![wire::HookConfig::ToolDefinitions]),
         (
             "ordered",
             vec![
-                wire::HookId::DefaultStartup,
-                wire::HookId::Cwd,
-                wire::HookId::ToolDefinitions,
+                wire::HookConfig::DefaultStartup,
+                wire::HookConfig::Cwd,
+                wire::HookConfig::ToolDefinitions,
             ],
         ),
     ] {
         let definition = harness
             .upsert_config(wire::AgentConfig {
-                tools: vec![ToolId::Noop],
-                hooks: wire::HookIds {
+                bundles: vec![psa_api::BundleConfig::Noop],
+                hooks: wire::HookConfigs {
                     agent_create: hooks,
                     ..Default::default()
                 },
@@ -1628,9 +1659,9 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
             &[
                 NewEvent::new(EventType::NewContext),
                 NewEvent::new(EventType::Model(model())),
-                NewEvent::new(EventType::ToolDefinition(ToolDefinition::for_tool(
-                    ToolId::Noop,
-                ))),
+                NewEvent::new(EventType::ToolDefinition(
+                    ToolDefinition::for_tool(ToolId::Noop).unwrap(),
+                )),
             ],
         )
         .await

@@ -453,13 +453,13 @@ jobs, fabricate cancellation results, or assume that a command had no effects.
 
 ## Mock tool registry
 
-Keep the initial tool boundary small: add one `ToolId::Noop` and a concrete mock
-tool whose `Tool::tool_definition()` returns a stable name, description, and empty
-object argument schema. Resolve `ToolId` through one registry lookup/method;
-do not build a plugin system or executor.
+Keep the initial tool boundary small: use `BundleConfig::Noop` to install a
+concrete mock tool identified by `ToolId::Noop`. Its `Tool::tool_definition()`
+returns a stable name, description, and empty object argument schema. Construct
+through the bundle; there is no standalone tool configuration. Do not build a
+plugin system or executor.
 
-At event construction, resolve the ID and store the definition snapshot alongside
-it. Rendering uses the stored definition, so a later binary changing descriptions
+At event construction, store the identity and definition snapshot together. Rendering uses the stored definition, so a later binary changing descriptions
 or schemas cannot rewrite a persisted prompt. A fork inherits those definitions;
 `NewContext` clears them, and re-adding a definition resolves a fresh snapshot.
 Test the mapping and insertion order without actually running tools.

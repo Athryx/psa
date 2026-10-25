@@ -1,20 +1,51 @@
 use super::{Hook, HookError};
 use crate::{
-    agents::{Agent, AgentState, agent_context::AgentContext, publication::status_event},
+    agents::{AgentState, agent_context::AgentContext, publication::status_event},
     components::cancellation::Cancellation,
-    sessions::Session,
 };
-use psa_api::events::EventType;
+use llm_api::api::{ContentBlock, Outcome, StopReason};
+use psa_api::{
+    AgentResult,
+    events::{Event, EventType, MessageType, NewEvent},
+};
 use std::time::Duration;
+
+#[cfg(test)]
+mod tests;
+
+pub(super) fn build_text_completion_events(items: &[Event]) -> [NewEvent; 2] {
+    let text = items
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventType::Message(message) if message.message_type == MessageType::Agent => {
+                Some(message)
+            }
+            _ => None,
+        })
+        .map(|message| {
+            message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text(text) => Some(text.text.as_str()),
+                    ContentBlock::Refusal(refusal) => Some(refusal.text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+
+    [
+        NewEvent::new(EventType::Result(AgentResult::Text(text))),
+        status_event(AgentState::Idle),
+    ]
+}
 
 #[derive(Default)]
 pub struct StopWithoutTools;
 
 impl Hook for StopWithoutTools {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self
-    }
-
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(3)
     }
@@ -22,19 +53,9 @@ impl Hook for StopWithoutTools {
     async fn run(
         &mut self,
         context: &mut AgentContext<'_>,
-        mut _cancellation: Cancellation,
+        mut cancellation: Cancellation,
     ) -> Result<(), HookError> {
-        // Goal mode installs its own stopping policy. Do not override it when
-        // this conventional stopper also appears in explicit hook configuration.
-        if context.agent().interactive
-            && context
-                .definition()
-                .bundles
-                .contains(&psa_api::BundleId::Goal)
-        {
-            return Ok(());
-        }
-        if context.agent().state != AgentState::Running {
+        if cancellation.is_cancelled() || context.agent().state != AgentState::Running {
             return Ok(());
         }
 
@@ -43,15 +64,35 @@ impl Hook for StopWithoutTools {
             return Ok(());
         };
 
-        if !response
+        let EventType::InferenceResultEnd(end) = &response.end.kind else {
+            return Ok(());
+        };
+        if !matches!(
+            end.outcome,
+            Outcome::Completed { .. }
+                | Outcome::Incomplete {
+                    reason: StopReason::TokenLimit
+                }
+        ) {
+            return Ok(());
+        }
+
+        if response
             .items
             .iter()
             .any(|event| matches!(event.kind, EventType::ToolCall(_)))
         {
-            context
-                .save_events(&[status_event(AgentState::Idle)])
-                .await?;
+            return Ok(());
         }
+
+        let events = build_text_completion_events(&response.items);
+
+        // Completion is not cancellation cleanup. An interrupt received during
+        // the trace read must win before starting the worker-owned status save.
+        if cancellation.is_cancelled() {
+            return Ok(());
+        }
+        context.save_events(&events).await?;
 
         Ok(())
     }

@@ -12,15 +12,13 @@ CREATE TABLE agent_definitions (
     name TEXT NOT NULL,
     description TEXT NOT NULL,
     selectable BOOLEAN NOT NULL,
-    tools TEXT NOT NULL CHECK (json_valid(tools)),
     agent_create_hooks TEXT NOT NULL CHECK (json_valid(agent_create_hooks)),
     session_update_hooks TEXT NOT NULL CHECK (json_valid(session_update_hooks)),
     before_request_hooks TEXT NOT NULL CHECK (json_valid(before_request_hooks)),
     after_request_hooks TEXT NOT NULL CHECK (json_valid(after_request_hooks)),
     model_config TEXT CHECK (model_config IS NULL OR json_valid(model_config)),
     skills TEXT NOT NULL CHECK (json_valid(skills)),
-    permitted_subagents TEXT NOT NULL CHECK (json_valid(permitted_subagents)),
-    extra_system_prompt TEXT NOT NULL
+    permitted_subagents TEXT NOT NULL CHECK (json_valid(permitted_subagents))
 );
 
 CREATE TABLE sessions (
@@ -61,7 +59,7 @@ CREATE TABLE events (
     event_seq INTEGER NOT NULL CHECK (event_seq >= 1),
     session_position INTEGER NOT NULL CHECK (session_position >= 1),
     timestamp_us INTEGER NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('status_change', 'model', 'new_context', 'message', 'thinking', 'provider_item', 'tool_definition', 'tool_call', 'tool_result', 'compaction', 'log', 'inference_start', 'inference_end')),
+    kind TEXT NOT NULL CHECK (kind IN ('status_change', 'model', 'new_context', 'message', 'thinking', 'provider_item', 'tool_definition', 'tool_call', 'tool_result', 'compaction', 'log', 'result', 'inference_start', 'inference_end')),
     UNIQUE (agent_id, event_seq),
     UNIQUE (event_pk, kind)
 );

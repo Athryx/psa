@@ -3,11 +3,8 @@
 //! limits (there is no model-specific inputLimits capability in AgentContext).
 use super::{Tool, ToolOutput, ToolSystemPrompt, file_ops, typed_tool_execute};
 use crate::{
-    agents::{Agent, agent_context::AgentContext},
-    components::cancellation::Cancellation,
-    probes::ProbeHandle,
-    prompts,
-    sessions::Session,
+    agents::agent_context::AgentContext, components::cancellation::Cancellation,
+    probes::ProbeHandle, prompts,
 };
 use llm_api::api::{ContentBlock, ImageBlock, MediaSource, ToolDefinition};
 use psa_api::probes::{Command, Event, Stdio};
@@ -122,10 +119,6 @@ impl Read {
 }
 
 impl Tool for Read {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self
-    }
-
     fn tool_definition(&self) -> ToolDefinition {
         ToolDefinition::for_type::<ReadArgs>(
             "read",

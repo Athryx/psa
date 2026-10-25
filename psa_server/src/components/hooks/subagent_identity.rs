@@ -1,9 +1,8 @@
 //! Identity uses core agent ancestry, independently of fork lineage.
 use super::{Hook, HookError};
 use crate::{
-    agents::{Agent, agent_context::AgentContext, session_manager::RuntimeError},
+    agents::{agent_context::AgentContext, session_manager::RuntimeError},
     components::cancellation::Cancellation,
-    sessions::Session,
 };
 use psa_api::events::{EventType, Message, MessageType, NewEvent};
 use std::time::Duration;
@@ -47,9 +46,6 @@ impl SubagentIdentity {
     }
 }
 impl Hook for SubagentIdentity {
-    fn new(_agent: &Agent, _session: &Session) -> Self {
-        Self::default()
-    }
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(2)
     }
