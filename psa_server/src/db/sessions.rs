@@ -250,7 +250,7 @@ async fn fork_agent(
     let now = now_us()?;
 
     let result = sqlx::query!(
-        "INSERT INTO agents (session_id, definition_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, interactive, state, usage, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO agents (session_id, definition_id, parent_agent_id, first_event_seq, next_event_seq, created_position, name, interactive, hidden, state, usage, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         session_id,
         definition_id,
         parent,
@@ -259,6 +259,7 @@ async fn fork_agent(
         created,
         agent.name,
         agent.interactive,
+        agent.hidden,
         state,
         usage,
         now,

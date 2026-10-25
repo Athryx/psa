@@ -273,6 +273,7 @@ async fn recovery_of_a_structured_result_fork_acknowledges_only_its_producer_and
                     definition_id: definition.id,
                     subagent_parent_id: None,
                     interactive: false,
+                    hidden: false,
                 },
             )
             .await

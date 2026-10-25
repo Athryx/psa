@@ -36,6 +36,7 @@ async fn create_agent_record(
                 definition_id: definition.id,
                 name: "bundle agent".into(),
                 interactive: false,
+                hidden: false,
             },
         )
         .await

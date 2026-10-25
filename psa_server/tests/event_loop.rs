@@ -1,5 +1,7 @@
 //! Real HTTP/client/SSE tests against an in-process fake inference endpoint.
 
+#[path = "event_loop/compaction.rs"]
+mod compaction_features;
 #[path = "event_loop/components.rs"]
 mod component_features;
 #[path = "support/fake_probe.rs"]
@@ -290,6 +292,7 @@ impl Harness {
                     model: None,
                     subagent_parent_id: None,
                     interactive: false,
+                    hidden: false,
                     name: "agent".into(),
                     config_id: config_id("default"),
                 },
@@ -338,10 +341,11 @@ fn message(delivery: MessageDelivery) -> AgentRequest {
 }
 
 #[tokio::test]
-async fn interactive_metadata_survives_http_create_get_list_and_fork() {
+async fn interactive_and_hidden_metadata_survive_http_create_get_list_and_fork() {
     let harness = Harness::start(vec![]).await;
     let (session, ordinary) = harness.create_agent().await;
     assert!(!ordinary.interactive);
+    assert!(!ordinary.hidden);
     let interactive = harness
         .client
         .create_agent(
@@ -352,11 +356,13 @@ async fn interactive_metadata_survives_http_create_get_list_and_fork() {
                 name: "interactive".into(),
                 config_id: config_id("default"),
                 interactive: true,
+                hidden: true,
             },
         )
         .await
         .unwrap();
     assert!(interactive.interactive);
+    assert!(interactive.hidden);
     harness.wait_stopped(session.id).await;
 
     let agents = harness.client.list_agents(session.id).await.unwrap();
@@ -368,8 +374,10 @@ async fn interactive_metadata_survives_http_create_get_list_and_fork() {
             .await
             .unwrap();
         assert_eq!(loaded.interactive, source.interactive);
+        assert_eq!(loaded.hidden, source.hidden);
         let listed = agents.iter().find(|agent| agent.id == source.id).unwrap();
         assert_eq!(listed.interactive, source.interactive);
+        assert_eq!(listed.hidden, source.hidden);
     }
 
     let fork = harness
@@ -394,6 +402,7 @@ async fn interactive_metadata_survives_http_create_get_list_and_fork() {
             .find(|agent| agent.parent_id == Some(source.id))
             .unwrap();
         assert_eq!(child.interactive, source.interactive);
+        assert_eq!(child.hidden, source.hidden);
         assert_eq!(child.definition_id, source.definition_id);
         assert_eq!(child.parent_id, Some(source.id));
         let loaded = harness
@@ -402,8 +411,10 @@ async fn interactive_metadata_survives_http_create_get_list_and_fork() {
             .await
             .unwrap();
         assert_eq!(loaded.interactive, source.interactive);
+        assert_eq!(loaded.hidden, source.hidden);
         let listed = children.iter().find(|agent| agent.id == child.id).unwrap();
         assert_eq!(listed.interactive, source.interactive);
+        assert_eq!(listed.hidden, source.hidden);
     }
     harness.close().await;
 }
@@ -550,6 +561,7 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
                 name: "pinned".into(),
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
                 model: None,
             },
         )
@@ -599,6 +611,7 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
                 name: "updated".into(),
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
                 model: None,
             },
         )
@@ -686,6 +699,7 @@ async fn config_batches_cycles_and_dependency_changes_pin_complete_graphs() {
         name: name.into(),
         subagent_parent_id: None,
         interactive: false,
+        hidden: false,
         model: None,
     };
     let original = harness
@@ -782,6 +796,7 @@ async fn group_membership_changes_only_advance_new_agent_snapshots() {
         name: name.into(),
         subagent_parent_id: None,
         interactive: false,
+        hidden: false,
         model: None,
     };
     let original = harness
@@ -858,6 +873,7 @@ async fn missing_explicit_dependencies_warn_and_resolve_again_when_registered() 
         name: "parent".into(),
         subagent_parent_id: None,
         interactive: false,
+        hidden: false,
         model: None,
     };
     let incomplete = harness
@@ -966,6 +982,7 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
                     model: None,
                     subagent_parent_id: None,
                     interactive: false,
+                    hidden: false,
                     name: name.into(),
                     config_id: definition.config_id,
                 },
@@ -1207,6 +1224,7 @@ async fn busy_queries_track_all_workers_and_request_ids_ignore_generations() {
                     model: None,
                     subagent_parent_id: None,
                     interactive: false,
+                    hidden: false,
                     name: "second".into(),
                     config_id: config_id("default"),
                 },
@@ -1633,6 +1651,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
             NewAgent {
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "agent".into(),
             },
@@ -1809,6 +1828,7 @@ async fn persistence_failure_does_not_mutate_worker_memory() {
             NewAgent {
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "agent".into(),
             },
@@ -1859,6 +1879,7 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
                 config_id: config_id("default"),
                 name: "plain-child".into(),
                 interactive: false,
+                hidden: false,
             },
         )
         .await

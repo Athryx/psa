@@ -50,11 +50,12 @@ effort = "Medium"
 
 # Optional fallbacks for omitted API/TOML agent component fields.
 [agent_defaults]
-bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents"]
+bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents", { Goal = { interactive_only = true } }]
 
 [agent_defaults.hooks]
 agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
-after_request = ["StopWithoutTools"]
+before_request = [{ Compaction = {} }]
+after_request = []
 ```
 
 `[session_defaults]` provides the model for new sessions that omit `model_config`
@@ -148,6 +149,7 @@ let agent = client.create_agent(session.id, &NewConfiguredAgent {
     config_id,
     subagent_parent_id: None,
     interactive: false,
+    hidden: false,
     model: None,
     name: "Main".into(),
 }).await?;
@@ -188,14 +190,23 @@ and the supervisor's published activity projection share the publication gate,
 preventing stale busy values from overwriting newer transitions. Apply these
 snapshots in stream order: activity-only changes do not advance `updated_at`.
 
+### Context compaction
+
+Generated defaults install `Compaction {}` in `before_request`. It summarizes
+older messages through hidden agents, then atomically restores system prompts,
+tool definitions, a checkpoint, and the recent conversation. Configure
+`reserve_tokens`, `keep_recent_tokens`, and optional `context_window` in the hook
+payload. See [compaction](../docs/COMPACTION.md) for behavior and limitations.
+
 ### Durable completion results
 
 Runs can produce one durable `EventType::Result`: text through ordinary
 `StopWithoutTools` or inactive Goal completion, or JSON through
 `TypedResult { schema: ToolSchema, max_retries }`. These completion modes are
 mutually incompatible, including inherited default hooks. Configuring none is
-allowed but provides no automatic completion or Result, as does a skipped
-interactive-only Goal bundle. Results are metadata excluded from model history.
+allowed but provides no automatic completion or Result. An interactive-only Goal
+bundle falls back to `StopWithoutTools` on noninteractive agents.
+Results are metadata excluded from model history.
 Failure/cancellation does not synthesize results; accepted database saves cannot
 be revoked and can complete after cancellation. Running goals continue even at
 token limits. Non-running includes Blocked: a blocked goal stays retained/paused
@@ -252,6 +263,10 @@ behavior switch. Opt-in Goal and AskQuestion bundles consult it only when their
 `interactive_only` construction flag is true; false enables them on any agent.
 Agent responses expose it, and forks inherit the source flag.
 
+Agent creation also accepts `hidden`, defaulting to `false` in JSON. It is client
+visibility metadata only: the server stores and returns it without filtering
+agents. Forks inherit the source flag.
+
 `CreateSession.model_config: Option<ModelConfig>` is optional: omitted/null uses
 server `session_defaults`, while an explicit configuration wins. Session responses
 always contain the concrete persisted configuration, which `UpdateSession` can
@@ -279,10 +294,11 @@ installs `Bash`, `InteractBash`, and `CloseBash`.
 `{"Goal":{"interactive_only":true}}` installs `SetGoal`/`SetGoalStatus` plus stopping
 policy; `{"AskQuestion":{"interactive_only":true}}` installs only `ask_question`,
 with no hooks. These variants require payloads, not bare unit strings. The flag
-defaults to true inside the payload and skips all bundle tools/hooks for
-noninteractive agents. False fully enables the bundle, including Goal state
-persistence and continuation on noninteractive agents. Neither bundle is a
-server default. TOML bundle entries use `{ Goal = { interactive_only = true } }`
+defaults to true inside the payload: noninteractive agents get only
+`StopWithoutTools` from Goal and nothing from AskQuestion. False fully enables
+the bundle, including Goal state persistence and continuation on noninteractive
+agents. Generated server defaults include Goal with `interactive_only = true`,
+but not AskQuestion. TOML bundle entries use `{ Goal = { interactive_only = true } }`
 or `{ AskQuestion = { interactive_only = true } }`. Low-level `query_client`
 remains available to any agent independently of these installation flags.
 `Subagents` installs child creation,
@@ -494,6 +510,7 @@ let resolved = cursor.resolve_agent_config(
 let agent = cursor.create_agent(session.id, NewAgent {
     subagent_parent_id: None,
     interactive: false,
+    hidden: false,
     definition_id: resolved.definition.id,
     name: "Main".into(),
 }).await?;

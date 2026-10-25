@@ -16,13 +16,16 @@ impl Hook for SessionModelUpdateHook {
         context: &mut AgentContext<'_>,
         _cancellation: Cancellation,
     ) -> Result<(), HookError> {
-        if context.definition().model_config.is_some()
-            || context.projection().model_config() == Some(&context.session().model_config)
-        {
+        let model = match &context.definition().model_config {
+            Some(model) if context.projection().model_config().is_none() => model,
+            Some(_) => return Ok(()),
+            None => &context.session().model_config,
+        };
+        if context.projection().model_config() == Some(model) {
             return Ok(());
         }
 
-        let model = context.session().model_config.clone();
+        let model = model.clone();
         context
             .save_events(&[NewEvent::new(EventType::Model(model))])
             .await?;

@@ -123,7 +123,7 @@ pub enum EventType {
         /// Result payload with its text-or-JSON representation.
         AgentResult,
     ),
-    /// Replaces model-facing history with a compacted summary.
+    /// Appends a compacted summary; pair with NewContext to replace older history.
     Compaction(
         /// Replacement summary and compaction usage.
         Compaction,

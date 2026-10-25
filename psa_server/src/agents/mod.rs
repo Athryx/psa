@@ -42,6 +42,7 @@ pub struct Agent {
     pub created_position: u64,
     pub name: String,
     pub interactive: bool,
+    pub hidden: bool,
     pub state: AgentState,
     pub usage: AgentUsage,
     pub created_at: OffsetDateTime,
@@ -58,6 +59,7 @@ impl From<Agent> for psa_api::Agent {
             subagent_parent_id: agent.subagent_parent_id,
             name: agent.name,
             interactive: agent.interactive,
+            hidden: agent.hidden,
             state: agent.state,
             usage: agent.usage,
             next_event_id: agent.next_event_id,
@@ -73,6 +75,7 @@ pub struct NewAgent {
     pub definition_id: AgentDefinitionId,
     pub name: String,
     pub interactive: bool,
+    pub hidden: bool,
 }
 
 #[derive(Debug, thiserror::Error)]

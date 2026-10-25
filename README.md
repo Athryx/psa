@@ -7,16 +7,24 @@ operations across machines or sandboxes.
 
 Agent creation accepts an `interactive` boolean (JSON default: `false`). It is
 metadata available to tools and hooks, not a runtime behavior switch; agent
-responses expose it and forks inherit it. Opt-in `Goal { interactive_only }` and
+responses expose it and forks inherit it. `Goal { interactive_only }` and
 `AskQuestion { interactive_only }` bundles consult the flag only when their
 construction policy is true (the default inside each payload). False enables
-those bundles on noninteractive agents too; low-level client queries remain
-available independently.
+those bundles on noninteractive agents too. Goal falls back to `StopWithoutTools`
+when gated off; AskQuestion installs nothing. Goal is included in generated defaults;
+low-level client queries remain available independently.
+
+Agent creation also accepts `hidden: bool` (JSON default: `false`). This is client
+visibility metadata only: the server stores and returns all agents without
+filtering. Agent responses expose the flag, and forks inherit it.
 
 **Current limitations:** the client HTTP API has no authentication layer. Keep it
 on loopback or behind a trusted authenticated transport. Probe operations are
 available to server-side Rust integrations, but agent tools do not use them yet.
 Probes execute with their process's OS permissions, not an additional sandbox.
+
+Automatic context compaction uses hidden summarizer agents; see
+[`docs/COMPACTION.md`](docs/COMPACTION.md) for configuration and replay semantics.
 
 ## Workspace
 
@@ -188,11 +196,12 @@ effort = "Medium"
 
 # Optional fallbacks for omitted component fields in API/TOML agent configs.
 [agent_defaults]
-bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents"]
+bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents", { Goal = { interactive_only = true } }]
 
 [agent_defaults.hooks]
 agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
-after_request = ["StopWithoutTools"]
+before_request = [{ Compaction = {} }]
+after_request = []
 ```
 
 `[session_defaults]` supplies the model for session creation when `model_config`
@@ -268,7 +277,7 @@ registered probe ID; its working directory is on that probe. Optional
 `CreateSession.model_config` overrides server `[session_defaults]`; omission or
 null uses the server default, persisted as a concrete session model configuration.
 Batch-upsert `AgentConfigInput` values with `upsert_agent_configs`, then create an agent
-with `NewConfiguredAgent { config_id, name, subagent_parent_id, interactive, model }`.
+with `NewConfiguredAgent { config_id, name, subagent_parent_id, interactive, hidden, model }`.
 `config_id` is a `(config_group, name)` identity, not an immutable definition ID.
 Creation resolves the config's allowed model/effort policies and pins an immutable
 snapshot; later config upserts do not change existing agents. Optional `model`

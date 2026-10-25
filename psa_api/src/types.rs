@@ -43,6 +43,8 @@ pub enum HookId {
     DefaultStartup,
     /// Appends the system prompt supplied by its hook configuration.
     ExtraSystemPrompt,
+    /// Summarizes older context before the next inference.
+    Compaction,
     /// Loads project instructions from the working directory hierarchy.
     ProjectContext,
     /// Publishes the installed tool definitions.
@@ -255,6 +257,9 @@ pub struct Agent {
     pub name: String,
     /// Tool and hook metadata; does not itself change runtime behavior.
     pub interactive: bool,
+    /// Client visibility metadata only; the server never filters hidden agents.
+    #[serde(default)]
+    pub hidden: bool,
     /// Current persisted execution state.
     pub state: AgentState,
     /// Cumulative usage, including inherited inference results.
@@ -345,6 +350,9 @@ pub struct CreateAgent {
     /// Metadata for tools and hooks; does not change runtime behavior.
     #[serde(default)]
     pub interactive: bool,
+    /// Client visibility metadata only; defaults to false without server filtering.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 /// Sender attribution for a subagent message. Names are snapshots at submission.

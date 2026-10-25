@@ -387,6 +387,7 @@ async fn context_query_snapshots_are_scoped_and_cancellation_removes_the_query()
             NewAgent {
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "sibling".into(),
             },

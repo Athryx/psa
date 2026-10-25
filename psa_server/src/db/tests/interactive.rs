@@ -15,6 +15,7 @@ async fn interactive_round_trips_reloads_and_is_inherited_by_forks() {
                     definition_id: psa_api::AgentDefinitionId(1),
                     name: format!("interactive-{interactive}"),
                     interactive,
+                    hidden: false,
                 },
             )
             .await

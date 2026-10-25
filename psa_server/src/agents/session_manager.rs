@@ -42,6 +42,8 @@ mod signals_tests;
 mod tests;
 
 const MAX_PENDING: usize = 128;
+pub(crate) const EXECUTION_FAILURE_MESSAGE: &str =
+    "Agent execution failed; see server logs for details.";
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
@@ -53,6 +55,8 @@ pub enum RuntimeError {
     Unavailable,
     #[error("operation cancelled")]
     Cancelled,
+    #[error("agent {agent:?} in session {session:?} stopped without a matching durable result")]
+    ResultUnavailable { session: SessionId, agent: AgentId },
     #[error("provider is not configured")]
     MissingProvider,
     #[error("agent request queue is full")]
@@ -345,6 +349,7 @@ impl SessionManager {
 
     async fn begin_shutdown(&mut self) {
         self.shutting_down = true;
+        self.publication.close();
         for worker in self.workers.values_mut() {
             worker.queue.clear();
             worker.lifecycle.clear();
@@ -609,8 +614,7 @@ impl SessionManager {
                     EventType::InferenceResultEnd(result) => {
                         summary.inference_outcome = match result.outcome {
                             llm_api::api::Outcome::Failed(_) => Some(AgentRunOutcome::Failed {
-                                message: "Agent execution failed; see server logs for details."
-                                    .into(),
+                                message: EXECUTION_FAILURE_MESSAGE.into(),
                             }),
                             llm_api::api::Outcome::Incomplete {
                                 reason: llm_api::api::StopReason::TokenLimit,
@@ -1093,7 +1097,7 @@ impl SessionManager {
             self.finish_run(
                 agent,
                 AgentRunOutcome::Failed {
-                    message: "Agent execution failed; see server logs for details.".into(),
+                    message: EXECUTION_FAILURE_MESSAGE.into(),
                 },
             )
             .await;
@@ -1157,7 +1161,7 @@ impl SessionManager {
         state
             .persist_events(&[NewEvent::new(EventType::Log(Log {
                 error: true,
-                message: "Agent execution failed; see server logs for details.".into(),
+                message: EXECUTION_FAILURE_MESSAGE.into(),
             }))])
             .await?;
 

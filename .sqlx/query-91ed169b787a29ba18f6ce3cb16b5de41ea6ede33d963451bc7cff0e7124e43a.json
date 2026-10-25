@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO agents (session_id, definition_id, subagent_parent_id, first_event_seq, next_event_seq, created_position, name, interactive, hidden, created_at_us, updated_at_us) VALUES (?,?,?,1,1,?,?,?,?,?,?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "91ed169b787a29ba18f6ce3cb16b5de41ea6ede33d963451bc7cff0e7124e43a"
+}

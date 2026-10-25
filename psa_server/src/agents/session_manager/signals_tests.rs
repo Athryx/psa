@@ -48,6 +48,7 @@ impl Fixture {
                     name: "signals".into(),
                     definition_id: definition.id,
                     interactive: false,
+                    hidden: false,
                 },
             )
             .await
@@ -693,6 +694,7 @@ async fn completion_hook_reports_children_without_bundle_and_preserves_outcomes(
                 definition_id: definition.id,
                 name: "child".into(),
                 interactive: false,
+                hidden: false,
             },
         )
         .await
@@ -771,6 +773,7 @@ async fn starting_plain_child_restores_parent_bundle_lifecycle_callbacks() {
                 definition_id: definition.id,
                 name: "child".into(),
                 interactive: false,
+                hidden: false,
             },
         )
         .await

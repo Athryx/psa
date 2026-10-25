@@ -276,6 +276,7 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
                     name: "main".into(),
                     config_id: config_id.clone(),
                     interactive: false,
+                    hidden: false,
                 },
             )
             .await

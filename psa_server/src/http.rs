@@ -991,6 +991,7 @@ mod tests {
                 NewAgent {
                     subagent_parent_id: None,
                     interactive: false,
+                    hidden: false,
                     name: "test".into(),
                     definition_id: api::AgentDefinitionId(1),
                 },

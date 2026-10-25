@@ -9,9 +9,8 @@ revoked by cancellation and may still complete.
 
 ## Completion modes
 
-Configure at most one completion mode. No-policy configurations and a skipped
-interactive-only Goal bundle are allowed, but provide no automatic completion
-or Result:
+Configure at most one completion mode. No-policy configurations are allowed,
+but provide no automatic completion or Result:
 
 - `StopWithoutTools`: ordinary no-tool completion records the response text and
   settles Idle. Token-limited text can be a result, including
@@ -20,15 +19,16 @@ or Result:
   token limit; no completion result is recorded. Inactive means
   `!GoalState::is_running()`: completed, unset, and Blocked all qualify. A blocked
   goal remains retained/paused, while the current run settles Idle with a text
-  Result; completion does not clear that blocked goal.
+  Result; completion does not clear that blocked goal. With `interactive_only = true`,
+  noninteractive agents install only `StopWithoutTools`, without Goal tools or continuation.
 - `TypedResult { schema, max_retries }`: require the schema-validated
   `record_result` tool to complete with a JSON result.
 
 These modes are mutually incompatible, including completion hooks inherited from
 server defaults. A Goal or TypedResult configuration must not also select
 `StopWithoutTools`. Override an inherited `after_request` list with `[]` when the
-bundle supplies the completion hook. Goal's `interactive_only` installation
-policy is unchanged; this does not add any bundle to server defaults.
+bundle supplies the completion hook. Generated server defaults use Goal with
+`interactive_only = true` instead of an explicit `StopWithoutTools` hook.
 
 ## Typed JSON results
 

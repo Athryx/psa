@@ -80,6 +80,7 @@ async fn configured_creation_refreshes_sources_uploads_and_retains_selected_proj
         name: "review".into(),
         subagent_parent_id: None,
         interactive: false,
+        hidden: false,
         model: Some(psa_api::ModelSelection::Global),
     };
     let listed = harness

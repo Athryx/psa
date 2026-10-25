@@ -7,6 +7,7 @@ fn child(parent: AgentId, name: &str) -> NewAgent {
         definition_id: psa_api::AgentDefinitionId(1),
         name: name.into(),
         interactive: false,
+        hidden: false,
     }
 }
 

@@ -98,6 +98,7 @@ fn configured_agent_requests_carry_typed_model_and_effort_selections() {
             name: "child".into(),
             subagent_parent_id: None,
             interactive: false,
+            hidden: false,
             model: model.clone(),
         };
         let wire = serde_json::to_value(&request).unwrap();
@@ -289,13 +290,14 @@ fn session_models_are_optional_and_agents_reference_definitions() {
     let agent = CreateAgent {
         subagent_parent_id: None,
         interactive: false,
+        hidden: false,
         definition_id: AgentDefinitionId(7),
         name: "agent".into(),
     };
     let mut json = serde_json::to_value(agent).unwrap();
     assert_eq!(
         json,
-        serde_json::json!({"definition_id": 7, "name": "agent", "interactive": false, "subagent_parent_id": null})
+        serde_json::json!({"definition_id": 7, "name": "agent", "interactive": false, "hidden": false, "subagent_parent_id": null})
     );
     assert!(serde_json::from_value::<CreateAgent>(json.clone()).is_ok());
     json["model"] = serde_json::to_value(model_config()).unwrap();
@@ -317,6 +319,7 @@ fn agent_interactive_wire_field_defaults_false_and_round_trips_bools() {
             definition_id: AgentDefinitionId(7),
             name: "agent".into(),
             interactive,
+            hidden: false,
         };
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["interactive"], interactive);
@@ -331,6 +334,7 @@ fn agent_interactive_wire_field_defaults_false_and_round_trips_bools() {
             subagent_parent_id: None,
             name: request.name,
             interactive,
+            hidden: false,
             state: AgentState::Idle,
             usage: AgentUsage::default(),
             next_event_id: events::EventId(1),
@@ -354,6 +358,95 @@ fn agent_interactive_wire_field_defaults_false_and_round_trips_bools() {
             }))
             .is_err()
         );
+    }
+}
+
+#[test]
+fn agent_hidden_wire_field_defaults_false_and_round_trips_bools() {
+    let create_json = serde_json::json!({"definition_id": 7, "name": "agent"});
+    let configured_json = serde_json::json!({
+        "config_id": {"config_group": "Global", "name": "worker"},
+        "name": "agent"
+    });
+    let mut create: CreateAgent = serde_json::from_value(create_json.clone()).unwrap();
+    let mut configured: NewConfiguredAgent =
+        serde_json::from_value(configured_json.clone()).unwrap();
+    assert!(!create.hidden);
+    assert!(!configured.hidden);
+
+    for hidden in [false, true] {
+        create.hidden = hidden;
+        configured.hidden = hidden;
+        for request in [
+            serde_json::to_value(&create).unwrap(),
+            serde_json::to_value(&configured).unwrap(),
+        ] {
+            assert_eq!(request["hidden"], hidden);
+        }
+        assert_eq!(
+            serde_json::from_value::<CreateAgent>(serde_json::to_value(&create).unwrap())
+                .unwrap()
+                .hidden,
+            hidden
+        );
+        assert_eq!(
+            serde_json::from_value::<NewConfiguredAgent>(
+                serde_json::to_value(&configured).unwrap()
+            )
+            .unwrap()
+            .hidden,
+            hidden
+        );
+
+        let agent = Agent {
+            id: AgentId(1),
+            session_id: SessionId(2),
+            definition_id: create.definition_id,
+            parent_id: None,
+            subagent_parent_id: None,
+            name: create.name.clone(),
+            interactive: false,
+            hidden,
+            state: AgentState::Idle,
+            usage: AgentUsage::default(),
+            next_event_id: events::EventId(1),
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+            updated_at: time::OffsetDateTime::UNIX_EPOCH,
+        };
+        let update = serde_json::to_value(StreamMessage::AgentUpdated {
+            agent: agent.clone(),
+        })
+        .unwrap();
+        assert_eq!(update["agent"]["hidden"], hidden);
+        let mut json = serde_json::to_value(&agent).unwrap();
+        assert_eq!(json["hidden"], hidden);
+        assert_eq!(
+            serde_json::from_value::<Agent>(json.clone())
+                .unwrap()
+                .hidden,
+            hidden
+        );
+        json.as_object_mut().unwrap().remove("hidden");
+        assert!(
+            !serde_json::from_value::<Agent>(json.clone())
+                .unwrap()
+                .hidden
+        );
+
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!("true"),
+            serde_json::json!(1),
+        ] {
+            let mut request = create_json.clone();
+            request["hidden"] = invalid.clone();
+            assert!(serde_json::from_value::<CreateAgent>(request).is_err());
+            let mut request = configured_json.clone();
+            request["hidden"] = invalid.clone();
+            assert!(serde_json::from_value::<NewConfiguredAgent>(request).is_err());
+            json["hidden"] = invalid;
+            assert!(serde_json::from_value::<Agent>(json.clone()).is_err());
+        }
     }
 }
 

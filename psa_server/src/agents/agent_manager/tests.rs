@@ -25,6 +25,7 @@ async fn persisted_model_updates_live_request_projection_and_survives_reload() {
             super::super::NewAgent {
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "agent".into(),
             },
@@ -120,6 +121,7 @@ async fn repeated_status_changes_are_omitted_using_prior_transitions_in_the_batc
             super::super::NewAgent {
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "test".into(),
             },
@@ -238,6 +240,7 @@ async fn cancelled_persistence_finishes_before_the_next_append() {
             super::super::NewAgent {
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "test".into(),
             },
@@ -358,6 +361,7 @@ async fn committed_calls_get_not_run_results_when_interrupted_before_execution()
             super::super::NewAgent {
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "test".into(),
             },

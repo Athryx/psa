@@ -52,13 +52,14 @@ impl DatabaseCursor {
         let now = now_us()?;
 
         let result = sqlx::query!(
-            "INSERT INTO agents (session_id, definition_id, subagent_parent_id, first_event_seq, next_event_seq, created_position, name, interactive, created_at_us, updated_at_us) VALUES (?,?,?,1,1,?,?,?,?,?)",
+            "INSERT INTO agents (session_id, definition_id, subagent_parent_id, first_event_seq, next_event_seq, created_position, name, interactive, hidden, created_at_us, updated_at_us) VALUES (?,?,?,1,1,?,?,?,?,?,?)",
             session_id,
             definition_id,
             subagent_parent,
             position,
             new.name,
             new.interactive,
+            new.hidden,
             now,
             now
         )
@@ -96,7 +97,7 @@ pub(super) async fn get_agent(conn: &mut SqliteConnection, id: AgentId) -> Resul
     let key = encode_integer(id.0)?;
     let row = sqlx::query_as!(
         AgentRow,
-        "SELECT id, session_id, definition_id, parent_agent_id, subagent_parent_id, first_event_seq, next_event_seq, created_position, name, interactive, state, usage, created_at_us, updated_at_us FROM agents WHERE id = ?",
+        "SELECT id, session_id, definition_id, parent_agent_id, subagent_parent_id, first_event_seq, next_event_seq, created_position, name, interactive, hidden, state, usage, created_at_us, updated_at_us FROM agents WHERE id = ?",
         key
     )
     .fetch_optional(conn)
@@ -113,7 +114,7 @@ pub(super) async fn list_agents(
     let key = encode_integer(session.0)?;
     let rows = sqlx::query_as!(
         AgentRow,
-        "SELECT id, session_id, definition_id, parent_agent_id, subagent_parent_id, first_event_seq, next_event_seq, created_position, name, interactive, state, usage, created_at_us, updated_at_us FROM agents WHERE session_id = ? ORDER BY id",
+        "SELECT id, session_id, definition_id, parent_agent_id, subagent_parent_id, first_event_seq, next_event_seq, created_position, name, interactive, hidden, state, usage, created_at_us, updated_at_us FROM agents WHERE session_id = ? ORDER BY id",
         key
     )
     .fetch_all(conn)

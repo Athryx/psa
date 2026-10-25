@@ -81,6 +81,7 @@ impl CreateAgent {
                         definition_id: selected.id,
                         name,
                         interactive: false,
+                        hidden: false,
                     },
                     model,
                 )

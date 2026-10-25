@@ -133,10 +133,11 @@ macro are unchanged.
   `{"Goal":{"interactive_only":true}}` and
   `{"AskQuestion":{"interactive_only":true}}`; bare `"Goal"` is invalid. TOML uses
   `{ Goal = { interactive_only = true } }` (or `AskQuestion`) in the bundle array.
-  The flag defaults to true inside the payload: noninteractive agents skip all
-  tools/hooks of that bundle. False fully enables it regardless of interactivity,
-  including Goal persistence and continuation. Both bundles remain opt-in;
-  do not add them to default lists. This installation gate never restricts the
+  The flag defaults to true inside the payload: noninteractive agents get only
+  StopWithoutTools from Goal and nothing from AskQuestion. False fully enables
+  it regardless of interactivity, including Goal persistence and continuation.
+  Generated defaults include Goal with interactive_only = true, not AskQuestion.
+  This installation gate never restricts the
   low-level `query_client` API, which any agent can use, including offline probes.
   `Subagents` adds session-wide tools using session-shared resources. These
   component tool IDs also require their corresponding bundle.
@@ -156,8 +157,9 @@ macro are unchanged.
   TypedResult, Goal, and ordinary StopWithoutTools are incompatible completion
   modes, including inherited defaults; explicit hook overrides must remove the
   ordinary default completion hook when selecting a bundle completion mode.
-  At most one policy may be configured; none (or a skipped interactive-only Goal)
-  is allowed but provides no automatic completion or Result. Non-running Goal
+  At most one policy may be configured; none is allowed but provides no automatic
+  completion or Result. Interactive-only Goal supplies ordinary completion for
+  noninteractive agents. Non-running Goal
   includes Blocked: retain the paused goal while settling this run with a text
   Result. Completion reports prefer Result artifacts, serializing JSON as text.
   Three retries after the initial invalid/missing completion are allowed by
@@ -304,7 +306,11 @@ session create/get/list/update/fork; agent create/get/list (including immutable
 submit/steer/resume/interrupt requests. `wait_for_steering(session, agent,
 &mut cancellation)` is a cancellation-safe, non-consuming, level-triggered wait
 for queued steering; it returns `Cancelled` on cancellation and `Unavailable` on
-shutdown. `load_agent_events(session, agent, range)` validates session ownership
+shutdown. `await_result(session, agent, after, &mut cancellation)` waits for a
+durable result using publication notifications; `after` excludes older artifacts.
+Stopped/failed agents without a matching result return `ResultUnavailable`.
+Agent creation accepts `hidden` visibility metadata; the server does not filter it.
+`load_agent_events(session, agent, range)` validates session ownership
 before scoped cross-agent trace reads. Use these facade methods for persistence,
 publication, and runtime coordination rather than manipulating their internals.
 

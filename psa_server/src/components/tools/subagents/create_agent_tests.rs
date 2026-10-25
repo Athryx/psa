@@ -68,6 +68,7 @@ impl Fixture {
                     definition_id: definition.id,
                     subagent_parent_id: None,
                     interactive: false,
+                    hidden: false,
                 },
             )
             .await

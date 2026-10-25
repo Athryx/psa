@@ -1,4 +1,4 @@
-Pi's tool behavior and prompt text are adapted under the following license.
+Pi's tool behavior, compaction logic, and prompt text are adapted under the following license.
 
 MIT License
 

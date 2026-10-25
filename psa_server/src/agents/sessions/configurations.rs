@@ -273,6 +273,7 @@ impl Sessions {
                 name: request.name,
                 subagent_parent_id: request.subagent_parent_id,
                 interactive: request.interactive,
+                hidden: request.hidden,
             },
         )
         .await

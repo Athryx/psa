@@ -60,6 +60,9 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
             psa_api::BundleConfig::FileTools { read_only: false },
             psa_api::BundleConfig::Bash,
             psa_api::BundleConfig::Subagents,
+            psa_api::BundleConfig::Goal {
+                interactive_only: true,
+            },
         ]
     );
     assert_eq!(
@@ -71,11 +74,15 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
         ]
     );
     assert!(config.agent_defaults.hooks.session_update.is_empty());
-    assert!(config.agent_defaults.hooks.before_request.is_empty());
     assert_eq!(
-        config.agent_defaults.hooks.after_request,
-        vec![psa_api::HookConfig::StopWithoutTools]
+        config.agent_defaults.hooks.before_request,
+        vec![psa_api::HookConfig::Compaction {
+            reserve_tokens: 16384,
+            keep_recent_tokens: 20000,
+            context_window: None,
+        }]
     );
+    assert!(config.agent_defaults.hooks.after_request.is_empty());
     tokio::fs::write(&config.config_path, "broken TOML [")
         .await
         .unwrap();

@@ -54,6 +54,7 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
                 NewAgent {
                     subagent_parent_id: None,
                     interactive: false,
+                    hidden: false,
                     definition_id: psa_api::AgentDefinitionId(1),
                     name: "main".into(),
                 },

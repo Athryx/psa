@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, session_id, definition_id, parent_agent_id, subagent_parent_id, first_event_seq, next_event_seq, created_position, name, interactive, state, usage, created_at_us, updated_at_us FROM agents WHERE session_id = ? ORDER BY id",
+  "query": "SELECT id, session_id, definition_id, parent_agent_id, subagent_parent_id, first_event_seq, next_event_seq, created_position, name, interactive, hidden, state, usage, created_at_us, updated_at_us FROM agents WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -114,8 +114,19 @@
         }
       },
       {
-        "name": "state",
+        "name": "hidden",
         "ordinal": 10,
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "agents",
+            "name": "hidden"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 11,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -126,7 +137,7 @@
       },
       {
         "name": "usage",
-        "ordinal": 11,
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -137,7 +148,7 @@
       },
       {
         "name": "created_at_us",
-        "ordinal": 12,
+        "ordinal": 13,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -148,7 +159,7 @@
       },
       {
         "name": "updated_at_us",
-        "ordinal": 13,
+        "ordinal": 14,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -175,8 +186,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "23f8eb255c8ffb1ad038951991049c52ae93f9a0f30838a885602ba3b33df30f"
+  "hash": "bbb0088fbf6d071f519b8813493b6d248644f56b6912c7202b18fbed83a371f4"
 }

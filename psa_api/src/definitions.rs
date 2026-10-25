@@ -239,6 +239,9 @@ pub struct NewConfiguredAgent {
     /// Metadata available to hooks and tools; defaults to false.
     #[serde(default)]
     pub interactive: bool,
+    /// Client visibility metadata only; defaults to false without server filtering.
+    #[serde(default)]
+    pub hidden: bool,
     /// Selection that must exactly match an allowed entry, including effort policy.
     /// Omission/null selects the sole entry, or the first entry when defaults are enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -304,5 +307,6 @@ mod tests {
             serde_json::from_value(json!({"config_id": id, "name": "instance"})).unwrap();
         assert!(create.model.is_none());
         assert!(!create.interactive);
+        assert!(!create.hidden);
     }
 }

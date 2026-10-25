@@ -45,6 +45,7 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
         model: choice,
         subagent_parent_id: None,
         interactive: true,
+        hidden: false,
     };
 
     for choice in [
@@ -147,6 +148,7 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
         model: choice,
         subagent_parent_id: Some(parent.id),
         interactive: true,
+        hidden: false,
     };
     assert!(matches!(
         harness
@@ -186,6 +188,7 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
                     model: Some(selection),
                     subagent_parent_id: Some(parent.id),
                     interactive: true,
+                    hidden: false,
                 },
             )
             .await

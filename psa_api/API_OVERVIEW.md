@@ -47,7 +47,12 @@ tool configuration or `tools` field on configs, definitions, or defaults.
 Hook lists (`agent_create`, `session_update`, `before_request`, `after_request`)
 default to empty in normalized definitions. Supported hook configurations are
 `Noop`, `StopWithoutTools`, `DefaultStartup`, `ToolDefinitions`, `Cwd`, `Skills`,
-`ExtraSystemPrompt`, `ProjectContext`, and `SessionModelUpdate`. For ordinary
+`ExtraSystemPrompt`, `ProjectContext`, `SessionModelUpdate`, and
+`Compaction { reserve_tokens, keep_recent_tokens, context_window }`. Compaction
+runs only in `before_request`; omitted budgets default to 16384/20000 and the
+optional context-window override defaults to the model catalog. Generated server
+configs enable it. See [compaction](../docs/COMPACTION.md), including hidden
+summarizer agents and `Sessions::await_result`. For ordinary
 execution, explicitly configure
 `agent_create: [DefaultStartup, ToolDefinitions, Cwd, ProjectContext, Skills]` in that order,
 `session_update: [SessionModelUpdate]`, and `after_request: [StopWithoutTools]`.
@@ -109,9 +114,10 @@ bare `"FileTools"` is invalid. TOML uses `{ FileTools = { read_only = true } }`.
 `{"Goal":{"interactive_only":true}}` installs goal tools and stopping policy;
 `{"AskQuestion":{"interactive_only":true}}` installs only `ask_question`, with no
 hooks. Both require payload objects (bare `"Goal"` is invalid). Omitting the flag
-inside either payload defaults to true: noninteractive agents skip that bundle's
-tools and hooks. False fully enables the bundle on noninteractive agents,
-including Goal persistence and continuation. Both remain opt-in, not defaults.
+inside either payload defaults to true: noninteractive agents get only
+`StopWithoutTools` from Goal and nothing from AskQuestion. False fully enables
+the bundle on noninteractive agents, including Goal persistence and continuation.
+Generated server defaults include Goal with `interactive_only = true`, not AskQuestion.
 TOML uses `{ Goal = { interactive_only = true } }` or
 `{ AskQuestion = { interactive_only = true } }` in the bundle list.
 `Subagents` installs group tools with
@@ -147,11 +153,11 @@ text/image results; they do not add Pi's UI/programmatic result metadata.
 `Read` uses Pi's line/byte head truncation and default image limits. See
 `../docs/FILE_TOOLS.md` for behavior, safety bounds, and compatibility limitations.
 
-Creating an agent takes `config_id`, `name`, optional `interactive` (default
-`false`), and optional `model: ModelSelection`. For example:
+Creating an agent takes `config_id`, `name`, optional `interactive` and `hidden`
+(both default `false`), and optional `model: ModelSelection`. For example:
 
 ```json
-{"config_id":{"config_group":{"Custom":"examples"},"name":"worker"},"name":"Main","interactive":false,"model":{"Fixed":{"model":"openrouter/vendor/model","effort":{"Fixed":"High"}}}}
+{"config_id":{"config_group":{"Custom":"examples"},"name":"worker"},"name":"Main","interactive":false,"hidden":false,"model":{"Fixed":{"model":"openrouter/vendor/model","effort":{"Fixed":"High"}}}}
 ```
 
 The model selector must exactly match an allowed entry, including its effort
@@ -163,7 +169,9 @@ multiple entries with `default = false` require explicit selection.
 Native `create_agent` uses the same
 typed selector, and its allowed-template identity prompt includes full selectors.
 
-Agent responses include the exact definition ID and `interactive` flag. The flag
+Agent responses include the exact definition ID and `interactive` and `hidden`
+flags. `hidden` is client visibility metadata only: the server stores and returns
+it without filtering agents, and forks inherit it. The `interactive` flag
 is creation-time metadata available to tools and hooks, not an automatic UI or
 permission mode. Explicit Goal and AskQuestion bundles use it only when their
 `interactive_only` construction flag is true; false enables them on any agent. Forked agents inherit it. `CreateSession.model_config`
@@ -285,9 +293,9 @@ at most one per run. Failure/cancellation does not synthesize one; a database
 save already accepted can still finish after cancellation. Completion modes are
 ordinary `StopWithoutTools` (text), Goal (text only once inactive), or
 `TypedResult { schema: ToolSchema, max_retries }` (JSON). They are mutually
-incompatible, including inherited default hooks. No policy or a skipped
-interactive-only Goal bundle is allowed, but provides no automatic completion or
-Result. Token-limited ordinary text can complete; running Goal continuation never
+incompatible, including inherited default hooks. No policy is allowed, but provides
+no automatic completion or Result. Interactive-only Goal falls back to
+`StopWithoutTools` on noninteractive agents. Token-limited ordinary text can complete; running Goal continuation never
 treats a token limit as completion. Non-running Goal states include Blocked: the
 goal remains retained/paused while the current run settles Idle with a text Result.
 

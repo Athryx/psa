@@ -76,6 +76,7 @@ async fn goal_continues_after_a_final_answer_and_stops_after_explicit_completion
                 model: None,
                 subagent_parent_id: None,
                 interactive: true,
+                hidden: false,
                 name: "main".into(),
                 config_id: definition.config_id,
             },
@@ -182,6 +183,7 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
                 model: None,
                 subagent_parent_id: None,
                 interactive: true,
+                hidden: false,
                 name: "main".into(),
                 config_id: definition.config_id,
             },
@@ -371,6 +373,7 @@ async fn subagent_creation_checks_permitted_definitions_without_creating_a_child
                 model: None,
                 subagent_parent_id: None,
                 interactive: true,
+                hidden: false,
                 name: "main".into(),
                 config_id: definition.config_id,
             },
@@ -430,6 +433,7 @@ async fn subagent_tools_list_and_message_unrelated_roots_in_the_same_session() {
                 config_id: definition.config_id,
                 name: "main".into(),
                 interactive: false,
+                hidden: false,
             },
         )
         .await
@@ -444,6 +448,7 @@ async fn subagent_tools_list_and_message_unrelated_roots_in_the_same_session() {
                 config_id: config_id("default"),
                 name: "peer".into(),
                 interactive: false,
+                hidden: false,
             },
         )
         .await

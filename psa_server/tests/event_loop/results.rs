@@ -46,6 +46,7 @@ async fn create_configured(
                 model: None,
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
             },
         )
         .await

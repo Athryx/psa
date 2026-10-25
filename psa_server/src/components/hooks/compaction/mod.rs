@@ -1,0 +1,274 @@
+//! Pi-style context compaction, with inference delegated to ordinary hidden agents.
+mod prepare;
+mod prompts;
+#[cfg(test)]
+mod tests;
+
+use super::{Hook, HookError};
+use crate::{
+    agents::{AgentState, agent_context::AgentContext},
+    components::cancellation::Cancellation,
+};
+use llm_api::{
+    api::{ContentBlock, Outcome, StopReason},
+    providers::ModelConfig,
+};
+use psa_api::{
+    AgentDefinitionId, AgentResult, CreateAgent, CreateAgentDefinition, HookConfig, HookConfigs,
+    events::{Compaction, CompactionSummary, Event, EventRange, EventType, MessageType, NewEvent},
+};
+use std::time::Duration;
+
+pub struct CompactionHook {
+    reserve_tokens: u64,
+    keep_recent_tokens: u64,
+    context_window: Option<u64>,
+    counter: Option<u64>,
+    summarizer: Option<(ModelConfig, AgentDefinitionId)>,
+}
+
+impl CompactionHook {
+    pub fn new(reserve_tokens: u64, keep_recent_tokens: u64, context_window: Option<u64>) -> Self {
+        Self {
+            reserve_tokens,
+            keep_recent_tokens,
+            context_window,
+            counter: None,
+            summarizer: None,
+        }
+    }
+
+    async fn compact(
+        &mut self,
+        context: &mut AgentContext<'_>,
+        cancellation: &mut Cancellation,
+    ) -> Result<(), HookError> {
+        if cancellation.is_cancelled() || context.agent().state != AgentState::Running {
+            return Ok(());
+        }
+        let Some(model) = context.projection().model_config().cloned() else {
+            return Ok(());
+        };
+        let window = match self.context_window {
+            Some(window) => Some(window),
+            None => match context.sessions().model_catalog() {
+                Some(catalog) => catalog
+                    .model_info(&model.model)
+                    .await
+                    .map_err(|error| HookError::Compaction(error.to_string()))?
+                    .and_then(|info| info.context_window),
+                None => None,
+            },
+        };
+        let Some(window) = window.filter(|window| *window > 0) else {
+            return Ok(());
+        };
+        let events = context.load_context_window().await?;
+        if prepare::estimate_context_tokens(&events) <= window.saturating_sub(self.reserve_tokens) {
+            return Ok(());
+        }
+        let Some(preparation) = prepare::prepare(&events, self.keep_recent_tokens) else {
+            return Ok(());
+        };
+
+        let history = match &preparation.history_prompt {
+            Some(prompt) => Some(
+                self.summarize(context, &model, prompt, cancellation)
+                    .await?,
+            ),
+            None => None,
+        };
+        let prefix = match &preparation.turn_prefix_prompt {
+            Some(prompt) => Some(
+                self.summarize(context, &model, prompt, cancellation)
+                    .await?,
+            ),
+            None => None,
+        };
+        if cancellation.is_cancelled() {
+            return Ok(());
+        }
+        let summary = preparation.finish_summary(history.as_deref(), prefix.as_deref());
+        tracing::debug!(
+            agent = context.agent().id.0,
+            tokens_before = preparation.tokens_before,
+            "compacting context"
+        );
+        let replacement = build_replacement(&events, &model, preparation, summary);
+        context.save_events(&replacement).await?;
+        Ok(())
+    }
+
+    async fn summarize(
+        &mut self,
+        context: &AgentContext<'_>,
+        model: &ModelConfig,
+        prompt: &str,
+        cancellation: &mut Cancellation,
+    ) -> Result<String, HookError> {
+        if cancellation.is_cancelled() {
+            return Err(crate::agents::session_manager::RuntimeError::Cancelled.into());
+        }
+        let sessions = context.sessions();
+        let session = context.session().id;
+        let definition_id = match &self.summarizer {
+            Some((configured, id)) if configured == model => *id,
+            _ => {
+                let definition = sessions
+                    .create_agent_definition(CreateAgentDefinition {
+                        name: "_internal_compaction".into(),
+                        model_config: Some(model.clone()),
+                        hooks: HookConfigs {
+                            agent_create: vec![
+                                HookConfig::SessionModelUpdate,
+                                HookConfig::ExtraSystemPrompt {
+                                    prompt: prompts::SUMMARIZATION_SYSTEM_PROMPT.into(),
+                                },
+                            ],
+                            after_request: vec![HookConfig::StopWithoutTools],
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .await?;
+                self.summarizer = Some((model.clone(), definition.id));
+                definition.id
+            }
+        };
+        let prefix = format!("_internal_{}_compaction", context.agent().name);
+        if self.counter.is_none() {
+            self.counter = Some(
+                sessions
+                    .list_agents(session)
+                    .await?
+                    .iter()
+                    .filter_map(|agent| agent.name.strip_prefix(&prefix)?.parse::<u64>().ok())
+                    .max()
+                    .unwrap_or(0),
+            );
+        }
+        let count = self
+            .counter
+            .unwrap()
+            .checked_add(1)
+            .ok_or_else(|| HookError::Compaction("summarizer name counter exhausted".into()))?;
+        self.counter = Some(count);
+        let agent = sessions
+            .create_agent_with_model(
+                session,
+                CreateAgent {
+                    definition_id,
+                    name: format!("{prefix}{count}"),
+                    subagent_parent_id: None,
+                    interactive: false,
+                    hidden: true,
+                },
+                None,
+            )
+            .await?;
+
+        // Await registration/submission even on cancellation, then stop that exact
+        // agent. Dropping a queued submission would not retract it from the manager.
+        let result = async {
+            if cancellation.is_cancelled() {
+                return Err(crate::agents::session_manager::RuntimeError::Cancelled.into());
+            }
+            sessions
+                .steer(session, agent.id, crate::prompts::text(prompt))
+                .await?;
+            let result = sessions
+                .await_result(session, agent.id, None, cancellation)
+                .await?;
+            let events = sessions
+                .load_agent_events(session, agent.id, EventRange::default())
+                .await?;
+            require_summary(result.value, &events)
+        }
+        .await;
+        if result.is_err() {
+            // Preserve the original context on every failure, including cancellation.
+            sessions.interrupt(session, agent.id).await?;
+        }
+        result
+    }
+}
+
+fn require_summary(result: AgentResult, events: &[Event]) -> Result<String, HookError> {
+    let complete = events.iter().rev().find_map(|event| match &event.kind {
+        EventType::InferenceResultEnd(end) => Some(matches!(
+            end.outcome,
+            Outcome::Completed { ref reason } if *reason != StopReason::TokenLimit
+        )),
+        _ => None,
+    });
+    let invalid_output = events.iter().any(|event| match &event.kind {
+        EventType::ToolCall(_) => true,
+        EventType::Message(message) => message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Refusal(_))),
+        _ => false,
+    });
+    match result {
+        AgentResult::Text(text)
+            if !text.trim().is_empty() && complete == Some(true) && !invalid_output =>
+        {
+            Ok(text)
+        }
+        _ => Err(HookError::Compaction(
+            "summarizer did not produce a complete text summary".into(),
+        )),
+    }
+}
+
+fn build_replacement(
+    events: &[Event],
+    model: &ModelConfig,
+    preparation: prepare::Preparation,
+    summary: String,
+) -> Vec<NewEvent> {
+    let mut replacement = vec![
+        NewEvent::new(EventType::NewContext),
+        NewEvent::new(EventType::Model(
+            preparation
+                .retained_model
+                .clone()
+                .unwrap_or_else(|| model.clone()),
+        )),
+    ];
+    replacement.extend(events.iter().filter_map(|event| match &event.kind {
+        EventType::Message(message) if message.message_type == MessageType::System => {
+            Some(NewEvent::new(event.kind.clone()))
+        }
+        EventType::ToolDefinition(_) => Some(NewEvent::new(event.kind.clone())),
+        _ => None,
+    }));
+    replacement.push(NewEvent::new(EventType::Compaction(Compaction {
+        summary: CompactionSummary::Text(summary),
+        // Summary inference is already billed on its own agent, not twice here.
+        usage: Default::default(),
+    })));
+    replacement.extend(preparation.retained_events);
+    replacement
+}
+
+impl Hook for CompactionHook {
+    fn cancellation_timeout(&self) -> Duration {
+        Duration::from_secs(3)
+    }
+
+    async fn run(
+        &mut self,
+        context: &mut AgentContext<'_>,
+        mut cancellation: Cancellation,
+    ) -> Result<(), HookError> {
+        match self.compact(context, &mut cancellation).await {
+            Err(HookError::Sessions(crate::agents::session_manager::RuntimeError::Cancelled))
+                if cancellation.is_cancelled() =>
+            {
+                Ok(())
+            }
+            result => result,
+        }
+    }
+}

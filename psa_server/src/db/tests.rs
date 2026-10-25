@@ -16,6 +16,7 @@ use std::time::Duration;
 mod cursor;
 mod definitions;
 mod file_tools;
+mod hidden;
 mod interactive;
 mod models;
 mod results;
@@ -44,6 +45,7 @@ async fn fixture() -> (tempfile::TempDir, Database, Session, Agent) {
             NewAgent {
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "main".into(),
             },
@@ -468,6 +470,7 @@ async fn forks_inherit_state_at_the_selected_event_boundary() {
             NewAgent {
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "empty".into(),
             },
@@ -606,6 +609,7 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
             NewAgent {
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "worker".into(),
             },
@@ -618,6 +622,7 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
             NewAgent {
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "empty".into(),
             },
@@ -636,6 +641,7 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
             NewAgent {
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "too late".into(),
             },
@@ -817,6 +823,7 @@ async fn concurrent_writers_reserve_unique_positions_and_sequences() {
             NewAgent {
                 subagent_parent_id: None,
                 interactive: false,
+                hidden: false,
                 definition_id: psa_api::AgentDefinitionId(1),
                 name: "other".into(),
             },

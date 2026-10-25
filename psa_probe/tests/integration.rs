@@ -323,6 +323,7 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
                 &psa_api::NewConfiguredAgent {
                     subagent_parent_id: None,
                     interactive: false,
+                    hidden: false,
                     name: "remote reader".into(),
                     config_id,
                     model: None,

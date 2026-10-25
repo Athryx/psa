@@ -17,6 +17,7 @@ use crate::{components::cancellation::Cancellation, db::Database, sessions};
 use psa_api::{self as api, AgentId, SessionId};
 
 mod configurations;
+mod results;
 
 #[derive(Clone)]
 pub struct Sessions {
@@ -92,8 +93,7 @@ impl Sessions {
         self.queries.respond(session, agent, id, response).await
     }
 
-    #[cfg(test)]
-    pub(crate) async fn create_agent_definition(
+    pub async fn create_agent_definition(
         &self,
         request: api::CreateAgentDefinition,
     ) -> Result<api::AgentDefinition, RuntimeError> {
@@ -324,6 +324,7 @@ impl Sessions {
                     name: request.name,
                     definition_id: request.definition_id,
                     interactive: request.interactive,
+                    hidden: request.hidden,
                 },
             )
             .await?;
@@ -539,15 +540,15 @@ mod tests {
     use psa_api::events::{EventId, EventType, NewEvent, StatusChange};
     use std::time::Duration;
 
-    struct Fixture {
+    pub(super) struct Fixture {
         _directory: tempfile::TempDir,
-        sessions: Sessions,
+        pub(super) sessions: Sessions,
         _queries: crate::agents::client_queries::ClientQueries,
         received: actors::Mailbox<ManagerCommand>,
     }
 
     impl Fixture {
-        async fn new() -> Self {
+        pub(super) async fn new() -> Self {
             let directory = tempfile::tempdir().unwrap();
             let database = Database::open(directory.path().join("sessions.sqlite3"))
                 .await
@@ -569,7 +570,7 @@ mod tests {
             }
         }
 
-        async fn create_session(&self) -> sessions::Session {
+        pub(super) async fn create_session(&self) -> sessions::Session {
             self.sessions
                 .create_session(api::CreateSession {
                     name: "test".into(),
@@ -582,10 +583,11 @@ mod tests {
         }
     }
 
-    fn create_agent_request() -> api::CreateAgent {
+    pub(super) fn create_agent_request() -> api::CreateAgent {
         api::CreateAgent {
             subagent_parent_id: None,
             interactive: false,
+            hidden: false,
             name: "agent".into(),
             definition_id: api::AgentDefinitionId(1),
         }

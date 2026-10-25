@@ -87,6 +87,7 @@ enum BundleConfig {
 enum HookConfig {
     Noop, StopWithoutTools, DefaultStartup, ToolDefinitions, Cwd, Skills,
     ExtraSystemPrompt { prompt: String }, ProjectContext, SessionModelUpdate,
+    Compaction { reserve_tokens: u64, keep_recent_tokens: u64, context_window: Option<u64> },
 }
 struct HookConfigs {
     agent_create: Vec<HookConfig>,
@@ -141,8 +142,9 @@ The latter two require payload objects: `{"Goal":{"interactive_only":true}}` or
 defaults to true (for example `{"Goal":{}}`); bare `"Goal"` is invalid. TOML uses
 `{ Goal = { interactive_only = true } }` or
 `{ AskQuestion = { interactive_only = true } }` in the bundle array.
-With true, noninteractive agents install neither the bundle's tools nor hooks;
-false fully enables the bundle regardless of the agent flag. Both remain opt-in.
+With true, noninteractive agents get only `StopWithoutTools` from Goal and nothing
+from AskQuestion; false fully enables the bundle regardless of the agent flag.
+Generated server defaults include Goal with `interactive_only = true`, not AskQuestion.
 `AskQuestion` installs only its tool, with no hook. `Goal` retains its goal state,
 persistence, and continuation policy even for noninteractive agents when false.
 `TypedResult { schema, max_retries }` installs a sequential JSON result tool and
@@ -167,6 +169,10 @@ The equivalent file hook stage is:
 [hooks]
 agent_create = ["DefaultStartup", { ExtraSystemPrompt = { prompt = "Follow the project conventions." } }, "ToolDefinitions"]
 ```
+
+`Compaction {}` runs only in `before_request`, defaulting to a 16384-token
+reserve and 20000 recent tokens. Generated server defaults enable it; see
+[compaction](COMPACTION.md) for hidden summarizer agents and replay semantics.
 
 Prompt hooks are opt-in; ordinary startup lists omit `ExtraSystemPrompt` unless
 an explicit prompt payload is provided. Definitions, defaults, API input, and
@@ -333,6 +339,7 @@ struct NewConfiguredAgent {
     name: String,
     subagent_parent_id: Option<AgentId>,
     interactive: bool,
+    hidden: bool,
     model: Option<ModelSelection>,
 }
 ```
@@ -355,8 +362,9 @@ an equivalent resolved effort is not sufficient. Omitted/null model selects the
 sole choice, or the first choice when `default` is true. Database registration
 and upsert normalize stored `AgentConfig.default` to true for single-model
 configurations, even when input specifies false. Multiple choices with
-`default = false` require explicit selection. `interactive` defaults to false
-and parent to none.
+`default = false` require explicit selection. `interactive` and `hidden` default
+to false, and parent to none. `hidden` is client visibility metadata only: the
+server stores and returns it without filtering agents. Forked agents inherit it.
 
 `Parent` and `Global` model/effort policies resolve at creation time, not as live
 bindings. Parent falls back to the session/global model without a parent. The

@@ -49,6 +49,7 @@ async fn runtime_shutdown_cleans_retained_owners_and_reports_failures() {
                             definition_id: definition.id,
                             name: name.into(),
                             interactive: false,
+                            hidden: false,
                         },
                     )
                     .await

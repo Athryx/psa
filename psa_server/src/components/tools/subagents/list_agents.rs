@@ -81,6 +81,7 @@ impl ListAgents {
                 "parent": parent.map(|agent| &agent.name),
                 "template": definition.name,
                 "interactive": agent.interactive,
+                "hidden": agent.hidden,
                 "status": agent.state,
             }));
         }

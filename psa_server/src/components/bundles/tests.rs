@@ -14,6 +14,7 @@ fn snapshots() -> (Agent, Session) {
     let now = OffsetDateTime::now_utc();
     let agent = Agent {
         interactive: false,
+        hidden: false,
         id: AgentId(1),
         session_id: SessionId(1),
         definition_id: AgentDefinitionId(1),
@@ -144,7 +145,11 @@ async fn goal_installation_respects_interactive_only_and_feature_tools_require_b
                     .iter()
                     .all(|tool| tool.execution_mode() == ExecutionMode::Sequential)
             );
-            assert_eq!(installed.hooks.after_request.len(), usize::from(enabled));
+            assert_eq!(installed.hooks.after_request.len(), 1);
+            assert!(matches!(
+                (&installed.hooks.after_request[0], enabled),
+                (HookKind::Goal(_), true) | (HookKind::StopWithoutTools(_), false)
+            ));
             installed.cleanup().await.unwrap();
         }
     }

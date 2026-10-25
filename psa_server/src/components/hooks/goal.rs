@@ -176,7 +176,7 @@ mod tests {
         .unwrap();
 
         // Exercise installed policy, persisted state, and conventional stopper
-        // precedence for interactive, opted-in, and skipped noninteractive agents.
+        // behavior for interactive, opted-in, and fallback noninteractive agents.
         for (interactive, interactive_only) in [(true, true), (false, false), (false, true)] {
             let installed = interactive || !interactive_only;
             for (reason, active, completed, interrupted, cancelled, expected) in [
@@ -272,6 +272,7 @@ mod tests {
                         NewAgent {
                             subagent_parent_id: None,
                             interactive,
+                            hidden: false,
                             definition_id: definition.id,
                             name: "goal agent".into(),
                         },
@@ -293,7 +294,7 @@ mod tests {
                 ));
                 state.attach_components(shared_components.clone()).await;
                 let mut components = shared_components.lock().await;
-                assert_eq!(components.hooks.after_request.len(), usize::from(installed));
+                assert_eq!(components.hooks.after_request.len(), 1);
                 let mut context =
                     AgentContext::with_optional_probe(&mut state, None, &runtime.handle);
                 context
@@ -375,14 +376,10 @@ mod tests {
                 if cancelled {
                     let _ = sender.send(());
                 }
-                if let Some(hook) = components.hooks.after_request.first_mut() {
-                    hook.run(&mut context, cancellation).await.unwrap();
-                } else {
-                    super::super::StopWithoutTools
-                        .run(&mut context, cancellation)
-                        .await
-                        .unwrap();
-                }
+                components.hooks.after_request[0]
+                    .run(&mut context, cancellation)
+                    .await
+                    .unwrap();
                 let expected = if !installed && !interrupted && !cancelled {
                     AgentState::Idle
                 } else {

@@ -1,3 +1,4 @@
+pub mod compaction;
 pub mod cwd;
 pub mod default_startup;
 pub mod extra_system_prompt;
@@ -52,6 +53,8 @@ pub enum HookError {
     Probe(#[from] ProbeError),
     #[error(transparent)]
     Sessions(#[from] RuntimeError),
+    #[error("context compaction failed: {0}")]
+    Compaction(String),
     #[error(transparent)]
     ClientQuery(#[from] crate::agents::client_queries::ClientQueryError),
 }
@@ -76,6 +79,7 @@ pub enum HookKind {
     Skills(SkillsHook),
     SessionModelUpdate(SessionModelUpdateHook),
     Goal(GoalHook),
+    Compaction(compaction::CompactionHook),
     RequireResult(RequireResult),
     SubagentIdentity(SubagentIdentity),
     #[cfg(test)]
@@ -94,6 +98,15 @@ impl HookKind {
             HookConfig::ExtraSystemPrompt { prompt } => {
                 Self::ExtraSystemPrompt(ExtraSystemPromptHook::new(prompt.clone()))
             }
+            HookConfig::Compaction {
+                reserve_tokens,
+                keep_recent_tokens,
+                context_window,
+            } => Self::Compaction(compaction::CompactionHook::new(
+                *reserve_tokens,
+                *keep_recent_tokens,
+                *context_window,
+            )),
             HookConfig::ProjectContext => Self::ProjectContext(ProjectContextHook),
             HookConfig::ToolDefinitions => Self::ToolDefinitions(ToolDefinitionsHook),
             HookConfig::Cwd => Self::Cwd(CwdHook),
@@ -116,6 +129,7 @@ impl Hook for HookKind {
             Self::Skills(hook) => hook.cancellation_timeout(),
             Self::SessionModelUpdate(hook) => hook.cancellation_timeout(),
             Self::Goal(hook) => hook.cancellation_timeout(),
+            Self::Compaction(hook) => hook.cancellation_timeout(),
             Self::RequireResult(hook) => hook.cancellation_timeout(),
             Self::SubagentIdentity(hook) => hook.cancellation_timeout(),
             #[cfg(test)]
@@ -141,6 +155,7 @@ impl Hook for HookKind {
             Self::Skills(hook) => hook.run(context, cancellation).await,
             Self::SessionModelUpdate(hook) => hook.run(context, cancellation).await,
             Self::Goal(hook) => hook.run(context, cancellation).await,
+            Self::Compaction(hook) => hook.run(context, cancellation).await,
             Self::RequireResult(hook) => hook.run(context, cancellation).await,
             Self::SubagentIdentity(hook) => hook.run(context, cancellation).await,
             #[cfg(test)]

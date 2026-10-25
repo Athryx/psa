@@ -8,7 +8,7 @@ use super::{Bundle, CleanupError, HookStage, InstallError, Installer};
 use crate::{
     agents::Agent,
     components::{
-        hooks::{HookKind, goal::GoalHook},
+        hooks::{HookKind, StopWithoutTools, goal::GoalHook},
         tools::{
             ToolKind,
             goal::{SetGoal, SetGoalStatus},
@@ -46,6 +46,10 @@ impl Bundle for GoalBundle {
         installer: &mut Installer,
     ) -> Result<(), InstallError> {
         if self.interactive_only && !agent.interactive {
+            installer.add_hook(
+                HookStage::AfterRequest,
+                HookKind::StopWithoutTools(StopWithoutTools),
+            );
             return Ok(());
         }
         let handle = self.runtime.handle();

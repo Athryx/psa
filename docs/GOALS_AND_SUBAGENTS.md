@@ -36,7 +36,8 @@ ID substituted for `42`:
 Create the coordinator agent with `interactive: true` for the Goal configuration
 above. `Goal` requires a payload object; bare `"Goal"` is invalid. Omitted
 `interactive_only` inside that object defaults to true. With true, noninteractive
-agents install neither Goal tools nor hooks. Set it to false to fully enable Goal
+agents install only `StopWithoutTools`, without Goal tools or continuation.
+Set it to false to fully enable Goal
 on noninteractive agents, including state persistence and continuation policy.
 TOML uses `{ Goal = { interactive_only = true } }` in the bundle array.
 Subagent tools are independent of this flag. `create_agent` is installed only

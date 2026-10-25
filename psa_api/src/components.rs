@@ -27,6 +27,18 @@ pub enum HookConfig {
         /// System prompt text owned by this hook installation.
         prompt: String,
     },
+    /// Summarizes older context before the next inference using a hidden agent.
+    Compaction {
+        /// Space reserved for the next response; defaults to 16384 tokens.
+        #[serde(default = "default_compaction_reserve_tokens")]
+        reserve_tokens: u64,
+        /// Recent conversation budget to retain verbatim; defaults to 20000 tokens.
+        #[serde(default = "default_compaction_keep_recent_tokens")]
+        keep_recent_tokens: u64,
+        /// Override the model catalog's context window, including for unknown models.
+        #[serde(default)]
+        context_window: Option<u64>,
+    },
     /// Loads project instructions from the working directory hierarchy.
     ProjectContext,
     /// Publishes the installed tools' model-facing definitions.
@@ -47,6 +59,7 @@ impl HookConfig {
             Self::StopWithoutTools => HookId::StopWithoutTools,
             Self::DefaultStartup => HookId::DefaultStartup,
             Self::ExtraSystemPrompt { .. } => HookId::ExtraSystemPrompt,
+            Self::Compaction { .. } => HookId::Compaction,
             Self::ProjectContext => HookId::ProjectContext,
             Self::ToolDefinitions => HookId::ToolDefinitions,
             Self::Cwd => HookId::Cwd,
@@ -77,8 +90,8 @@ pub enum BundleConfig {
     Bash,
     /// Installs goal tools and their goal-aware stopping policy.
     Goal {
-        /// When true, skip this bundle for noninteractive agents; when false,
-        /// install all its tools and hooks for every agent. Defaults to true.
+        /// When true, install only StopWithoutTools for noninteractive agents;
+        /// when false, install goal tools and policy for every agent. Defaults to true.
         #[serde(default = "default_interactive_only")]
         interactive_only: bool,
     },
@@ -132,6 +145,14 @@ impl BundleConfig {
             max_retries,
         }
     }
+}
+
+fn default_compaction_reserve_tokens() -> u64 {
+    16384
+}
+
+fn default_compaction_keep_recent_tokens() -> u64 {
+    20000
 }
 
 fn default_result_retries() -> u32 {
@@ -242,6 +263,32 @@ mod tests {
             assert!(
                 serde_json::from_value::<crate::AgentDefaults>(json!({"tools": tools})).is_err()
             );
+        }
+    }
+
+    #[test]
+    fn compaction_payload_defaults_and_rejects_invalid_settings() {
+        let config: HookConfig =
+            serde_json::from_value(serde_json::json!({"Compaction": {}})).unwrap();
+        assert_eq!(
+            config,
+            HookConfig::Compaction {
+                reserve_tokens: 16384,
+                keep_recent_tokens: 20000,
+                context_window: None,
+            }
+        );
+        assert_eq!(config.id(), HookId::Compaction);
+        let wire = serde_json::to_value(&config).unwrap();
+        assert_eq!(serde_json::from_value::<HookConfig>(wire).unwrap(), config);
+        for invalid in [
+            serde_json::json!("Compaction"),
+            serde_json::json!({"Compaction": {"reserve_tokens": -1}}),
+            serde_json::json!({"Compaction": {"keep_recent_tokens": 1.5}}),
+            serde_json::json!({"Compaction": {"context_window": "large"}}),
+            serde_json::json!({"Compaction": {"unknown": true}}),
+        ] {
+            assert!(serde_json::from_value::<HookConfig>(invalid).is_err());
         }
     }
 

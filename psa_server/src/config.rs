@@ -22,13 +22,13 @@ effort = "Medium"
 # Fallbacks for omitted fields in agent files and API registrations.
 # Explicit empty arrays override these defaults; hook stages inherit separately.
 [agent_defaults]
-bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents"]
+bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents", { Goal = { interactive_only = true } }]
 
 [agent_defaults.hooks]
 agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
 session_update = []
-before_request = []
-after_request = ["StopWithoutTools"]
+before_request = [{ Compaction = {} }]
+after_request = []
 "#;
 
 #[derive(Debug, Parser)]
