@@ -41,9 +41,11 @@ configuration fails startup without overwriting it.
 
 ```toml
 host = true # Marks this config directory as sharing the server's filesystem.
+default_agent_name = "default" # Suggested agent configuration name for clients.
 
 [server]
 listen = "127.0.0.1:8080"
+autostart_local_probe = true # Start a probe on the server host.
 
 [database]
 path = "psa.sqlite3"
@@ -61,6 +63,11 @@ agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
 before_request = [{ Compaction = {} }]
 after_request = []
 ```
+
+`default_agent_name` is a client suggestion, not an agent registration or creation policy.
+It defaults to `"default"` when omitted, including in existing files. Authenticated
+`GET /config` returns this client-safe option; use `Client::get_config()` from
+`psa_api`. Changes take effect after restarting the server.
 
 `[session_defaults]` provides the model for new sessions that omit `model_config`
 or send null. Model configuration files use a provider/API-name slug string, such
@@ -83,6 +90,12 @@ adopt them. Library servers can use
 configuration, default_model_config, client_key, shutdown)`. Pass a concrete `ModelConfig`
 as `default_model_config`; CLI resolution exposes it as
 `ResolvedConfig.session_defaults`.
+
+Set `[server].autostart_local_probe = true` to opt in to starting a local
+probe with the server. The setting defaults to `false` when omitted, including
+in existing configurations. A local probe executes operations on the server host;
+enable it only when that access is intended. Remote probes can still be started
+separately; see [the probe README](../psa_probe/README.md).
 
 Relative database paths resolve against the selected data directory. The listen
 CLI option overrides TOML. Startup applies embedded migrations before listening;

@@ -16,6 +16,12 @@ transport. Both constructors require the client key; all requests, including SSE
 send it as a bearer token, overriding any default Authorization header on the
 transport. Use TLS or a trusted encrypted tunnel for remote connections.
 
+## Client-safe configuration
+
+Authenticated `GET /config` returns `{"default_agent_name":"default"}` (or the
+server-configured name). `Client::get_config()` fetches this suggestion; it does
+not guarantee a matching agent configuration exists.
+
 ## Session and Agent
 
 /sessions/{id}
@@ -41,16 +47,91 @@ transport. Use TLS or a trusted encrypted tunnel for remote connections.
   - optional flag to include non persisted events
   - `Accept: text/event-stream` for SSE; `Accept: application/json` for JSON
 
-## Agent definitions
+## Ordered session summaries and the global feed
 
-`POST /agent-definitions` creates a reusable definition; `GET /agent-definitions`
-lists definitions. `GET /agent-definitions/{definition_id}` retrieves an exact
-immutable version. `PUT /agent-definitions/{definition_id}` accepts a full
-replacement and returns a new ID with `previous_version_id` pointing to the
-original version and an incremented `version`. Both writes return HTTP 201.
-The async client exposes matching `create_agent_definition`,
-`list_agent_definitions`, `get_agent_definition`, and `update_agent_definition`
-methods.
+Legacy `GET /sessions?parent=ID` / `Client::list_sessions(parent)` still return
+roots (no parent) or direct children in ID order.
+
+`GET /sessions/query` / `Client::query_sessions(&SessionListQuery)` return
+`SessionsPage { sessions, next_before, revision }`. Set `flat=true` to include
+forks; otherwise `parent` selects children or its absence selects roots.
+`flat=true` and `parent` together are invalid. Optional `probe_id` filters the
+scope. Summaries include published busy state, ordered by `updated_at DESC, id
+DESC`. `limit` defaults to 100 (1–1000); pass opaque `next_before` as `before`.
+Cursors are exclusive and bound to the filter scope, not to page size. Keyset
+pages are not an immutable snapshot: merge by session ID and reconcile the feed.
+
+`GET /events?kind=session_updated&probe_id=UUID` /
+`Client::stream_global_events(&GlobalEventsQuery, last_event_id)` are a separate
+SSE-only summary feed. The typed allowlist currently contains only
+`GlobalEventKind::SessionUpdated`; no transcript data is exposed. Messages:
+
+- `ready { revision }`: subscription established.
+- `session_updated { revision, session }`: full committed summary upsert.
+- `resync_required`: discard the bootstrap and start a fresh subscription/reload.
+
+Subscribe first, wait for ready, buffer updates while fetching pages, and apply
+updates newer than each page's `revision`. Keep per-session revisions so a late
+page cannot overwrite newer state. Revisions are global monotonic publication
+order within one server lifetime, not timestamps: busy transitions do not change
+`updated_at`. Creation, metadata/model edits, agent creation, event commits, and
+busy transitions publish summaries under the same gate. Token/provisional
+updates do not publish summaries. Both server and client buffering must be
+bounded; the server closes with resync on overflow. EOF/reconnect also requires
+fresh bootstrap; supplying Last-Event-ID explicitly returns resync, not replay.
+There is no durable replay or deletion operation. Refresh probe/model catalogs
+separately.
+
+## Recent and backward transcript history
+
+Both event scopes accept JSON-only `recent=true` for the latest bounded page or
+exclusive `before=N` for an older page. Events remain chronological.
+`EventsPage.next_before` and `has_older` identify older history; `head` is the
+captured live cursor. Agent cursors are event IDs, session cursors are session
+positions (including gaps from agent creation). `limit` remains 1–10000.
+
+Connect the existing forward SSE with `after=page.head` and no upper bound;
+commits between page capture and SSE connection are replayed, then snapshot
+replaces pending events/questions. Recent JSON pages may include current pending
+state; older `before` pages always return empty pending/questions and must not
+replace current live state. Merge committed events by scoped identity.
+`recent` and `before` are mutually exclusive, incompatible with nonzero
+`after` or `through`, and rejected on SSE. Existing forward pagination,
+Last-Event-ID replay, finite through streams, and provisional promotion remain
+unchanged. Empty history still has a usable head cursor.
+
+## Agent configurations and immutable snapshots
+
+Named configurations are mutable; agent creation resolves and pins an immutable
+executable snapshot. A `ConfigId` contains `config_group` and `name`, not a
+snapshot ID. The current routes and async client methods are:
+
+- `POST /agent-configs` / `upsert_agent_configs(&configs)` atomically creates or
+  replaces a JSON array of `AgentConfigInput` values and returns HTTP 200 with
+  `Vec<AgentConfigStatus>`. Omitted/null bundles and omitted hook stages inherit
+  server defaults; explicit lists replace them, including empty lists. Passing
+  normalized `AgentConfig` values through the client makes all lists explicit.
+- `GET /agent-configs?refresh_session_id=ID` /
+  `refresh_and_list_agent_configs(refresh_session_id)` refreshes global discovery
+  and optionally the selected session's project, then returns all registered
+  configurations and dependency statuses. The session ID controls discovery,
+  not result filtering.
+- `POST /agent-configs/lookup` / `get_agent_config(&config_id)` accepts a JSON
+  `ConfigId` and returns its current `AgentConfigStatus`, or HTTP 404 if unknown.
+  A status contains the normalized `config` and `status.missing_components`.
+- `GET /agent-snapshots/{definition_id}` /
+  `get_resolved_agent_config(definition_id)` returns HTTP 200 with a
+  `ResolvedAgentConfig`, or JSON `null` (`None`) for an unknown ID. It contains
+  captured source `config`, executable `definition`, and resolved `references`
+  for subagent snapshots and mutable skill records.
+
+`POST /sessions/{session_id}/agents` accepts `NewConfiguredAgent` with a
+`config_id`, instance `name`, and optional allowed `model` selection. It resolves
+and pins the current configuration graph; subsequent configuration upserts do
+not modify existing agents' snapshots. Legacy `/agent-definitions` CRUD is
+removed, not retained as a compatibility API. See
+[configuration schema and resolution](../docs/AGENT_DEF_SCHEMA.md) for input
+fields, model policies, discovery, and snapshot semantics.
 
 Definitions contain `name`, `description`, `selectable`, `bundles`, `hooks`, an
 optional `model_config` override, `skills` paths, and `permitted_subagents` IDs.
@@ -205,7 +286,7 @@ TODO: probe api
 Exact route templates/builders are in `src/routes.rs`; wire types are in
 `src/types.rs` and `src/events.rs`. `src/client.rs` provides the async `Client`,
 including typed JSON requests and SSE decoding. `EventsQuery` uses `after`,
-`through`, `limit`, `include_pending`, and `results_only`; it has no `stream` field.
+`through`, `recent`, `before`, `limit`, `include_pending`, and `results_only`; it has no `stream` field.
 `results_only=true` filters durable Result events before the database limit and
 filters SSE durable events as well. Event endpoints
 select SSE with `Accept: text/event-stream`, or JSON with
@@ -226,11 +307,13 @@ queue/shutdown semantics, and the trusted-client-only security boundary.
 
 Client queries are ephemeral runtime requests for input, not transcript events.
 They do not require `interactive: true`, a UI, or a currently connected client.
-Outstanding queries are included as `queries: [ClientQueryRequest, ...]` in both
-JSON event pages and SSE `snapshot` messages on the existing session/agent event
-endpoints, regardless of `include_pending`. Older pages/snapshots without this
-field deserialize with an empty list. Replace local query state for the stream's
-scope when receiving a snapshot; upsert by query ID on
+Outstanding queries are included as `queries: [ClientQueryRequest, ...]` in
+forward/recent JSON event pages and SSE `snapshot` messages on the existing
+session/agent event endpoints, regardless of `include_pending`. Backward history
+pages requested with `before` return empty queries; merging history must not
+clear current query state. Payloads from older API versions without this field
+deserialize with an empty list. Replace local query state for the stream's scope
+when receiving a snapshot; upsert by query ID on
 `client_query_requested { query }` and remove on
 `client_query_removed { session_id, agent_id, query_id }`. Query notifications do
 not advance the durable event cursor. Reconnecting to the event stream recovers
@@ -287,13 +370,18 @@ after eviction, later responses receive 404 instead of 409/410. See
 
 `GET /probes` lists registered systems; `GET /probes/{probe_id}` fetches one UUID.
 Both return flattened probe metadata (`id`, `hostname`, `os`, `architecture`,
-optional `label`, absolute `data_dir`, boolean `host`), timestamps, and live `is_active`.
+optional `label`, absolute `data_dir`, optional absolute `home_dir`, boolean `host`),
+timestamps, and live `is_active`.
 `Client::list_probes` and `Client::get_probe` wrap these endpoints.
 
 Probes authenticate `GET /probes/connect` with `Authorization: Bearer <probe_key>`.
 Query parameters are `version=2` and the metadata fields above; success upgrades
 to WebSocket. Invalid auth returns 401, incompatible versions/metadata return
 400, and an already-connected UUID returns 409. Offline records persist.
+
+`home_dir` is advertised from the probe process's `HOME` when it is an absolute
+UTF-8 path of at most 4096 bytes; otherwise it is omitted. Legacy metadata may
+omit it. It is a hint, not a guarantee that the directory exists or is accessible.
 
 `host` defaults to false for legacy metadata. A probe reads it from root
 `host = true` in the server's `config.toml` beside its selected `probe.toml`.
@@ -302,9 +390,20 @@ The flag asserts a shared server filesystem: server-owned skills use their
 original paths without cache synchronization on host probes. Remote probes
 continue receiving synchronized skill copies.
 
+`GET /probes/{probe_id}/directories?path=...` lists immediate children of an
+absolute UTF-8 path on a connected probe. The client-authenticated endpoint is
+read-only and returns an array of `DirectoryEntry` objects (`name`, `kind`,
+`size`); kinds are `file`, `directory`, `symlink`, or `other`. Entry metadata
+does not follow symlinks. Paths are passed unchanged, not canonicalized, and
+results are not guaranteed sorted. `Client::list_probe_dir(id, path)` safely
+encodes the query. A malformed path returns 400 `invalid_input`, an unknown
+probe 404 `not_found`, a disconnected or overloaded probe 503 `unavailable`,
+and a remote filesystem or protocol failure 502 `probe_error`. The probe's
+filesystem access is not restricted to the session workspace: client keys are
+trusted credentials.
+
 Session creation requires `probe_id`, referencing a registered probe. It is
-returned in session responses, remains fixed, and is inherited on fork. No
-remote-operation HTTP endpoints are exposed yet: use server-side probe handles.
+returned in session responses, remains fixed, and is inherited on fork.
 
 ## Durable results
 

@@ -7,6 +7,13 @@ use llm_api::providers::Effort;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Server options safe to expose to authenticated clients.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientConfig {
+    /// Name of the agent configuration suggested for new sessions.
+    pub default_agent_name: String,
+}
+
 /// Namespace for named agent configurations and skills.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

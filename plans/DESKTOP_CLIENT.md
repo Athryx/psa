@@ -1,6 +1,13 @@
 # Desktop client: initial UI and API plan
 
-Status: design sketch; no client implementation or API changes yet.
+Status: initial desktop client and API implementation added. This document records
+its design and agreed scope; see `client/psa_desktop/README.md` for running it and
+`psa_api/API_OVERVIEW.md` for the concrete endpoint contracts.
+
+The desktop WebView renderer is enabled with `--features native`, keeping ordinary
+workspace tests independent of native GUI development libraries. Web/mobile/TUI
+shells remain future work. Duplicate-agent views are supported by workspace state
+but deliberately have no creation action in the initial GUI.
 
 ## Crates and ownership
 
@@ -310,3 +317,24 @@ API field names, feed ready/resync protocol, cursor encoding, and page sizes are
 implementation details to settle with tests, not additional product blockers.
 The requested API key storage remains plaintext `desktop.toml`, with restrictive
 permissions and redaction.
+
+## Initial implementation verification
+
+- `cargo fmt --all -- --check` and `git diff --check` pass.
+- `SQLX_OFFLINE=true CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2 cargo test --locked --workspace`:
+  681 tests passed, one ignored (including 21 shared-client, seven GUI, and five
+  desktop settings tests).
+- Strict Clippy passes for all targets of the three new client crates.
+- `cargo check --locked -p psa_desktop --features native` passes in a Nix shell
+  providing GTK/WebKitGTK dependencies. The interactive native window has not
+  been manually smoke-tested.
+- Workspace-wide strict Clippy remains blocked by existing server/API warnings
+  outside this implementation's changed code. No unrelated lint cleanup was made.
+- An initial fully parallel run exposed the existing scheduling-sensitive
+  `parallel_wait_then_create_receives_child_completion_and_keeps_agents_addressable`
+  test. It passed 21 targeted retries and the final workspace run. The underlying
+  queued-to-started coordination race was not broadened into this client task.
+
+Current UI limits: no duplicate-view creation action (by design), binary attachment
+placeholders rather than media viewers, and local DOM scroll/expansion state may
+reset when moving a tab between panes. Web/mobile/TUI shells remain unimplemented.

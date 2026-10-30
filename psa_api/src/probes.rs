@@ -42,6 +42,9 @@ pub struct ProbeMetadata {
     pub label: Option<String>,
     /// Absolute UTF-8 probe data directory, at most 4096 bytes.
     pub data_dir: PathBuf,
+    /// Optional absolute UTF-8 home directory, at most 4096 bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_dir: Option<String>,
     /// Whether this probe shares the server's filesystem (advertised from config.toml).
     /// Host probes use server-owned skills in place instead of synchronizing copies.
     #[serde(default, deserialize_with = "deserialize_host")]
@@ -64,7 +67,7 @@ fn deserialize_host<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result
 }
 
 impl ProbeMetadata {
-    /// Check metadata length limits and require an absolute UTF-8 data directory.
+    /// Check metadata length limits and require absolute UTF-8 directory paths.
     pub fn validate(&self) -> Result<(), String> {
         if self.hostname.is_empty()
             || self.hostname.len() > 255
@@ -76,10 +79,69 @@ impl ProbeMetadata {
             || !self.data_dir.is_absolute()
             || self.data_dir.to_str().is_none()
             || self.data_dir.as_os_str().len() > 4096
+            || self.home_dir.as_ref().is_some_and(|home| {
+                home.len() > 4096
+                    || home.contains('\0')
+                    || !std::path::Path::new(home).is_absolute()
+            })
         {
             return Err("invalid probe metadata".into());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    fn metadata() -> ProbeMetadata {
+        ProbeMetadata {
+            id: ProbeId(Uuid::nil()),
+            hostname: "test".into(),
+            os: "linux".into(),
+            architecture: "x86_64".into(),
+            label: None,
+            data_dir: "/data".into(),
+            home_dir: None,
+            host: false,
+        }
+    }
+
+    #[test]
+    fn optional_home_dir_supports_legacy_and_round_trip_json() {
+        let mut value = serde_json::to_value(metadata()).unwrap();
+        assert!(value.get("home_dir").is_none());
+        assert!(
+            serde_json::from_value::<ProbeMetadata>(value.clone())
+                .unwrap()
+                .home_dir
+                .is_none()
+        );
+        value["home_dir"] = serde_json::json!("/home/user");
+        let decoded: ProbeMetadata = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(decoded.home_dir.as_deref(), Some("/home/user"));
+        assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+        value["home_dir"] = serde_json::Value::Null;
+        assert!(
+            serde_json::from_value::<ProbeMetadata>(value)
+                .unwrap()
+                .home_dir
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn home_dir_must_be_an_absolute_bounded_path_without_nul() {
+        let mut metadata = metadata();
+        for valid in ["/", "/home/a b", &format!("/{}", "a".repeat(4095))] {
+            metadata.home_dir = Some(valid.into());
+            assert!(metadata.validate().is_ok());
+        }
+        for invalid in ["", "relative", "/a\0b", &format!("/{}", "a".repeat(4096))] {
+            metadata.home_dir = Some(invalid.into());
+            assert!(metadata.validate().is_err());
+        }
     }
 }
 

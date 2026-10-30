@@ -1,1 +1,4 @@
 /target
+# Desktop settings may include the server's trusted-client key.
+desktop.toml
+.desktop-*.tmp

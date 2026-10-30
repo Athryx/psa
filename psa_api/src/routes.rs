@@ -1,6 +1,9 @@
 //! Shared HTTP route templates and numeric/UUID path substitution helpers.
 use crate::{AgentDefinitionId, AgentId, ClientQueryId, SessionId};
 
+/// GET client-safe server configuration.
+pub const CONFIG: &str = "/config";
+
 /// GET the supported providers and configured-authentication flags.
 pub const PROVIDERS: &str = "/providers";
 /// GET model catalog entries with optional filters.
@@ -23,6 +26,10 @@ pub const SKILLS: &str = "/skills";
 
 /// GET root/child sessions or POST a new session.
 pub const SESSIONS: &str = "/sessions";
+/// Ordered session summary pages.
+pub const SESSION_QUERY: &str = "/sessions/query";
+/// Global summary SSE feed.
+pub const GLOBAL_EVENTS: &str = "/events";
 /// GET or PATCH one session.
 pub const SESSION: &str = "/sessions/{session_id}";
 /// POST a session fork at a history boundary.
@@ -46,6 +53,8 @@ pub const AGENT_RESULTS: &str = "/sessions/{session_id}/agents/{agent_id}/result
 pub const PROBES: &str = "/probes";
 /// GET one registered probe by UUID.
 pub const PROBE: &str = "/probes/{probe_id}";
+/// GET an immediate directory listing from a connected probe.
+pub const PROBE_DIRECTORIES: &str = "/probes/{probe_id}/directories";
 /// GET the authenticated probe WebSocket upgrade endpoint.
 pub const PROBES_CONNECT: &str = "/probes/connect";
 
@@ -76,4 +85,9 @@ pub fn client_query_response_path(
 /// Build the discovery path for a registered probe.
 pub fn probe_path(id: crate::ProbeId) -> String {
     PROBE.replace("{probe_id}", &id.to_string())
+}
+
+/// Build the directory-listing path for a probe.
+pub fn probe_directories_path(id: crate::ProbeId) -> String {
+    PROBE_DIRECTORIES.replace("{probe_id}", &id.to_string())
 }

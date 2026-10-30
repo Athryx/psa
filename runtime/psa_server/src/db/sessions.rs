@@ -68,6 +68,42 @@ impl DatabaseCursor {
         rows.into_iter().map(TryInto::try_into).collect()
     }
 
+    /// Summary keyset pages; runtime SQL avoids adding prepared-cache entries.
+    pub async fn query_sessions(
+        &mut self,
+        query: &psa_api::SessionListQuery,
+        before: Option<(i64, i64)>,
+    ) -> Result<Vec<Session>, DbError> {
+        use sqlx::Row;
+        let parent = query.parent.map(|id| encode_integer(id.0)).transpose()?;
+        let probe = query.probe_id.map(|id| id.to_string());
+        let rows = sqlx::query(
+            "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, model_config, created_at_us, updated_at_us FROM sessions WHERE (? OR parent_session_id IS ?) AND (? IS NULL OR probe_id = ?) AND (? IS NULL OR updated_at_us < ? OR (updated_at_us = ? AND id < ?)) ORDER BY updated_at_us DESC, id DESC LIMIT ?"
+        )
+        .bind(query.flat).bind(parent).bind(&probe).bind(&probe)
+        .bind(before.map(|v| v.0)).bind(before.map(|v| v.0))
+        .bind(before.map(|v| v.0)).bind(before.map(|v| v.1))
+        .bind(i64::from(query.limit) + 1)
+        .fetch_all(self.connection()).await?;
+        rows.into_iter()
+            .map(|row| {
+                SessionRow {
+                    id: row.try_get("id")?,
+                    parent_session_id: row.try_get("parent_session_id")?,
+                    first_position: row.try_get("first_position")?,
+                    next_position: row.try_get("next_position")?,
+                    name: row.try_get("name")?,
+                    working_directory: row.try_get("working_directory")?,
+                    probe_id: row.try_get("probe_id")?,
+                    model_config: row.try_get("model_config")?,
+                    created_at_us: row.try_get("created_at_us")?,
+                    updated_at_us: row.try_get("updated_at_us")?,
+                }
+                .try_into()
+            })
+            .collect()
+    }
+
     pub async fn update_session(
         &mut self,
         id: SessionId,

@@ -4,6 +4,8 @@
 !Cargo.lock
 !.sqlx/
 !.sqlx/**
+!client/
+!client/**
 !lib/
 !lib/actors/
 !lib/actors/**
@@ -28,3 +30,5 @@
 **/.env*
 **/auth.toml
 **/probe.toml
+**/desktop.toml
+**/.desktop-*.tmp

@@ -229,6 +229,81 @@ impl DatabaseCursor {
             .collect()
     }
 
+    /// Bounded reverse history across the logical lineage, returned chronologically.
+    pub async fn load_recent_agent_events(
+        &mut self,
+        session: SessionId,
+        agent: AgentId,
+        through: u64,
+        limit: u32,
+        results_only: bool,
+    ) -> Result<Vec<EventEnvelope>, DbError> {
+        self.require_agent_session(session, agent).await?;
+        if results_only {
+            let mut events = load_result_envelopes(
+                self.connection(),
+                session,
+                agent,
+                EventRange {
+                    after: EventId(0),
+                    through: Some(EventId(through)),
+                    limit,
+                },
+                true,
+            )
+            .await?;
+            events.reverse();
+            return Ok(events);
+        }
+        let segments =
+            load_segments(self.connection(), agent, EventId(0), Some(EventId(through))).await?;
+        let mut remaining = u64::from(limit);
+        let mut lower = through;
+        for (_, first, last) in segments.into_iter().rev() {
+            let count = (last - first + 1) as u64;
+            let take = count.min(remaining);
+            lower = last as u64 + 1 - take;
+            remaining -= take;
+            if remaining == 0 {
+                break;
+            }
+        }
+        self.load_agent_envelopes(
+            session,
+            agent,
+            EventRange {
+                after: EventId(lower.saturating_sub(1)),
+                through: Some(EventId(through)),
+                limit,
+            },
+        )
+        .await
+    }
+
+    /// Session positions include agent creation and can therefore have gaps.
+    pub async fn load_recent_session_events(
+        &mut self,
+        session: SessionId,
+        through: u64,
+        limit: u32,
+        results_only: bool,
+    ) -> Result<Vec<EventEnvelope>, DbError> {
+        self.get_session(session).await?;
+        let mut events = Vec::new();
+        for agent in self.list_agents(session).await? {
+            let upper =
+                decode_integer(event_cutoff_at(self.connection(), agent.id, through).await?)?;
+            events.extend(
+                self.load_recent_agent_events(session, agent.id, upper, limit, results_only)
+                    .await?,
+            );
+        }
+        events.sort_by_key(|event| std::cmp::Reverse(event.position));
+        events.truncate(limit as usize);
+        events.reverse();
+        Ok(events)
+    }
+
     /// Shared session positions include agent creation; event IDs remain per stream.
     pub async fn load_session_events(
         &mut self,

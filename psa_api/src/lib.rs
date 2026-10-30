@@ -22,7 +22,9 @@ pub mod results;
 pub mod routes;
 mod types;
 
-pub use client::{Client, ClientError, EventStream, StreamEvent};
+pub use client::{
+    Client, ClientError, EventStream, GlobalEventStream, GlobalStreamEvent, StreamEvent,
+};
 pub use client_queries::*;
 pub use models::*;
 pub use results::*;

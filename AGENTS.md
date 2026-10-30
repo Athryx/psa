@@ -11,7 +11,11 @@ The codebase uses async code, not blocking sync.
 
 The following crates are present in the workspace. Runtime crates live under
 `runtime/` (`psa_server`, `psa_shared`, `psa_probe`), reusable libraries under `lib/`
-(`llm_api`, `actors`, `actors_macros`), and `psa_api` remains at the workspace root:
+(`llm_api`, `actors`, `actors_macros`), clients under `client/`, and `psa_api`
+remains at the workspace root:
+- `client_shared`: UI-independent client projections, workspace state, and settings.
+- `psa_gui`: shared Dioxus UI and a small platform-services interface; no native renderer.
+- `psa_desktop`: desktop executable and settings persistence; enable `native` for the WebView renderer.
 - `llm_api`: a generic wrapper over different llm api types, like OpenAI responses and completions, low level close to the api.
 - `psa_server`: main server managing sessions and calling into `llm_api` to make inference requests.
 - `psa_api`: defines common types and endpoints clients and probes use to communicate to psa server, and provides a thin client library for making the requests.

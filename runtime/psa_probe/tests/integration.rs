@@ -76,7 +76,7 @@ impl Harness {
                 .await
                 .unwrap();
         }
-        let config = StartOptions {
+        let mut config = StartOptions {
             data_dir: Some(probe_dir),
             server: Some(base.clone()),
             label: Some("integration".into()),
@@ -85,6 +85,12 @@ impl Harness {
         .resolve()
         .await
         .unwrap();
+        if let Ok(home) = std::env::var("HOME") {
+            if std::path::Path::new(&home).is_absolute() && home.len() <= 4096 {
+                assert_eq!(config.metadata.home_dir.as_deref(), Some(home.as_str()));
+            }
+        }
+        config.metadata.home_dir = Some("/home/test user & files".into());
         let id = config.metadata.id;
         let metadata = config.metadata.clone();
         let (probe_stop, stopped) = oneshot::channel();
@@ -185,6 +191,7 @@ async fn probe_and_client_keys_are_isolated() {
         assert_eq!(probes.len(), 1);
         assert_eq!(probes[0].metadata.id, harness.id);
         assert_eq!(probes[0].metadata.label.as_deref(), Some("integration"));
+        assert_eq!(probes[0].metadata.home_dir, harness.metadata.home_dir);
         assert!(probes[0].is_active);
 
         let probe_client = Client::new(&harness.base, "test-probe-key").unwrap();

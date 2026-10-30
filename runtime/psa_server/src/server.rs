@@ -29,12 +29,25 @@ pub enum ServerError {
     Runtime(#[from] RuntimeError),
     #[error(transparent)]
     Catalog(#[from] crate::models::CatalogError),
+    #[error(transparent)]
+    ProbeConfig(#[from] psa_probe::config::ConfigError),
 }
 
 pub async fn start(config: ResolvedConfig) -> Result<(), ServerError> {
+    start_with_shutdown(config, shutdown_signal()).await
+}
+
+/// Start a configured server with an injectable shutdown signal.
+pub async fn start_with_shutdown(
+    config: ResolvedConfig,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), ServerError> {
     if let Some(parent) = config.database_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
+
+    #[cfg(unix)]
+    let local_lock = crate::local_control::LocalControl::acquire(&config.data_dir)?;
 
     let auth_path = config.config_path.with_file_name("auth.toml");
     // Validate existing provider credentials before changing the shared file.
@@ -49,8 +62,60 @@ pub async fn start(config: ResolvedConfig) -> Result<(), ServerError> {
         "server ready"
     );
 
+    let local_probe = if config.autostart_local_probe {
+        let mut address = listener.local_addr()?;
+        if address.ip().is_unspecified() {
+            address.set_ip(if address.is_ipv4() {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv6Addr::LOCALHOST.into()
+            });
+        }
+        let probe_config = psa_probe::config::StartOptions {
+            data_dir: Some(config.data_dir.clone()),
+            server: Some(format!("http://{address}")),
+            ..Default::default()
+        }
+        .resolve_with_server_config(Some(&config.config_path))
+        .await?;
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            if let Err(error) = psa_probe::run(probe_config, async {
+                let _ = stopped.await;
+            })
+            .await
+            {
+                tracing::error!(%error, "local probe stopped");
+            }
+        });
+        Some((stop, task))
+    } else {
+        None
+    };
+    #[cfg(unix)]
+    let (_local_control, local_stop) = {
+        let mut address = listener.local_addr()?;
+        if address.ip().is_unspecified() {
+            address.set_ip(if address.is_ipv4() {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv6Addr::LOCALHOST.into()
+            });
+        }
+        crate::local_control::LocalControl::start(
+            local_lock,
+            &config.data_dir,
+            address,
+            &keys.client_key,
+        )?
+    };
+    #[cfg(unix)]
+    let shutdown = async move {
+        tokio::select! { _ = shutdown => (), _ = local_stop => () }
+    };
+
     let probes = crate::probes::ProbeRegistry::start(keys.probe_key);
-    serve_with_configuration(
+    let result = serve_with_client_config(
         listener,
         database,
         providers,
@@ -58,10 +123,20 @@ pub async fn start(config: ResolvedConfig) -> Result<(), ServerError> {
         crate::config_registry::ConfigRegistry::new(config.data_dir)
             .with_agent_defaults(config.agent_defaults),
         config.session_defaults,
+        psa_api::ClientConfig {
+            default_agent_name: config.default_agent_name,
+        },
         keys.client_key,
-        shutdown_signal(),
+        shutdown,
     )
-    .await
+    .await;
+    if let Some((stop, task)) = local_probe {
+        let _ = stop.send(());
+        if let Err(error) = task.await {
+            tracing::error!(%error, "local probe task failed");
+        }
+    }
+    result
 }
 
 /// Injectable listener and shutdown future permit isolated startup tests.
@@ -151,6 +226,34 @@ pub async fn serve_with_configuration(
     client_key: String,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
+    serve_with_client_config(
+        listener,
+        database,
+        providers,
+        probes,
+        configuration,
+        default_model_config,
+        psa_api::ClientConfig {
+            default_agent_name: "default".into(),
+        },
+        client_key,
+        shutdown,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn serve_with_client_config(
+    listener: TcpListener,
+    database: Database,
+    providers: ProviderRegistry,
+    probes: crate::probes::ProbeRegistry,
+    configuration: crate::config_registry::ConfigRegistry,
+    default_model_config: ModelConfig,
+    client_config: psa_api::ClientConfig,
+    client_key: String,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), ServerError> {
     let mut catalog = crate::models::ModelCatalogRuntime::start(
         database.clone(),
         &providers,
@@ -175,6 +278,7 @@ pub async fn serve_with_configuration(
         runtime: runtime.handle.clone(),
         accepting: accepting.clone(),
         client_key: client_key.into(),
+        client_config,
         probes: probes.clone(),
     });
     // signals http server to stop when anything sent on stopped

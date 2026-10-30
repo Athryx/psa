@@ -6,6 +6,7 @@ pub mod config;
 pub mod config_registry;
 pub mod db;
 pub mod http;
+mod local_control;
 pub mod models;
 pub mod prompts;
 pub mod providers;

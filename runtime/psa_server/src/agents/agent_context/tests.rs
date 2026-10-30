@@ -81,6 +81,9 @@ impl Fixture {
             runtime: runtime.handle.clone(),
             accepting: Arc::new(AtomicBool::new(true)),
             client_key: "test-client-key".into(),
+            client_config: psa_api::ClientConfig {
+                default_agent_name: "default".into(),
+            },
             probes: probes.clone(),
         });
         let (stop, stopped) = oneshot::channel();
@@ -422,6 +425,11 @@ async fn saved_events_synchronize_projection_agent_status_and_publication() {
         panic!("expected synchronized agent snapshot");
     };
     assert_eq!(updated.state, AgentState::Interrupted);
+    let StreamMessage::SessionUpdated { session } = published.try_recv().unwrap() else {
+        panic!("expected committed session recency snapshot");
+    };
+    assert_eq!(session.id, agent.session_id);
+    assert_eq!(session.updated_at, updated.updated_at);
     assert!(published.try_recv().is_err());
     fixture.close().await;
 }

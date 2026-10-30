@@ -274,6 +274,7 @@ pub fn client_router() -> Router<AppState> {
     Router::new()
         .route(psa_api::routes::PROBES, get(list_probes))
         .route(psa_api::routes::PROBE, get(get_probe))
+        .route(psa_api::routes::PROBE_DIRECTORIES, get(list_probe_dir))
 }
 
 /// Probe transport authenticates independently of the client API.
@@ -315,6 +316,68 @@ async fn get_probe(
 
     probe.is_active = state.probes.is_active(id).await;
     Ok(Json(probe))
+}
+
+#[derive(serde::Deserialize)]
+struct ListDirectoryQuery {
+    path: String,
+}
+
+async fn list_probe_dir(
+    State(state): State<AppState>,
+    crate::http::ApiPath(id): crate::http::ApiPath<ProbeId>,
+    crate::http::ApiQuery(query): crate::http::ApiQuery<ListDirectoryQuery>,
+) -> Result<Json<Vec<psa_api::probes::DirectoryEntry>>, Response> {
+    if !query.path.starts_with('/') || query.path.contains('\0') {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_input",
+            "path must be absolute UTF-8 without NUL",
+        ));
+    }
+
+    // Distinguish an unknown probe from a registered but disconnected one.
+    let mut cursor = state
+        .database
+        .cursor()
+        .await
+        .map_err(|error| crate::http::HttpError::from(error).into_response())?;
+    cursor
+        .get_probe(id)
+        .await
+        .map_err(|error| crate::http::HttpError::from(error).into_response())?;
+    cursor
+        .rollback()
+        .await
+        .map_err(|error| crate::http::HttpError::from(error).into_response())?;
+
+    let probe = state.probes.handle(id).await.map_err(probe_listing_error)?;
+    let entries = probe
+        .list_dir(query.path)
+        .await
+        .map_err(probe_listing_error)?;
+    Ok(Json(entries))
+}
+
+fn probe_listing_error(error: ProbeError) -> Response {
+    match error {
+        ProbeError::Disconnected | ProbeError::Overloaded => api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            &error.to_string(),
+        ),
+        ProbeError::Remote { .. } => {
+            api_error(StatusCode::BAD_GATEWAY, "probe_error", &error.to_string())
+        }
+        ProbeError::Protocol(_) => {
+            tracing::warn!(%error, "probe directory listing failed");
+            api_error(
+                StatusCode::BAD_GATEWAY,
+                "probe_error",
+                "invalid response from probe",
+            )
+        }
+    }
 }
 
 async fn connect_probe(

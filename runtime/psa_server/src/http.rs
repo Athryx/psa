@@ -79,6 +79,7 @@ pub struct AppState {
     pub accepting: Arc<AtomicBool>,
     pub probes: crate::probes::ProbeRegistry,
     pub client_key: Arc<str>,
+    pub client_config: api::ClientConfig,
 }
 
 impl AppState {
@@ -193,6 +194,7 @@ impl IntoResponse for HttpError {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok\n" }))
+        .route(routes::CONFIG, get(get_config))
         .route(
             routes::AGENT_CONFIGS,
             post(upsert_agent_configs).get(refresh_and_list_agent_configs),
@@ -208,6 +210,8 @@ pub fn router(state: AppState) -> Router {
             ),
         )
         .route(routes::SESSIONS, post(create_session).get(list_sessions))
+        .route(routes::SESSION_QUERY, get(query_sessions))
+        .route(routes::GLOBAL_EVENTS, get(global_events))
         .route(routes::SESSION, get(get_session).patch(update_session))
         .route(routes::FORK, post(fork_session))
         .route(routes::AGENTS, post(create_agent).get(list_agents))
@@ -249,6 +253,10 @@ async fn require_client_key(
     }
 
     next.run(request).await
+}
+
+async fn get_config(State(state): State<AppState>) -> Json<api::ClientConfig> {
+    Json(state.client_config)
 }
 
 fn require_catalog(state: &AppState) -> Result<&crate::models::ModelCatalog, HttpError> {
@@ -383,6 +391,119 @@ async fn list_sessions(
         views.push(session.into_api(busy));
     }
     Ok(Json(views))
+}
+
+// Cursors carry their filter scope so accidentally reusing one cannot omit rows.
+type SummaryCursor = (i64, i64, bool, Option<SessionId>, Option<api::ProbeId>);
+
+async fn query_sessions(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<api::SessionListQuery>,
+) -> Result<Json<api::SessionsPage>, HttpError> {
+    state.require_accepting()?;
+    if query.limit == 0 || query.limit > 1000 || (query.flat && query.parent.is_some()) {
+        return Err(HttpError::Invalid(
+            "invalid session list scope or limit".into(),
+        ));
+    }
+    let before = query
+        .before
+        .as_ref()
+        .map(|value| {
+            let cursor: SummaryCursor = serde_json::from_str(value)
+                .map_err(|_| HttpError::Invalid("invalid session cursor".into()))?;
+            if cursor.0 < 0
+                || cursor.1 <= 0
+                || (cursor.2, cursor.3, cursor.4) != (query.flat, query.parent, query.probe_id)
+            {
+                return Err(HttpError::Invalid(
+                    "session cursor belongs to another scope".into(),
+                ));
+            }
+            Ok((cursor.0, cursor.1))
+        })
+        .transpose()?;
+    let publication = state.publication.lock().await;
+    let mut cursor = state.database.cursor().await?;
+    let mut sessions = cursor.query_sessions(&query, before).await?;
+    cursor.rollback().await?;
+    let more = sessions.len() > query.limit as usize;
+    sessions.truncate(query.limit as usize);
+    let next_before = if more {
+        let last = sessions.last().expect("nonempty bounded page");
+        Some(
+            serde_json::to_string(&(
+                i64::try_from(last.updated_at.unix_timestamp_nanos() / 1000)
+                    .map_err(|_| HttpError::Invalid("invalid session timestamp".into()))?,
+                i64::try_from(last.id.0)
+                    .map_err(|_| HttpError::Invalid("invalid session ID".into()))?,
+                query.flat,
+                query.parent,
+                query.probe_id,
+            ))
+            .expect("summary cursor is serializable"),
+        )
+    } else {
+        None
+    };
+    let sessions = sessions
+        .into_iter()
+        .map(|session| {
+            let busy = publication.is_session_busy(session.id);
+            session.into_api(busy)
+        })
+        .collect();
+    Ok(Json(api::SessionsPage {
+        sessions,
+        next_before,
+        revision: publication.revision(),
+    }))
+}
+
+async fn global_events(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<api::GlobalEventsQuery>,
+    headers: HeaderMap,
+) -> Result<Response, HttpError> {
+    state.require_accepting()?;
+    let publication = state.publication.lock().await;
+    let mut received = publication.subscribe_global();
+    let revision = publication.revision();
+    drop(publication);
+    let mut shutdown = state.publication.shutdown_receiver();
+    let reconnect = headers.contains_key("last-event-id");
+    let stream = async_stream::stream! {
+        if reconnect {
+            yield SseEvent::default().json_data(api::GlobalStreamMessage::ResyncRequired);
+            return;
+        }
+        yield SseEvent::default().id(revision.to_string())
+            .json_data(api::GlobalStreamMessage::Ready { revision });
+        if *shutdown.borrow() { return; }
+        loop {
+            let message = tokio::select! {
+                biased;
+                message = received.recv() => message,
+                _ = shutdown.changed() => break,
+            };
+            match message {
+                Ok(api::GlobalStreamMessage::SessionUpdated { revision, session }) => {
+                    if query.probe_id.is_some_and(|probe| probe != session.probe_id) { continue; }
+                    yield SseEvent::default().id(revision.to_string())
+                        .json_data(api::GlobalStreamMessage::SessionUpdated { revision, session });
+                }
+                Ok(api::GlobalStreamMessage::ResyncRequired) | Err(broadcast::error::RecvError::Lagged(_)) => {
+                    yield SseEvent::default().json_data(api::GlobalStreamMessage::ResyncRequired);
+                    break;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+                Ok(api::GlobalStreamMessage::Ready { .. }) => {}
+            }
+        }
+    };
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response())
 }
 
 async fn get_session(
@@ -533,6 +654,9 @@ async fn load_page(
     if query.limit == 0
         || query.limit > 10_000
         || query.through.is_some_and(|through| through < query.after)
+        || ((query.recent || query.before.is_some())
+            && (query.after != 0 || query.through.is_some()))
+        || (query.recent && query.before.is_some())
     {
         return Err(HttpError::Invalid(
             "invalid event range or page limit".into(),
@@ -540,6 +664,83 @@ async fn load_page(
     }
 
     let mut cursor = state.database.cursor().await?;
+    let backward = query.recent || query.before.is_some();
+    if backward {
+        let head = match agent {
+            Some(agent) => {
+                cursor
+                    .require_agent_session(session, agent)
+                    .await?
+                    .next_event_id
+                    .0
+                    - 1
+            }
+            None => cursor.get_session(session).await?.next_position - 1,
+        };
+        let through = query
+            .before
+            .map_or(head, |before| before.saturating_sub(1).min(head));
+        let events = match agent {
+            Some(agent) => {
+                cursor
+                    .load_recent_agent_events(
+                        session,
+                        agent,
+                        through,
+                        query.limit,
+                        query.results_only,
+                    )
+                    .await?
+            }
+            None => {
+                cursor
+                    .load_recent_session_events(session, through, query.limit, query.results_only)
+                    .await?
+            }
+        };
+        let older_through = events
+            .first()
+            .map(|event| event_cursor(event, agent).saturating_sub(1));
+        let has_older = if let Some(older_through) = older_through {
+            let older = match agent {
+                Some(agent) => {
+                    cursor
+                        .load_recent_agent_events(
+                            session,
+                            agent,
+                            older_through,
+                            1,
+                            query.results_only,
+                        )
+                        .await?
+                }
+                None => {
+                    cursor
+                        .load_recent_session_events(session, older_through, 1, query.results_only)
+                        .await?
+                }
+            };
+            !older.is_empty()
+        } else {
+            false
+        };
+        cursor.rollback().await?;
+        let next_before = if has_older {
+            events.first().map(|event| event_cursor(event, agent))
+        } else {
+            None
+        };
+        return Ok(api::EventsPage {
+            events,
+            pending: Vec::new(),
+            queries: Vec::new(),
+            next_after: head,
+            next_before,
+            has_older,
+            head,
+            has_more: false,
+        });
+    }
     let (head, events) = match agent {
         Some(agent) => {
             let head = cursor
@@ -595,6 +796,8 @@ async fn load_page(
         },
         head,
         has_more,
+        next_before: None,
+        has_older: false,
     })
 }
 
@@ -620,6 +823,12 @@ async fn events_response(
                 .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
         });
 
+    if stream_events && (query.recent || query.before.is_some()) {
+        return Err(HttpError::Invalid(
+            "SSE requires forward event pagination".into(),
+        ));
+    }
+
     if stream_events && let Some(id) = headers.get("last-event-id") {
         query.after = decode_cursor(
             id.to_str()
@@ -643,8 +852,10 @@ async fn events_response(
     drop(publication);
 
     if !stream_events {
-        page.pending = pending;
-        page.queries = queries;
+        if query.before.is_none() {
+            page.pending = pending;
+            page.queries = queries;
+        }
         return Ok(Json(page).into_response());
     }
 
@@ -695,6 +906,10 @@ async fn events_response(
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             };
+            if matches!(message, api::StreamMessage::ResyncRequired) {
+                yield encode_sse(message, None);
+                break;
+            }
             if !matches_scope(&message, session, agent, query.include_pending)
                 || !matches_result_filter(&message, query.results_only)
             {
@@ -824,10 +1039,56 @@ fn encode_sse(message: api::StreamMessage, id: Option<String>) -> Result<SseEven
 }
 
 #[cfg(test)]
+mod desktop_stream_tests;
+#[cfg(test)]
+mod desktop_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::agents::{NewAgent, session_manager::Runtime};
     use crate::{providers::ProviderRegistry, sessions};
+
+    #[test]
+    fn old_probe_connection_query_accepts_new_metadata() {
+        fn legacy_host<'de, D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<bool, D::Error> {
+            let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+            value.parse().map_err(serde::de::Error::custom)
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct LegacyMetadata {
+            id: api::ProbeId,
+            hostname: String,
+            os: String,
+            architecture: String,
+            label: Option<String>,
+            data_dir: std::path::PathBuf,
+            #[serde(default, deserialize_with = "legacy_host")]
+            host: bool,
+        }
+        #[derive(serde::Deserialize)]
+        struct LegacyConnect {
+            version: u32,
+            #[serde(flatten)]
+            metadata: LegacyMetadata,
+        }
+        let uri = format!("/probes/connect?version=2&id={}&hostname=test&os=linux&architecture=x86_64&data_dir=%2Ftmp&host=false&home_dir=%2Fhome", api::probes::Uuid::nil()).parse().unwrap();
+        let Query(legacy) = Query::<LegacyConnect>::try_from_uri(&uri).unwrap();
+        assert_eq!(legacy.version, 2);
+        assert_eq!(legacy.metadata.hostname, "test");
+        let _ = (
+            legacy.metadata.id,
+            legacy.metadata.os,
+            legacy.metadata.architecture,
+            legacy.metadata.label,
+            legacy.metadata.data_dir,
+            legacy.metadata.host,
+        );
+    }
 
     #[test]
     fn probe_connection_query_decodes_host_and_legacy_metadata() {
@@ -840,7 +1101,17 @@ mod tests {
             let uri = format!("{base}{suffix}").parse().unwrap();
             let Query(query) = Query::<api::probes::ConnectProbe>::try_from_uri(&uri).unwrap();
             assert_eq!(query.metadata.host, host);
+            assert_eq!(query.metadata.home_dir, None);
         }
+        let uri = format!("{base}&home_dir=%2Fhome%2Ftest+user")
+            .parse()
+            .unwrap();
+        let Query(query) = Query::<api::probes::ConnectProbe>::try_from_uri(&uri).unwrap();
+        assert_eq!(query.metadata.home_dir.as_deref(), Some("/home/test user"));
+        assert!(query.metadata.validate().is_ok());
+        let uri = format!("{base}&home_dir=relative").parse().unwrap();
+        let Query(query) = Query::<api::probes::ConnectProbe>::try_from_uri(&uri).unwrap();
+        assert!(query.metadata.validate().is_err());
         for value in ["invalid", "1", "", "TRUE"] {
             let uri = format!("{base}&host={value}").parse().unwrap();
             assert!(Query::<api::probes::ConnectProbe>::try_from_uri(&uri).is_err());
@@ -858,6 +1129,8 @@ mod tests {
             ("POST", routes::MODELS_RESYNC),
             ("GET", routes::PROBES),
             ("GET", routes::PROBE),
+            ("GET", routes::PROBE_DIRECTORIES),
+            ("GET", routes::CONFIG),
             ("GET", routes::AGENT_CONFIGS),
             ("POST", routes::AGENT_CONFIGS),
             ("POST", routes::AGENT_CONFIG_LOOKUP),
@@ -866,6 +1139,8 @@ mod tests {
             ("POST", routes::SKILLS),
             ("GET", routes::SESSIONS),
             ("POST", routes::SESSIONS),
+            ("GET", routes::SESSION_QUERY),
+            ("GET", routes::GLOBAL_EVENTS),
             ("GET", routes::SESSION),
             ("PATCH", routes::SESSION),
             ("POST", routes::FORK),
@@ -966,6 +1241,9 @@ mod tests {
             runtime: runtime.handle.clone(),
             accepting: Arc::new(AtomicBool::new(true)),
             client_key: "test-client-key".into(),
+            client_config: api::ClientConfig {
+                default_agent_name: "worker".into(),
+            },
             probes,
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -974,6 +1252,20 @@ mod tests {
             tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
         assert_client_authentication(&base).await;
         let client = api::Client::new(&base, "test-client-key").unwrap();
+        assert_eq!(
+            client.get_config().await.unwrap().default_agent_name,
+            "worker"
+        );
+        let response = reqwest::Client::new()
+            .get(format!("{base}/config"))
+            .bearer_auth("test-client-key")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.json::<serde_json::Value>().await.unwrap(),
+            serde_json::json!({"default_agent_name": "worker"})
+        );
         let config: api::AgentConfig = serde_json::from_value(serde_json::json!({
             "config_id": {"config_group": {"Custom": "http-test"}, "name": "worker"},
             "models": ["Global"]
@@ -1145,6 +1437,9 @@ mod tests {
             runtime: runtime.handle.clone(),
             accepting: Arc::new(AtomicBool::new(true)),
             client_key: "test-client-key".into(),
+            client_config: api::ClientConfig {
+                default_agent_name: "default".into(),
+            },
             probes: crate::probes::ProbeRegistry::start("test".into()),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

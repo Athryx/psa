@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = [
+    "client/client_shared",
+    "client/psa_gui",
+    "client/psa_desktop",
     "lib/actors",
     "lib/actors_macros",
     "lib/llm_api",

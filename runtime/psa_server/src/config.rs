@@ -9,9 +9,11 @@ use std::{
 use tokio::io::AsyncWriteExt;
 
 const DEFAULT_CONFIG: &str = r#"host = true
+default_agent_name = "default"
 
 [server]
 listen = "127.0.0.1:8080"
+autostart_local_probe = true
 
 [database]
 path = "psa.sqlite3"
@@ -60,6 +62,8 @@ pub struct StartOptions {
 struct Config {
     #[serde(default)]
     host: bool,
+    #[serde(default = "default_agent_name")]
+    default_agent_name: String,
     server: ServerConfig,
     database: DatabaseConfig,
     #[serde(
@@ -75,6 +79,8 @@ struct Config {
 #[serde(deny_unknown_fields)]
 struct ServerConfig {
     listen: SocketAddr,
+    #[serde(default)]
+    autostart_local_probe: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -86,10 +92,12 @@ struct DatabaseConfig {
 #[derive(Debug)]
 pub struct ResolvedConfig {
     pub host: bool,
+    pub default_agent_name: String,
     pub data_dir: PathBuf,
     pub config_path: PathBuf,
     pub database_path: PathBuf,
     pub listen: SocketAddr,
+    pub autostart_local_probe: bool,
     pub session_defaults: ModelConfig,
     pub agent_defaults: AgentDefaults,
 }
@@ -161,14 +169,20 @@ impl StartOptions {
         let database_path = data_dir.join(config.database.path);
         Ok(ResolvedConfig {
             host: config.host,
+            default_agent_name: config.default_agent_name,
             data_dir,
             config_path,
             database_path,
             listen: self.listen.unwrap_or(config.server.listen),
+            autostart_local_probe: config.server.autostart_local_probe,
             session_defaults: config.session_defaults,
             agent_defaults: config.agent_defaults,
         })
     }
+}
+
+fn default_agent_name() -> String {
+    "default".into()
 }
 
 /// Built-in session fallback, also used when `[session_defaults]` is absent.

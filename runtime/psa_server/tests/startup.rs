@@ -52,6 +52,7 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
         .await
         .unwrap();
     assert!(config.host);
+    assert_eq!(config.default_agent_name, "default");
     assert_eq!(
         toml::from_str::<toml::Value>(&generated).unwrap()["host"].as_bool(),
         Some(true)
@@ -130,12 +131,70 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
     assert_eq!(resolved.listen.port(), 2222);
     assert_eq!(resolved.database_path, dir.path().join("custom.sqlite3"));
     assert!(!resolved.host);
+    assert_eq!(resolved.default_agent_name, "default");
     // Existing files without a defaults section keep their original behavior.
     assert_eq!(resolved.agent_defaults, psa_api::AgentDefaults::default());
     assert_eq!(
         resolved.session_defaults,
         psa_server::config::default_model_config()
     );
+}
+
+#[tokio::test]
+async fn config_reads_custom_default_agent_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let contents = "default_agent_name = \"helper\"\n[server]\nlisten = \"127.0.0.1:8080\"\n[database]\npath = \"test.sqlite3\"\n";
+    tokio::fs::write(&path, contents).await.unwrap();
+    let resolved = StartOptions {
+        data_dir: Some(dir.path().into()),
+        ..Default::default()
+    }
+    .resolve()
+    .await
+    .unwrap();
+    assert_eq!(resolved.default_agent_name, "helper");
+    assert_eq!(tokio::fs::read_to_string(path).await.unwrap(), contents);
+}
+
+#[tokio::test]
+async fn config_parses_local_probe_autostart_without_rewriting_existing_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let options = || StartOptions {
+        data_dir: Some(dir.path().into()),
+        ..Default::default()
+    };
+
+    // New configurations enable the probe; missing fields in existing files remain disabled.
+    assert!(options().resolve().await.unwrap().autostart_local_probe);
+    for (setting, expected) in [
+        ("", false),
+        ("autostart_local_probe = true\n", true),
+        ("autostart_local_probe = false\n", false),
+    ] {
+        let contents = format!(
+            "[server]\n{setting}listen = '127.0.0.1:0'\n[database]\npath = 'psa.sqlite3'\n"
+        );
+        tokio::fs::write(&path, &contents).await.unwrap();
+        assert_eq!(
+            options().resolve().await.unwrap().autostart_local_probe,
+            expected
+        );
+        assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), contents);
+    }
+
+    for setting in ["'true'", "1", "[]"] {
+        let contents = format!(
+            "[server]\nautostart_local_probe = {setting}\n[database]\npath = 'psa.sqlite3'\n"
+        );
+        tokio::fs::write(&path, &contents).await.unwrap();
+        assert!(matches!(
+            options().resolve().await,
+            Err(ConfigError::Parse { .. })
+        ));
+        assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), contents);
+    }
 }
 
 #[tokio::test]

@@ -87,10 +87,11 @@ Event endpoints use `Accept: text/event-stream` for SSE and
 and runtime busy changes, ordered under the publication gate. There is no
 separate `SessionBusy` message.
 
-Nonstream event pages also include `queries`. These are current runtime state,
-not historical events at a transcript cursor. Queries are included regardless of
-`include_pending`, which continues to control provisional transcript events.
-They do not advance the durable SSE cursor. Snapshot subscription and projection
+Forward/recent nonstream event pages also include current `queries`, regardless
+of `include_pending`, which continues to control provisional transcript events.
+These are runtime state, not historical events at a transcript cursor. Backward
+history pages requested with `before` return empty queries; merging these pages
+must not clear current query state. Queries do not advance the durable SSE cursor. Snapshot subscription and projection
 capture share one gate, so reconnecting cannot lose an outstanding request in a
 subscribe/snapshot race. A resync should rebuild query state from the snapshot.
 

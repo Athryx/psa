@@ -102,6 +102,9 @@ fn build_connect_request(config: &ResolvedConfig) -> Result<Request, ProbeError>
         if let Some(label) = &metadata.label {
             query.append_pair("label", label);
         }
+        if let Some(home_dir) = &metadata.home_dir {
+            query.append_pair("home_dir", home_dir);
+        }
     }
 
     let mut request = url

@@ -47,6 +47,15 @@ pub enum ConfigError {
 
 impl StartOptions {
     pub async fn resolve(self) -> Result<ResolvedConfig, ConfigError> {
+        self.resolve_with_server_config(None).await
+    }
+
+    /// Resolve normally, but read server authentication and host marker beside
+    /// the selected server configuration rather than beside probe.toml.
+    pub async fn resolve_with_server_config(
+        self,
+        server_config: Option<&Path>,
+    ) -> Result<ResolvedConfig, ConfigError> {
         let data_dir = self
             .data_dir
             .or_else(|| {
@@ -99,8 +108,12 @@ impl StartOptions {
                 "missing server_url in probe.toml; use --server",
             ))?;
         let url = parse_server_url(&server_url)?;
-        let key = read_probe_key(&path.with_file_name("auth.toml")).await?;
-        let host = read_host_marker(&path.with_file_name("config.toml")).await?;
+        let key_path = server_config.unwrap_or(&path).with_file_name("auth.toml");
+        let host_path = server_config
+            .map(Path::to_owned)
+            .unwrap_or_else(|| path.with_file_name("config.toml"));
+        let key = read_probe_key(&key_path).await?;
+        let host = read_host_marker(&host_path).await?;
 
         let hostname = tokio::fs::read_to_string("/proc/sys/kernel/hostname")
             .await?
@@ -114,6 +127,7 @@ impl StartOptions {
             architecture: std::env::consts::ARCH.into(),
             label: config.label,
             data_dir,
+            home_dir: valid_home_dir(std::env::var_os("HOME")),
         };
         metadata
             .validate()
@@ -125,6 +139,14 @@ impl StartOptions {
             key,
         })
     }
+}
+
+fn valid_home_dir(value: Option<std::ffi::OsString>) -> Option<String> {
+    let home = value?.into_string().ok()?;
+    if home.len() > 4096 || home.contains('\0') || !Path::new(&home).is_absolute() {
+        return None;
+    }
+    Some(home)
 }
 
 fn parse_server_url(value: &str) -> Result<String, ConfigError> {
@@ -169,6 +191,31 @@ async fn read_probe_key(path: &Path) -> Result<String, ConfigError> {
         ))?
         .to_owned();
     Ok(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::ffi::OsStringExt;
+
+    #[test]
+    fn home_dir_is_optional_and_validated_without_affecting_startup() {
+        assert_eq!(valid_home_dir(None), None);
+        assert_eq!(
+            valid_home_dir(Some("/home/a b".into())).as_deref(),
+            Some("/home/a b")
+        );
+        assert_eq!(valid_home_dir(Some("".into())), None);
+        assert_eq!(valid_home_dir(Some("relative".into())), None);
+        assert_eq!(
+            valid_home_dir(Some(format!("/{}", "a".repeat(4096)).into())),
+            None
+        );
+        assert_eq!(
+            valid_home_dir(Some(std::ffi::OsString::from_vec(vec![b'/', 0xff]))),
+            None
+        );
+    }
 }
 
 async fn write_config(path: &Path, text: &str) -> Result<(), std::io::Error> {

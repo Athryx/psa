@@ -1,0 +1,30 @@
+[package]
+name = "psa_desktop"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+native = ["dep:dioxus", "dep:dioxus-desktop"]
+
+[[bin]]
+name = "psa_desktop"
+path = "src/main.rs"
+required-features = ["native"]
+
+[dependencies]
+client_shared = { path = "../client_shared" }
+psa_gui = { path = "../psa_gui" }
+dioxus = { version = "0.7.10", default-features = false, optional = true }
+dioxus-desktop = { version = "0.7.10", optional = true }
+clap = { version = "4", features = ["derive"] }
+directories = "6"
+rand = "0.9"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "fs", "io-util", "sync"] }
+toml = "0.9"
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "fs"] }

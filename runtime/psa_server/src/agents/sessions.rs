@@ -328,6 +328,7 @@ impl Sessions {
                 },
             )
             .await?;
+        let session = cursor.get_session(session).await?;
         cursor.commit().await?;
 
         // Reserve before mutation, then enqueue synchronously after commit and
@@ -338,6 +339,10 @@ impl Sessions {
         });
         publication.publish(api::StreamMessage::AgentUpdated {
             agent: agent.clone().into(),
+        });
+        let busy = publication.is_session_busy(session.id);
+        publication.publish(api::StreamMessage::SessionUpdated {
+            session: session.into_api(busy),
         });
         Ok(agent)
     }
@@ -631,6 +636,9 @@ mod tests {
         assert_eq!(loaded.first_event_id, agent.first_event_id);
         assert!(
             matches!(published.recv().await.unwrap(), api::StreamMessage::AgentUpdated { agent: value } if value.id == agent.id)
+        );
+        assert!(
+            matches!(published.recv().await.unwrap(), api::StreamMessage::SessionUpdated { session: value } if value.id == session.id && value.updated_at == agent.updated_at)
         );
 
         assert!(matches!(

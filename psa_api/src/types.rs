@@ -234,7 +234,8 @@ pub struct Session {
     /// Creation time in RFC 3339 format.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
-    /// Last metadata update time in RFC 3339 format.
+    /// Last persisted change (metadata, agent creation, or event commit), in RFC 3339 format.
+    /// Busy-only transitions do not advance this value.
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
@@ -413,12 +414,93 @@ pub struct ListSessions {
     pub parent: Option<SessionId>,
 }
 
+/// Ordered, keyset-paginated session summaries. Legacy listing remains unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SessionListQuery {
+    /// Include roots and forks; incompatible with parent.
+    pub flat: bool,
+    /// Direct children of this session; absent selects roots unless flat.
+    pub parent: Option<SessionId>,
+    /// Restrict to one probe.
+    pub probe_id: Option<crate::ProbeId>,
+    /// Opaque exclusive cursor returned by the previous page.
+    pub before: Option<String>,
+    /// Page size, 1 through 1000.
+    pub limit: u32,
+}
+impl Default for SessionListQuery {
+    fn default() -> Self {
+        Self {
+            flat: false,
+            parent: None,
+            probe_id: None,
+            before: None,
+            limit: 100,
+        }
+    }
+}
+
+/// Session summaries captured at one publication boundary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionsPage {
+    /// Ordered by updated_at descending, then ID descending.
+    pub sessions: Vec<Session>,
+    /// Exclusive older-page cursor, absent at the end.
+    pub next_before: Option<String>,
+    /// Global publication revision at which these summaries were captured.
+    pub revision: u64,
+}
+
+/// Typed allowlist of supported global data events.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GlobalEventKind {
+    /// Full session summary upserts.
+    #[default]
+    SessionUpdated,
+}
+
+/// Global summary subscription selection, independent of transcript routes.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GlobalEventsQuery {
+    /// Selected data-event kind.
+    pub kind: GlobalEventKind,
+    /// Restrict summaries to one probe.
+    pub probe_id: Option<crate::ProbeId>,
+}
+
+/// Ephemeral global feed protocol. Reconnects require a new summary bootstrap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum GlobalStreamMessage {
+    /// Subscription established; fetch pages only after this boundary.
+    Ready {
+        /// Current global publication revision.
+        revision: u64,
+    },
+    /// Full committed session summary, ordered by revision.
+    SessionUpdated {
+        /// Monotonic publication revision within this server lifetime.
+        revision: u64,
+        /// Session metadata and published busy state.
+        session: Session,
+    },
+    /// Buffered updates were lost, or a reconnect attempted ephemeral replay.
+    ResyncRequired,
+}
+
 /// Pagination and provisional-event options shared by event pages and streams.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EventsQuery {
     /// Exclusive EventId for an agent route; session position for a session route.
     pub after: u64,
+    /// Fetch the latest committed page; JSON only, incompatible with forward bounds.
+    pub recent: bool,
+    /// Exclusive older-history cursor; JSON only, incompatible with forward bounds/recent.
+    pub before: Option<u64>,
     /// Inclusive upper cursor bound; absent to use the current head.
     pub through: Option<u64>,
     /// Maximum page size, from 1 through 10,000; defaults to 1,000.
@@ -435,6 +517,8 @@ impl Default for EventsQuery {
     fn default() -> Self {
         Self {
             after: 0,
+            recent: false,
+            before: None,
             through: None,
             limit: 1000,
             include_pending: false,
@@ -483,6 +567,12 @@ pub struct EventsPage {
     pub queries: Vec<ClientQueryRequest>,
     /// Exclusive cursor to use for the next page.
     pub next_after: u64,
+    /// Exclusive cursor for older history, absent when no older events remain.
+    #[serde(default)]
+    pub next_before: Option<u64>,
+    /// Whether older committed events exist before this page.
+    #[serde(default)]
+    pub has_older: bool,
     /// Captured head cursor, clamped to the requested upper bound.
     pub head: u64,
     /// Whether additional committed events remain before the captured head.
@@ -543,7 +633,7 @@ pub enum StreamMessage {
         /// Updated agent snapshot.
         agent: Agent,
     },
-    /// Publishes a full snapshot after session metadata or activity changes.
+    /// Publishes a full snapshot after session metadata, committed history, agent creation, or activity changes.
     /// Apply snapshots in stream order; activity changes do not advance `updated_at`.
     SessionUpdated {
         /// Updated session, including its current published busy state.

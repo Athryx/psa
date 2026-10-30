@@ -32,12 +32,35 @@ Automatic context compaction uses hidden summarizer agents; see
 
 | Crate | Path | Purpose |
 | --- | --- | --- |
+| `psa_desktop` | `client/psa_desktop` | Desktop executable and platform settings persistence |
+| `psa_gui` | `client/psa_gui` | Shared Dioxus GUI |
+| `client_shared` | `client/client_shared` | UI-independent projections, workspace state, and settings |
 | `psa_server` | `runtime/psa_server` | HTTP server, SQLite storage, and agent runtime |
 | `psa_api` | `psa_api` | API/protocol types, routes, and async client |
 | `psa_shared` | `runtime/psa_shared` | Shared probe transport and local configuration locking |
 | `psa_probe` | `runtime/psa_probe` | Linux remote filesystem and process execution |
 | `llm_api` | `lib/llm_api` | Low-level model provider adapters |
 | `actors`, `actors_macros` | `lib/actors`, `lib/actors_macros` | Async mailboxes and typed client generation |
+
+## Desktop client
+
+The desktop client uses a shared dark Dioxus GUI with probe/session browsing,
+agent transcripts, preview tabs, split panes, and session-default model selection.
+See [desktop setup and settings](client/psa_desktop/README.md) for native build
+dependencies and the `desktop.toml` configuration.
+
+```sh
+cargo run --locked -p psa_desktop --features native -- --server-binary ./target/debug/psa_server
+```
+
+On NixOS, use the included build/runtime shell instead:
+
+```sh
+nix-shell --run 'cargo run --locked -p psa_desktop --features native -- --server-binary ./target/debug/psa_server'
+```
+
+The native renderer is opt-in; ordinary workspace tests do not require WebView
+libraries or a graphical session.
 
 ## Package just the probe with Docker
 
@@ -354,6 +377,7 @@ the snapshot's `permitted_subagents` IDs when spawning children. There is no
 remote-operation HTTP API yet; use `psa_server::probes::ProbeRegistry` handles
 inside server-side integrations.
 
+- [Desktop client, settings, and native dependencies](client/psa_desktop/README.md)
 - [Server setup, client examples, storage, and SQLx workflow](runtime/psa_server/README.md)
 - [Probe operations, archive handling, and connection lifecycle](runtime/psa_probe/README.md)
 - [HTTP API overview](psa_api/API_OVERVIEW.md)

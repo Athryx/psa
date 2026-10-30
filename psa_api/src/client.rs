@@ -49,6 +49,18 @@ pub struct StreamEvent {
 /// Owned SSE stream. EOF or a resync notification requires explicit reconnection.
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, ClientError>> + Send>>;
 
+/// One decoded global summary SSE notification.
+#[derive(Debug, Clone)]
+pub struct GlobalStreamEvent {
+    /// Ephemeral revision, not a durable replay cursor.
+    pub id: String,
+    /// Global protocol notification.
+    pub message: crate::GlobalStreamMessage,
+}
+/// Global summary feed; EOF/resync requires a fresh bootstrap.
+pub type GlobalEventStream =
+    Pin<Box<dyn Stream<Item = Result<GlobalStreamEvent, ClientError>> + Send>>;
+
 /// Cloneable async client for PSA's trusted-client HTTP API.
 ///
 /// Methods return [`ClientError`] for transport failures, non-success HTTP
@@ -138,6 +150,11 @@ impl Client {
         Ok(response.json().await?)
     }
 
+    /// Fetch the server's client-safe configuration.
+    pub async fn get_config(&self) -> Result<crate::ClientConfig, ClientError> {
+        self.get(routes::CONFIG, &()).await
+    }
+
     /// List supported providers and whether each has configured credentials.
     /// This does not validate credentials or model access.
     pub async fn list_providers(&self) -> Result<Vec<crate::ProviderInfo>, ClientError> {
@@ -196,6 +213,17 @@ impl Client {
     /// Returns HTTP 404 if the probe is unknown.
     pub async fn get_probe(&self, id: crate::ProbeId) -> Result<crate::Probe, ClientError> {
         self.get(&routes::probe_path(id), &()).await
+    }
+
+    /// List immediate children of an absolute directory on a connected probe.
+    /// Paths are passed unchanged; entry metadata does not follow symlinks.
+    pub async fn list_probe_dir(
+        &self,
+        id: crate::ProbeId,
+        path: &str,
+    ) -> Result<Vec<crate::probes::DirectoryEntry>, ClientError> {
+        self.get(&routes::probe_directories_path(id), &[("path", path)])
+            .await
     }
 
     /// Atomically create or replace named configurations and return their statuses.
@@ -451,6 +479,48 @@ impl Client {
             .into_iter()
             .map(|record| record.decode::<T>().map_err(ClientError::from))
             .collect()
+    }
+
+    /// Fetch ordered summaries. Subscribe globally first and reconcile updates
+    /// newer than each page's revision; deduplicate by session ID.
+    pub async fn query_sessions(
+        &self,
+        query: &crate::SessionListQuery,
+    ) -> Result<crate::SessionsPage, ClientError> {
+        self.get(routes::SESSION_QUERY, query).await
+    }
+
+    /// Subscribe to ephemeral global summaries. Wait for Ready before fetching
+    /// pages. Reconnect/overflow requires clearing the old bootstrap and reloading.
+    pub async fn stream_global_events(
+        &self,
+        query: &crate::GlobalEventsQuery,
+        last_event_id: Option<&str>,
+    ) -> Result<GlobalEventStream, ClientError> {
+        let mut request = self
+            .request(Method::GET, routes::GLOBAL_EVENTS)
+            .header("Accept", "text/event-stream")
+            .query(query);
+        if let Some(id) = last_event_id {
+            request = request.header("Last-Event-ID", id);
+        }
+        let response = require_success(request.send().await?).await?;
+        if !response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("text/event-stream"))
+        {
+            return Err(ClientError::Stream("expected text/event-stream".into()));
+        }
+        let stream = response.bytes_stream().eventsource().map(|event| {
+            let event = event.map_err(|error| ClientError::Stream(error.to_string()))?;
+            Ok(GlobalStreamEvent {
+                id: event.id,
+                message: serde_json::from_str(&event.data)?,
+            })
+        });
+        Ok(Box::pin(stream))
     }
 
     /// Fetch one event page for a session or, with `Some(agent)`, one agent.

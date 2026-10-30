@@ -27,18 +27,23 @@ pub struct PublicationState {
     /// Metadata writers read it under this gate to avoid publishing stale busy state.
     busy_sessions: HashSet<SessionId>,
     sender: broadcast::Sender<StreamMessage>,
+    global_sender: broadcast::Sender<psa_api::GlobalStreamMessage>,
+    revision: std::sync::atomic::AtomicU64,
 }
 
 impl Default for Publication {
     fn default() -> Self {
         let (sender, _) = broadcast::channel(1024);
         let (shutdown, _) = watch::channel(false);
+        let (global_sender, _) = broadcast::channel(1024);
         Self {
             state: Arc::new(Mutex::new(PublicationState {
                 pending: HashMap::new(),
                 queries: HashMap::new(),
                 busy_sessions: HashSet::new(),
                 sender,
+                global_sender,
+                revision: std::sync::atomic::AtomicU64::new(0),
             })),
             shutdown,
         }
@@ -152,8 +157,8 @@ impl Publication {
         }
 
         let snapshot = cursor.get_agent(agent).await?;
-        let first_position = cursor.get_session(snapshot.session_id).await?.next_position
-            - result.events.len() as u64;
+        let session = cursor.get_session(snapshot.session_id).await?;
+        let first_position = session.next_position - result.events.len() as u64;
         cursor.commit().await?;
 
         for (offset, event) in result.events.iter().enumerate() {
@@ -178,6 +183,12 @@ impl Publication {
             agent: snapshot.into(),
         });
 
+        if !result.events.is_empty() {
+            let busy = publication.is_session_busy(session.id);
+            publication.publish(StreamMessage::SessionUpdated {
+                session: session.into_api(busy),
+            });
+        }
         Ok((result, context))
     }
 }
@@ -192,7 +203,35 @@ impl PublicationState {
         self.sender.subscribe()
     }
 
+    pub fn revision(&self) -> u64 {
+        self.revision.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn subscribe_global(&self) -> broadcast::Receiver<psa_api::GlobalStreamMessage> {
+        self.global_sender.subscribe()
+    }
+
     pub fn publish(&self, message: StreamMessage) {
+        match &message {
+            StreamMessage::SessionUpdated { session } => {
+                let revision = self
+                    .revision
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    + 1;
+                let _ = self
+                    .global_sender
+                    .send(psa_api::GlobalStreamMessage::SessionUpdated {
+                        revision,
+                        session: session.clone(),
+                    });
+            }
+            StreamMessage::ResyncRequired => {
+                let _ = self
+                    .global_sender
+                    .send(psa_api::GlobalStreamMessage::ResyncRequired);
+            }
+            _ => {}
+        }
         let _ = self.sender.send(message);
     }
 

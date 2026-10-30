@@ -80,6 +80,7 @@ mod tests {
             architecture: "x86_64".into(),
             label: None,
             data_dir: "/probe".into(),
+            home_dir: None,
             host,
         }
     }
@@ -217,6 +218,7 @@ mod tests {
             architecture: "x86_64".into(),
             label: None,
             data_dir: "/one".into(),
+            home_dir: None,
             host: false,
         };
         let mut cursor = database.cursor().await.unwrap();
@@ -229,12 +231,24 @@ mod tests {
         metadata.hostname = "second".into();
         metadata.label = Some("sandbox".into());
         metadata.data_dir = "/two".into();
+        metadata.home_dir = Some("/home/sandbox".into());
         let mut cursor = database.cursor().await.unwrap();
         let second = cursor.upsert_probe(&metadata).await.unwrap();
         assert_eq!(second.created_at, first.created_at);
         assert!(second.last_connected_at >= first.last_connected_at);
         assert_eq!(second.metadata.hostname, "second");
         assert_eq!(second.metadata.label.as_deref(), Some("sandbox"));
+        assert_eq!(second.metadata.home_dir.as_deref(), Some("/home/sandbox"));
+        assert_eq!(
+            cursor
+                .get_probe(id)
+                .await
+                .unwrap()
+                .metadata
+                .home_dir
+                .as_deref(),
+            Some("/home/sandbox")
+        );
         assert_eq!(cursor.list_probes().await.unwrap().len(), 1);
         cursor.commit().await.unwrap();
         database.close().await;

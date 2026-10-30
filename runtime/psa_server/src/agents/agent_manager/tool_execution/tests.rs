@@ -168,6 +168,9 @@ impl Fixture {
             runtime: runtime.handle.clone(),
             accepting: Arc::new(AtomicBool::new(true)),
             client_key: "test-client-key".into(),
+            client_config: psa_api::ClientConfig {
+                default_agent_name: "default".into(),
+            },
             probes: probes.clone(),
         });
         let (stop, stopped) = oneshot::channel();

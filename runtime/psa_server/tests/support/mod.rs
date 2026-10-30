@@ -9,6 +9,7 @@ pub fn probe_metadata() -> ProbeMetadata {
         architecture: "x86_64".into(),
         label: None,
         data_dir: "/tmp/psa-test".into(),
+        home_dir: None,
         host: false,
     }
 }
