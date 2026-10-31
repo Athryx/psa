@@ -1,6 +1,7 @@
 use super::*;
 use crate::components::tools::tool_definition;
 use llm_api::api::ContentBlock;
+use psa_api::events::MessageType;
 
 fn system_text(event: &NewEvent) -> &str {
     let EventType::Message(message) = &event.kind else {
@@ -24,6 +25,12 @@ fn snapshots_are_followed_by_two_separate_system_prompt_events() {
         },
     )]);
     assert_eq!(events.len(), 3);
+    assert!(
+        matches!(&events[1].kind, EventType::Message(message) if message.description.as_deref() == Some("Tool usage"))
+    );
+    assert!(
+        matches!(&events[2].kind, EventType::Message(message) if message.description.as_deref() == Some("Tool rules"))
+    );
     assert!(
         matches!(&events[0].kind, EventType::ToolDefinition(snapshot) if snapshot.id == ToolId::Noop)
     );

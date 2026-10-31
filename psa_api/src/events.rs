@@ -166,6 +166,9 @@ pub struct Message {
     /// Optional sender attribution for a subagent message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<crate::AgentMessageSource>,
+    /// Short display description, primarily for system instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Origin or role of this message.
     pub message_type: MessageType,
     /// Ordered message content blocks.
@@ -179,6 +182,7 @@ impl Message {
     pub fn text(message_type: MessageType, contents: impl Into<String>) -> Self {
         Self {
             source: None,
+            description: None,
             message_type,
             content: vec![ContentBlock::Text(TextBlock {
                 text: contents.into(),
@@ -186,6 +190,32 @@ impl Message {
             })],
             metadata: HistoryItemMetadata::default(),
         }
+    }
+
+    /// Creates a system instruction with a short transcript description.
+    pub fn system(contents: impl Into<String>, description: impl Into<String>) -> Self {
+        let mut message = Self::text(MessageType::System, contents);
+        message.description = Some(description.into());
+        message
+    }
+}
+
+#[cfg(test)]
+mod message_tests {
+    use super::*;
+
+    #[test]
+    fn system_description_is_optional_and_round_trips() {
+        let legacy = serde_json::to_value(Message::text(MessageType::System, "prompt")).unwrap();
+        assert!(legacy.get("description").is_none());
+        let decoded: Message = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.description, None);
+
+        let described = Message::system("prompt", "Base instructions");
+        let json = serde_json::to_value(described).unwrap();
+        assert_eq!(json["description"], "Base instructions");
+        let decoded: Message = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.description.as_deref(), Some("Base instructions"));
     }
 }
 

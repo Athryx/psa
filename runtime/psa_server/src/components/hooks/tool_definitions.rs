@@ -10,7 +10,7 @@ use crate::{
 use llm_api::api::ToolDefinition as ApiToolDefinition;
 use psa_api::{
     ToolId,
-    events::{EventType, Message, MessageType, NewEvent, ToolDefinition},
+    events::{EventType, Message, NewEvent, ToolDefinition},
 };
 use std::time::Duration;
 
@@ -60,17 +60,16 @@ fn build_tool_events(
         })));
     }
 
-    for section in [
-        prompts::tools::format_tools(directions),
-        prompts::tools::format_rules(rules),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        events.push(NewEvent::new(EventType::Message(Message::text(
-            MessageType::System,
-            section,
-        ))));
+    for (section, description) in [
+        (prompts::tools::format_tools(directions), "Tool usage"),
+        (prompts::tools::format_rules(rules), "Tool rules"),
+    ] {
+        if let Some(section) = section {
+            events.push(NewEvent::new(EventType::Message(Message::system(
+                section,
+                description,
+            ))));
+        }
     }
     events
 }

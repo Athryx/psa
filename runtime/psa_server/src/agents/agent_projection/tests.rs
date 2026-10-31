@@ -305,6 +305,7 @@ fn model_switches_convert_context_but_preserve_the_response_snapshot() {
 fn preserves_rich_content_and_checks_snapshotted_tools() {
     let rich = Message {
         source: None,
+        description: None,
         message_type: MessageType::Agent,
         content: vec![
             api::ContentBlock::Text(api::TextBlock {
@@ -359,6 +360,7 @@ fn renders_plain_and_empty_message_content() {
         message(MessageType::Human, "hello"),
         EventType::Message(Message {
             source: None,
+            description: None,
             message_type: MessageType::Agent,
             content: vec![],
             metadata: Default::default(),

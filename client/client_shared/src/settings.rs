@@ -63,6 +63,14 @@ impl SidebarState {
         }
     }
 }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReasoningDisplay {
+    Hidden,
+    #[default]
+    Collapsed,
+    Shown,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiPreferences {
@@ -71,6 +79,9 @@ pub struct UiPreferences {
     pub conversation_max_width_ch: u16,
     pub auto_follow: bool,
     pub double_click_session_opens_details: bool,
+    pub hide_text_recorded_results: bool,
+    pub hide_agent_statuses: bool,
+    pub reasoning_display: ReasoningDisplay,
 }
 impl Default for UiPreferences {
     fn default() -> Self {
@@ -80,6 +91,9 @@ impl Default for UiPreferences {
             conversation_max_width_ch: 85,
             auto_follow: true,
             double_click_session_opens_details: true,
+            hide_text_recorded_results: true,
+            hide_agent_statuses: true,
+            reasoning_display: ReasoningDisplay::default(),
         }
     }
 }
@@ -325,6 +339,30 @@ mod tests {
         let legacy: UiPreferences = serde_json::from_str(r#"{"auto_follow":false}"#).unwrap();
         assert_eq!(legacy.conversation_max_width_ch, 85);
         assert!(legacy.double_click_session_opens_details);
+    }
+
+    #[test]
+    fn transcript_appearance_defaults_and_roundtrips() {
+        let mut settings: DesktopSettings =
+            serde_json::from_str(r#"{"preferences":{"auto_follow":false}}"#).unwrap();
+        assert!(settings.preferences.hide_text_recorded_results);
+        assert!(settings.preferences.hide_agent_statuses);
+        assert_eq!(
+            settings.preferences.reasoning_display,
+            ReasoningDisplay::Collapsed
+        );
+
+        settings.preferences.hide_text_recorded_results = false;
+        settings.preferences.hide_agent_statuses = false;
+        settings.preferences.reasoning_display = ReasoningDisplay::Shown;
+        let encoded = serde_json::to_string(&settings).unwrap();
+        let restored: DesktopSettings = serde_json::from_str(&encoded).unwrap();
+        assert!(!restored.preferences.hide_text_recorded_results);
+        assert!(!restored.preferences.hide_agent_statuses);
+        assert_eq!(
+            restored.preferences.reasoning_display,
+            ReasoningDisplay::Shown
+        );
     }
 
     #[test]

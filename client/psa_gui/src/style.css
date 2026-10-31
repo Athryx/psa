@@ -365,9 +365,21 @@ textarea {
   scroll-behavior:auto
 }
 .message {
-  padding:10px 0 18px;
   overflow-wrap:anywhere
 }
+.human-message {
+  background:#354573;
+  border-radius:7px;
+  box-sizing:border-box;
+  width:fit-content;
+  max-width:100%;
+  padding:6px 10px;
+  margin:0 0 0 auto
+}
+.message.human-message pre { margin:0 }
+.agent-message { color:#fff }
+.streaming-indicator { color:var(--muted); font-size:11px }
+.reasoning { color:var(--muted) }
 .role {
   font-size:11px;
   color:var(--accent);
@@ -382,6 +394,9 @@ textarea {
 }
 .markdown { line-height:1.55; min-width:0 }
 .markdown p { margin:8px 0; white-space:pre-wrap }
+/* Keep internal paragraph spacing, but leave row spacing to the transcript. */
+.message > :first-child,.markdown > :first-child { margin-top:0 }
+.message > :last-child,.markdown > :last-child { margin-bottom:0 }
 .markdown h1,.markdown h2,.markdown h3,.markdown h4,.markdown h5,.markdown h6 { margin:16px 0 8px; line-height:1.25 }
 .markdown ul,.markdown ol { padding-left:1.8em; margin:8px 0 }
 .markdown blockquote { margin:8px 0; padding-left:12px; border-left:3px solid var(--line) }
@@ -401,14 +416,30 @@ textarea {
   background:var(--panel);
   border:1px solid var(--line);
   border-radius:7px;
-  margin:8px 0;
+  margin:0;
   padding:8px 12px;
   overflow-wrap:anywhere
 }
 .tool summary {
   cursor:pointer;
-  font:12px ui-monospace,monospace
+  display:flex;
+  align-items:center;
+  gap:6px;
+  list-style:none;
+  font:12px/1.4 ui-monospace,monospace
 }
+.tool summary::-webkit-details-marker { display:none }
+.tool summary::before {
+  content:"";
+  flex:none;
+  border:4px solid transparent;
+  border-left-color:currentColor;
+  transform:translateX(2px)
+}
+.tool[open] > summary::before {
+  transform:rotate(90deg) translateX(2px)
+}
+.system-prompt { color:var(--muted) }
 .tool pre,.fallback {
   white-space:pre-wrap;
   font:12px/1.5 ui-monospace,monospace;
@@ -795,8 +826,10 @@ textarea {
   border:1px solid #8b7946;
   padding:12px;
   border-radius:8px;
-  margin:14px 0
+  margin:0
 }
+/* Empty EventRows render no element, so they do not create extra gaps. */
+.transcript > * + * { margin-top:12px }
 .question input {
   width:100%;
   margin:6px 0

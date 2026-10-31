@@ -260,6 +260,7 @@ async fn cancelled_persistence_finishes_before_the_next_append() {
         status_event(AgentState::Running),
         NewEvent::new(EventType::Message(Message {
             source: None,
+            description: None,
             message_type: MessageType::Harness,
             content: prompts::text("saved despite cancellation"),
             metadata: Default::default(),

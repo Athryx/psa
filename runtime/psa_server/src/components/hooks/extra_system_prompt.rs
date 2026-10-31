@@ -1,6 +1,6 @@
 use super::{Hook, HookError};
 use crate::{agents::agent_context::AgentContext, components::cancellation::Cancellation};
-use psa_api::events::{EventType, Message, MessageType, NewEvent};
+use psa_api::events::{EventType, Message, NewEvent};
 use std::time::Duration;
 
 #[cfg(test)]
@@ -32,9 +32,9 @@ impl Hook for ExtraSystemPromptHook {
             return Ok(());
         }
 
-        let event = NewEvent::new(EventType::Message(Message::text(
-            MessageType::System,
+        let event = NewEvent::new(EventType::Message(Message::system(
             prompt.clone(),
+            "Additional instructions",
         )));
         context.save_events(&[event]).await?;
         Ok(())

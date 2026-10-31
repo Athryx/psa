@@ -484,7 +484,20 @@ async fn session_connection(
     Err(ClientError::Stream("Transcript stream ended".into()))
 }
 
-pub async fn older(mut ui: Signal<Ui>, target: TranscriptTarget) {
+fn advancing_history_cursor(
+    before: u64,
+    next: Option<u64>,
+    has_older: bool,
+) -> (Option<u64>, bool) {
+    let next = next.filter(|next| *next < before);
+    (next, has_older && next.is_some())
+}
+
+fn history_page_makes_progress(has_older: bool, advancing: bool, has_older_event: bool) -> bool {
+    !has_older || (advancing && has_older_event)
+}
+
+pub async fn older(mut ui: Signal<Ui>, target: TranscriptTarget) -> bool {
     let generation = ui.read().generation;
     let cursor = ui
         .read()
@@ -492,10 +505,12 @@ pub async fn older(mut ui: Signal<Ui>, target: TranscriptTarget) {
         .get(&target)
         .and_then(|t| t.next_before);
     let Some(before) = cursor else {
-        return;
+        ui.write().error = Some("Unable to load older history: missing history cursor".into());
+        return false;
     };
     let Ok(api) = client(ui) else {
-        return;
+        ui.write().error = Some("Unable to load older history: not connected".into());
+        return false;
     };
     match api
         .events(
@@ -510,14 +525,43 @@ pub async fn older(mut ui: Signal<Ui>, target: TranscriptTarget) {
         .await
     {
         Ok(page) if generation == ui.read().generation => {
-            if let Some(t) = ui.write().transcripts.get_mut(&target) {
-                t.merge_history(page);
+            let (next, has_older) =
+                advancing_history_cursor(before, page.next_before, page.has_older);
+            if !history_page_makes_progress(
+                page.has_older,
+                has_older,
+                page.events.iter().any(|event| {
+                    event.session_id == target.session_id
+                        && event.agent_id == target.agent_id
+                        && event.event.id.0 < before
+                }),
+            ) {
+                ui.write().error = Some(
+                    "Unable to load older history: the server returned a non-progressing page"
+                        .into(),
+                );
+                return false;
             }
+            if let Some(t) = ui.write().transcripts.get_mut(&target) {
+                // Ignore a response for a cursor superseded by another pane or resync.
+                if t.next_before == Some(before) {
+                    t.merge_history(page);
+                    // Empty pages may not update the projection's boundary. Always
+                    // advance it, and stop on malformed/non-progressing cursors.
+                    if t.next_before == Some(before) || !has_older {
+                        t.next_before = next;
+                        t.has_older = has_older;
+                    }
+                    return true;
+                }
+            }
+            false
         }
         Err(_) if generation == ui.read().generation => {
-            ui.write().error = Some("Unable to load older history".into())
+            ui.write().error = Some("Unable to load older history".into());
+            false
         }
-        _ => {}
+        _ => false,
     }
 }
 
@@ -815,6 +859,30 @@ pub async fn submit_draft_root(mut ui: Signal<Ui>, session_id: SessionId) {
             draft.uncertain = true;
             state.error = Some("Agent creation failed or delivery is uncertain. Draft retained. Reopen the session to check for an existing agent before retrying.".into());
         }
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::{advancing_history_cursor, history_page_makes_progress};
+
+    #[test]
+    fn cursor_must_advance_and_server_must_report_more() {
+        assert_eq!(
+            advancing_history_cursor(20, Some(10), true),
+            (Some(10), true)
+        );
+        assert_eq!(
+            advancing_history_cursor(20, Some(10), false),
+            (Some(10), false)
+        );
+        assert_eq!(advancing_history_cursor(20, Some(20), true), (None, false));
+        assert_eq!(advancing_history_cursor(20, Some(21), true), (None, false));
+        assert_eq!(advancing_history_cursor(20, None, true), (None, false));
+        assert!(history_page_makes_progress(false, false, false));
+        assert!(history_page_makes_progress(true, true, true));
+        assert!(!history_page_makes_progress(true, false, true));
+        assert!(!history_page_makes_progress(true, true, false));
     }
 }
 

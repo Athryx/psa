@@ -494,6 +494,7 @@ fn build_item_event(item: &HistoryItem) -> Result<EventType, AgentError> {
     Ok(match &item.kind {
         HistoryItemKind::Message(message) => EventType::Message(Message {
             source: None,
+            description: None,
             message_type: MessageType::Agent,
             content: message.content.clone(),
             metadata: item.metadata.clone(),
@@ -616,6 +617,7 @@ pub(crate) async fn run_worker(
                         .persist_events(&[
                             NewEvent::new(EventType::Message(Message {
                                 source: request.source,
+                                description: None,
                                 message_type: request.message_type,
                                 content: request.content,
                                 metadata: Default::default(),

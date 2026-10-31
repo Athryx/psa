@@ -874,6 +874,10 @@ async fn extra_system_prompt_hook_persists_verbatim_system_message_and_skips_emp
                 panic!("expected a system message");
             };
             assert_eq!(message.message_type, MessageType::System);
+            assert_eq!(
+                message.description.as_deref(),
+                Some("Additional instructions")
+            );
             let [api::ContentBlock::Text(block)] = message.content.as_slice() else {
                 panic!("expected one text block");
             };

@@ -112,6 +112,38 @@ fn running_tabs_render_accessible_spinners_including_duplicates() {
     assert!(!html.contains("class=\"tab-spinner\""), "{html}");
 }
 
+#[test]
+fn clicking_tab_selects_it_without_closing_another_tab() {
+    dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+    let mut dom = VirtualDom::new(tabs_root);
+    let mutations = dom.rebuild_to_vec();
+    // Tab titles uniquely have a double-click listener for promotion.
+    let title = mutations
+        .edits
+        .iter()
+        .find_map(|edit| match edit {
+            dioxus::core::Mutation::NewEventListener { name, id } if name == "dblclick" => {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    use dioxus::html::{PlatformEventData, SerializedMouseData};
+    use std::{any::Any, rc::Rc};
+    let event = Event::new(
+        Rc::new(PlatformEventData::new(Box::<SerializedMouseData>::default())) as Rc<dyn Any>,
+        true,
+    );
+    dom.runtime().handle_event("click", event, title);
+    dom.render_immediate_to_vec();
+    let html = dioxus_ssr::render(&dom);
+    assert!(
+        html.contains("data-view-id=\"3\" data-active=\"true\""),
+        "{html}"
+    );
+    assert_eq!(html.matches("class=\"title\"").count(), 4, "{html}");
+}
+
 fn details_root() -> Element {
     let ui = use_signal(|| {
         let mut state = fixture();

@@ -1,6 +1,6 @@
 use crate::{app::Ui, network};
 use client_shared::*;
-use dioxus::prelude::*;
+use dioxus::{core::spawn_forever, prelude::*};
 use llm_api::{
     api::ContentBlock,
     providers::{Effort, Model, ModelConfig, ProviderType},
@@ -352,7 +352,7 @@ fn Pane(group: TabGroup) -> Element {
         .iter()
         .find(|t| Some(t.id) == group.active)
         .cloned();
-    rsx! {section{class:if focused{"pane focused"}else{"pane"},
+    rsx! {section{class:if focused{"pane focused"}else{"pane"}, "data-pane-id":"{group.id.0}",
         onmousedown:move |_|{ui.write().workspace.focused_group=group.id;},
         onfocusin:move |_|{ui.write().workspace.focused_group=group.id;},
         ondragover:move |event|event.prevent_default(),
@@ -364,7 +364,7 @@ fn Pane(group: TabGroup) -> Element {
                     ondragend:move |_|ui.write().dragging=None,
                     ondragover:move |e|e.prevent_default(),
                     ondrop:move |e|{e.prevent_default();e.stop_propagation();let dragging=ui.read().dragging;if let Some(view)=dragging{ui.write().workspace.move_tab(view,group.id,index);}ui.write().dragging=None;},
-                    button{class:"title",onclick:move |_|{ui.write().workspace.focus(tab.id);if tab.target.agent_id != crate::app::DRAFT_ROOT { ui.write().last_agents.insert(tab.target.session_id,tab.target.agent_id); }},ondoubleclick:move |_|ui.write().workspace.promote(tab.id),
+                    button{class:"title",onclick:move |_|{ui.write().workspace.focus(tab.id);if tab.target.agent_id != crate::app::DRAFT_ROOT { ui.write().last_agents.insert(tab.target.session_id,tab.target.agent_id); } crate::app::request_composer_focus(ui);},ondoubleclick:move |_|ui.write().workspace.promote(tab.id),
                         "{tab_title(&state,tab.target)}"
                     }
                     if tab_is_running(&state, tab.target) { span { class:"tab-spinner", role:"img", "aria-label":"Agent running" } }
@@ -386,7 +386,7 @@ fn Pane(group: TabGroup) -> Element {
                 div{class:"drop-zone {edge}",ondragover:move |e|e.prevent_default(),ondrop:move |e|{e.prevent_default();e.stop_propagation();let dragging=ui.read().dragging;if let Some(view)=dragging{let mut state=ui.write();move_to_split(&mut state.workspace,view,group.id,axis,before);state.dragging=None;}},"{label}"}
             }
         }}
-        for tab in group.tabs.iter().cloned(){div{key:"{tab.id.0}",style:if Some(tab.id)==group.active{"display:flex;flex-direction:column;flex:1;min-height:0;"}else{"display:none;"},TranscriptView{key:"{tab.id.0}:{tab.target.session_id.0}:{tab.target.agent_id.0}",active:Some(tab.id)==group.active,tab:tab.clone()}}}
+        for tab in group.tabs.iter().cloned(){div{key:"{tab.id.0}","data-view-id":"{tab.id.0}","data-active":if Some(tab.id)==group.active{"true"}else{"false"},style:if Some(tab.id)==group.active{"display:flex;flex-direction:column;flex:1;min-height:0;"}else{"display:none;"},TranscriptView{key:"{tab.id.0}:{tab.target.session_id.0}:{tab.target.agent_id.0}",active:Some(tab.id)==group.active,tab:tab.clone()}}}
         if active.is_none(){div{class:"empty","Select an agent to open a preview here."}}
     }}
 }
@@ -464,6 +464,67 @@ fn update_following_from_scroll(mut following: Signal<bool>, near_bottom: bool) 
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum HistoryAction {
+    Reveal,
+    Fetch,
+    None,
+}
+
+fn history_trigger(top: f64, active: bool, latched: &mut bool) -> bool {
+    if top > 80.0 {
+        *latched = false;
+        return false;
+    }
+    if !active || *latched {
+        return false;
+    }
+    *latched = true;
+    true
+}
+
+fn history_action(count: usize, visible: usize, has_older: bool, busy: bool) -> HistoryAction {
+    if count > visible {
+        HistoryAction::Reveal
+    } else if has_older && !busy {
+        HistoryAction::Fetch
+    } else {
+        HistoryAction::None
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct HistorySnapshot {
+    count: usize,
+    boundary: Option<u64>,
+    latest: Option<u64>,
+    pending: std::collections::HashSet<String>,
+}
+
+fn updated_history_limit(
+    limit: usize,
+    previous: Option<(usize, Option<u64>)>,
+    count: usize,
+    boundary: Option<u64>,
+    live_added: usize,
+) -> usize {
+    match previous {
+        None => count.min(150),
+        Some((previous_count, old_boundary)) if old_boundary == boundary => {
+            (limit + count.saturating_sub(previous_count)).min(count)
+        }
+        _ => (limit + live_added).min(count),
+    }
+}
+
+fn history_needs_continuation(old_height: f64, new_height: f64, client_height: f64) -> bool {
+    new_height <= client_height + 1.0 || new_height <= old_height + 1.0
+}
+
+fn restored_history_top(old_height: f64, old_top: f64, new_height: f64) -> f64 {
+    (old_top + new_height - old_height).max(0.0)
+}
+
 fn scroll_transcript_to_bottom(element: Signal<Option<std::rc::Rc<MountedData>>>) {
     if let Some(node) = element.peek().clone() {
         spawn(async move {
@@ -481,15 +542,40 @@ fn scroll_transcript_to_bottom(element: Signal<Option<std::rc::Rc<MountedData>>>
 
 #[component]
 fn TranscriptView(tab: Tab, active: bool) -> Element {
-    let ui = use_context::<Signal<Ui>>();
+    let mut ui = use_context::<Signal<Ui>>();
     let mut following = use_signal(|| ui.read().settings.preferences.auto_follow);
-    let mut visible = use_signal(|| 150usize);
+    let mut visible = use_signal(|| {
+        ui.read()
+            .transcripts
+            .get(&tab.target)
+            .map(|t| (t.committed.len() + t.pending.len()).min(150))
+            .unwrap_or(150)
+    });
+    let mut history_snapshot = use_signal(|| {
+        ui.read()
+            .transcripts
+            .get(&tab.target)
+            .map(|t| HistorySnapshot {
+                count: t.committed.len() + t.pending.len(),
+                boundary: t.next_before,
+                latest: t.committed.last_key_value().map(|(id, _)| *id),
+                pending: t.pending.keys().cloned().collect(),
+            })
+    });
+    // Each pane owns its trigger and scroll anchor, even for duplicate tabs.
+    let mut top_latched = use_signal(|| false);
+    let mut scroll_metrics = use_signal(|| (0.0_f64, 0.0_f64, 0.0_f64));
+    let mut restore = use_signal(|| None::<(f64, f64, f64)>);
+    let mut load_request = use_signal(|| 0_u64);
+    let mut load_steps = use_signal(|| 0_usize);
+    let mut history_busy = use_signal(|| false);
+    let mut history_waiting = use_signal(|| false);
+    let mut history_error = use_signal(|| false);
+    let mut history_auto_fill = use_signal(|| false);
+    let mut view_active = use_signal(|| active);
     let state = ui.read();
     let target = tab.target;
     let transcript = state.transcripts.get(&target);
-    let count = transcript
-        .map(|t| t.committed.len() + t.pending.len())
-        .unwrap_or(0);
     let rows = transcript
         .map(|t| t.recent_rows(visible()))
         .unwrap_or_default();
@@ -516,6 +602,55 @@ fn TranscriptView(tab: Tab, active: bool) -> Element {
         .unwrap_or_default();
     let tool_results = std::rc::Rc::new(tool_results);
     let mut element = use_signal(|| None::<std::rc::Rc<MountedData>>);
+    use_effect(use_reactive((&active,), move |(active,)| {
+        view_active.set(active)
+    }));
+    use_effect(move || {
+        let state = ui.read();
+        let Some(t) = state.transcripts.get(&target) else {
+            return;
+        };
+        let snapshot = HistorySnapshot {
+            count: t.committed.len() + t.pending.len(),
+            boundary: t.next_before,
+            latest: t.committed.last_key_value().map(|(id, _)| *id),
+            pending: t.pending.keys().cloned().collect(),
+        };
+        let old = history_snapshot.peek().clone();
+        if old.as_ref() == Some(&snapshot) {
+            return;
+        }
+        let live_added = old
+            .as_ref()
+            .map(|previous| {
+                let start = match previous.latest {
+                    Some(id) => std::ops::Bound::Excluded(id),
+                    None => std::ops::Bound::Included(previous.boundary.unwrap_or(0)),
+                };
+                let committed = t
+                    .committed
+                    .range((start, std::ops::Bound::Unbounded))
+                    .count();
+                let added = snapshot.pending.difference(&previous.pending).count();
+                let removed = previous.pending.difference(&snapshot.pending).count();
+                (committed + added).saturating_sub(removed)
+            })
+            .unwrap_or(0);
+        drop(state);
+        let limit = *visible.peek();
+        let old_summary = old.map(|old| (old.count, old.boundary));
+        let new_limit = updated_history_limit(
+            limit,
+            old_summary,
+            snapshot.count,
+            snapshot.boundary,
+            live_added,
+        );
+        if limit != new_limit {
+            visible.set(new_limit);
+        }
+        history_snapshot.set(Some(snapshot));
+    });
     let changed = use_memo(move || {
         let state = ui.read();
         state
@@ -529,6 +664,187 @@ fn TranscriptView(tab: Tab, active: bool) -> Element {
             })
             .unwrap_or_default()
     });
+    use_effect(move || {
+        if let Some((old_height, old_top, client_height)) = restore() {
+            restore.set(None);
+            if let Some(node) = element.peek().clone() {
+                spawn(async move {
+                    if let Ok(size) = node.get_scroll_size().await {
+                        // Do not override a user who moved while layout was measured.
+                        if (scroll_metrics.peek().1 - old_top).abs() > 1.0 {
+                            history_busy.set(false);
+                            return;
+                        }
+                        let top = if *history_auto_fill.peek() && *following.peek() {
+                            (size.height - client_height).max(0.0)
+                        } else {
+                            restored_history_top(old_height, old_top, size.height)
+                        };
+                        let _ = node
+                            .scroll(
+                                dioxus::html::geometry::PixelsVector2D::new(0.0, top),
+                                ScrollBehavior::Instant,
+                            )
+                            .await;
+                        // Invisible rows and short pages need another page without
+                        // requiring an impossible additional scroll gesture. Bound
+                        // automatic continuation for a misbehaving server.
+                        if history_needs_continuation(old_height, size.height, client_height)
+                            && *view_active.peek()
+                        {
+                            scroll_metrics.set((size.height, top, client_height));
+                            load_steps += 1;
+                            if *load_steps.peek() >= 10 {
+                                // Yield between batches while retaining cancellation on unmount.
+                                tokio::task::yield_now().await;
+                                load_steps.set(0);
+                            }
+                            load_request += 1;
+                            return;
+                        }
+                    }
+                    history_busy.set(false);
+                });
+            } else {
+                history_busy.set(false);
+            }
+        }
+    });
+    use_effect(move || {
+        if load_request() == 0 {
+            return;
+        }
+        let state = ui.peek();
+        let transcript = state.transcripts.get(&target);
+        let count = transcript
+            .map(|t| t.committed.len() + t.pending.len())
+            .unwrap_or(0);
+        let has_older = transcript.is_some_and(|t| t.has_older);
+        let generation = state.generation;
+        let busy = state.history_requests.get(&target) == Some(&generation);
+        drop(state);
+        let (height, top, client_height) = *scroll_metrics.peek();
+        let limit = *visible.peek();
+        match history_action(count, limit, has_older, busy) {
+            HistoryAction::Reveal => {
+                if !*history_auto_fill.peek() {
+                    following.set(false);
+                }
+                restore.set(Some((height, top, client_height)));
+                visible.set((limit + 150).min(count));
+            }
+            HistoryAction::Fetch => {
+                // Do not allow a short tail limit to expose shared rows before
+                // this pane can capture and restore its anchor.
+                visible.set(limit.min(count));
+                if !*history_auto_fill.peek() {
+                    following.set(false);
+                }
+                ui.write().history_requests.insert(target, generation);
+                dioxus::core::spawn_forever(async move {
+                    let loaded = network::older(ui, target).await;
+                    let owns_request = ui.read().history_requests.get(&target) == Some(&generation);
+                    if owns_request {
+                        ui.write().history_requests.remove(&target);
+                    }
+                    if loaded && ui.read().generation == generation {
+                        if let Ok(metrics) = scroll_metrics.try_peek() {
+                            let (height, top, client_height) = *metrics;
+                            if top <= 80.0 {
+                                if let (Ok(mut anchor), Ok(mut limit)) =
+                                    (restore.try_write(), visible.try_write())
+                                {
+                                    *anchor = Some((height, top, client_height));
+                                    let count = ui
+                                        .peek()
+                                        .transcripts
+                                        .get(&target)
+                                        .map(|t| t.committed.len() + t.pending.len())
+                                        .unwrap_or(0);
+                                    *limit = (*limit + 150).min(count);
+                                    return;
+                                }
+                            }
+                        }
+                    } else {
+                        if let Ok(mut latch) = top_latched.try_write() {
+                            *latch = false;
+                        }
+                        if let Ok(mut error) = history_error.try_write() {
+                            *error = true;
+                        }
+                    }
+                    if let Ok(mut busy) = history_busy.try_write() {
+                        *busy = false;
+                    }
+                });
+            }
+            HistoryAction::None => {
+                if busy && has_older {
+                    history_waiting.set(true);
+                } else {
+                    history_busy.set(false);
+                }
+            }
+        }
+    });
+    // Other panes may already be fetching this target. Wait for that request,
+    // then reveal from this pane's own anchor rather than issuing a duplicate.
+    use_effect(move || {
+        if !history_waiting() {
+            return;
+        }
+        let state = ui.read();
+        let busy = state.history_requests.get(&target) == Some(&state.generation);
+        drop(state);
+        if !busy {
+            history_waiting.set(false);
+            if *view_active.peek() && scroll_metrics.peek().1 <= 80.0 {
+                load_request += 1;
+            } else {
+                history_busy.set(false);
+            }
+        }
+    });
+    // An initially short (or newly activated) pane cannot emit a scroll event.
+    use_effect(use_reactive((&active,), move |(active,)| {
+        let node = element.read().clone();
+        let state = ui.read();
+        let has_history = state
+            .transcripts
+            .get(&target)
+            .is_some_and(|t| t.has_older || t.committed.len() + t.pending.len() > *visible.peek());
+        drop(state);
+        if !active
+            || !has_history
+            || *history_busy.peek()
+            || *history_error.peek()
+            || *top_latched.peek()
+        {
+            return;
+        }
+        if let Some(node) = node {
+            history_busy.set(true);
+            spawn(async move {
+                let (size, offset, rect) = (
+                    node.get_scroll_size().await,
+                    node.get_scroll_offset().await,
+                    node.get_client_rect().await,
+                );
+                if let (Ok(size), Ok(offset), Ok(rect)) = (size, offset, rect) {
+                    if *view_active.peek() && size.height <= rect.size.height + 1.0 {
+                        scroll_metrics.set((size.height, offset.y, rect.size.height));
+                        top_latched.set(true);
+                        history_auto_fill.set(true);
+                        load_steps.set(0);
+                        load_request += 1;
+                        return;
+                    }
+                }
+                history_busy.set(false);
+            });
+        }
+    }));
     let follow_request = use_memo(move || ui.read().follow_request);
     let mut seen_follow_request = use_signal(|| follow_request.peek().0);
     use_effect(move || {
@@ -550,12 +866,64 @@ fn TranscriptView(tab: Tab, active: bool) -> Element {
             scroll_transcript_to_bottom(element);
         }
     }));
+    let overflow_anchor = if history_busy() { "none" } else { "auto" };
     rsx! {
-        div{class:"transcript",style:"font-size:{state.settings.preferences.transcript_font_size}px;--conversation-max-width:{state.settings.preferences.conversation_max_width_ch}rch",
+        div{class:"transcript",style:"font-size:{state.settings.preferences.transcript_font_size}px;--conversation-max-width:{state.settings.preferences.conversation_max_width_ch}rch;overflow-anchor:{overflow_anchor}",
             onmounted:move |event|element.set(Some(event.data())),
-            onscroll:move |event|{let near=(event.scroll_height()-event.client_height()) as f64-event.scroll_top()<80.0;update_following_from_scroll(following, near);},
-            if transcript.is_some_and(|transcript| transcript.has_older) { button{onclick:move |_|{following.set(false);visible+=150;spawn(network::older(ui,target));},"Load older history"} }
-            if count>visible(){button{onclick:move |_|visible+=150,"Show {count-visible()} earlier loaded items"}}
+            onscroll:move |event|{
+                let top = event.scroll_top();
+                let height = event.scroll_height() as f64;
+                scroll_metrics.set((height, top, event.client_height() as f64));
+                let near_bottom = (event.scroll_height()-event.client_height()) as f64-top<80.0;
+                if !near_bottom {
+                    history_auto_fill.set(false);
+                    update_following_from_scroll(following, false);
+                } else if !*history_busy.peek() && (top > 80.0 || !*top_latched.peek()) {
+                    update_following_from_scroll(following, true);
+                }
+                let mut latched = *top_latched.peek();
+                let short_follow = *following.peek() && height <= event.client_height() as f64 + 1.0;
+                let trigger = !short_follow && history_trigger(top, active, &mut latched);
+                if latched != *top_latched.peek() {
+                    top_latched.set(latched);
+                }
+                if trigger && !*history_busy.peek() {
+                    history_auto_fill.set(false);
+                    history_error.set(false);
+                    history_busy.set(true);
+                    load_steps.set(0);
+                    load_request += 1;
+                }
+            },
+            onwheel:move |event| {
+                let upward = event.delta().strip_units().y < 0.0;
+                if active && upward && *history_busy.peek() {
+                    history_auto_fill.set(false);
+                    following.set(false);
+                }
+                if active && upward && !*history_busy.peek() {
+                    if let Some(node) = element.peek().clone() {
+                        top_latched.set(true);
+                        history_auto_fill.set(false);
+                        history_error.set(false);
+                        history_busy.set(true);
+                        spawn(async move {
+                            let (size, offset, rect) = (node.get_scroll_size().await, node.get_scroll_offset().await, node.get_client_rect().await);
+                            if let (Ok(size), Ok(offset), Ok(rect)) = (size, offset, rect) {
+                                if offset.y <= 80.0 {
+                                    scroll_metrics.set((size.height, offset.y, rect.size.height));
+                                    load_steps.set(0);
+                                    load_request += 1;
+                                    return;
+                                }
+                            }
+                            top_latched.set(false);
+                            history_busy.set(false);
+                        });
+                    }
+                }
+            },
+            if history_error() { button { onclick: move |_| { history_auto_fill.set(false); history_error.set(false); history_busy.set(true); load_steps.set(0); load_request += 1; }, "Retry loading history" } }
             for row in rows.into_iter().filter(|row|!matches!(&row.kind,psa_api::events::EventType::ToolResult(result) if call_ids.contains(&result.call_id))){
                 EventRow{key:"{row.id:?}",kind:row.kind,provisional:row.provisional,results:tool_results.clone()}
             }
@@ -609,13 +977,23 @@ pub(crate) fn EventRow(props: EventRowProps) -> Element {
         results,
     } = props;
     use psa_api::events::EventType;
+    let preferences = try_use_context::<Signal<Ui>>()
+        .map(|ui| ui.read().settings.preferences.clone())
+        .unwrap_or_default();
     match kind {
         EventType::Message(message) => {
+            if matches!(message.message_type, psa_api::events::MessageType::System) {
+                let content = blocks(&message.content);
+                return rsx! {details{class:"tool system-prompt",summary{"System Prompt" if let Some(description) = &message.description { " · {description}" }}pre{"{content}"}}};
+            }
             let is_agent = matches!(
                 message.message_type,
                 psa_api::events::MessageType::Agent | psa_api::events::MessageType::Subagent
             );
-            rsx! {article{class:"message",div{class:"role","{message.message_type:?}" if provisional{" · streaming"}}
+            let is_human = matches!(message.message_type, psa_api::events::MessageType::Human);
+            rsx! {article{class:if is_human { "message human-message" } else if is_agent { "message agent-message" } else { "message" },
+                if !is_human && !is_agent { div{class:"role","{message.message_type:?}"} }
+                if provisional { span { class:"streaming-indicator", "Streaming" } }
                 if is_agent {
                     for block in &message.content {
                         match block {
@@ -647,10 +1025,24 @@ pub(crate) fn EventRow(props: EventRowProps) -> Element {
             rsx! {details{class:"tool",summary{"Provider-native event"}pre{"{serde_json::to_string_pretty(&item).unwrap_or_default()}"}}}
         }
         EventType::Thinking(thinking) => {
-            rsx! {details{class:"tool",summary{"Reasoning"}pre{"{serde_json::to_string_pretty(&thinking.contents).unwrap_or_default()}"}}}
+            let text = thinking.contents.summary.join("\n");
+            if text.is_empty() {
+                return rsx! {};
+            }
+            match preferences.reasoning_display {
+                ReasoningDisplay::Hidden => rsx! {},
+                ReasoningDisplay::Collapsed => {
+                    rsx! {details{class:"tool reasoning",summary{"Reasoning"}pre{"{text}"}}}
+                }
+                ReasoningDisplay::Shown => rsx! {article{class:"message reasoning",pre{"{text}"}}},
+            }
         }
         EventType::Result(result) => {
-            rsx! {details{class:"tool",summary{"Recorded result"}pre{"{serde_json::to_string_pretty(&result).unwrap_or_default()}"}}}
+            if preferences.hide_text_recorded_results && matches!(result, AgentResult::Text(_)) {
+                rsx! {}
+            } else {
+                rsx! {details{class:"tool",summary{"Recorded result"}pre{"{serde_json::to_string_pretty(&result).unwrap_or_default()}"}}}
+            }
         }
         EventType::InferenceResultEnd(end) => match end.outcome {
             llm_api::api::Outcome::Failed(error) => {
@@ -677,14 +1069,28 @@ pub(crate) fn EventRow(props: EventRowProps) -> Element {
             }
             llm_api::api::Outcome::Completed { .. } | llm_api::api::Outcome::InProgress => rsx! {},
         },
-        EventType::StatusChange(status) => rsx! {div{class:"muted","Agent {status.new_status:?}"}},
+        EventType::StatusChange(status) => {
+            if status.new_status == AgentState::Interrupted {
+                rsx! {div{class:"error","Agent Interrupted"}}
+            } else if preferences.hide_agent_statuses {
+                rsx! {}
+            } else {
+                rsx! {div{class:"muted","Agent {status.new_status:?}"}}
+            }
+        }
         _ => rsx! {},
     }
 }
 
 #[cfg(test)]
+#[path = "appearance_event_tests.rs"]
+mod appearance_event_tests;
+#[cfg(test)]
 #[path = "inference_result_tests.rs"]
 mod inference_result_tests;
+#[cfg(test)]
+#[path = "transcript_visual_tests.rs"]
+mod transcript_visual_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DraftCommandStage {
@@ -1006,6 +1412,8 @@ fn DraftComposer(tab: Tab) -> Element {
     let mut all_models = use_signal(|| false);
     let mut textarea_node = use_signal(|| None::<std::rc::Rc<MountedData>>);
     let mut info_open = use_signal(|| false);
+    // Submission promotes this draft to a real agent, unmounting this component.
+    // Its task must outlive the composer until the request outcome is handled.
     use_effect(move || {
         spawn(network::load_draft_root(ui, session_id));
     });
@@ -1205,12 +1613,12 @@ fn DraftComposer(tab: Tab) -> Element {
                     event.prevent_default();
                     if matches!(parse_composer_input(&text), ComposerInput::Command { id: CommandId::Refresh, .. }) { refresh_draft_configs(ui,session_id,target); }
                     else if matches!(parse_composer_input(&text), ComposerInput::Command { id: CommandId::Info, .. }) { ui.write().drafts.remove(&target); info_open.set(true); }
-                    else { spawn(network::submit_draft_root(ui,session_id)); }
+                    else { spawn_forever(network::submit_draft_root(ui,session_id)); }
                 }
             }
         }
           }
-          button { class:"primary composer-send", "aria-label":"Send first message", disabled:blocked, onclick:move |_| { spawn(network::submit_draft_root(ui,session_id)); }, "↑" }
+          button { class:"primary composer-send", "aria-label":"Send first message", disabled:blocked, onclick:move |_| { spawn_forever(network::submit_draft_root(ui,session_id)); }, "↑" }
         }
         ComposerStatus { path: state.sessions.iter().find(|s| s.id == session_id).map(|s| s.working_directory.to_string_lossy().into_owned()), model: status_name, effort: status_effort, context_tokens: None, context_window: status_window }
     }}
@@ -1594,6 +2002,16 @@ pub fn Settings() -> Element {
         if tab() == "keybinds" { KeybindSettings {} }
         if tab() == "appearance" {
             h3{"Appearance"}
+            label{r#for:"reasoning-display","Reasoning"}
+            select{id:"reasoning-display",value:format!("{:?}",state.settings.preferences.reasoning_display),onchange:move |e|{
+                ui.write().settings.preferences.reasoning_display=match e.value().as_str(){
+                    "Hidden"=>client_shared::ReasoningDisplay::Hidden,
+                    "Shown"=>client_shared::ReasoningDisplay::Shown,
+                    _=>client_shared::ReasoningDisplay::Collapsed,
+                };
+            },option{value:"Hidden","Hidden"}option{value:"Collapsed","Collapsed"}option{value:"Shown","Shown"}}
+            label{input{r#type:"checkbox",checked:state.settings.preferences.hide_text_recorded_results,onchange:move |e|ui.write().settings.preferences.hide_text_recorded_results=e.checked()},"Hide text recorded results"}
+            label{input{r#type:"checkbox",checked:state.settings.preferences.hide_agent_statuses,onchange:move |e|ui.write().settings.preferences.hide_agent_statuses=e.checked()},"Hide agent statuses (interrupted always shown)"}
             label{input{r#type:"checkbox",checked:state.settings.preferences.double_click_session_opens_details,onchange:move |e|ui.write().settings.preferences.double_click_session_opens_details=e.checked()},"Open current session details when double-clicking a session"}
             label{r#for:"transcript-font-size","Transcript font size"}input{id:"transcript-font-size",r#type:"range",min:"11",max:"22",value:state.settings.preferences.transcript_font_size.to_string(),oninput:move |e|{if let Ok(size)=e.value().parse(){ui.write().settings.preferences.transcript_font_size=size;}}}
             label{r#for:"conversation-max-width","Conversation and composer max width (characters): {state.settings.preferences.conversation_max_width_ch}"}

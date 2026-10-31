@@ -6,7 +6,7 @@ use crate::{
     prompts::skills::{SkillDescription, format_skills},
 };
 use psa_api::{
-    events::{EventType, Log, Message, MessageType, NewEvent},
+    events::{EventType, Log, Message, NewEvent},
     probes::Event,
 };
 use psa_shared::probe_transport::ProbeError;
@@ -76,9 +76,9 @@ impl Hook for SkillsHook {
         }
         if let Some(prompt) = format_skills(&catalogue.visible) {
             context
-                .save_events(&[NewEvent::new(EventType::Message(Message::text(
-                    MessageType::System,
+                .save_events(&[NewEvent::new(EventType::Message(Message::system(
                     prompt,
+                    "Available skills",
                 )))])
                 .await?;
         }

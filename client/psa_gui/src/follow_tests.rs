@@ -3,10 +3,190 @@ use dioxus::{
     core::{ElementId, Mutation},
     html::{
         Code, Location, PlatformEventData, SerializedFormData, SerializedKeyboardData,
-        SerializedMouseData,
+        SerializedMouseData, SerializedScrollData,
     },
 };
 use std::{any::Any, cell::Cell, rc::Rc};
+
+#[test]
+fn shared_history_prepend_does_not_expand_another_panes_visible_tail() {
+    assert_eq!(updated_history_limit(20, None, 20, Some(20), 0), 20);
+    assert_eq!(
+        updated_history_limit(20, Some((20, Some(20))), 170, Some(10), 0),
+        20
+    );
+    assert_eq!(
+        updated_history_limit(20, Some((20, Some(20))), 21, Some(20), 1),
+        21
+    );
+    assert_eq!(
+        updated_history_limit(20, Some((20, Some(20))), 19, Some(20), 0),
+        19
+    );
+    assert_eq!(
+        updated_history_limit(20, Some((20, Some(20))), 171, Some(10), 1),
+        21
+    );
+}
+
+#[test]
+fn history_continues_for_invisible_or_short_pages() {
+    assert!(history_needs_continuation(500.0, 500.0, 300.0));
+    assert!(history_needs_continuation(100.0, 200.0, 300.0));
+    assert!(!history_needs_continuation(500.0, 700.0, 300.0));
+}
+
+#[test]
+fn history_anchor_preserves_the_distance_from_existing_content() {
+    assert_eq!(restored_history_top(1000.0, 24.0, 1400.0), 424.0);
+    assert_eq!(restored_history_top(1000.0, 24.0, 900.0), 0.0);
+}
+
+#[test]
+fn history_trigger_requires_a_new_top_entry_after_failure_and_is_per_pane() {
+    let mut first = false;
+    let mut second = false;
+    assert!(!history_trigger(0.0, false, &mut first));
+    assert!(history_trigger(0.0, true, &mut first));
+    assert!(!history_trigger(0.0, true, &mut first));
+    assert!(history_trigger(0.0, true, &mut second));
+    assert!(!history_trigger(81.0, true, &mut first));
+    assert!(history_trigger(80.0, true, &mut first));
+    assert!(!history_trigger(0.0, true, &mut second));
+}
+
+#[test]
+fn history_reveals_cached_rows_before_fetching_and_stops_when_busy_or_exhausted() {
+    assert_eq!(history_action(151, 150, true, false), HistoryAction::Reveal);
+    assert_eq!(history_action(151, 150, true, true), HistoryAction::Reveal);
+    assert_eq!(history_action(150, 150, true, false), HistoryAction::Fetch);
+    assert_eq!(history_action(150, 150, true, true), HistoryAction::None);
+    assert_eq!(history_action(150, 150, false, false), HistoryAction::None);
+}
+
+#[component]
+fn HistoryFixture() -> Element {
+    let tab = fixture_pane(1).tabs.remove(0);
+    let target = tab.target;
+    let ui = use_signal(move || {
+        let mut ui = Ui::new(DesktopSettings::default());
+        let mut transcript = Transcript::new(target.session_id, Some(target.agent_id));
+        for i in 0..151 {
+            let pending = PendingEvent {
+                id: format!("{i:03}"),
+                revision: 1,
+                session_id: target.session_id,
+                agent_id: target.agent_id,
+                kind: psa_api::events::EventType::Message(psa_api::events::Message::text(
+                    psa_api::events::MessageType::Human,
+                    format!("history-item-{i:03}"),
+                )),
+            };
+            transcript.apply(StreamMessage::Upsert { pending });
+        }
+        ui.transcripts.insert(target, transcript);
+        ui
+    });
+    use_context_provider(|| ui);
+    rsx! { TranscriptView { tab, active: true } }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn scrolling_to_top_reveals_cached_history_without_manual_buttons() {
+    dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+    let mut dom = VirtualDom::new(HistoryFixture);
+    let edits = dom.rebuild_to_vec();
+    let scroll = edits
+        .edits
+        .iter()
+        .find_map(|edit| match edit {
+            Mutation::NewEventListener { name, id } if name == "scroll" => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let html = dioxus_ssr::render(&dom);
+    assert!(!html.contains("history-item-000"));
+    assert!(!html.contains("Load older history"));
+    assert!(!html.contains("earlier loaded items"));
+    let data = SerializedScrollData {
+        scroll_top: 0.0,
+        scroll_left: 0.0,
+        scroll_width: 500,
+        scroll_height: 5000,
+        client_width: 500,
+        client_height: 500,
+    };
+    dom.runtime().handle_event(
+        "scroll",
+        Event::new(
+            Rc::new(PlatformEventData::new(Box::new(data))) as Rc<dyn Any>,
+            true,
+        ),
+        scroll,
+    );
+    for _ in 0..5 {
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_millis(10), dom.wait_for_work()).await;
+        dom.render_immediate_to_vec();
+    }
+    assert!(dioxus_ssr::render(&dom).contains("history-item-000"));
+}
+
+#[component]
+fn EmptyHistoryFixture() -> Element {
+    let tab = fixture_pane(1).tabs.remove(0);
+    let target = tab.target;
+    let mut ui = use_signal(move || {
+        let mut ui = Ui::new(DesktopSettings::default());
+        ui.transcripts.insert(
+            target,
+            Transcript::new(target.session_id, Some(target.agent_id)),
+        );
+        ui
+    });
+    use_context_provider(|| ui);
+    rsx! {
+        button { onclick: move |_| {
+            ui.write().transcripts.get_mut(&target).unwrap().apply(StreamMessage::Upsert {
+                pending: PendingEvent {
+                    id: "new".into(), revision: 1, session_id: target.session_id, agent_id: target.agent_id,
+                    kind: psa_api::events::EventType::Message(psa_api::events::Message::text(
+                        psa_api::events::MessageType::Human, "new-live-row")),
+                },
+            });
+        }, "Add live row" }
+        TranscriptView { tab, active: true }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn empty_transcript_displays_later_live_rows() {
+    dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+    let mut dom = VirtualDom::new(EmptyHistoryFixture);
+    let edits = dom.rebuild_to_vec();
+    let button = edits
+        .edits
+        .iter()
+        .find_map(|edit| match edit {
+            Mutation::NewEventListener { name, id } if name == "click" => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    dom.runtime().handle_event(
+        "click",
+        Event::new(
+            Rc::new(PlatformEventData::new(Box::<SerializedMouseData>::default())) as Rc<dyn Any>,
+            true,
+        ),
+        button,
+    );
+    for _ in 0..5 {
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_millis(10), dom.wait_for_work()).await;
+        dom.render_immediate_to_vec();
+    }
+    assert!(dioxus_ssr::render(&dom).contains("new-live-row"));
+}
 
 #[component]
 fn FollowFixture(renders: Rc<Cell<usize>>) -> Element {

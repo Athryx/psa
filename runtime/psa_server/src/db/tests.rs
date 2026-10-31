@@ -199,6 +199,7 @@ async fn round_trips_all_payloads_and_reopens_database() {
     {
         kinds.push(EventType::Message(Message {
             source: None,
+            description: None,
             message_type,
             content: vec![api::ContentBlock::Refusal(api::RefusalBlock {
                 text: "refused".into(),
@@ -211,6 +212,7 @@ async fn round_trips_all_payloads_and_reopens_database() {
     }
     kinds.push(EventType::Message(Message {
         source: None,
+        description: None,
         message_type: MessageType::Human,
         content: vec![],
         metadata: Default::default(),
@@ -218,6 +220,10 @@ async fn round_trips_all_payloads_and_reopens_database() {
     kinds.push(EventType::Message(Message::text(
         MessageType::Human,
         "hello",
+    )));
+    kinds.push(EventType::Message(Message::system(
+        "instructions",
+        "Base instructions",
     )));
     for outcome in [
         Outcome::Completed {

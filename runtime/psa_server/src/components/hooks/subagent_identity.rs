@@ -4,7 +4,7 @@ use crate::{
     agents::{agent_context::AgentContext, session_manager::RuntimeError},
     components::cancellation::Cancellation,
 };
-use psa_api::events::{EventType, Message, MessageType, NewEvent};
+use psa_api::events::{EventType, Message, NewEvent};
 use std::time::Duration;
 
 pub struct SubagentIdentity;
@@ -61,9 +61,9 @@ impl Hook for SubagentIdentity {
             result = Self::build_identity(context) => result.map_err(RuntimeError::Invalid)?,
         };
 
-        let events = [NewEvent::new(EventType::Message(Message::text(
-            MessageType::System,
+        let events = [NewEvent::new(EventType::Message(Message::system(
             identity,
+            "Agent identity",
         )))];
         tokio::select! {
             biased;

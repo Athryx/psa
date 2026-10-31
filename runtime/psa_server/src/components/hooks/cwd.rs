@@ -1,6 +1,6 @@
 use super::{Hook, HookError};
 use crate::{agents::agent_context::AgentContext, components::cancellation::Cancellation, prompts};
-use psa_api::events::{EventType, Message, MessageType, NewEvent};
+use psa_api::events::{EventType, Message, NewEvent};
 use std::time::Duration;
 
 /// Adds the invocation's session working directory to the model context.
@@ -18,9 +18,9 @@ impl Hook for CwdHook {
     ) -> Result<(), HookError> {
         let prompt = prompts::cwd_system_prompt(&context.session().working_directory);
         context
-            .save_events(&[NewEvent::new(EventType::Message(Message::text(
-                MessageType::System,
+            .save_events(&[NewEvent::new(EventType::Message(Message::system(
                 prompt,
+                "Working directory",
             )))])
             .await?;
         Ok(())

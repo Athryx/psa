@@ -109,10 +109,22 @@ pub(crate) fn handle_workspace_key(
         }
         WorkspaceShortcut::Tab(index) => {
             ui.write().workspace.focus_tab_at(index);
+            request_composer_focus(ui);
         }
         WorkspaceShortcut::Direction(direction) => {
             ui.write().workspace.focus_direction(direction);
+            request_composer_focus(ui);
         }
+    }
+}
+
+pub(crate) fn request_composer_focus(ui: Signal<Ui>) {
+    let state = ui.peek();
+    if let Some(tab) = state.workspace.active_tab() {
+        document::eval(&format!(
+            "window.psaFocusComposer?.({}, {});",
+            state.workspace.focused_group.0, tab.id.0
+        ));
     }
 }
 
@@ -214,6 +226,7 @@ pub struct Ui {
     pub models: Vec<ModelInfo>,
     pub transcripts: HashMap<TranscriptTarget, Transcript>,
     pub transcript_status: HashMap<TranscriptTarget, String>,
+    pub history_requests: HashMap<TranscriptTarget, u64>,
     pub drafts: HashMap<TranscriptTarget, String>,
     pub uncertain_submissions: HashSet<TranscriptTarget>,
     pub pending_submissions: HashSet<TranscriptTarget>,
@@ -261,6 +274,7 @@ impl Ui {
             models: Vec::new(),
             transcripts: HashMap::new(),
             transcript_status: HashMap::new(),
+            history_requests: HashMap::new(),
             drafts: HashMap::new(),
             uncertain_submissions: HashSet::new(),
             pending_submissions: HashSet::new(),
@@ -370,6 +384,7 @@ pub fn app() -> Element {
     // Key events targeted at the document (for example after the focused tab
     // is removed) do not bubble through the shell. Forward those to it.
     use_effect(|| {
+        document::eval(include_str!("pane_focus.js"));
         document::eval(
             r#"
             if (!window.psaWorkspaceKeyForwarder) {
@@ -390,7 +405,7 @@ pub fn app() -> Element {
     });
     use_drop(|| {
         document::eval(
-            "window.removeEventListener('keydown', window.psaWorkspaceKeyForwarder, true); delete window.psaWorkspaceKeyForwarder;",
+            "window.removeEventListener('keydown', window.psaWorkspaceKeyForwarder, true); delete window.psaWorkspaceKeyForwarder; window.psaRemovePaneFocus?.();",
         );
     });
     let platform = bootstrap.platform.clone();

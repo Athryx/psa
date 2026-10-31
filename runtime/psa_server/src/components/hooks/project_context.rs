@@ -4,7 +4,7 @@ use crate::{
     probes::ProbeHandle,
 };
 use psa_api::{
-    events::{EventType, Log, Message, MessageType, NewEvent},
+    events::{EventType, Log, Message, NewEvent},
     probes::Event,
 };
 use psa_shared::probe_transport::ProbeError;
@@ -58,9 +58,9 @@ impl Hook for ProjectContextHook {
             })
             .collect();
         if let Some(prompt) = format_project_context(&loaded.files) {
-            events.push(NewEvent::new(EventType::Message(Message::text(
-                MessageType::System,
+            events.push(NewEvent::new(EventType::Message(Message::system(
                 prompt,
+                "Project context",
             ))));
         }
         if !events.is_empty() {

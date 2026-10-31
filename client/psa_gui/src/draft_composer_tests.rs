@@ -168,6 +168,189 @@ use dioxus::{
 };
 use std::{any::Any, rc::Rc};
 
+thread_local! {
+    static SUBMISSION_TEST_URL: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    static HIDE_SUBMISSION_COMPOSER: std::cell::Cell<Option<Signal<bool>>> = const { std::cell::Cell::new(None) };
+}
+
+fn submission_fixture() -> Element {
+    let mut settings = DesktopSettings::default();
+    settings.active_profile_mut().connection.api_url =
+        SUBMISSION_TEST_URL.with(|url| url.borrow().clone());
+    let mut state = Ui::new(settings);
+    let status: AgentConfigStatus = serde_json::from_value(serde_json::json!({
+        "config": {"config_id":{"config_group":"Global","name":"root"}, "selectable":true,
+          "models":["Global"], "default":true},
+        "status":{"missing_components":[]}
+    }))
+    .unwrap();
+    let mut draft = crate::app::DraftRoot::default();
+    draft.ready = true;
+    draft.configs.push(status.clone());
+    draft.select_config(status.config.config_id);
+    state.draft_roots.insert(SessionId(1), draft);
+    let ui = use_signal(|| state);
+    let hidden = use_signal(|| false);
+    HIDE_SUBMISSION_COMPOSER.with(|slot| slot.set(Some(hidden)));
+    use_context_provider(|| ui);
+    let target = TranscriptTarget {
+        session_id: SessionId(1),
+        agent_id: crate::app::DRAFT_ROOT,
+    };
+    let promoted = !ui
+        .read()
+        .agents
+        .get(&SessionId(1))
+        .is_none_or(|agents| agents.is_empty());
+    let uncertain = !ui.read().uncertain_submissions.is_empty();
+    let pending = !ui.read().pending_submissions.is_empty();
+    if promoted || hidden() {
+        rsx! { div { "hidden promoted={promoted} uncertain={uncertain} pending={pending}" } }
+    } else {
+        rsx! { DraftComposer { tab: Tab { id: ViewId(1), target, preview: false, last_focused: 0 } } }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn first_message_survives_draft_composer_unmount() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::{Arc, Mutex, mpsc},
+        time::{Duration, Instant},
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    SUBMISSION_TEST_URL
+        .with(|url| *url.borrow_mut() = format!("http://{}", listener.local_addr().unwrap()));
+    let requests = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+    let recorded = requests.clone();
+    let (release_create, wait_create) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        for index in 0..3 {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("accept: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut data = Vec::new();
+            let mut buffer = [0; 4096];
+            let (end, len) = loop {
+                let n = stream.read(&mut buffer).unwrap();
+                assert!(n > 0);
+                data.extend_from_slice(&buffer[..n]);
+                if let Some(end) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&data[..end]);
+                    let len = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|s| s.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if data.len() >= end + 4 + len {
+                        break (end + 4, len);
+                    }
+                }
+            };
+            let line = String::from_utf8_lossy(&data[..end])
+                .lines()
+                .next()
+                .unwrap()
+                .to_owned();
+            let body = String::from_utf8_lossy(&data[end..end + len]).into_owned();
+            recorded.lock().unwrap().push((line.clone(), body));
+            let (status, response) = match index {
+                0 => {
+                    assert!(line.starts_with("GET /sessions/1/agents "));
+                    ("200 OK", serde_json::json!([]))
+                }
+                1 => {
+                    assert!(line.starts_with("POST /sessions/1/agents "));
+                    wait_create.recv_timeout(Duration::from_secs(5)).unwrap();
+                    (
+                        "200 OK",
+                        serde_json::json!({"id":42,"definition_id":1,"session_id":1,"parent_id":null,"subagent_parent_id":null,"name":"root","hidden":false,"interactive":true,"state":"Idle","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"cached_input_tokens":0,"reasoning_output_tokens":0},"next_event_id":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}),
+                    )
+                }
+                _ => {
+                    assert!(line.starts_with("POST /sessions/1/agents/42/requests "));
+                    wait.recv_timeout(Duration::from_secs(5)).unwrap();
+                    ("500 Internal Server Error", serde_json::json!({}))
+                }
+            };
+            let response = response.to_string();
+            write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+        }
+    });
+    dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+    let mut dom = VirtualDom::new(submission_fixture);
+    let edits = dom.rebuild_to_vec();
+    let textarea = edits
+        .edits
+        .iter()
+        .find_map(|edit| match edit {
+            Mutation::NewEventListener { name, id } if name == "keydown" => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    root_input(&mut dom, textarea, "first message");
+    root_key(&mut dom, textarea, Key::Enter);
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        let _ = tokio::time::timeout(Duration::from_millis(10), dom.wait_for_work()).await;
+        dom.render_immediate_to_vec();
+        if requests.lock().unwrap().len() == 2 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "agent creation did not start");
+    }
+    HIDE_SUBMISSION_COMPOSER.with(|slot| slot.get().unwrap().set(true));
+    dom.render_immediate_to_vec();
+    assert!(dioxus_ssr::render(&dom).contains("hidden promoted=false"));
+    release_create.send(()).unwrap();
+    loop {
+        let _ = tokio::time::timeout(Duration::from_millis(10), dom.wait_for_work()).await;
+        dom.render_immediate_to_vec();
+        if dioxus_ssr::render(&dom).contains("promoted=true") && requests.lock().unwrap().len() == 3
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "request did not survive promotion: {:?}",
+            requests.lock().unwrap()
+        );
+    }
+    assert!(requests.lock().unwrap()[2].1.contains("first message"));
+    release.send(()).unwrap();
+    loop {
+        let _ = tokio::time::timeout(Duration::from_millis(10), dom.wait_for_work()).await;
+        dom.render_immediate_to_vec();
+        if dioxus_ssr::render(&dom).contains("uncertain=true pending=false") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "uncertain result was not recorded"
+        );
+    }
+    server.join().unwrap();
+}
+
 fn root_fixture() -> Element {
     let mut state = Ui::new(DesktopSettings::default());
     let status: AgentConfigStatus = serde_json::from_value(serde_json::json!({

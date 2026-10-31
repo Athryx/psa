@@ -1,6 +1,6 @@
 use super::{Hook, HookError};
 use crate::{agents::agent_context::AgentContext, components::cancellation::Cancellation, prompts};
-use psa_api::events::{EventType, Message, MessageType, NewEvent};
+use psa_api::events::{EventType, Message, NewEvent};
 use std::time::Duration;
 
 /// Initializes a new root agent from its pinned definition and session snapshot.
@@ -30,9 +30,9 @@ impl Hook for DefaultStartupHook {
         let events = [
             NewEvent::new(EventType::NewContext),
             NewEvent::new(EventType::Model(model)),
-            NewEvent::new(EventType::Message(Message::text(
-                MessageType::System,
+            NewEvent::new(EventType::Message(Message::system(
                 prompts::default_system_prompt(),
+                "Base instructions",
             ))),
         ];
 

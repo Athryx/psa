@@ -113,6 +113,7 @@ fn image_only_discarded_messages_still_produce_a_summary_request() {
     let image = EventType::Message(Message {
         message_type: MessageType::Human,
         source: None,
+        description: None,
         metadata: Default::default(),
         content: vec![ContentBlock::Image(ImageBlock {
             source: MediaSource::Url("image".into()),

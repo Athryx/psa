@@ -109,6 +109,10 @@ replace current live state. Merge committed events by scoped identity.
 Last-Event-ID replay, finite through streams, and provisional promotion remain
 unchanged. Empty history still has a usable head cursor.
 
+Transcript `Message` events may include an optional `description` display label,
+used for system instructions. It is omitted when absent; older events without it
+remain readable. The label is not included in model-facing message content.
+
 ## Agent configurations and immutable snapshots
 
 Named configurations are mutable; agent creation resolves and pins an immutable

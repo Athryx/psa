@@ -575,7 +575,8 @@ fn message_content_is_escaped_not_rendered_as_html() {
     );
     assert!(html.contains("&#60;script&#62;"), "{html}");
     assert!(!html.contains("<script>"));
-    assert!(html.contains("Human"));
+    assert!(html.contains("human-message"), "{html}");
+    assert!(!html.contains(">Human<"), "{html}");
 }
 
 #[test]
@@ -596,10 +597,14 @@ fn agent_markdown_streaming_keeps_content_blocks_separate() {
         crate::views::EventRow { kind, provisional: true, results: Rc::new(HashMap::new()) }
     });
     assert!(
-        html.contains("streaming") && html.contains("Image attachment"),
+        html.contains("Streaming") && html.contains("Image attachment"),
         "{html}"
     );
     assert!(!html.contains("<strong>"), "{html}");
+    assert!(
+        html.contains("agent-message") && !html.contains(">Agent<"),
+        "{html}"
+    );
 }
 
 #[test]

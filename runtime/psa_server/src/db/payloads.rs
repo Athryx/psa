@@ -184,13 +184,14 @@ pub(super) async fn insert_payload(
             let source = value.source.as_ref().map(serialize_json).transpose()?;
 
             sqlx::query!(
-                "INSERT INTO event_message (event_pk,message_type,delivery,content,metadata,source) VALUES (?,?,?,?,?,?)",
+                "INSERT INTO event_message (event_pk,message_type,delivery,content,metadata,source,description) VALUES (?,?,?,?,?,?,?)",
                 pk,
                 message_type,
                 delivery,
                 content,
                 metadata,
-                source
+                source,
+                value.description
             )
             .execute(&mut *conn)
             .await?;
@@ -448,9 +449,10 @@ pub(super) async fn load_payloads(
         |r| EventType::NewContext
     );
     load!(
-        "SELECT p.event_pk, p.message_type, p.delivery, p.content, p.metadata, p.source FROM event_message p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+        "SELECT p.event_pk, p.message_type, p.delivery, p.content, p.metadata, p.source, p.description FROM event_message p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
         |r| EventType::Message(Message {
             source: r.source.as_deref().map(parse_json).transpose()?,
+            description: r.description,
             message_type: match r.message_type.as_str() {
                 "subagent" => MessageType::Subagent,
                 "human" => MessageType::Human,
