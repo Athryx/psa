@@ -115,6 +115,7 @@ fn load_directory(
 pub fn CreateSessionPicker() -> Element {
     let mut ui = use_context::<Signal<Ui>>();
     let mut open = use_signal(|| false);
+    crate::app::register_modal(open);
     let mut probe = use_signal(|| None::<ProbeId>);
     let mut path = use_signal(|| "/".to_string());
     let mut path_input = use_signal(|| "/".to_string());
@@ -122,6 +123,40 @@ pub fn CreateSessionPicker() -> Element {
     let mut loading = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
     let mut revision = use_signal(|| 0u64);
+    // A probe may come online after the picker opened (for example, after a
+    // server restart). Select it as soon as the background refresh sees it.
+    use_effect(move || {
+        if !open() || probe().is_some() {
+            return;
+        }
+        let state = ui.read();
+        let initial = state
+            .selected_probe
+            .and_then(|id| {
+                state
+                    .probes
+                    .iter()
+                    .find(|p| p.metadata.id == id && p.is_active)
+            })
+            .or_else(|| state.probes.iter().find(|p| p.is_active))
+            .map(|p| {
+                (
+                    p.metadata.id,
+                    p.metadata
+                        .home_dir
+                        .clone()
+                        .filter(|path| path.starts_with('/'))
+                        .unwrap_or_else(|| "/".into()),
+                )
+            });
+        drop(state);
+        if let Some((id, home)) = initial {
+            probe.set(Some(id));
+            path.set(home.clone());
+            path_input.set(home.clone());
+            load_directory(ui, id, home, entries, loading, error, revision);
+        }
+    });
     let state = ui.read();
     let probes: Vec<_> = state
         .probes
@@ -129,10 +164,7 @@ pub fn CreateSessionPicker() -> Element {
         .map(|p| {
             (
                 p.metadata.id,
-                p.metadata
-                    .label
-                    .clone()
-                    .unwrap_or_else(|| p.metadata.hostname.clone()),
+                crate::views::probe_label(p),
                 p.metadata
                     .home_dir
                     .clone()
@@ -143,6 +175,7 @@ pub fn CreateSessionPicker() -> Element {
         })
         .collect();
     let probe_choices = probes.clone();
+    let selected_online = probe().is_some_and(|id| probes.iter().any(|p| p.0 == id && p.3));
     let initial = state
         .selected_probe
         .and_then(|id| probes.iter().find(|p| p.0 == id && p.3))
@@ -152,6 +185,7 @@ pub fn CreateSessionPicker() -> Element {
         button { class: "primary session-new", title: "New session", disabled: state.connection != "Connected" || state.creation_pending,
             onclick: move |_| {
                 open.set(true);
+                spawn(network::refresh_probes(ui));
                 if let Some((id, _, home, _)) = initial.clone() { probe.set(Some(id)); path.set(home.clone()); path_input.set(home.clone()); load_directory(ui, id, home, entries, loading, error, revision); }
                 else { probe.set(None); error.set(Some("No online probes available".into())); }
             }, "New"
@@ -170,7 +204,9 @@ pub fn CreateSessionPicker() -> Element {
                                 probe.set(Some(*id)); path.set(home.clone()); path_input.set(home.clone()); load_directory(ui, *id, home.clone(), entries, loading, error, revision);
                             }
                         },
-                        for (id, label, _, active) in probes.clone() { option { value: id.to_string(), disabled: !active, "{label} ({id})" } }
+                        for (id, label, _, active) in probes.clone() { option { value: id.to_string(), disabled: !active, "{label}" } }
+                    }
+                    if let Some(id) = probe() { crate::views::ProbeName { id }
                     }
                     label { r#for: "picker-path", "Absolute path on the probe (press Enter to browse)" }
                     input { id: "picker-path", value: path_input(), oninput: move |event| path_input.set(event.value()),
@@ -178,14 +214,16 @@ pub fn CreateSessionPicker() -> Element {
                     }
                     button { disabled: loading() || path() == "/", onclick: move |_| { if let Some(id) = probe() { let parent = parent_directory(&path()); path.set(parent.clone()); path_input.set(parent.clone()); load_directory(ui, id, parent, entries, loading, error, revision); } }, "↑ Parent" }
                     if loading() { p { class: "muted", "Loading directories…" } }
-                    if let Some(message) = error() { p { class: "error", "{message}" } button { onclick: move |_| { if let Some(id) = probe() { load_directory(ui, id, path(), entries, loading, error, revision); } }, "Retry" } }
+                    if let Some(message) = &state.probe_error { p { class: "error", "{message}" } }
+                    if let Some(message) = error() { p { class: "error", "{message}" } button { onclick: move |_| { if let Some(id) = probe() { load_directory(ui, id, path(), entries, loading, error, revision); } else { spawn(network::refresh_probes(ui)); } }, "Retry" } }
+                    if probe().is_some() && !selected_online { p { class: "error", "Selected probe is offline. Choose an online probe or wait for it to reconnect." } }
                     if !loading() && error().is_none() && probe().is_some() && entries().is_empty() { p { class: "muted", "No directories in this folder." } }
                     div { class: "directory-list",
                         for entry in entries() {
                             button { key: "{entry.name}", onclick: { let entry = entry.clone(); move |_| { if let Some(id) = probe() { let child = if path() == "/" { format!("/{}", entry.name) } else { format!("{}/{}", path(), entry.name) }; path.set(child.clone()); path_input.set(child.clone()); load_directory(ui, id, child, entries, loading, error, revision); } } }, if entry.kind == "symlink" { "↗ " } else { "📁 " } "{entry.name}" if entry.kind == "symlink" { " (symlink)" } }
                         }
                     }
-                    button { class: "primary", disabled: probe().is_none() || loading() || error().is_some() || path_input() != path(), onclick: move |_| { if let Some(id) = probe() { let needs_filter_reset = ui.read().selected_probe.is_some_and(|selected| selected != id); if needs_filter_reset { ui.write().selected_probe = None; ui.write().next_sessions = None; spawn(network::load_sessions(ui, false)); } select_target(&mut ui.write(), CreationTarget { probe: id, directory: path() }); revision += 1; open.set(false); } }, "Select this directory" }
+                    button { class: "primary", disabled: !selected_online || loading() || error().is_some() || path_input() != path(), onclick: move |_| { if let Some(id) = probe() { let needs_filter_reset = ui.read().selected_probe.is_some_and(|selected| selected != id); if needs_filter_reset { ui.write().selected_probe = None; ui.write().next_sessions = None; spawn(network::load_sessions(ui, false)); } select_target(&mut ui.write(), CreationTarget { probe: id, directory: path() }); revision += 1; open.set(false); } }, "Select this directory" }
                 }
             }
         }

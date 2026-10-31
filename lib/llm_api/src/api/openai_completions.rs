@@ -568,7 +568,12 @@ impl Decoder for CompletionsDecoder {
         let choice = choices[0]
             .as_object()
             .ok_or_else(|| protocol("choice must be an object"))?;
-        self.decode_choice(choice, output, events)?;
+        self.decode_choice(
+            choice,
+            object.get("usage").is_some_and(Value::is_object),
+            output,
+            events,
+        )?;
         Ok(false)
     }
 }
@@ -646,6 +651,7 @@ impl CompletionsDecoder {
     fn decode_choice(
         &mut self,
         choice: &Map<String, Value>,
+        has_usage: bool,
         output: &mut ModelResponse,
         events: &mut VecDeque<TurnEvent>,
     ) -> Result<(), Error> {
@@ -664,11 +670,26 @@ impl CompletionsDecoder {
             }
             _ => return Err(protocol("streaming choice requires an object delta")),
         };
-        if self.finish_reason.is_some() {
-            return Err(protocol("choice received after finish_reason"));
+        let finished = self.finish_reason.is_some();
+        if finished {
+            // OpenRouter's final usage chunk repeats the finish reason with a
+            // content-free delta. Accept accounting, never additional output.
+            let repeats_finish = choice.get("finish_reason").and_then(Value::as_str)
+                == self.finish_reason.as_deref();
+            let content_free = delta.iter().all(|(key, value)| {
+                value.is_null()
+                    || match key.as_str() {
+                        "role" => value.as_str() == Some("assistant"),
+                        "content" => value.as_str() == Some(""),
+                        _ => false,
+                    }
+            });
+            if !has_usage || !repeats_finish || !content_free {
+                return Err(protocol("choice received after finish_reason"));
+            }
+        } else {
+            self.decode_delta(delta, output, events)?;
         }
-
-        self.decode_delta(delta, output, events)?;
         for (key, value) in choice {
             if !matches!(key.as_str(), "index" | "delta" | "finish_reason") {
                 output
@@ -678,7 +699,9 @@ impl CompletionsDecoder {
             }
         }
 
-        if let Some(reason) = choice.get("finish_reason").filter(|value| !value.is_null()) {
+        if !finished
+            && let Some(reason) = choice.get("finish_reason").filter(|value| !value.is_null())
+        {
             let reason = reason
                 .as_str()
                 .filter(|reason| !reason.is_empty())
@@ -1725,6 +1748,101 @@ mod tests {
             let body = request_body(&history, &config).unwrap();
             assert_eq!(body["tool_choice"], expected);
             assert!(body["tools"][0]["function"].get("strict").is_none());
+        }
+    }
+
+    #[test]
+    fn repeated_finish_usage_trailers_preserve_text_and_tool_items() {
+        for reason in ["stop", "tool_calls"] {
+            let mut decoder = CompletionsDecoder::new(true);
+            let mut output = ModelResponse::default_for_model(model());
+            let mut events = VecDeque::new();
+            let delta = if reason == "tool_calls" {
+                json!({"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls -la\"}"}}]})
+            } else {
+                json!({"role":"assistant","content":"OK"})
+            };
+            decode(
+                &mut decoder,
+                &mut output,
+                &mut events,
+                chunk(delta, Value::Null),
+            )
+            .unwrap();
+            decode(
+                &mut decoder,
+                &mut output,
+                &mut events,
+                chunk(json!({}), json!(reason)),
+            )
+            .unwrap();
+            let frozen = serde_json::to_value(&output.items).unwrap();
+            events.clear();
+
+            let mut trailer = chunk(json!({"role":"assistant","content":""}), json!(reason));
+            trailer["choices"][0]["native_finish_reason"] = json!(reason);
+            trailer["usage"] = json!({"prompt_tokens":35,"completion_tokens":14,"total_tokens":49,"cost":0.000016065});
+            decode(&mut decoder, &mut output, &mut events, trailer).unwrap();
+
+            assert_eq!(serde_json::to_value(&output.items).unwrap(), frozen);
+            assert!(events.iter().all(|event| matches!(
+                event,
+                TurnEvent::UsageUpdated | TurnEvent::MetadataUpdated
+            )));
+            assert_eq!(output.usage.total_tokens, Some(49));
+            assert_eq!(
+                output.provider_metadata["choice_native_finish_reason"],
+                reason
+            );
+            assert!(done(&mut decoder, &mut output, &mut events).unwrap());
+            assert!(
+                matches!(
+                    output.outcome,
+                    Outcome::Completed {
+                        reason: StopReason::EndTurn
+                    }
+                ) && reason == "stop"
+                    || matches!(
+                        output.outcome,
+                        Outcome::Completed {
+                            reason: StopReason::ToolCalls
+                        }
+                    ) && reason == "tool_calls"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_output_or_conflicting_choices_after_finish_even_with_usage() {
+        for (delta, reason, has_usage) in [
+            (json!({"content":"extra"}), json!("stop"), true),
+            (json!({"reasoning":"extra"}), json!("stop"), true),
+            (json!({"tool_calls":[]}), json!("stop"), true),
+            (json!({"role":"user"}), json!("stop"), true),
+            (json!({}), json!("tool_calls"), true),
+            (json!({}), Value::Null, true),
+            (json!({}), json!("stop"), false),
+        ] {
+            let mut decoder = CompletionsDecoder::new(true);
+            let mut output = ModelResponse::default_for_model(model());
+            let mut events = VecDeque::new();
+            decode(
+                &mut decoder,
+                &mut output,
+                &mut events,
+                chunk(json!({"content":"OK"}), json!("stop")),
+            )
+            .unwrap();
+            let frozen = serde_json::to_value(&output.items).unwrap();
+            let mut trailer = chunk(delta, reason);
+            if has_usage {
+                trailer["usage"] = json!({"total_tokens":49});
+            }
+            assert!(
+                matches!(decode(&mut decoder, &mut output, &mut events, trailer),
+                Err(Error::Protocol { message }) if message == "choice received after finish_reason")
+            );
+            assert_eq!(serde_json::to_value(&output.items).unwrap(), frozen);
         }
     }
 

@@ -6,6 +6,7 @@ use std::{future::Future, pin::Pin, rc::Rc};
 
 mod app;
 mod creation;
+mod markdown;
 mod network;
 mod style;
 #[cfg(test)]

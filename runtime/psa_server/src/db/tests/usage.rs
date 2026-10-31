@@ -23,6 +23,47 @@ fn result(usage: Usage) -> NewEvent {
 }
 
 #[tokio::test]
+async fn cache_writes_count_only_reported_values() {
+    let (_dir, db, _session, agent) = fixture().await;
+    let mut cursor = db.cursor().await.unwrap();
+    assert_eq!(
+        cursor
+            .get_agent(agent.id)
+            .await
+            .unwrap()
+            .usage
+            .cache_write_tokens,
+        Some(0)
+    );
+
+    let mut usage = reported(5);
+    usage.provider_details.insert(
+        "prompt_tokens_details".into(),
+        serde_json::json!({"cache_write_tokens": 4}),
+    );
+    let updated = cursor
+        .add_events(agent.id, &[result(usage.clone()), result(usage)])
+        .await
+        .unwrap();
+    assert_eq!(updated.new_usage.unwrap().cache_write_tokens, Some(8));
+    assert_eq!(
+        super::super::queries::usage_at(cursor.connection(), agent.id, psa_api::events::EventId(2))
+            .await
+            .unwrap()
+            .cache_write_tokens,
+        Some(8)
+    );
+
+    let updated = cursor
+        .add_events(agent.id, &[result(reported(1))])
+        .await
+        .unwrap();
+    assert_eq!(updated.new_usage.unwrap().cache_write_tokens, None);
+    cursor.rollback().await.unwrap();
+    db.close().await;
+}
+
+#[tokio::test]
 async fn usage_batches_unknown_fields_and_rollback() {
     let (_dir, db, _session, agent) = fixture().await;
     let mut cursor = db.cursor().await.unwrap();
@@ -146,9 +187,9 @@ async fn migration_backfills_usage_through_each_ancestor_cutoff() {
          INSERT INTO events VALUES (2,1,2,3,0,'inference_end');
          INSERT INTO events VALUES (3,2,2,3,0,'inference_end');
          INSERT INTO event_inference_end (event_pk,inference_id,outcome,request_time_us,provider_metadata,input_tokens,output_tokens,total_tokens,cached_tokens,reasoning_tokens,usage_details)
-         VALUES (1,1,'cancelled',0,'{}',10,0,10,0,0,'{}'),
+         VALUES (1,1,'cancelled',0,'{}',10,0,10,0,0,'{\"prompt_tokens_details\":{\"cache_write_tokens\":5}}'),
                 (2,2,'cancelled',0,'{}',NULL,0,20,0,0,'{}'),
-                (3,2,'cancelled',0,'{}',4,0,4,0,0,'{}');"
+                (3,2,'cancelled',0,'{}',4,0,4,0,0,'{\"prompt_tokens_details\":{\"cache_write_tokens\":2}}');"
     ).execute(&pool).await.unwrap();
     pool.close().await;
     let db = Database::open(path).await.unwrap();
@@ -157,10 +198,12 @@ async fn migration_backfills_usage_through_each_ancestor_cutoff() {
     let root = cursor.get_agent(crate::agents::AgentId(1)).await.unwrap();
     assert_eq!(root.usage.input_tokens, None);
     assert_eq!(root.usage.total_tokens, Some(30));
+    assert_eq!(root.usage.cache_write_tokens, None);
     for id in [2, 3] {
         let child = cursor.get_agent(crate::agents::AgentId(id)).await.unwrap();
         assert_eq!(child.usage.input_tokens, Some(14));
         assert_eq!(child.usage.total_tokens, Some(14));
+        assert_eq!(child.usage.cache_write_tokens, Some(7));
     }
     assert_eq!(
         cursor
@@ -171,5 +214,76 @@ async fn migration_backfills_usage_through_each_ancestor_cutoff() {
         crate::agents::AgentUsage::default()
     );
     cursor.rollback().await.unwrap();
+    db.close().await;
+}
+
+#[tokio::test]
+async fn status_projects_fork_bounded_markers_and_context_resets() {
+    let (_dir, db, session, agent) = fixture().await;
+    let mut cursor = db.cursor().await.unwrap();
+    let completed = |tokens| {
+        NewEvent::new(EventType::InferenceResultEnd(InferenceResultEnd {
+            id: 1,
+            outcome: Outcome::Completed {
+                reason: StopReason::EndTurn,
+            },
+            usage: reported(tokens),
+            request_time: Duration::ZERO,
+            response_id: None,
+            provider_metadata: Default::default(),
+        }))
+    };
+    cursor
+        .add_events(
+            agent.id,
+            &[
+                NewEvent::new(EventType::NewContext),
+                NewEvent::new(EventType::Model(model())),
+                completed(42),
+            ],
+        )
+        .await
+        .unwrap();
+    cursor
+        .add_events(
+            agent.id,
+            &(0..300).map(|_| log("later")).collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+    let fork = cursor
+        .fork_session(
+            session.id,
+            SessionFork {
+                point: ForkPoint::Head,
+                metadata: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let child = fork.agents[0].id;
+    cursor
+        .add_events(agent.id, &[NewEvent::new(EventType::NewContext)])
+        .await
+        .unwrap();
+    let status = cursor
+        .load_agent_status(fork.session.id, child)
+        .await
+        .unwrap();
+    assert_eq!(status.model_config, Some(model()));
+    assert_eq!(status.context_tokens, Some(42));
+    assert_eq!(status.head, 303);
+    assert!(cursor.load_agent_status(session.id, child).await.is_err());
+    cursor
+        .add_events(child, &[NewEvent::new(EventType::NewContext)])
+        .await
+        .unwrap();
+    let status = cursor
+        .load_agent_status(fork.session.id, child)
+        .await
+        .unwrap();
+    assert!(status.model_config.is_none());
+    assert_eq!(status.context_tokens, None);
+    cursor.commit().await.unwrap();
     db.close().await;
 }

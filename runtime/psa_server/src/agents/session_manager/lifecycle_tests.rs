@@ -159,6 +159,44 @@ impl Fixture {
         event
     }
 
+    async fn identity_prompt(&self, agent: AgentId) -> String {
+        let mut cursor = self.db.cursor().await.unwrap();
+        let events = cursor.load_all_events(agent).await.unwrap();
+        cursor.rollback().await.unwrap();
+        assert_eq!(
+            serde_json::to_string(&events)
+                .unwrap()
+                .matches("<agent_identity>")
+                .count(),
+            1
+        );
+
+        let projection = crate::agents::agent_projection::AgentProjection::replay(&events).unwrap();
+        let prompts = projection
+            .items()
+            .iter()
+            .filter_map(|item| match &item.kind {
+                llm_api::api::HistoryItemKind::Message(message) => Some(&message.content),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|block| match block {
+                llm_api::api::ContentBlock::Text(text)
+                    if text.text.starts_with("<agent_identity>") =>
+                {
+                    Some(text.text.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            prompts.len(),
+            1,
+            "identity must survive startup initialization"
+        );
+        prompts.into_iter().next().unwrap()
+    }
+
     async fn wait_idle(&self, sessions: &Sessions, session: SessionId) {
         tokio::time::timeout(WAIT, async {
             while sessions.is_busy(session).await.unwrap() {
@@ -415,6 +453,129 @@ async fn creation_runs_once_after_commit_and_not_on_worker_reload_or_restart() {
     updated.release.send(()).unwrap();
     fixture.wait_idle(&runtime.handle, session.id).await;
     assert!(fixture.recorded.try_recv().is_err());
+    runtime.shutdown().await.unwrap();
+    fixture.probes.shutdown().await;
+}
+
+#[tokio::test]
+async fn subagent_identity_is_created_once_and_preserved_on_reload_restart_and_fork() {
+    let mut fixture = Fixture::new(false).await;
+    let runtime = fixture.start().await;
+    let definition = runtime
+        .handle
+        .update_agent_definition(
+            psa_api::AgentDefinitionId(1),
+            psa_api::CreateAgentDefinition {
+                name: "subagents".into(),
+                bundles: vec![psa_api::BundleConfig::Subagents],
+                hooks: psa_api::HookConfigs {
+                    agent_create: vec![
+                        psa_api::HookConfig::DefaultStartup,
+                        psa_api::HookConfig::ToolDefinitions,
+                    ],
+                    after_request: vec![psa_api::HookConfig::StopWithoutTools],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let session = fixture.create_session(&runtime.handle).await;
+    let agent = runtime
+        .handle
+        .create_agent(
+            session.id,
+            psa_api::CreateAgent {
+                definition_id: definition.id,
+                ..agent_request()
+            },
+        )
+        .await
+        .unwrap();
+    fixture
+        .next("create", agent.id)
+        .await
+        .release
+        .send(())
+        .unwrap();
+    fixture.wait_idle(&runtime.handle, session.id).await;
+    let identity = fixture.identity_prompt(agent.id).await;
+    assert!(identity.contains(&format!(
+        "Agent ID: {}. Session ID: {}.",
+        agent.id.0, session.id.0
+    )));
+
+    // Configured startup initializes context before the bundle's create hook.
+    let mut resources = crate::components::bundles::session::SessionBundleResources::start(
+        session.id,
+        runtime.handle.clone(),
+    );
+    let mut installed = crate::components::bundles::InstalledComponents::install_with_session(
+        &definition,
+        &agent,
+        &session,
+        Some(&resources.handle()),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        installed.hooks.agent_create[0],
+        crate::components::hooks::HookKind::DefaultStartup(_)
+    ));
+    assert!(matches!(
+        installed.hooks.agent_create[2],
+        crate::components::hooks::HookKind::SubagentIdentity(_)
+    ));
+    assert!(installed.hooks.before_request.is_empty());
+    installed.cleanup().await.unwrap();
+    resources.cleanup().await.unwrap();
+
+    rename(&runtime.handle, session.id, "reloaded").await;
+    fixture
+        .next("update", agent.id)
+        .await
+        .release
+        .send(())
+        .unwrap();
+    fixture.wait_idle(&runtime.handle, session.id).await;
+    assert_eq!(fixture.identity_prompt(agent.id).await, identity);
+    runtime.shutdown().await.unwrap();
+
+    let runtime = fixture.start().await;
+    rename(&runtime.handle, session.id, "restarted").await;
+    fixture
+        .next("update", agent.id)
+        .await
+        .release
+        .send(())
+        .unwrap();
+    fixture.wait_idle(&runtime.handle, session.id).await;
+    assert_eq!(fixture.identity_prompt(agent.id).await, identity);
+
+    let fork = runtime
+        .handle
+        .fork_session(
+            session.id,
+            psa_api::ForkSession {
+                point: psa_api::ForkPoint::Head,
+                metadata: psa_api::UpdateSession::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let child = &fork.agents[0];
+    fixture
+        .next("create", child.id)
+        .await
+        .release
+        .send(())
+        .unwrap();
+    fixture.wait_idle(&runtime.handle, fork.session.id).await;
+    assert_ne!(child.id, agent.id);
+    assert_eq!(fixture.identity_prompt(child.id).await, identity);
+    assert!(fixture.recorded.try_recv().is_err());
+
     runtime.shutdown().await.unwrap();
     fixture.probes.shutdown().await;
 }

@@ -59,4 +59,6 @@ Use `promote` on double-click, draft edits, and submission. Independent `ViewId`
 are stable across serialization and never reused after closing tabs.
 `open_duplicate` supports restored/future split views internally; ordinary
 navigation should not call it. `split`, `move_tab`, and `close` preserve focus and
-remove empty panes after moves/closes. Splits expose ratios for UI resize controls.
+remove only the pane emptied by a move or close, leaving unrelated empty panes intact.
+`close_active` also closes the focused empty pane, while preserving the last pane.
+Splits expose ratios for UI resize controls.

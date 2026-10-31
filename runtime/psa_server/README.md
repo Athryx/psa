@@ -132,8 +132,17 @@ api_key = "YOUR_API_KEY"
 Create the file with owner-only access (`chmod 600 auth.toml` on Unix). The server
 creates a missing file and adds separate `[psa].client_key` and `[psa].probe_key`
 values when absent, preserving existing keys and provider credentials. Missing provider auth means no providers configured; malformed auth
-fails startup without printing source excerpts/secrets. Login,
-token refresh, and live credential reload are not implemented.
+fails startup without printing source excerpts/secrets. Authenticated clients can
+set or remove provider credentials through `PUT /providers/credential`; credentials
+are persisted with owner-only permissions and applied to subsequent inference and
+catalog status without restart. In-flight requests retain their existing provider;
+queued or future inference can fail if its provider is removed before it starts.
+This endpoint grants every client key holder control over provider credentials and
+potential spending: client keys are full-trust administrator credentials. Use a
+trusted encrypted tunnel for remote access. External edits to `auth.toml` are not
+automatically reloaded; restart or a subsequent successful credential update loads them. Login and token refresh are not implemented.
+Codex takes a ChatGPT Codex access token, not an OpenAI platform API key; configured
+status does not verify that credentials work.
 
 `psa_api` provides shared request/response types, route definitions, and an async
 `Client`. Session views include runtime-derived `busy`; agent views include
@@ -337,7 +346,9 @@ remains available to any agent independently of these installation flags.
 messaging, waiting, and listing backed by session-shared actor resources. These
 tool groups require their bundle. See `../../docs/GOALS_AND_SUBAGENTS.md` for setup,
 core ancestry, append-only goal semantics, and delivery/recovery limitations.
-Bundles install in list order before explicit hooks. There is no standalone tool
+Bundles install in list order. Configured `agent_create` hooks run before
+bundle creation hooks, so startup initializes context before bundle prompts.
+Other stages run bundle hooks before explicit hooks. There is no standalone tool
 configuration or agent/config/defaults `tools` field; every tool requires a bundle. Duplicate bundle IDs, tool IDs, or tool
 names are rejected during component installation. The session manager retains
 owners and instances by agent ID across worker retirement/failure. Forked agents

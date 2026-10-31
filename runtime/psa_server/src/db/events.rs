@@ -369,6 +369,14 @@ pub(super) fn add_usage(
     total.output_tokens = add(total.output_tokens, usage.output_tokens)?;
     total.total_tokens = add(total.total_tokens, usage.total_tokens)?;
     total.cached_input_tokens = add(total.cached_input_tokens, usage.cached_input_tokens)?;
+    // OpenRouter chat completions report writes in prompt_tokens_details. Do not
+    // treat omitted or unrecognized provider fields as zero.
+    let cache_write = usage
+        .provider_details
+        .get("prompt_tokens_details")
+        .and_then(|details| details.get("cache_write_tokens"))
+        .and_then(serde_json::Value::as_u64);
+    total.cache_write_tokens = add(total.cache_write_tokens, cache_write)?;
     total.reasoning_output_tokens =
         add(total.reasoning_output_tokens, usage.reasoning_output_tokens)?;
     Ok(())

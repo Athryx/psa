@@ -161,6 +161,15 @@ impl Client {
         self.get(routes::PROVIDERS, &()).await
     }
 
+    /// Set or remove a provider credential. Returns only its configured status.
+    pub async fn set_provider_credential(
+        &self,
+        request: &crate::SetProviderCredential,
+    ) -> Result<crate::ProviderInfo, ClientError> {
+        self.send(Method::PUT, routes::PROVIDER_CREDENTIAL, request)
+            .await
+    }
+
     /// List catalog models matching the AND-combined filters in `query`.
     /// Reads cached metadata; does not trigger a catalog refresh.
     pub async fn list_models(
@@ -369,6 +378,19 @@ impl Client {
     ) -> Result<Agent, ClientError> {
         self.get(&routes::agent_path(routes::AGENT, session, agent), &())
             .await
+    }
+
+    /// Fetch the effective model and last inference usage for one agent.
+    pub async fn get_agent_status(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+    ) -> Result<crate::AgentStatusSnapshot, ClientError> {
+        self.get(
+            &routes::agent_path(routes::AGENT_STATUS, session, agent),
+            &(),
+        )
+        .await
     }
 
     /// Submit an interrupt or message-delivery request and return its acceptance ID.

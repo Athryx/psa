@@ -82,12 +82,7 @@ async fn summary_connection(mut ui: Signal<Ui>, generation: u64) -> Result<(), C
     if ui.read().selected_probe == filter && ui.read().list_request == request {
         merge_page(ui, page);
     }
-    if let Ok(probes) = api.list_probes().await {
-        if ui.read().generation != generation {
-            return Ok(());
-        }
-        ui.write().probes = probes;
-    }
+    refresh_probes(ui).await;
     if let Ok(models) = api.list_models(&ListModels::default()).await {
         if ui.read().generation != generation {
             return Ok(());
@@ -98,11 +93,30 @@ async fn summary_connection(mut ui: Signal<Ui>, generation: u64) -> Result<(), C
         return Ok(());
     }
     ui.write().connection = "Connected".into();
-    while let Some(event) = feed.next().await {
+    // Probe connections are not included in the global session event feed.
+    // Reconcile periodically, including when a probe reconnects after the server.
+    let mut refresh = tokio::time::interval(std::time::Duration::from_secs(5));
+    refresh.tick().await;
+    let mut probe_refresh: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>> = None;
+    loop {
+        let event = tokio::select! {
+            event = feed.next() => match event {
+                Some(event) => event?,
+                None => return Err(ClientError::Stream("Summary stream ended".into())),
+            },
+            _ = refresh.tick(), if probe_refresh.is_none() => {
+                probe_refresh = Some(Box::pin(refresh_probes(ui)));
+                continue;
+            }
+            _ = async { probe_refresh.as_mut().unwrap().await }, if probe_refresh.is_some() => {
+                probe_refresh = None;
+                continue;
+            }
+        };
         if ui.read().generation != generation {
             return Ok(());
         }
-        match event?.message {
+        match event.message {
             GlobalStreamMessage::SessionUpdated { revision, session } => {
                 let mut state = ui.write();
                 if state
@@ -120,7 +134,6 @@ async fn summary_connection(mut ui: Signal<Ui>, generation: u64) -> Result<(), C
             GlobalStreamMessage::Ready { .. } => {}
         }
     }
-    Err(ClientError::Stream("Summary stream ended".into()))
 }
 
 fn merge_page(mut ui: Signal<Ui>, page: SessionsPage) {
@@ -186,16 +199,48 @@ pub async fn more_sessions(ui: Signal<Ui>) {
     load_sessions(ui, true).await;
 }
 
+pub async fn refresh_probes(mut ui: Signal<Ui>) {
+    let generation = ui.read().generation;
+    ui.write().probe_request += 1;
+    let request = ui.read().probe_request;
+    let result = match client(ui) {
+        Ok(api) => {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), api.list_probes()).await {
+                Ok(result) => result.map_err(|error| format!("Unable to refresh probes: {error}")),
+                Err(_) => Err("Timed out refreshing probes".into()),
+            }
+        }
+        Err(error) => Err(format!("Unable to refresh probes: {error}")),
+    };
+    apply_probe_refresh(&mut ui.write(), generation, request, result);
+}
+
+fn apply_probe_refresh(
+    state: &mut Ui,
+    generation: u64,
+    request: u64,
+    result: Result<Vec<Probe>, String>,
+) {
+    if state.generation != generation || state.probe_request != request {
+        return;
+    }
+    match result {
+        Ok(probes) => {
+            state.probes = probes;
+            state.probe_error = None;
+        }
+        Err(error) => state.probe_error = Some(error),
+    }
+}
+
 pub async fn refresh_metadata(mut ui: Signal<Ui>) {
     let generation = ui.read().generation;
     let Ok(api) = client(ui) else {
         return;
     };
-    if let Ok(probes) = api.list_probes().await {
-        if ui.read().generation != generation {
-            return;
-        }
-        ui.write().probes = probes;
+    refresh_probes(ui).await;
+    if ui.read().generation != generation {
+        return;
     }
     match api.list_models(&ListModels::default()).await {
         Ok(models) if ui.read().generation == generation => ui.write().models = models,
@@ -235,7 +280,20 @@ pub async fn pin_model(mut ui: Signal<Ui>, model: ModelInfo) {
     }
 }
 
-pub async fn open_session(mut ui: Signal<Ui>, id: SessionId, permanent: bool) {
+pub async fn open_session(ui: Signal<Ui>, id: SessionId, permanent: bool) {
+    open_session_selection(ui, id, permanent, false).await;
+}
+
+pub async fn double_click_session(ui: Signal<Ui>, id: SessionId) {
+    open_session_selection(ui, id, true, true).await;
+}
+
+async fn open_session_selection(
+    mut ui: Signal<Ui>,
+    id: SessionId,
+    permanent: bool,
+    from_double_click: bool,
+) {
     ui.write().selection_request += 1;
     let request = ui.read().selection_request;
     let generation = ui.read().generation;
@@ -257,20 +315,22 @@ pub async fn open_session(mut ui: Signal<Ui>, id: SessionId, permanent: bool) {
             let rootless = agents.is_empty();
             ui.write().agents.insert(id, agents);
             if let Some(agent_id) = selected {
-                ui.write().open(
+                ui.write().open_session_target(
                     TranscriptTarget {
                         session_id: id,
                         agent_id,
                     },
                     permanent,
+                    from_double_click,
                 );
             } else if rootless {
-                ui.write().open(
+                ui.write().open_session_target(
                     TranscriptTarget {
                         session_id: id,
                         agent_id: crate::app::DRAFT_ROOT,
                     },
                     permanent,
+                    from_double_click,
                 );
                 load_draft_root(ui, id).await;
             } else {
@@ -360,15 +420,19 @@ async fn session_connection(
                 },
             )
             .await?;
+        // A status snapshot may be newer than the page. The subscribed stream
+        // buffers all later events, and the projection ignores replay through its head.
+        let status = api.get_agent_status(session_id, target.agent_id).await.ok();
         if ui.read().generation != generation {
             return Ok(());
         }
         let mut state = ui.write();
-        state
+        let transcript = state
             .transcripts
             .entry(*target)
-            .or_insert_with(|| Transcript::new(session_id, Some(target.agent_id)))
-            .bootstrap(page);
+            .or_insert_with(|| Transcript::new(session_id, Some(target.agent_id)));
+        transcript.bootstrap(page);
+        transcript.status_snapshot = status;
     }
     // The subscribed stream buffers AgentUpdated while the HTTP snapshot loads;
     // consume those updates afterward, so live metadata always wins.
@@ -459,6 +523,9 @@ pub async fn older(mut ui: Signal<Ui>, target: TranscriptTarget) {
 
 pub async fn submit(mut ui: Signal<Ui>, target: TranscriptTarget, interrupt: bool) {
     let generation = ui.read().generation;
+    if interrupt && target.agent_id == crate::app::DRAFT_ROOT {
+        return;
+    }
     let text = ui.read().drafts.get(&target).cloned().unwrap_or_default();
     if !interrupt && (text.trim().is_empty() || ui.read().uncertain_submissions.contains(&target)) {
         return;
@@ -486,7 +553,12 @@ pub async fn submit(mut ui: Signal<Ui>, target: TranscriptTarget, interrupt: boo
     let Ok(api) = client(ui) else {
         return;
     };
-    if !interrupt && !ui.write().pending_submissions.insert(target) {
+    let inserted = if interrupt {
+        ui.write().pending_interrupts.insert(target)
+    } else {
+        ui.write().pending_submissions.insert(target)
+    };
+    if !inserted {
         return;
     }
     let result = api
@@ -495,7 +567,9 @@ pub async fn submit(mut ui: Signal<Ui>, target: TranscriptTarget, interrupt: boo
     if generation != ui.read().generation {
         return;
     }
-    if !interrupt {
+    if interrupt {
+        ui.write().pending_interrupts.remove(&target);
+    } else {
         ui.write().pending_submissions.remove(&target);
     }
     match result {
@@ -514,9 +588,11 @@ pub async fn submit(mut ui: Signal<Ui>, target: TranscriptTarget, interrupt: boo
             if !interrupt {
                 state.uncertain_submissions.insert(target);
             }
-            state.error = Some(
-                "Submission failed; delivery may be unknown. Draft retained; check the transcript before explicitly enabling retry.".into(),
-            );
+            state.error = Some(if interrupt {
+                "Interrupt request failed; delivery may be unknown. Check the agent status before retrying.".into()
+            } else {
+                "Submission failed; delivery may be unknown. Draft retained; check the transcript before explicitly enabling retry.".into()
+            });
         }
     }
 }
@@ -739,6 +815,136 @@ pub async fn submit_draft_root(mut ui: Signal<Ui>, session_id: SessionId) {
             draft.uncertain = true;
             state.error = Some("Agent creation failed or delivery is uncertain. Draft retained. Reopen the session to check for an existing agent before retrying.".into());
         }
+    }
+}
+
+#[cfg(test)]
+mod interrupt_tests {
+    use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        time::Duration,
+    };
+
+    fn empty_root() -> Element {
+        rsx! { div {} }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn interrupt_is_deduplicated_preserves_draft_and_ignores_stale_profile() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut data = Vec::new();
+                let mut buffer = [0; 4096];
+                let (body_start, length) = loop {
+                    let n = stream.read(&mut buffer).unwrap();
+                    assert!(n > 0);
+                    data.extend_from_slice(&buffer[..n]);
+                    if let Some(end) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&data[..end]);
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .and_then(|s| s.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        if data.len() >= end + 4 + length {
+                            break (end + 4, length);
+                        }
+                    }
+                };
+                requests.push((
+                    String::from_utf8_lossy(&data[..body_start])
+                        .lines()
+                        .next()
+                        .unwrap()
+                        .to_owned(),
+                    String::from_utf8(data[body_start..body_start + length].to_vec()).unwrap(),
+                ));
+                std::thread::sleep(Duration::from_millis(100));
+                let body = r#"{"request_id":"accepted"}"#;
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+            requests
+        });
+        let mut dom = VirtualDom::new(empty_root);
+        dom.rebuild_in_place();
+        let mut settings = DesktopSettings::default();
+        settings.active_profile_mut().connection.api_url = format!("http://{address}");
+        let mut ui = dom.in_scope(ScopeId::ROOT, || Signal::new(Ui::new(settings)));
+        let target = TranscriptTarget {
+            session_id: SessionId(1),
+            agent_id: AgentId(42),
+        };
+        let mut run = Box::pin(async move {
+            ui.write().drafts.insert(target, "unsent draft".into());
+            futures_util::join!(submit(ui, target, true), submit(ui, target, true));
+            assert_eq!(
+                ui.read().drafts.get(&target).map(String::as_str),
+                Some("unsent draft")
+            );
+            assert!(ui.read().pending_interrupts.is_empty());
+            assert!(ui.read().notice.as_deref().unwrap().contains("accepted"));
+            let draft = TranscriptTarget {
+                agent_id: crate::app::DRAFT_ROOT,
+                ..target
+            };
+            submit(ui, draft, true).await;
+            assert!(ui.read().pending_interrupts.is_empty());
+
+            let change = async move {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                assert!(ui.read().pending_interrupts.contains(&target));
+                ui.write()
+                    .change_connection("http://127.0.0.1:1".into(), String::new());
+            };
+            futures_util::join!(submit(ui, target, true), change);
+            assert!(ui.read().notice.is_none());
+            assert!(ui.read().error.is_none());
+            assert!(ui.read().pending_interrupts.is_empty());
+        });
+        std::future::poll_fn(|cx| dom.in_scope(ScopeId::ROOT, || run.as_mut().poll(cx))).await;
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        for (line, body) in requests {
+            assert!(
+                line.starts_with("POST /sessions/1/agents/42/requests "),
+                "{line}"
+            );
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                "Interrupt"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod probe_refresh_tests {
+    use super::*;
+
+    #[test]
+    fn stale_probe_responses_cannot_override_newer_requests_or_profiles() {
+        let mut ui = Ui::new(DesktopSettings::default());
+        ui.probe_request = 2;
+        apply_probe_refresh(&mut ui, 0, 2, Err("new failure".into()));
+        apply_probe_refresh(&mut ui, 0, 1, Ok(Vec::new()));
+        assert_eq!(ui.probe_error.as_deref(), Some("new failure"));
+        ui.generation = 1;
+        apply_probe_refresh(&mut ui, 0, 2, Ok(Vec::new()));
+        assert_eq!(ui.probe_error.as_deref(), Some("new failure"));
+        apply_probe_refresh(&mut ui, 1, 2, Ok(Vec::new()));
+        assert!(ui.probe_error.is_none());
     }
 }
 

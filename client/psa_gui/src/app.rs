@@ -1,6 +1,6 @@
 use crate::{GuiBootstrap, network, style, views};
 use client_shared::*;
-use dioxus::{core::Task, prelude::*};
+use dioxus::{core::Task, document, prelude::*};
 use futures_util::StreamExt;
 use psa_api::*;
 use std::{
@@ -9,7 +9,112 @@ use std::{
     rc::Rc,
 };
 
+#[cfg(test)]
+mod shortcuts_tests;
+
 pub const DRAFT_ROOT: AgentId = AgentId(0);
+
+#[derive(Clone, Default)]
+pub(crate) struct ModalRegistry(Rc<RefCell<Vec<(Rc<()>, Signal<bool>)>>>);
+
+impl ModalRegistry {
+    pub(crate) fn is_open(&self) -> bool {
+        self.0.borrow().iter().any(|(_, open)| *open.peek())
+    }
+}
+
+pub(crate) fn register_modal(open: Signal<bool>) {
+    let registry = dioxus::core::try_consume_context::<ModalRegistry>();
+    let token = use_hook(|| Rc::new(()));
+    use_hook(|| {
+        if let Some(registry) = &registry {
+            registry.0.borrow_mut().push((token.clone(), open));
+        }
+    });
+    use_drop(move || {
+        if let Some(registry) = registry {
+            registry
+                .0
+                .borrow_mut()
+                .retain(|(id, _)| !Rc::ptr_eq(id, &token));
+        }
+    });
+}
+
+enum WorkspaceShortcut {
+    Follow,
+    Close,
+    Tab(usize),
+    Direction(FocusDirection),
+}
+
+fn workspace_shortcut(key: &Key, code: Code, modifiers: Modifiers) -> Option<WorkspaceShortcut> {
+    if modifiers == Modifiers::CONTROL && *key == Key::End {
+        return Some(WorkspaceShortcut::Follow);
+    }
+    if modifiers == Modifiers::CONTROL {
+        return matches!(key, Key::Character(value) if value.eq_ignore_ascii_case("w"))
+            .then_some(WorkspaceShortcut::Close);
+    }
+    if modifiers != Modifiers::ALT {
+        return None;
+    }
+    let direction = match key {
+        Key::ArrowLeft => Some(FocusDirection::Left),
+        Key::ArrowRight => Some(FocusDirection::Right),
+        Key::ArrowUp => Some(FocusDirection::Up),
+        Key::ArrowDown => Some(FocusDirection::Down),
+        _ => None,
+    };
+    if let Some(direction) = direction {
+        return Some(WorkspaceShortcut::Direction(direction));
+    }
+    let index = match code {
+        Code::Digit1 => 0,
+        Code::Digit2 => 1,
+        Code::Digit3 => 2,
+        Code::Digit4 => 3,
+        Code::Digit5 => 4,
+        Code::Digit6 => 5,
+        Code::Digit7 => 6,
+        Code::Digit8 => 7,
+        Code::Digit9 => 8,
+        _ => return None,
+    };
+    Some(WorkspaceShortcut::Tab(index))
+}
+
+pub(crate) fn handle_workspace_key(
+    mut ui: Signal<Ui>,
+    modals: &ModalRegistry,
+    event: KeyboardEvent,
+) {
+    let Some(shortcut) = workspace_shortcut(&event.key(), event.code(), event.modifiers()) else {
+        return;
+    };
+    event.prevent_default();
+    if ui.peek().settings_open || modals.is_open() {
+        return;
+    }
+    match shortcut {
+        WorkspaceShortcut::Follow => {
+            let active = ui.peek().workspace.active_tab().map(|tab| tab.id);
+            if let Some(view) = active {
+                let mut state = ui.write();
+                state.follow_request = (state.follow_request.0.wrapping_add(1), Some(view));
+            }
+        }
+        WorkspaceShortcut::Close => {
+            ui.write().workspace.close_active();
+        }
+        WorkspaceShortcut::Tab(index) => {
+            ui.write().workspace.focus_tab_at(index);
+        }
+        WorkspaceShortcut::Direction(direction) => {
+            ui.write().workspace.focus_direction(direction);
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct DraftRoot {
@@ -104,6 +209,7 @@ pub struct Ui {
     pub sessions: Vec<Session>,
     pub fresh_sessions: HashSet<SessionId>,
     pub probes: Vec<Probe>,
+    pub probe_error: Option<String>,
     pub agents: HashMap<SessionId, Vec<Agent>>,
     pub models: Vec<ModelInfo>,
     pub transcripts: HashMap<TranscriptTarget, Transcript>,
@@ -111,17 +217,20 @@ pub struct Ui {
     pub drafts: HashMap<TranscriptTarget, String>,
     pub uncertain_submissions: HashSet<TranscriptTarget>,
     pub pending_submissions: HashSet<TranscriptTarget>,
+    pub pending_interrupts: HashSet<TranscriptTarget>,
     pub draft_roots: HashMap<SessionId, DraftRoot>,
     pub revisions: HashMap<SessionId, u64>,
     pub next_sessions: Option<String>,
     pub generation: u64,
     pub selection_request: u64,
     pub list_request: u64,
+    pub probe_request: u64,
     pub connection: String,
     pub settings_open: bool,
     pub error: Option<String>,
     pub notice: Option<String>,
     pub dragging: Option<ViewId>,
+    pub follow_request: (u64, Option<ViewId>),
 }
 impl Ui {
     pub fn new(settings: DesktopSettings) -> Self {
@@ -147,6 +256,7 @@ impl Ui {
             sessions: Vec::new(),
             fresh_sessions: HashSet::new(),
             probes: Vec::new(),
+            probe_error: None,
             agents: HashMap::new(),
             models: Vec::new(),
             transcripts: HashMap::new(),
@@ -154,17 +264,20 @@ impl Ui {
             drafts: HashMap::new(),
             uncertain_submissions: HashSet::new(),
             pending_submissions: HashSet::new(),
+            pending_interrupts: HashSet::new(),
             draft_roots: HashMap::new(),
             revisions: HashMap::new(),
             next_sessions: None,
             generation: 0,
             selection_request: 0,
             list_request: 0,
+            probe_request: 0,
             connection: "Not connected".into(),
             settings_open: false,
             error: None,
             notice: None,
             dragging: None,
+            follow_request: (0, None),
         }
     }
     pub fn persisted(&self) -> DesktopSettings {
@@ -199,6 +312,18 @@ impl Ui {
         self.workspace.open(target, permanent);
         if target.agent_id != DRAFT_ROOT {
             self.last_agents.insert(target.session_id, target.agent_id);
+        }
+    }
+    pub fn open_session_target(
+        &mut self,
+        target: TranscriptTarget,
+        permanent: bool,
+        from_double_click: bool,
+    ) {
+        self.open(target, permanent);
+        if from_double_click && self.settings.preferences.double_click_session_opens_details {
+            self.sidebar.expanded_mode = SidebarMode::Details;
+            self.sidebar.collapsed = false;
         }
     }
     pub fn upsert_session(&mut self, session: Session) {
@@ -241,6 +366,33 @@ pub fn app() -> Element {
     let initial = bootstrap.config.settings.clone();
     let ui = use_signal(move || Ui::new(initial));
     use_context_provider(|| ui);
+    let modals = use_context_provider(ModalRegistry::default);
+    // Key events targeted at the document (for example after the focused tab
+    // is removed) do not bubble through the shell. Forward those to it.
+    use_effect(|| {
+        document::eval(
+            r#"
+            if (!window.psaWorkspaceKeyForwarder) {
+                window.psaWorkspaceKeyForwarder = event => {
+                    const shell = document.getElementById('psa-shell');
+                    if (!shell || shell.contains(event.target)) return;
+                    const close = event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === 'w';
+                    const navigate = event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && (/^Digit[1-9]$/.test(event.code) || /^Arrow(Left|Right|Up|Down)$/.test(event.key));
+                    const follow = event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && event.key === 'End';
+                    if (!close && !navigate && !follow) return;
+                    event.preventDefault();
+                    shell.dispatchEvent(new KeyboardEvent('keydown', { key: event.key, code: event.code, ctrlKey: event.ctrlKey, altKey: event.altKey, metaKey: event.metaKey, shiftKey: event.shiftKey, bubbles: true, cancelable: true }));
+                };
+                window.addEventListener('keydown', window.psaWorkspaceKeyForwarder, true);
+            }
+        "#,
+        );
+    });
+    use_drop(|| {
+        document::eval(
+            "window.removeEventListener('keydown', window.psaWorkspaceKeyForwarder, true); delete window.psaWorkspaceKeyForwarder;",
+        );
+    });
     let platform = bootstrap.platform.clone();
     let mut local_ui = ui;
     let generation = use_memo(move || ui.read().generation);
@@ -371,20 +523,49 @@ pub fn app() -> Element {
     let state = ui.read();
     rsx! {
         style { "{style::CSS}" }
-        div { class:"shell",
+        div { id:"psa-shell", class:"shell", onkeydown: move |event| handle_workspace_key(ui, &modals, event),
             views::Rail {}
             if !state.sidebar.collapsed { views::Sidebar { key: "{state.generation}" } }
             main { class:"workspace",
-                div { class:"connection", span { "{state.connection}" } span { "PSA · workspace" } }
-                if let Some(error)=&state.error {
-                    div { class:"error connection", "{error}" button { onclick:move |_|save_ui.write().error=None,"Dismiss" } }
-                }
-                if let Some(notice)=&state.notice {
-                    div { class:"connection", "{notice}" button { onclick:move |_|save_ui.write().notice=None,"Dismiss" } }
-                }
+                StatusBar { ui }
                 div { class:"layout", views::Layout {key:"{state.generation}",node:state.workspace.root.clone(),path:Vec::new()} }
             }
             if state.settings_open { views::Settings {} }
+        }
+    }
+}
+
+#[component]
+pub(crate) fn StatusBar(mut ui: Signal<Ui>) -> Element {
+    let state = ui.read();
+    rsx! {
+        div { class:"connection",
+            span { class:"connection-label", title:"{state.connection}", "{state.connection}" }
+            span { class:"workspace-label", "PSA · workspace" }
+            div { class:"status-notifications",
+                div { class:"status-live", role:"alert",
+                    if let Some(error) = &state.error {
+                        details { class:"status-notification status-error",
+                            summary { title:"{error}", "Error: {error}" }
+                            div { class:"status-popover",
+                                p { "{error}" }
+                                button { "aria-label":"Dismiss error", onclick:move |_|ui.write().error=None, "Dismiss" }
+                            }
+                        }
+                    }
+                }
+                div { class:"status-live", role:"status",
+                    if let Some(notice) = &state.notice {
+                        details { class:"status-notification",
+                            summary { title:"{notice}", "Notice: {notice}" }
+                            div { class:"status-popover",
+                                p { "{notice}" }
+                                button { "aria-label":"Dismiss notice", onclick:move |_|ui.write().notice=None, "Dismiss" }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

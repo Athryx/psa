@@ -12,6 +12,24 @@ pub struct ProviderInfo {
     pub authed: bool,
 }
 
+/// Set or remove one provider credential. This request contains a secret and
+/// intentionally does not implement Debug. `None` removes the credential.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetProviderCredential {
+    /// Provider whose credential is being changed.
+    pub provider: ProviderType,
+    /// New credential, or `None` to remove it. Never returned by the server.
+    #[serde(deserialize_with = "deserialize_credential")]
+    pub credential: Option<String>,
+}
+
+fn deserialize_credential<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(deserializer)
+}
+
 /// Catalog reference prices in USD per million tokens, not subscription charges.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelCostRates {

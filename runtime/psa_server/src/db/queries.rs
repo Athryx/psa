@@ -10,7 +10,7 @@ use crate::{
     sessions::SessionId,
 };
 use psa_api::{EventEnvelope, ResultRecord, events::*};
-use sqlx::SqliteConnection;
+use sqlx::{Row, SqliteConnection};
 
 #[derive(Debug, Clone)]
 pub struct InferenceResultEvents {
@@ -82,6 +82,40 @@ impl DatabaseCursor {
     ) -> Result<Vec<EventEnvelope>, DbError> {
         self.require_agent_session(session, agent).await?;
         load_result_envelopes(self.connection(), session, agent, range, false).await
+    }
+
+    /// Project status from the newest relevant markers across the bounded fork lineage.
+    pub async fn load_agent_status(
+        &mut self,
+        session: SessionId,
+        agent: AgentId,
+    ) -> Result<psa_api::AgentStatusSnapshot, DbError> {
+        let metadata = self.require_agent_session(session, agent).await?;
+        let mut markers = Vec::new();
+        for kind in ["new_context", "model", "compaction", "inference_end"] {
+            if let Some(id) = self.find_last_marker(agent, kind).await? {
+                markers.push(id);
+            }
+        }
+        markers.sort_unstable();
+        let mut status = psa_api::AgentStatusSnapshot::default();
+        for id in markers {
+            let events = self
+                .load_events(
+                    agent,
+                    EventRange {
+                        after: EventId(id - 1),
+                        through: Some(EventId(id)),
+                        limit: 1,
+                    },
+                )
+                .await?;
+            if let Some(event) = events.first() {
+                status.apply_event(event);
+            }
+        }
+        status.head = metadata.next_event_id.0.saturating_sub(1);
+        Ok(status)
     }
 
     /// Includes staged appends in this cursor. Never silently truncates a window.
@@ -446,23 +480,34 @@ pub(super) async fn usage_at(
 ) -> Result<AgentUsage, DbError> {
     let mut total = AgentUsage::default();
     for (owner, lower, upper) in load_segments(conn, agent, EventId(0), Some(through)).await? {
-        let rows = sqlx::query!(
-            "SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens FROM event_inference_result_end p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ? UNION ALL SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens FROM event_compaction p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
-            owner, lower, upper, owner, lower, upper
-        ).fetch_all(&mut *conn).await?;
+        let rows = sqlx::query(
+            "SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens, p.usage_details FROM event_inference_result_end p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ? UNION ALL SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens, p.usage_details FROM event_compaction p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+        ).bind(owner).bind(lower).bind(upper).bind(owner).bind(lower).bind(upper).fetch_all(&mut *conn).await?;
         for row in rows {
             add_usage(
                 &mut total,
                 &llm_api::api::Usage {
-                    input_tokens: row.input_tokens.map(decode_integer).transpose()?,
-                    output_tokens: row.output_tokens.map(decode_integer).transpose()?,
-                    total_tokens: row.total_tokens.map(decode_integer).transpose()?,
-                    cached_input_tokens: row.cached_tokens.map(decode_integer).transpose()?,
-                    reasoning_output_tokens: row
-                        .reasoning_tokens
+                    input_tokens: row
+                        .try_get::<Option<i64>, _>("input_tokens")?
                         .map(decode_integer)
                         .transpose()?,
-                    provider_details: Default::default(),
+                    output_tokens: row
+                        .try_get::<Option<i64>, _>("output_tokens")?
+                        .map(decode_integer)
+                        .transpose()?,
+                    total_tokens: row
+                        .try_get::<Option<i64>, _>("total_tokens")?
+                        .map(decode_integer)
+                        .transpose()?,
+                    cached_input_tokens: row
+                        .try_get::<Option<i64>, _>("cached_tokens")?
+                        .map(decode_integer)
+                        .transpose()?,
+                    reasoning_output_tokens: row
+                        .try_get::<Option<i64>, _>("reasoning_tokens")?
+                        .map(decode_integer)
+                        .transpose()?,
+                    provider_details: serde_json::from_str(row.try_get("usage_details")?)?,
                 },
             )?;
         }
@@ -473,6 +518,7 @@ pub(super) async fn usage_at(
         total.output_tokens,
         total.total_tokens,
         total.cached_input_tokens,
+        total.cache_write_tokens,
         total.reasoning_output_tokens,
     ]
     .into_iter()

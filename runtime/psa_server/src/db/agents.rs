@@ -65,6 +65,12 @@ impl DatabaseCursor {
         )
         .execute(&mut *savepoint)
         .await?;
+        // The schema's legacy default predates cache-write tracking.
+        sqlx::query("UPDATE agents SET usage = ? WHERE id = ?")
+            .bind(serde_json::to_string(&crate::agents::AgentUsage::default())?)
+            .bind(result.last_insert_rowid())
+            .execute(&mut *savepoint)
+            .await?;
         sqlx::query!(
             "UPDATE sessions SET next_position = ?, updated_at_us = ? WHERE id = ?",
             next,

@@ -3,9 +3,16 @@ use client_shared::*;
 use dioxus::prelude::*;
 use llm_api::{
     api::ContentBlock,
-    providers::{Effort, ModelConfig},
+    providers::{Effort, Model, ModelConfig, ProviderType},
 };
 use psa_api::*;
+
+#[cfg(test)]
+#[path = "follow_tests.rs"]
+mod follow_tests;
+#[cfg(test)]
+#[path = "tab_spinner_tests.rs"]
+mod tab_spinner_tests;
 
 #[component]
 pub fn Rail() -> Element {
@@ -93,15 +100,17 @@ pub fn Sidebar() -> Element {
             option{value:"","All probes"}
             for (id,label) in probe_options{option{value:"{id}","{label}"}}
         }
+        if let Some(id) = probe { div { class: "folder-probe", ProbeName { id } } }
         if groups.is_empty(){p{class:"muted","No sessions loaded. Check the connection or choose another probe."}}
         for group in groups{
             div{key:"{group.probe_id}:{group.working_directory.display()}",class:"folder",
                 details{key: if creation_target.as_ref().is_some_and(|target| target.probe == group.probe_id && group.working_directory.as_os_str() == std::ffi::OsStr::new(&target.directory)) { state.creation_revision.to_string() } else { "0".to_string() },open:true,
-                    summary{"{group.working_directory.display()}" if probe.is_none(){" · {group.probe_id}"} if group.busy{span{class:"busy"," ●"}}}
+                    summary{"{group.working_directory.display()}" if group.busy{span{class:"busy"," ●"}}}
+                    if probe.is_none() { div { class: "folder-probe", ProbeName { id: group.probe_id } } }
                     for session in group.sessions{
                         button{key:"{session.id.0}",class:"session",title:"{session.name}",
                             onclick:move |_|{spawn(network::open_session(ui,session.id,false));},
-                            ondoubleclick:move |_|{spawn(network::open_session(ui,session.id,true));},
+                            ondoubleclick:move |_|{spawn(network::double_click_session(ui,session.id));},
                             if session.parent_id.is_some(){"⑂ "}
                             "{session.name}"
                             if session.busy{span{class:"busy"," ●"}}else if state.connection!="Connected"{span{class:"muted"," ?"}}
@@ -117,20 +126,88 @@ pub fn Sidebar() -> Element {
             }
         }
         if let Some(target) = creation_target.filter(|_| !target_in_groups) {
-            div { class: "folder transient-folder", div { class: "transient-folder-title", "{target.directory} · {target.probe}" } crate::creation::InlineSessionName { target } }
+            div { class: "folder transient-folder", div { class: "transient-folder-title", "{target.directory} · " ProbeName { id: target.probe } } crate::creation::InlineSessionName { target } }
         }
         if state.next_sessions.is_some(){button{onclick:move |_|{spawn(network::more_sessions(ui));},"Load more sessions"}p{class:"muted","Folder groups may be incomplete until all pages are loaded."}}
     }}
 }
 
-fn probe_label(probe: &Probe) -> String {
-    let label = probe
+pub(crate) fn probe_label(probe: &Probe) -> String {
+    probe
         .metadata
         .label
         .as_deref()
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&probe.metadata.hostname);
-    format!("{label} ({})", probe.metadata.id)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(&probe.metadata.hostname)
+        .to_owned()
+}
+
+#[cfg(test)]
+mod probe_name_tests {
+    use super::*;
+
+    #[test]
+    fn label_prefers_nonblank_label_then_hostname() {
+        let mut probe: Probe = serde_json::from_value(serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "hostname": "host", "os": "linux", "architecture": "x86_64",
+            "label": "Workstation", "data_dir": "/data", "host": false,
+            "is_active": true, "created_at": "2026-01-01T00:00:00Z",
+            "last_connected_at": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        assert_eq!(probe_label(&probe), "Workstation");
+        probe.metadata.label = Some("  ".into());
+        assert_eq!(probe_label(&probe), "host");
+        probe.metadata.label = None;
+        assert_eq!(probe_label(&probe), "host");
+    }
+}
+
+#[component]
+pub(crate) fn ProbeName(id: ProbeId) -> Element {
+    let ui = use_context::<Signal<Ui>>();
+    let mut open = use_signal(|| false);
+    let mut trigger = use_signal(|| None::<std::rc::Rc<MountedData>>);
+    crate::app::register_modal(open);
+    let probe = ui
+        .read()
+        .probes
+        .iter()
+        .find(|p| p.metadata.id == id)
+        .cloned();
+    let name = probe
+        .as_ref()
+        .map(probe_label)
+        .unwrap_or_else(|| "Unknown probe".into());
+    rsx! {
+        button { class: "probe-name", title: "Probe information", onmounted: move |event| trigger.set(Some(event.data())), onclick: move |event| { event.stop_propagation(); open.set(true); }, "{name}" }
+        if open() {
+            div { class: "modal-backdrop", onclick: move |event| { event.stop_propagation(); open.set(false); if let Some(node) = trigger() { spawn(async move { let _ = node.set_focus(true).await; }); } },
+                section { class: "settings agent-info", role: "dialog", "aria-modal": "true", "aria-label": "Probe information", tabindex: "-1",
+                    onclick: move |event| event.stop_propagation(),
+                    onmounted: move |event| { spawn(async move { let _ = event.data().set_focus(true).await; }); },
+                    onkeydown: move |event| { if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); open.set(false); if let Some(node) = trigger() { spawn(async move { let _ = node.set_focus(true).await; }); } } },
+                    header { h2 { "Probe information" } button { "aria-label": "Close probe information", onclick: move |_| { open.set(false); if let Some(node) = trigger() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "×" } }
+                    dl { class: "info-grid",
+                        dt { "Name" } dd { "{name}" }
+                        dt { "UUID" } dd { "{id}" }
+                        if let Some(probe) = probe {
+                            dt { "Status" } dd { if probe.is_active { "Online" } else { "Offline" } }
+                            dt { "Hostname" } dd { "{probe.metadata.hostname}" }
+                            dt { "Operating system" } dd { "{probe.metadata.os}" }
+                            dt { "Architecture" } dd { "{probe.metadata.architecture}" }
+                            dt { "Data directory" } dd { "{probe.metadata.data_dir.display()}" }
+                            dt { "Home directory" } dd { "{probe.metadata.home_dir.as_deref().unwrap_or(\"Unknown\")}" }
+                            dt { "Host probe" } dd { if probe.metadata.host { "Yes" } else { "No" } }
+                            dt { "First registered" } dd { "{probe.created_at}" }
+                            dt { "Last connected" } dd { "{probe.last_connected_at}" }
+                        } else { dt { "Status" } dd { "Unknown (metadata unavailable)" } }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[component]
@@ -151,20 +228,28 @@ fn Details() -> Element {
         .unwrap_or_default();
     let tree = agent_tree(&agents, state.settings.preferences.show_hidden_agents);
     rsx! {
-        h2{"Current session"}strong{"{session.name}"}
+        div{class:"sessions-heading", h2{"Current session"}}
+        strong{class:"details-session-name","{session.name}"}
         dl{class:"details-grid",
             dt{"Working directory"}dd{"{session.working_directory.display()}"}
-            dt{"Probe"}dd{"{session.probe_id}"}
+            dt{"Probe"}dd{ProbeName{id:session.probe_id}}
             dt{"Session default model"}dd{"{session.model_config.model.provider.as_str()}/{session.model_config.model.api_name}"}
             dt{"Default effort"}dd{"{session.model_config.effort.as_str()}"}
-            dt{"Activity"}dd{if state.connection!="Connected"||!state.fresh_sessions.contains(&session.id){"Unknown (awaiting refresh)"}else if session.busy{"Busy"}else{"Idle"}}
         }
-        h2{"Agents"}
-        button{onclick:move |_|{let show=ui.read().settings.preferences.show_hidden_agents;ui.write().settings.preferences.show_hidden_agents= !show;},if state.settings.preferences.show_hidden_agents{"Hide hidden agents"}else{"Reveal hidden agents"}}
-        for row in tree{
-            button{class:"agent",style:"padding-left:{12+row.depth*14}px",disabled:row.context_only,
-                onclick:move |_|ui.write().open(TranscriptTarget{session_id:target.session_id,agent_id:row.agent.id},false),
-                "{row.agent.name} · {row.agent.state:?}" if row.context_only{" (hidden ancestor)"}
+        section{class:"details-agents",
+            div{class:"details-agents-heading",
+                h2{"Agents"}
+                button{class:"details-toggle", "aria-pressed":state.settings.preferences.show_hidden_agents,
+                    onclick:move |_|{let show=ui.read().settings.preferences.show_hidden_agents;ui.write().settings.preferences.show_hidden_agents= !show;},
+                    if state.settings.preferences.show_hidden_agents{"Hide internal"}else{"Show internal"}
+                }
+            }
+            for row in tree{
+                button{class:"agent",style:"padding-left:{8+row.depth*14}px",disabled:row.context_only,
+                    onclick:move |_|ui.write().open(TranscriptTarget{session_id:target.session_id,agent_id:row.agent.id},false),
+                    span{class:"agent-name","{row.agent.name}" if row.context_only{" (hidden ancestor)"}}
+                    if row.agent.state == AgentState::Running { span{class:"tab-spinner",role:"img","aria-label":"Agent running"} }
+                }
             }
         }
     }
@@ -269,6 +354,7 @@ fn Pane(group: TabGroup) -> Element {
         .cloned();
     rsx! {section{class:if focused{"pane focused"}else{"pane"},
         onmousedown:move |_|{ui.write().workspace.focused_group=group.id;},
+        onfocusin:move |_|{ui.write().workspace.focused_group=group.id;},
         ondragover:move |event|event.prevent_default(),
         ondrop:move |event|{event.prevent_default();let dragging=ui.read().dragging;if let Some(view)=dragging{ui.write().workspace.move_tab(view,group.id,usize::MAX);}ui.write().dragging=None;},
         div{class:"tabs",
@@ -278,13 +364,16 @@ fn Pane(group: TabGroup) -> Element {
                     ondragend:move |_|ui.write().dragging=None,
                     ondragover:move |e|e.prevent_default(),
                     ondrop:move |e|{e.prevent_default();e.stop_propagation();let dragging=ui.read().dragging;if let Some(view)=dragging{ui.write().workspace.move_tab(view,group.id,index);}ui.write().dragging=None;},
-                    button{class:"title",onclick:move |_|{ui.write().workspace.focus(tab.id);if tab.target.agent_id != crate::app::DRAFT_ROOT { ui.write().last_agents.insert(tab.target.session_id,tab.target.agent_id); }},ondoubleclick:move |_|ui.write().workspace.promote(tab.id),"{tab_title(&state,tab.target)}"}
+                    button{class:"title",onclick:move |_|{ui.write().workspace.focus(tab.id);if tab.target.agent_id != crate::app::DRAFT_ROOT { ui.write().last_agents.insert(tab.target.session_id,tab.target.agent_id); }},ondoubleclick:move |_|ui.write().workspace.promote(tab.id),
+                        "{tab_title(&state,tab.target)}"
+                    }
+                    if tab_is_running(&state, tab.target) { span { class:"tab-spinner", role:"img", "aria-label":"Agent running" } }
                     button{class:"close",title:"Close tab",onclick:move |_|{ui.write().workspace.close(tab.id);},"×"}
                 }
             }
             div{class:"tab-actions",
-                button{title:"Split horizontally",onclick:move |_|{ui.write().workspace.split(group.id,SplitAxis::Horizontal);},"◫"}
-                button{title:"Split vertically",onclick:move |_|{ui.write().workspace.split(group.id,SplitAxis::Vertical);},"⬒"}
+                button{title:"Split horizontally","aria-label":"Split horizontally",onclick:move |_|{ui.write().workspace.split(group.id,SplitAxis::Horizontal);},span{class:"split-icon","aria-hidden":"true"}}
+                button{title:"Split vertically","aria-label":"Split vertically",onclick:move |_|{ui.write().workspace.split(group.id,SplitAxis::Vertical);},span{class:"split-icon split-icon-vertical","aria-hidden":"true"}}
             }
         }
         if state.dragging.is_some(){div{class:"drop-edges",
@@ -297,7 +386,7 @@ fn Pane(group: TabGroup) -> Element {
                 div{class:"drop-zone {edge}",ondragover:move |e|e.prevent_default(),ondrop:move |e|{e.prevent_default();e.stop_propagation();let dragging=ui.read().dragging;if let Some(view)=dragging{let mut state=ui.write();move_to_split(&mut state.workspace,view,group.id,axis,before);state.dragging=None;}},"{label}"}
             }
         }}
-        for tab in group.tabs.iter().cloned(){div{key:"{tab.id.0}",style:if Some(tab.id)==group.active{"display:flex;flex-direction:column;flex:1;min-height:0;"}else{"display:none;"},TranscriptView{tab:tab.clone()}}}
+        for tab in group.tabs.iter().cloned(){div{key:"{tab.id.0}",style:if Some(tab.id)==group.active{"display:flex;flex-direction:column;flex:1;min-height:0;"}else{"display:none;"},TranscriptView{key:"{tab.id.0}:{tab.target.session_id.0}:{tab.target.agent_id.0}",active:Some(tab.id)==group.active,tab:tab.clone()}}}
         if active.is_none(){div{class:"empty","Select an agent to open a preview here."}}
     }}
 }
@@ -334,6 +423,20 @@ pub(crate) fn move_to_split(
     workspace.move_tab(view, new, 0);
 }
 
+fn tab_is_running(state: &Ui, target: TranscriptTarget) -> bool {
+    target.agent_id != crate::app::DRAFT_ROOT
+        && state.connection == "Connected"
+        && state
+            .transcript_status
+            .get(&target)
+            .is_some_and(|status| status == "Live")
+        && state.agents.get(&target.session_id).is_some_and(|agents| {
+            agents
+                .iter()
+                .any(|agent| agent.id == target.agent_id && agent.state == AgentState::Running)
+        })
+}
+
 fn tab_title(state: &Ui, target: TranscriptTarget) -> String {
     let session = state
         .sessions
@@ -353,8 +456,31 @@ fn tab_title(state: &Ui, target: TranscriptTarget) -> String {
     format!("{session} · {agent}")
 }
 
+fn update_following_from_scroll(mut following: Signal<bool>, near_bottom: bool) {
+    // A redundant signal write reruns the follow effect, pulling a user who is
+    // scrolling within the bottom threshold straight back to the end.
+    if *following.peek() != near_bottom {
+        following.set(near_bottom);
+    }
+}
+
+fn scroll_transcript_to_bottom(element: Signal<Option<std::rc::Rc<MountedData>>>) {
+    if let Some(node) = element.peek().clone() {
+        spawn(async move {
+            // Scroll the transcript itself, not a sentinel via scrollIntoView: the
+            // latter can move ancestor panes and may already be considered visible.
+            let _ = node
+                .scroll(
+                    dioxus::html::geometry::PixelsVector2D::new(0.0, 1.0e9),
+                    ScrollBehavior::Instant,
+                )
+                .await;
+        });
+    }
+}
+
 #[component]
-fn TranscriptView(tab: Tab) -> Element {
+fn TranscriptView(tab: Tab, active: bool) -> Element {
     let ui = use_context::<Signal<Ui>>();
     let mut following = use_signal(|| ui.read().settings.preferences.auto_follow);
     let mut visible = use_signal(|| 150usize);
@@ -403,27 +529,38 @@ fn TranscriptView(tab: Tab) -> Element {
             })
             .unwrap_or_default()
     });
+    let follow_request = use_memo(move || ui.read().follow_request);
+    let mut seen_follow_request = use_signal(|| follow_request.peek().0);
     use_effect(move || {
-        let _ = changed();
-        if following()
-            && let Some(node) = element.read().clone()
-        {
-            spawn(async move {
-                let _ = node.scroll_to(ScrollBehavior::Instant).await;
-            });
+        let (revision, view) = follow_request();
+        if revision != *seen_follow_request.peek() {
+            seen_follow_request.set(revision);
+            if view == Some(tab.id) {
+                following.set(true);
+                scroll_transcript_to_bottom(element);
+            }
         }
     });
+    use_effect(use_reactive((&active,), move |(active,)| {
+        let _ = changed();
+        // Subscribe to mounting as well as transcript updates. Hidden tabs are
+        // scrolled when activated, after their layout becomes visible again.
+        let _ = element.read();
+        if active && following() {
+            scroll_transcript_to_bottom(element);
+        }
+    }));
     rsx! {
-        div{class:"transcript",style:"font-size:{state.settings.preferences.transcript_font_size}px",
-            onscroll:move |event|{let near=(event.scroll_height()-event.client_height()) as f64-event.scroll_top()<80.0;following.set(near);},
-            if target.agent_id != crate::app::DRAFT_ROOT { button{onclick:move |_|{following.set(false);visible+=150;spawn(network::older(ui,target));},"Load older history"} }
+        div{class:"transcript",style:"font-size:{state.settings.preferences.transcript_font_size}px;--conversation-max-width:{state.settings.preferences.conversation_max_width_ch}rch",
+            onmounted:move |event|element.set(Some(event.data())),
+            onscroll:move |event|{let near=(event.scroll_height()-event.client_height()) as f64-event.scroll_top()<80.0;update_following_from_scroll(following, near);},
+            if transcript.is_some_and(|transcript| transcript.has_older) { button{onclick:move |_|{following.set(false);visible+=150;spawn(network::older(ui,target));},"Load older history"} }
             if count>visible(){button{onclick:move |_|visible+=150,"Show {count-visible()} earlier loaded items"}}
             for row in rows.into_iter().filter(|row|!matches!(&row.kind,psa_api::events::EventType::ToolResult(result) if call_ids.contains(&result.call_id))){
                 EventRow{key:"{row.id:?}",kind:row.kind,provisional:row.provisional,results:tool_results.clone()}
             }
             for query in queries{Question{key:"{query.id}",query}}
-            div{onmounted:move |event|element.set(Some(event.data())),style:"height:1px"}
-            if !following(){button{class:"new-activity",onclick:move |_|following.set(true),"Follow new activity ↓"}}
+            if !following(){button{class:"new-activity",onclick:move |_|{following.set(true);scroll_transcript_to_bottom(element);},"Follow new activity ↓"}}
         }
         if target.agent_id == crate::app::DRAFT_ROOT { DraftComposer { tab } } else { Composer{tab} }
     }
@@ -474,7 +611,20 @@ pub(crate) fn EventRow(props: EventRowProps) -> Element {
     use psa_api::events::EventType;
     match kind {
         EventType::Message(message) => {
-            rsx! {article{class:"message",div{class:"role","{message.message_type:?}" if provisional{" · streaming"}}pre{"{blocks(&message.content)}"}}}
+            let is_agent = matches!(
+                message.message_type,
+                psa_api::events::MessageType::Agent | psa_api::events::MessageType::Subagent
+            );
+            rsx! {article{class:"message",div{class:"role","{message.message_type:?}" if provisional{" · streaming"}}
+                if is_agent {
+                    for block in &message.content {
+                        match block {
+                            ContentBlock::Text(text) => rsx! { crate::markdown::Markdown { text: text.text.clone() } },
+                            _ => rsx! { pre { "{blocks(std::slice::from_ref(block))}" } },
+                        }
+                    }
+                } else { pre { "{blocks(&message.content)}" } }
+            }}
         }
         EventType::Log(log) => {
             rsx! {article{class:if log.error{"message error"}else{"message muted"},div{class:"role","Harness log"}pre{"{log.message}"}}}
@@ -502,10 +652,39 @@ pub(crate) fn EventRow(props: EventRowProps) -> Element {
         EventType::Result(result) => {
             rsx! {details{class:"tool",summary{"Recorded result"}pre{"{serde_json::to_string_pretty(&result).unwrap_or_default()}"}}}
         }
+        EventType::InferenceResultEnd(end) => match end.outcome {
+            llm_api::api::Outcome::Failed(error) => {
+                rsx! {article{class:"message error",role:"alert",
+                    div{class:"role","Inference failed"}
+                    pre{"{error}"}
+                    details{summary{"Error details"}pre{"{serde_json::to_string_pretty(&error).unwrap_or_default()}"}}
+                }}
+            }
+            llm_api::api::Outcome::Cancelled => {
+                rsx! {article{class:"message muted",div{class:"role","Inference cancelled"}}}
+            }
+            llm_api::api::Outcome::Incomplete { reason } => {
+                use llm_api::api::StopReason;
+                let reason = match reason {
+                    StopReason::EndTurn => "End of turn".to_string(),
+                    StopReason::ToolCalls => "Tool calls".to_string(),
+                    StopReason::StopSequence => "Stop sequence".to_string(),
+                    StopReason::TokenLimit => "Token limit reached".to_string(),
+                    StopReason::ContentFilter => "Content filtered".to_string(),
+                    StopReason::Other(reason) => reason,
+                };
+                rsx! {article{class:"message",div{class:"role","Inference incomplete"}pre{"{reason}"}}}
+            }
+            llm_api::api::Outcome::Completed { .. } | llm_api::api::Outcome::InProgress => rsx! {},
+        },
         EventType::StatusChange(status) => rsx! {div{class:"muted","Agent {status.new_status:?}"}},
         _ => rsx! {},
     }
 }
+
+#[cfg(test)]
+#[path = "inference_result_tests.rs"]
+mod inference_result_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DraftCommandStage {
@@ -513,6 +692,7 @@ enum DraftCommandStage {
     Configurations,
     Models,
     SessionModels,
+    SessionEfforts,
 }
 
 fn draft_command_stage(
@@ -537,6 +717,12 @@ fn draft_command_stage(
         .is_some_and(|rest| rest.starts_with(char::is_whitespace))
     {
         return Some(DraftCommandStage::SessionModels);
+    }
+    if text
+        .strip_prefix("/effort")
+        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+    {
+        return Some(DraftCommandStage::SessionEfforts);
     }
     (!complete_commands(text).is_empty()).then_some(DraftCommandStage::Completion)
 }
@@ -592,16 +778,234 @@ fn refresh_draft_configs(mut ui: Signal<Ui>, session_id: SessionId, target: Tran
 #[path = "draft_composer_tests.rs"]
 mod draft_composer_tests;
 
+#[cfg(test)]
+#[path = "status_tests.rs"]
+mod status_tests;
+
+#[component]
+fn ComposerStatus(
+    path: Option<String>,
+    model: Option<String>,
+    effort: Option<Effort>,
+    context_tokens: Option<u64>,
+    context_window: Option<u64>,
+) -> Element {
+    let usage = format_context_usage(context_tokens, context_window);
+    let effort_class = effort
+        .map(|e| format!("effort-{}", e.as_str()))
+        .unwrap_or_default();
+    rsx! {
+        div { class:"composer-status", "aria-label":"Composer status",
+            span { class:"composer-status-path", title:"{path.as_deref().unwrap_or(\"Unknown working directory\")}", "{path.as_deref().unwrap_or(\"Unknown working directory\")}" }
+            span { class:"composer-status-details",
+                span { class:"composer-status-model", "{model.as_deref().unwrap_or(\"Unknown model\")}" }
+                if let Some(effort) = effort { " · " span { class:"{effort_class}", "{effort.as_str()}" } }
+                span { class:"composer-status-usage", title:"Last inference token usage; not exact current context", "{usage}" }
+            }
+        }
+    }
+}
+
+fn format_context_usage(tokens: Option<u64>, window: Option<u64>) -> String {
+    let percent = match (tokens, window) {
+        (Some(tokens), Some(window)) if window > 0 => {
+            format!(
+                "{}%",
+                (u128::from(tokens) * 100 + u128::from(window) / 2) / u128::from(window)
+            )
+        }
+        _ => "?".to_string(),
+    };
+    let window = window
+        .filter(|window| *window > 0)
+        .map(format_token_count)
+        .unwrap_or_else(|| "?".to_string());
+    format!("({percent} / {window})")
+}
+
+fn draft_status_model(
+    selection: Option<&ModelSelection>,
+    session: Option<&ModelConfig>,
+) -> (Option<Model>, Option<Effort>) {
+    match selection {
+        Some(ModelSelection::Global | ModelSelection::Parent) => session
+            .map(|config| (Some(config.model.clone()), Some(config.effort)))
+            .unwrap_or_default(),
+        Some(ModelSelection::Fixed { model, effort }) => {
+            let effort = match effort {
+                EffortSelection::Fixed(effort) => Some(*effort),
+                EffortSelection::Global | EffortSelection::Parent => {
+                    session.map(|config| config.effort)
+                }
+            };
+            (Model::parse_slug(model).ok(), effort)
+        }
+        None => (None, None),
+    }
+}
+
+fn format_token_count(count: u64) -> String {
+    if count < 1_000 {
+        return count.to_string();
+    }
+    format!("{}k", (u128::from(count) + 500) / 1_000)
+}
+
+fn info_location(state: &Ui, session_id: SessionId) -> (Option<String>, Option<ProbeId>) {
+    let Some(session) = state.sessions.iter().find(|s| s.id == session_id) else {
+        return (None, None);
+    };
+    let path = Some(session.working_directory.to_string_lossy().into_owned());
+    let probe = Some(session.probe_id);
+    (path, probe)
+}
+
+fn token_difference(total: Option<u64>, part: Option<u64>) -> Option<u64> {
+    total?.checked_sub(part?)
+}
+
+#[component]
+fn ResolvedTemplate(id: AgentDefinitionId) -> Element {
+    let ui = use_context::<Signal<Ui>>();
+    let mut name = use_signal(|| None::<String>);
+    use_effect(move || {
+        name.set(None);
+        spawn(async move {
+            if let Ok(client) = network::client(ui) {
+                if let Ok(Some(snapshot)) = client.get_resolved_agent_config(id).await {
+                    name.set(Some(snapshot.config.config_id.name));
+                }
+            }
+        });
+    });
+    rsx! { "{name.read().as_deref().unwrap_or(\"Unknown\")}" }
+}
+
+#[component]
+fn AgentInfo(
+    name: String,
+    template: Option<String>,
+    definition_id: Option<AgentDefinitionId>,
+    path: Option<String>,
+    probe: Option<ProbeId>,
+    model: Option<String>,
+    effort: Option<Effort>,
+    usage: Option<AgentUsage>,
+    mut open: Signal<bool>,
+) -> Element {
+    crate::app::register_modal(open);
+    let count = |value: Option<u64>| {
+        value
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "Unknown".into())
+    };
+    let input = usage.as_ref().and_then(|u| u.input_tokens);
+    let cached = usage.as_ref().and_then(|u| u.cached_input_tokens);
+    let cache_write = usage.as_ref().and_then(|u| u.cache_write_tokens);
+    let hit = usage
+        .as_ref()
+        .and_then(cache_hit_rate)
+        .map(|rate| format!("{:.1}%", rate * 100.0))
+        .unwrap_or_else(|| "Unknown".into());
+    let output = usage.as_ref().and_then(|u| u.output_tokens);
+    let thinking = usage.as_ref().and_then(|u| u.reasoning_output_tokens);
+    let effort_class = effort
+        .map(|e| format!("effort-{}", e.as_str()))
+        .unwrap_or_default();
+    rsx! {
+        div { class:"modal-backdrop", onclick:move |event| { event.stop_propagation(); open.set(false); },
+            section { class:"settings agent-info", role:"dialog", "aria-modal":"true", "aria-label":"Agent information", tabindex:"-1",
+                onclick:move |event| event.stop_propagation(),
+                onmounted:move |event| { spawn(async move { let _ = event.data().set_focus(true).await; }); },
+                onkeydown:move |event| { if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); open.set(false); } },
+                header { h2 { "Agent information" } button { "aria-label":"Close agent information", onclick:move |_| open.set(false), "×" } }
+                dl { class:"info-grid",
+                    dt { "Name" } dd { "{name}" }
+                    dt { "Template" } dd { if let Some(id) = definition_id { ResolvedTemplate { id } } else { "{template.as_deref().unwrap_or(\"Unknown\")}" } }
+                    dt { "Path" } dd { "{path.as_deref().unwrap_or(\"Unknown\")}" }
+                    dt { "Probe" } dd { if let Some(id) = probe { ProbeName { id } } else { "Unknown" } }
+                    dt { "Model" } dd { "{model.as_deref().unwrap_or(\"Unknown\")}" " · " span { class:"{effort_class}", "{effort.map(|e| e.as_str()).unwrap_or(\"Unknown\")}" } }
+                    dt { "Input tokens" } dd { "{count(input)}" }
+                    dt { class:"info-detail", "Cached" } dd { "{count(cached)}" }
+                    dt { class:"info-detail", "Cache hit rate" } dd { "{hit}" }
+                    dt { class:"info-detail", "Uncached" } dd { "{count(token_difference(input, cached))}" }
+                    if let Some(cache_write) = cache_write { dt { class:"info-detail", "Cache write" } dd { "{cache_write}" } }
+                    dt { "Output tokens" } dd { "{count(output)}" }
+                    dt { class:"info-detail", "Thinking" } dd { "{count(thinking)}" }
+                    dt { class:"info-detail", "Non-thinking" } dd { "{count(token_difference(output, thinking))}" }
+                    dt { "Total tokens" } dd { "{count(usage.as_ref().and_then(|u| u.total_tokens))}" }
+                }
+            }
+        }
+    }
+}
+
+type MenuNodes = Signal<Vec<Option<std::rc::Rc<MountedData>>>>;
+
+fn register_menu_option(mut nodes: MenuNodes, index: usize, node: std::rc::Rc<MountedData>) {
+    let mut nodes = nodes.write();
+    if nodes.len() <= index {
+        nodes.resize_with(index + 1, || None);
+    }
+    nodes[index] = Some(node);
+}
+
+fn scroll_menu_option(
+    popup: Signal<Option<std::rc::Rc<MountedData>>>,
+    nodes: MenuNodes,
+    selected: Signal<usize>,
+    index: usize,
+) {
+    let popup = popup.peek().clone();
+    let option = nodes.peek().get(index).and_then(Clone::clone);
+    if let (Some(popup), Some(option)) = (popup, option) {
+        spawn(async move {
+            let (Ok(container), Ok(item), Ok(offset)) = (
+                popup.get_client_rect().await,
+                option.get_client_rect().await,
+                popup.get_scroll_offset().await,
+            ) else {
+                return;
+            };
+            let delta = menu_scroll_delta(
+                container.origin.y as f64,
+                container.size.height as f64,
+                item.origin.y as f64,
+                item.size.height as f64,
+            );
+            if delta != 0.0 && *selected.peek() == index {
+                let _ = popup
+                    .scroll(
+                        dioxus::html::geometry::PixelsVector2D::new(offset.x, offset.y + delta),
+                        ScrollBehavior::Instant,
+                    )
+                    .await;
+            }
+        });
+    }
+}
+
+fn menu_scroll_delta(top: f64, height: f64, item_top: f64, item_height: f64) -> f64 {
+    if item_top < top {
+        item_top - top
+    } else {
+        (item_top + item_height - top - height).max(0.0)
+    }
+}
+
 #[component]
 fn DraftComposer(tab: Tab) -> Element {
     let mut ui = use_context::<Signal<Ui>>();
     let target = tab.target;
     let session_id = target.session_id;
     let mut selected_index = use_signal(|| 0usize);
+    let mut menu_popup = use_signal(|| None::<std::rc::Rc<MountedData>>);
+    let menu_nodes = use_signal(Vec::new);
     let mut dismissed = use_signal(|| false);
     let mut choosing_model = use_signal(|| false);
     let mut all_models = use_signal(|| false);
     let mut textarea_node = use_signal(|| None::<std::rc::Rc<MountedData>>);
+    let mut info_open = use_signal(|| false);
     use_effect(move || {
         spawn(network::load_draft_root(ui, session_id));
     });
@@ -631,6 +1035,22 @@ fn DraftComposer(tab: Tab) -> Element {
         .iter()
         .find(|s| s.id == session_id)
         .map(|s| s.model_config.clone());
+    let (status_model, status_effort) =
+        draft_status_model(draft.and_then(|d| d.model.as_ref()), current.as_ref());
+    let status_info = status_model
+        .as_ref()
+        .and_then(|model| state.models.iter().find(|info| info.model == *model));
+    let status_name = status_info.map(|info| info.name.clone()).or_else(|| {
+        status_model
+            .as_ref()
+            .map(|model| model.model_name().to_owned())
+    });
+    let status_window = status_info.and_then(|info| info.context_window);
+    let info_name = draft
+        .and_then(|d| d.selected.as_ref())
+        .map(|id| id.name.clone())
+        .unwrap_or_else(|| "Unselected root agent".into());
+    let (info_path, info_probe) = info_location(&state, session_id);
     let default_effort = current.as_ref().map(|c| c.effort).unwrap_or(Effort::Medium);
     let model_filter = text
         .strip_prefix("/model")
@@ -649,6 +1069,13 @@ fn DraftComposer(tab: Tab) -> Element {
         .cloned()
         .collect();
     let key_session_models = session_models.clone();
+    let effort_filter = text
+        .strip_prefix("/effort")
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    let efforts = session_efforts(&state.models, current.as_ref(), &effort_filter);
+    let key_efforts = efforts.clone();
     let models = draft.map(|d| d.model_choices()).unwrap_or_default();
     let key_models = models.clone();
     let pending = draft.is_none_or(|d| d.loading || d.pending);
@@ -660,17 +1087,19 @@ fn DraftComposer(tab: Tab) -> Element {
         Some(DraftCommandStage::Configurations) => configs.len(),
         Some(DraftCommandStage::Models) => models.len(),
         Some(DraftCommandStage::SessionModels) => session_models.len(),
+        Some(DraftCommandStage::SessionEfforts) => efforts.len(),
         None => 0,
     };
-    rsx! { div { class:"composer",
-        if let Some(stage) = stage { div { class:"popup command-popup", role:"listbox",
-            "aria-label": match stage { DraftCommandStage::Completion => "Slash commands", DraftCommandStage::Configurations => "Agent configurations", DraftCommandStage::Models => "Root agent model policy", DraftCommandStage::SessionModels => "Session default model" },
+    rsx! { div { class:"composer", style:"--conversation-max-width:{state.settings.preferences.conversation_max_width_ch}rch",
+        if info_open() { AgentInfo { name:info_name.clone(), template:draft.and_then(|d| d.selected.as_ref()).map(|id| id.name.clone()), definition_id:None, path:info_path, probe:info_probe, model:status_name.clone(), effort:status_effort, usage:None, open:info_open } }
+        if let Some(stage) = stage { div { class:"popup command-popup", role:"listbox", onmounted:move |event| menu_popup.set(Some(event.data())),
+            "aria-label": match stage { DraftCommandStage::Completion => "Slash commands", DraftCommandStage::Configurations => "Agent configurations", DraftCommandStage::Models => "Root agent model policy", DraftCommandStage::SessionModels => "Session default model", DraftCommandStage::SessionEfforts => "Session default effort" },
             match stage {
                 DraftCommandStage::Completion => rsx! {
                     for (index, command) in commands.iter().copied().enumerate() {
-                        button { class:if selected_index()==index { "command-option selected" } else { "command-option" }, role:"option", "aria-selected":selected_index()==index,
+                        button { class:if selected_index()==index { "command-option selected" } else { "command-option" }, role:"option", "aria-selected":selected_index()==index, onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),
                             onmousedown:move |event| event.prevent_default(),
-                            onclick:move |_| { if command.id == CommandId::Refresh { refresh_draft_configs(ui, session_id, target); } else { ui.write().drafts.insert(target, format!("/{} ", command.name)); } selected_index.set(0); if let Some(node)=textarea_node.read().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } },
+                            onclick:move |_| { if command.id == CommandId::Refresh { refresh_draft_configs(ui, session_id, target); } else if command.id == CommandId::Info { ui.write().drafts.remove(&target); info_open.set(true); } else { ui.write().drafts.insert(target, format!("/{} ", command.name)); } selected_index.set(0); if command.id != CommandId::Info { if let Some(node)=textarea_node.read().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } } },
                             span { class:"command-title", "/{command.name}" }
                             span { class:"command-description", "{command.description}" }
                         }
@@ -682,7 +1111,7 @@ fn DraftComposer(tab: Tab) -> Element {
                     if configs.is_empty() { p { class:"command-empty", "No matching usable configurations." } }
                     for (index, config) in configs.iter().enumerate() {
                         { let id = config.config.config_id.clone(); let name = id.name.clone(); let group = format!("{:?}", id.config_group); let description = config.config.description.clone(); rsx! {
-                            button { class:if selected_index()==index { "command-option selected" } else { "command-option" }, role:"option", "aria-selected":selected_index()==index,
+                            button { class:if selected_index()==index { "command-option selected" } else { "command-option" }, role:"option", "aria-selected":selected_index()==index, onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),
                                 onmousedown:move |event| event.prevent_default(),
                                 onclick:move |_| { choosing_model.set(select_draft_config(ui, session_id, target, id.clone())); selected_index.set(0); dismissed.set(false); if let Some(node)=textarea_node.read().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } },
                                 span { class:"command-title", "{name}" }
@@ -698,11 +1127,24 @@ fn DraftComposer(tab: Tab) -> Element {
                     button { onmousedown:move |event| event.prevent_default(), onclick:move |_| { all_models.set(!all_models()); selected_index.set(0); if let Some(node)=textarea_node.read().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, if all_models() { "Show favorites" } else { "All models…" } }
                     if session_models.is_empty() { p { class:"command-empty", if model_filter.is_empty() { "No favorite models. Open settings to pin models, or choose All models." } else { "No matching models. Try another search or choose All models." } } }
                     for (index, model) in session_models.iter().cloned().enumerate() {
-                        button { class:if selected_index()==index { "command-option selected" } else { "command-option" }, role:"option", "aria-selected":selected_index()==index,
+                        button { class:if selected_index()==index { "command-option selected" } else { "command-option" }, role:"option", "aria-selected":selected_index()==index, onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),
                             onmousedown:move |event| event.prevent_default(),
                             onclick:move |_| { spawn(change_model(ui, session_id, ModelConfig { model:model.model.clone(), effort:choose_effort(&model, default_effort) })); ui.write().drafts.remove(&target); if let Some(node)=textarea_node.read().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } },
                             span { class:"command-title", "{model.name}" }
                             span { class:"command-description", "{model.model.provider.as_str()}/{model.model.api_name}" }
+                        }
+                    }
+                    p { class:"command-hint", "↑↓ to navigate · Enter to select · Esc to dismiss" }
+                },
+                DraftCommandStage::SessionEfforts => rsx! {
+                    strong { class:"command-heading", "Session default effort (not individual agents)" }
+                    if let Some(config)=&current { p { class:"muted", "Current: {config.effort.as_str()}" } }
+                    if efforts.is_empty() { p { class:"command-empty", "No matching effort options for the current model." } }
+                    for (index, effort) in efforts.iter().copied().enumerate() {
+                        button { class:if selected_index()==index { "command-option selected" } else { "command-option" }, role:"option", "aria-selected":selected_index()==index, onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),
+                            onmousedown:move |event| event.prevent_default(),
+                            onclick:move |_| { select_session_effort(ui, target, effort); selected_index.set(0); if let Some(node)=textarea_node.read().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } },
+                            span { class:"command-title", "{effort.as_str()}" }
                         }
                     }
                     p { class:"command-hint", "↑↓ to navigate · Enter to select · Esc to dismiss" }
@@ -712,7 +1154,7 @@ fn DraftComposer(tab: Tab) -> Element {
                     if models.is_empty() { p { class:"command-empty", "No model policies available." } }
                     for (index, model) in models.iter().cloned().enumerate() {
                         { let label = draft_model_label(&model); rsx! {
-                            button { class:if selected_index()==index { "command-option selected" } else { "command-option" }, role:"option", "aria-selected":selected_index()==index,
+                            button { class:if selected_index()==index { "command-option selected" } else { "command-option" }, role:"option", "aria-selected":selected_index()==index, onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),
                                 onmousedown:move |event| event.prevent_default(),
                                 onclick:move |_| { if let Some(draft)=ui.write().draft_roots.get_mut(&session_id) { draft.model=Some(model.clone()); } choosing_model.set(false); selected_index.set(0); if let Some(node)=textarea_node.read().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } },
                                 span { class:"command-title", "{label}" }
@@ -732,21 +1174,24 @@ fn DraftComposer(tab: Tab) -> Element {
             onkeydown:move |event| {
                 if let Some(stage) = stage {
                     match event.key() {
-                        Key::ArrowDown => { event.prevent_default(); if count > 0 { selected_index.set((selected_index()+1)%count); } }
-                        Key::ArrowUp => { event.prevent_default(); if count > 0 { selected_index.set((selected_index()+count-1)%count); } }
-                        Key::Escape => { event.prevent_default(); dismissed.set(true); choosing_model.set(false); }
+                        Key::ArrowDown => { event.prevent_default(); if count > 0 { let next = (selected_index()+1)%count; selected_index.set(next); scroll_menu_option(menu_popup, menu_nodes, selected_index, next); } }
+                        Key::ArrowUp => { event.prevent_default(); if count > 0 { let next = (selected_index()+count-1)%count; selected_index.set(next); scroll_menu_option(menu_popup, menu_nodes, selected_index, next); } }
+                        Key::Escape => { event.prevent_default(); event.stop_propagation(); dismissed.set(true); choosing_model.set(false); }
                         Key::Tab if stage == DraftCommandStage::Completion && !event.modifiers().contains(Modifiers::SHIFT) => {
                             event.prevent_default(); if let Some(command)=key_commands.get(selected_index()) { ui.write().drafts.insert(target,if command.id == CommandId::Refresh { "/refresh".into() } else { format!("/{} ", command.name) }); selected_index.set(0); }
                         }
                         Key::Enter if !event.modifiers().contains(Modifiers::SHIFT) => {
                             event.prevent_default();
                             match stage {
-                                DraftCommandStage::Completion => if let Some(command)=key_commands.get(selected_index()) { if command.id == CommandId::Refresh { refresh_draft_configs(ui,session_id,target); } else { ui.write().drafts.insert(target,format!("/{} ", command.name)); } selected_index.set(0); }
+                                DraftCommandStage::Completion => if let Some(command)=key_commands.get(selected_index()) { if command.id == CommandId::Refresh { refresh_draft_configs(ui,session_id,target); } else if command.id == CommandId::Info { ui.write().drafts.remove(&target); info_open.set(true); } else { ui.write().drafts.insert(target,format!("/{} ", command.name)); } selected_index.set(0); }
                                 DraftCommandStage::Configurations => if let Some(config)=key_configs.get(selected_index()) {
                                     choosing_model.set(select_draft_config(ui,session_id,target,config.config.config_id.clone())); selected_index.set(0);
                                 },
                                 DraftCommandStage::SessionModels => if let Some(model)=key_session_models.get(selected_index()) {
                                     spawn(change_model(ui,session_id,ModelConfig { model:model.model.clone(), effort:choose_effort(model,default_effort) })); ui.write().drafts.remove(&target); selected_index.set(0);
+                                },
+                                DraftCommandStage::SessionEfforts => if let Some(effort)=key_efforts.get(selected_index()) {
+                                    select_session_effort(ui,target,*effort); selected_index.set(0);
                                 },
                                 DraftCommandStage::Models => if let Some(model)=key_models.get(selected_index()) {
                                     if let Some(draft)=ui.write().draft_roots.get_mut(&session_id) { draft.model=Some(model.clone()); }
@@ -759,6 +1204,7 @@ fn DraftComposer(tab: Tab) -> Element {
                 } else if event.key()==Key::Enter && !event.modifiers().contains(Modifiers::SHIFT) {
                     event.prevent_default();
                     if matches!(parse_composer_input(&text), ComposerInput::Command { id: CommandId::Refresh, .. }) { refresh_draft_configs(ui,session_id,target); }
+                    else if matches!(parse_composer_input(&text), ComposerInput::Command { id: CommandId::Info, .. }) { ui.write().drafts.remove(&target); info_open.set(true); }
                     else { spawn(network::submit_draft_root(ui,session_id)); }
                 }
             }
@@ -766,6 +1212,7 @@ fn DraftComposer(tab: Tab) -> Element {
           }
           button { class:"primary composer-send", "aria-label":"Send first message", disabled:blocked, onclick:move |_| { spawn(network::submit_draft_root(ui,session_id)); }, "↑" }
         }
+        ComposerStatus { path: state.sessions.iter().find(|s| s.id == session_id).map(|s| s.working_directory.to_string_lossy().into_owned()), model: status_name, effort: status_effort, context_tokens: None, context_window: status_window }
     }}
 }
 
@@ -778,12 +1225,43 @@ fn Composer(tab: Tab) -> Element {
     let mut ui = use_context::<Signal<Ui>>();
     let mut all = use_signal(|| false);
     let mut selected = use_signal(|| 0usize);
+    let mut menu_popup = use_signal(|| None::<std::rc::Rc<MountedData>>);
+    let menu_nodes = use_signal(Vec::new);
     let mut dismissed = use_signal(|| false);
+    let mut info_open = use_signal(|| false);
     let state = ui.read();
     let target = tab.target;
+    let status = state
+        .transcripts
+        .get(&target)
+        .map(|transcript| agent_status(transcript, &state.models));
+    let status_model = status
+        .as_ref()
+        .and_then(|status| status.model_config.as_ref())
+        .map(|config| {
+            state
+                .models
+                .iter()
+                .find(|model| model.model == config.model)
+                .map(|model| model.name.clone())
+                .unwrap_or_else(|| config.model.model_name().to_owned())
+        });
+    let status_effort = status
+        .as_ref()
+        .and_then(|status| status.model_config.as_ref())
+        .map(|config| config.effort);
+    let status_tokens = status.as_ref().and_then(|status| status.context_tokens);
+    let status_window = status.as_ref().and_then(|status| status.context_window);
     let draft = state.drafts.get(&target).cloned().unwrap_or_default();
     let uncertain = state.uncertain_submissions.contains(&target);
     let parsed = parse_composer_input(&draft);
+    let info_command = matches!(
+        parsed,
+        ComposerInput::Command {
+            id: CommandId::Info,
+            ..
+        }
+    );
     let agent_command = matches!(
         parsed,
         ComposerInput::Command {
@@ -800,7 +1278,12 @@ fn Composer(tab: Tab) -> Element {
     );
     let commands: Vec<_> = complete_commands(&draft)
         .into_iter()
-        .filter(|c| c.id == CommandId::SessionModel)
+        .filter(|c| {
+            matches!(
+                c.id,
+                CommandId::SessionModel | CommandId::SessionEffort | CommandId::Info
+            )
+        })
         .collect();
     // A complete command name remains a completion until a space starts its arguments.
     let model_command = commands.is_empty()
@@ -811,7 +1294,15 @@ fn Composer(tab: Tab) -> Element {
                 ..
             }
         );
-    let command = !dismissed() && (model_command || !commands.is_empty());
+    let effort_command = commands.is_empty()
+        && matches!(
+            parsed,
+            ComposerInput::Command {
+                id: CommandId::SessionEffort,
+                ..
+            }
+        );
+    let command = !dismissed() && (model_command || effort_command || !commands.is_empty());
     let current = state
         .sessions
         .iter()
@@ -835,19 +1326,45 @@ fn Composer(tab: Tab) -> Element {
         .collect();
     let key_models = models.clone();
     let default_effort = current.as_ref().map(|c| c.effort).unwrap_or(Effort::Medium);
-    let efforts: Vec<_> = current
-        .as_ref()
-        .and_then(|c| state.models.iter().find(|m| m.model == c.model))
-        .map(|m| m.reasoning_options.iter().map(|o| o.effort).collect())
-        .unwrap_or_else(|| vec![default_effort]);
-    rsx! {div{class:"composer",
-        if command{div{class:"popup command-popup",role:"listbox","aria-label":"Slash commands",
-            if !model_command{
+    let effort_filter = draft
+        .strip_prefix("/effort")
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    let efforts = session_efforts(&state.models, current.as_ref(), &effort_filter);
+    let key_efforts = efforts.clone();
+    let key_commands = commands.clone();
+    let agent = state
+        .agents
+        .get(&target.session_id)
+        .and_then(|agents| agents.iter().find(|agent| agent.id == target.agent_id));
+    let info_name = agent
+        .map(|agent| agent.name.clone())
+        .unwrap_or_else(|| "Unknown agent".into());
+    let info_usage = agent.map(|agent| agent.usage.clone());
+    let (info_path, info_probe) = info_location(&state, target.session_id);
+    rsx! {div{class:"composer",style:"--conversation-max-width:{state.settings.preferences.conversation_max_width_ch}rch",
+        if info_open() { AgentInfo { name:info_name, template:None, definition_id:agent.map(|a| a.definition_id), path:info_path, probe:info_probe, model:status_model.clone(), effort:status_effort, usage:info_usage, open:info_open } }
+        if command{div{class:"popup command-popup",role:"listbox","aria-label":"Slash commands",onmounted:move |event| menu_popup.set(Some(event.data())),
+            if !model_command && !effort_command{
                 div{class:"command-heading","Commands"}
-                button{class:"command-option selected",role:"option","aria-selected":"true",onclick:move |_|{ui.write().drafts.insert(target,"/model ".into());selected.set(0);},
-                    span{class:"command-title","/model"} span{class:"command-description","Change the session default model and effort"}
+                for (index, spec) in commands.iter().copied().enumerate() {
+                    button{class:if selected()==index{"command-option selected"}else{"command-option"},role:"option","aria-selected":(selected()==index).to_string(),onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),onclick:move |_|{if spec.id == CommandId::Info { ui.write().drafts.remove(&target); info_open.set(true); } else { ui.write().drafts.insert(target,format!("/{} ", spec.name)); } selected.set(0);},
+                        span{class:"command-title","/{spec.name}"} span{class:"command-description","{spec.description}"}
+                    }
                 }
                 div{class:"command-hint","↑↓ navigate · Enter select · Tab complete · Esc dismiss"}
+            }
+            else if effort_command {
+                div{class:"command-heading","Session default effort (not individual agents)"}
+                if let Some(config)=&current { p{class:"muted","Current: {config.effort.as_str()}"} }
+                if efforts.is_empty() { p{class:"command-empty","No matching effort options for the current model."} }
+                for (index, effort) in efforts.iter().copied().enumerate() {
+                    button{class:if selected()==index{"command-option selected"}else{"command-option"},role:"option","aria-selected":(selected()==index).to_string(),onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),onclick:move |_|{select_session_effort(ui,target,effort);selected.set(0);},
+                        span{class:"command-title","{effort.as_str()}"}
+                    }
+                }
+                div{class:"command-hint","↑↓ navigate · Enter select · Esc dismiss"}
             }
             else{
                 div{class:"command-heading","Session default model (not individual agents)"}
@@ -855,7 +1372,7 @@ fn Composer(tab: Tab) -> Element {
                 button{onclick:move |_|{all.set(!all());selected.set(0);},if all(){"Show favorites"}else{"All models…"}}
                 if models.is_empty(){p{class:"command-empty",if filter.is_empty(){"No favorite models. Open settings to pin models, or choose All models."}else{"No matching models. Try another search or choose All models."}}}
                 for (index,model) in models.iter().cloned().enumerate(){
-                    button{class:if selected()==index{"command-option selected"}else{"command-option"},role:"option","aria-selected":(selected()==index).to_string(),onclick:move |_|{spawn(change_model(ui,target.session_id,ModelConfig{model:model.model.clone(),effort:choose_effort(&model,default_effort)}));ui.write().drafts.remove(&target);},
+                    button{class:if selected()==index{"command-option selected"}else{"command-option"},role:"option","aria-selected":(selected()==index).to_string(),onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),onclick:move |_|{spawn(change_model(ui,target.session_id,ModelConfig{model:model.model.clone(),effort:choose_effort(&model,default_effort)}));ui.write().drafts.remove(&target);},
                         span{class:"command-title","{model.name}"} span{class:"command-description","{model.model.provider.as_str()}/{model.model.api_name}"}
                     }
                 }
@@ -872,33 +1389,82 @@ fn Composer(tab: Tab) -> Element {
             onkeydown:move |event|{
                 if command{
                     match event.key(){
-                        Key::ArrowDown=>{event.prevent_default();let count=if model_command{key_models.len()}else{1};selected.set((selected()+1)%count.max(1));},
-                        Key::ArrowUp=>{event.prevent_default();let count=if model_command{key_models.len()}else{1};selected.set((selected()+count.max(1)-1)%count.max(1));},
-                        Key::Escape=>{event.prevent_default();dismissed.set(true);},
-                        Key::Tab if !model_command && !event.modifiers().contains(Modifiers::SHIFT)=>{event.prevent_default();ui.write().drafts.insert(target,"/model ".into());selected.set(0);},
-                        Key::Enter if !event.modifiers().contains(Modifiers::SHIFT)=>{event.prevent_default();if model_command{if let Some(model)=key_models.get(selected()){spawn(change_model(ui,target.session_id,ModelConfig{model:model.model.clone(),effort:choose_effort(model,default_effort)}));ui.write().drafts.remove(&target);}}else{ui.write().drafts.insert(target,"/model ".into());selected.set(0);}},
+                        Key::ArrowDown=>{event.prevent_default();let count=if model_command{key_models.len()}else if effort_command{key_efforts.len()}else{key_commands.len()};if count > 0 { let next=(selected()+1)%count; selected.set(next); scroll_menu_option(menu_popup,menu_nodes,selected,next); }},
+                        Key::ArrowUp=>{event.prevent_default();let count=if model_command{key_models.len()}else if effort_command{key_efforts.len()}else{key_commands.len()};if count > 0 { let next=(selected()+count-1)%count; selected.set(next); scroll_menu_option(menu_popup,menu_nodes,selected,next); }},
+                        Key::Escape=>{event.prevent_default();event.stop_propagation();dismissed.set(true);},
+                        Key::Tab if !model_command && !effort_command && !event.modifiers().contains(Modifiers::SHIFT)=>{event.prevent_default();if let Some(spec)=key_commands.get(selected()){ui.write().drafts.insert(target,format!("/{} ",spec.name));selected.set(0);}},
+                        Key::Enter if !event.modifiers().contains(Modifiers::SHIFT)=>{event.prevent_default();if model_command{if let Some(model)=key_models.get(selected()){spawn(change_model(ui,target.session_id,ModelConfig{model:model.model.clone(),effort:choose_effort(model,default_effort)}));ui.write().drafts.remove(&target);}}else if effort_command {if let Some(effort)=key_efforts.get(selected()){select_session_effort(ui,target,*effort);selected.set(0);}}else if let Some(spec)=key_commands.get(selected()){if spec.id == CommandId::Info { ui.write().drafts.remove(&target); info_open.set(true); } else { ui.write().drafts.insert(target,format!("/{} ",spec.name)); } selected.set(0);}},
                         _=>{},
                     }
-                } else if event.key()==Key::Enter&&!event.modifiers().contains(Modifiers::SHIFT){event.prevent_default();ui.write().workspace.promote(tab.id);spawn(network::submit(ui,target,false));}
+                } else if event.key()==Key::Escape { event.prevent_default(); event.stop_propagation(); let generation=ui.read().generation; spawn(async move { if ui.read().generation == generation { network::submit(ui,target,true).await; } }); }
+                else if event.key()==Key::Enter&&!event.modifiers().contains(Modifiers::SHIFT){event.prevent_default();if info_command { ui.write().drafts.remove(&target); info_open.set(true); } else { ui.write().workspace.promote(tab.id);spawn(network::submit(ui,target,false)); }}
             }
         }
           }
           button{class:"primary composer-send","aria-label":"Send steer",disabled:uncertain || matches!(parsed, ComposerInput::Command { .. }),onclick:move |_|{ui.write().workspace.promote(tab.id);spawn(network::submit(ui,target,false));},"↑"}
         }
-        div{class:"composer-actions",
-            if uncertain { button { onclick:move |_| { ui.write().uncertain_submissions.remove(&target); }, "I checked delivery; enable retry" } }
-            button{onclick:move |_|{spawn(network::submit(ui,target,true));},"Interrupt"}
-            span{class:"muted",{state.transcript_status.get(&target).map(String::as_str).unwrap_or("Loading…")}}
-        }
-        if let Some(config)=current{
-            div{class:"composer-actions muted",span{"Session default: {config.model.api_name}"}
-                select{"aria-label":"Session default reasoning effort",value:config.effort.as_str(),onchange:move |e|{let effort=match e.value().as_str(){"off"=>Effort::Off,"minimal"=>Effort::Minimal,"low"=>Effort::Low,"high"=>Effort::High,"xhigh"=>Effort::Xhigh,"max"=>Effort::Max,_=>Effort::Medium};spawn(change_model(ui,target.session_id,ModelConfig{model:config.model.clone(),effort}));},
-                    for effort in efforts{option{value:effort.as_str(),"{effort.as_str()}"}}
-                }
+        ComposerStatus { path: state.sessions.iter().find(|s| s.id == target.session_id).map(|s| s.working_directory.to_string_lossy().into_owned()), model: status_model, effort: status_effort, context_tokens: status_tokens, context_window: status_window }
+        if uncertain || state.transcript_status.get(&target).is_some_and(|status| status != "Live") {
+            div{class:"composer-actions",
+                if uncertain { button { onclick:move |_| { ui.write().uncertain_submissions.remove(&target); }, "I checked delivery; enable retry" } }
+                if let Some(status) = state.transcript_status.get(&target).filter(|status| *status != "Live") { span{class:"muted","{status}"} }
             }
         }
     }}
 }
+fn session_efforts(
+    models: &[ModelInfo],
+    current: Option<&ModelConfig>,
+    filter: &str,
+) -> Vec<Effort> {
+    current
+        .and_then(|config| models.iter().find(|model| model.model == config.model))
+        .map(|model| {
+            model
+                .reasoning_options
+                .iter()
+                .map(|option| option.effort)
+                .filter(|effort| effort.as_str().contains(filter))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn effort_model_config(
+    models: &[ModelInfo],
+    current: Option<&ModelConfig>,
+    effort: Effort,
+) -> Option<ModelConfig> {
+    if !session_efforts(models, current, "").contains(&effort) {
+        return None;
+    }
+    current.cloned().map(|mut config| {
+        config.effort = effort;
+        config
+    })
+}
+
+fn select_session_effort(mut ui: Signal<Ui>, target: TranscriptTarget, effort: Effort) {
+    let config = {
+        let state = ui.read();
+        let current = state
+            .sessions
+            .iter()
+            .find(|session| session.id == target.session_id)
+            .map(|session| &session.model_config);
+        effort_model_config(&state.models, current, effort)
+    };
+    if let Some(config) = config {
+        let generation = ui.read().generation;
+        spawn(async move {
+            if ui.read().generation == generation {
+                change_model(ui, target.session_id, config).await;
+            }
+        });
+        ui.write().drafts.remove(&target);
+    }
+}
+
 fn choose_effort(model: &ModelInfo, preferred: Effort) -> Effort {
     if model
         .reasoning_options
@@ -978,7 +1544,7 @@ pub fn Settings() -> Element {
     let state = ui.read();
     let profile_id = state.settings.active_profile_id.clone();
     let mut filter = use_signal(String::new);
-    let models: Vec<_> = state
+    let mut models: Vec<_> = state
         .models
         .iter()
         .filter(|m| {
@@ -990,6 +1556,9 @@ pub fn Settings() -> Element {
         })
         .cloned()
         .collect();
+    models.sort_by_key(|model| !model.pinned);
+    let favorite_count = models.iter().take_while(|model| model.pinned).count();
+    let show_divider = favorite_count > 0 && favorite_count < models.len();
     rsx! {div{class:"modal-backdrop",onclick:move |event|{event.stop_propagation();ui.write().settings_open=false;},section{class:"settings settings-dialog",role:"dialog","aria-modal":"true","aria-label":"Settings",tabindex:"-1",onclick:move |event|event.stop_propagation(),
         onmounted:move |event| { spawn(async move { let _ = event.data().set_focus(true).await; }); },
         onkeydown:move |event| { if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); ui.write().settings_open=false; } },
@@ -1000,27 +1569,111 @@ pub fn Settings() -> Element {
         div { class:"settings-layout",
         nav { class:"settings-nav", "aria-label":"Settings sections",
             button { class:if tab() == "profiles" { "active" } else { "" }, "aria-current":if tab() == "profiles" { "page" } else { "false" }, onclick:move |_|tab.set("profiles".into()), "Profiles" }
+            button { class:if tab() == "providers" { "active" } else { "" }, "aria-current":if tab() == "providers" { "page" } else { "false" }, onclick:move |_|tab.set("providers".into()), "Providers" }
             button { class:if tab() == "models" { "active" } else { "" }, "aria-current":if tab() == "models" { "page" } else { "false" }, onclick:move |_|tab.set("models".into()), "Model favorites" }
             button { class:if tab() == "appearance" { "active" } else { "" }, "aria-current":if tab() == "appearance" { "page" } else { "false" }, onclick:move |_|tab.set("appearance".into()), "Appearance" }
+            button { class:if tab() == "keybinds" { "active" } else { "" }, "aria-current":if tab() == "keybinds" { "page" } else { "false" }, onclick:move |_|tab.set("keybinds".into()), "Keybinds" }
         }
-        div { class:if tab() == "models" { "settings-content models-settings" } else { "settings-content" },
+        // A keyed list makes Dioxus replace the scrolling element when the tab changes.
+        for active_tab in [tab()] {
+        div { key:"{active_tab}", class:if active_tab == "models" { "settings-content models-settings" } else { "settings-content" },
         if tab() == "profiles" { ProfileSettings { key:"{profile_id}" } }
+        if tab() == "providers" { ProviderSettings { key:"{profile_id}" } }
         if tab() == "models" {
             h3{"Model favorites"}p{class:"muted","Pins are stored on this server and shared with its other clients."}
             button{onclick:move |_|{spawn(network::refresh_metadata(ui));},"Refresh probes and model catalog"}
             input{placeholder:"Filter models",value:filter(),oninput:move |event|filter.set(event.value()),"aria-label":"Filter model favorites"}
-            div{class:"models",for model in models{div{class:"model-row",
-                div{strong{"{model.name}"}div{class:"muted","{model.model.provider.as_str()}/{model.model.api_name}"}}
-                button{"aria-label":if model.pinned{"Unpin model"}else{"Pin model"},onclick:move |_|{spawn(network::pin_model(ui,model.clone()));},if model.pinned{"★"}else{"☆"}}
-            }}}
+            div{class:"models",for (index, model) in models.iter().cloned().enumerate(){
+                if show_divider && index == favorite_count { div { class:"favorites-divider", role:"separator" } }
+                div{class:"model-row",
+                    div{strong{"{model.name}"}div{class:"muted","{model.model.provider.as_str()}/{model.model.api_name}"}}
+                    button{"aria-label":if model.pinned{"Unpin model"}else{"Pin model"},onclick:move |_|{spawn(network::pin_model(ui,model.clone()));},if model.pinned{"★"}else{"☆"}}
+                }
+            }}
         }
+        if tab() == "keybinds" { KeybindSettings {} }
         if tab() == "appearance" {
             h3{"Appearance"}
+            label{input{r#type:"checkbox",checked:state.settings.preferences.double_click_session_opens_details,onchange:move |e|ui.write().settings.preferences.double_click_session_opens_details=e.checked()},"Open current session details when double-clicking a session"}
             label{r#for:"transcript-font-size","Transcript font size"}input{id:"transcript-font-size",r#type:"range",min:"11",max:"22",value:state.settings.preferences.transcript_font_size.to_string(),oninput:move |e|{if let Ok(size)=e.value().parse(){ui.write().settings.preferences.transcript_font_size=size;}}}
+            label{r#for:"conversation-max-width","Conversation and composer max width (characters): {state.settings.preferences.conversation_max_width_ch}"}
+            input{id:"conversation-max-width",r#type:"range",min:"40",max:"160",value:state.settings.preferences.conversation_max_width_ch.to_string(),oninput:move |e|{if let Ok(width)=e.value().parse::<u16>(){ui.write().settings.preferences.conversation_max_width_ch=width.clamp(40,160);}}}
+        }
         }
         }
         }
     }}}
+}
+
+#[component]
+fn KeybindSettings() -> Element {
+    let sections: &[(&str, &[(&str, &str)])] = &[
+        (
+            "Workspace",
+            &[
+                ("Ctrl + W", "Close the active tab or empty pane"),
+                ("Alt + 1–9", "Focus a tab by position in the active group"),
+                ("Alt + Arrow keys", "Focus the neighboring workspace group"),
+                (
+                    "Arrow keys",
+                    "Resize a focused split divider along its axis",
+                ),
+            ],
+        ),
+        (
+            "Composer",
+            &[
+                (
+                    "Enter",
+                    "Send a message or run a command when the command menu is closed",
+                ),
+                ("Shift + Enter", "Insert a new line"),
+                ("Ctrl + End", "Follow latest activity in the focused pane"),
+                (
+                    "Escape",
+                    "Interrupt the agent when the command menu is closed (existing agent only)",
+                ),
+                ("Arrow Up / Down", "Navigate the open command menu"),
+                ("Enter", "Select the highlighted command or option"),
+                ("Tab", "Complete the highlighted slash command"),
+                ("Escape", "Dismiss the command menu"),
+            ],
+        ),
+        (
+            "Dialogs and session creation",
+            &[
+                (
+                    "Escape",
+                    "Close Settings, agent information, or the directory picker",
+                ),
+                (
+                    "Enter",
+                    "Browse the entered absolute path in the directory picker",
+                ),
+                ("Enter", "Create a session from the session name field"),
+                (
+                    "Escape",
+                    "Cancel session naming when creation is not pending",
+                ),
+            ],
+        ),
+    ];
+    rsx! {
+        div { class:"keybinds",
+            h3 { "Keybinds" }
+            p { class:"muted", "Application shortcuts are read-only. Workspace shortcuts are inactive while a dialog is open." }
+            for (heading, shortcuts) in sections.iter() {
+                section {
+                    h4 { "{heading}" }
+                    dl { class:"keybind-list",
+                        for (keys, description) in shortcuts.iter() {
+                            div { class:"keybind-row", dt { kbd { "{keys}" } } dd { "{description}" } }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[component]
@@ -1165,6 +1818,142 @@ fn ProfileSettings() -> Element {
             ui.write().settings.profiles.push(profile);
             ui.write().select_profile(id);
         }, "＋ Add remote profile" }
+        }
+    }
+}
+
+#[component]
+fn ProviderSettings() -> Element {
+    let ui = use_context::<Signal<Ui>>();
+    let mut providers = use_signal(Vec::<ProviderInfo>::new);
+    let mut loading = use_signal(|| true);
+    let mut error = use_signal(|| None::<String>);
+    let mut refresh = use_signal(|| 0u64);
+    let generation = use_memo(move || ui.read().generation);
+    use_effect(move || {
+        let selected_generation = generation();
+        let _ = refresh();
+        loading.set(true);
+        error.set(None);
+        providers.set(Vec::new());
+        spawn(async move {
+            let result = match network::client(ui) {
+                Ok(api) => api.list_providers().await,
+                Err(error) => Err(error),
+            };
+            if ui.read().generation != selected_generation {
+                return;
+            }
+            match result {
+                Ok(items) => providers.set(items),
+                Err(_) => error.set(Some(
+                    "Unable to load providers. Check the server connection and retry.".into(),
+                )),
+            }
+            loading.set(false);
+        });
+    });
+    rsx! {
+        h3 { "Providers" }
+        if loading() { p { role:"status", "Loading providers…" } }
+        if let Some(message) = error() {
+            div { class:"error", role:"alert", "{message}" }
+            button { onclick:move |_| refresh += 1, "Retry" }
+        }
+        if !loading() && error().is_none() && providers.read().is_empty() {
+            p { class:"muted", "No providers available." }
+        }
+        div { class:"profile-list",
+            for provider in providers() {
+                ProviderCard { key:"{provider.id.as_str()}", id:provider.id, authed:provider.authed, providers }
+            }
+        }
+    }
+}
+
+#[component]
+pub(crate) fn ProviderCard(
+    id: ProviderType,
+    authed: bool,
+    mut providers: Signal<Vec<ProviderInfo>>,
+) -> Element {
+    let ui = use_context::<Signal<Ui>>();
+    let mut editing = use_signal(|| false);
+    let mut credential = use_signal(String::new);
+    let mut confirming = use_signal(|| false);
+    let mut pending = use_signal(|| false);
+    let mut error = use_signal(|| None::<String>);
+    let name = id.name();
+    let credential_name = match id {
+        ProviderType::Openrouter => "API key",
+        ProviderType::OpenAiCodex => "Access token",
+    };
+    let mut save = move |value: Option<String>| {
+        let generation = ui.read().generation;
+        let api = match network::client(ui) {
+            Ok(api) => api,
+            Err(_) => {
+                error.set(Some("Unable to connect to the server.".into()));
+                return;
+            }
+        };
+        pending.set(true);
+        error.set(None);
+        spawn(async move {
+            let result = api
+                .set_provider_credential(&SetProviderCredential {
+                    provider: id,
+                    credential: value,
+                })
+                .await;
+            if ui.read().generation != generation {
+                return;
+            }
+            match result {
+                Ok(updated) => {
+                    if let Some(item) = providers.write().iter_mut().find(|p| p.id == id) {
+                        *item = updated;
+                    }
+                    credential.set(String::new());
+                    editing.set(false);
+                    confirming.set(false);
+                    spawn(network::refresh_metadata(ui));
+                }
+                Err(_) => error.set(Some(
+                    "Unable to update provider credentials. Please try again.".into(),
+                )),
+            }
+            pending.set(false);
+        });
+    };
+    let mut remove = save.clone();
+    rsx! {
+        article { class:"profile-card provider-card",
+            div { class:"profile-card-heading",
+                div { strong { "{name}" } div { class:"muted", if authed { "Configured" } else { "Not configured" } } }
+                if !editing() {
+                    button { disabled:pending(), "aria-label":format!("{} credentials for {}", if authed { "Edit" } else { "Add" }, name), onclick:move |_| { confirming.set(false); error.set(None); editing.set(true); }, if authed { "Edit" } else { "Add" } }
+                }
+            }
+            if let Some(message) = error() { p { class:"error", role:"alert", "{message}" } }
+            if editing() {
+                label { r#for:format!("provider-credential-{}", id.as_str()), "{credential_name}" }
+                input { id:format!("provider-credential-{}", id.as_str()), r#type:"password", autocomplete:"off", value:credential(), disabled:pending(), oninput:move |event|credential.set(event.value()) }
+                p { class:"muted", "Enter a new credential" }
+                div { class:"provider-actions",
+                    button { class:"primary", disabled:pending() || credential().trim().is_empty(), onclick:move |_|save(Some(credential())), "Save" }
+                    button { disabled:pending(), onclick:move |_| { credential.set(String::new()); editing.set(false); error.set(None); }, "Cancel" }
+                }
+            }
+            if authed && !editing() && !confirming() {
+                button { class:"profile-delete", disabled:pending(), "aria-label":format!("Delete credentials for {}", name), onclick:move |_| { error.set(None); confirming.set(true); }, "Delete credentials" }
+            }
+            if confirming() {
+                div { class:"local-server-confirm", role:"alert", p { "Delete credentials for {name}?" }
+                    button { disabled:pending(), onclick:move |_|remove(None), "Confirm delete" }
+                    button { disabled:pending(), onclick:move |_|confirming.set(false), "Cancel" }
+                }
+            }
         }
     }
 }

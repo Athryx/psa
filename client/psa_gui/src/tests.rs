@@ -40,6 +40,31 @@ fn root_renders_without_native_renderer_or_live_server() {
     assert!(html.contains("Select an agent"));
 }
 
+fn status_bar_test_root() -> Element {
+    let ui = use_signal(|| {
+        let mut state = crate::app::Ui::new(DesktopSettings::default());
+        state.connection = "Connected".into();
+        state.error = Some("A long error with details".into());
+        state.notice = Some("A useful notice".into());
+        state
+    });
+    rsx! { crate::app::StatusBar { ui } }
+}
+
+#[test]
+fn status_bar_renders_both_dismissible_notifications() {
+    let mut dom = VirtualDom::new(status_bar_test_root);
+    dom.rebuild_in_place();
+    let html = dioxus_ssr::render(&dom);
+    assert!(html.contains("Connected"), "{html}");
+    assert!(html.contains("A long error with details"), "{html}");
+    assert!(html.contains("A useful notice"), "{html}");
+    assert!(html.contains("aria-label=\"Dismiss error\""), "{html}");
+    assert!(html.contains("aria-label=\"Dismiss notice\""), "{html}");
+    assert!(html.contains("role=\"alert\""), "{html}");
+    assert!(html.contains("role=\"status\""), "{html}");
+}
+
 fn folder_create_test_root() -> Element {
     let mut ui = use_signal(|| {
         let mut state = crate::app::Ui::new(DesktopSettings::default());
@@ -132,6 +157,56 @@ fn pending_creation_cannot_be_retargeted() {
     assert_eq!(ui.creation_name, "draft");
 }
 
+fn reconnecting_picker_test_root() -> Element {
+    let mut ui = use_signal(|| {
+        let mut state = crate::app::Ui::new(DesktopSettings::default());
+        state.connection = "Connected".into();
+        state.settings.active_profile_mut().connection.api_url = "invalid".into();
+        state
+    });
+    use_context_provider(|| ui);
+    rsx! {
+        button { onclick: move |_| {
+            ui.write().probes = vec![serde_json::from_value(serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000001",
+                "hostname": "reconnected-host", "os": "linux", "architecture": "x86_64",
+                "label": null, "data_dir": "/tmp", "home_dir": "/home/test", "host": false,
+                "is_active": true, "created_at": "2026-01-01T00:00:00Z",
+                "last_connected_at": "2026-01-01T00:00:00Z"
+            })).unwrap()];
+        }, "Reconnect probe" }
+        crate::creation::CreateSessionPicker {}
+    }
+}
+
+#[tokio::test]
+async fn open_picker_selects_probe_that_reconnects_after_initial_empty_snapshot() {
+    use dioxus::core::Mutation;
+    dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+    let mut dom = VirtualDom::new(reconnecting_picker_test_root);
+    let mutations = dom.rebuild_to_vec();
+    let buttons: Vec<_> = mutations
+        .edits
+        .iter()
+        .filter_map(|edit| match edit {
+            Mutation::NewEventListener { name, id } if name == "click" => Some(*id),
+            _ => None,
+        })
+        .collect();
+    click(&dom, buttons[1].0);
+    dom.render_immediate_to_vec();
+    assert!(dioxus_ssr::render(&dom).contains("No online probes available"));
+    click(&dom, buttons[0].0);
+    for _ in 0..5 {
+        tokio::task::yield_now().await;
+        dom.render_immediate_to_vec();
+    }
+    let html = dioxus_ssr::render(&dom);
+    assert!(html.contains("reconnected-host"), "{html}");
+    assert!(html.contains("/home/test"), "{html}");
+    assert!(!html.contains("No online probes available"), "{html}");
+}
+
 fn empty_picker_test_root() -> Element {
     let ui = use_signal(|| {
         let mut state = crate::app::Ui::new(DesktopSettings::default());
@@ -142,8 +217,8 @@ fn empty_picker_test_root() -> Element {
     rsx! { crate::creation::CreateSessionPicker {} }
 }
 
-#[test]
-fn picker_escape_dismisses_without_creating_a_folder() {
+#[tokio::test]
+async fn picker_escape_dismisses_without_creating_a_folder() {
     use dioxus::{
         core::Mutation,
         html::{PlatformEventData, SerializedFormData},
@@ -384,6 +459,85 @@ fn settings_backdrop_closes_but_dialog_and_controls_do_not() {
 }
 
 #[test]
+fn settings_keybinds_navigation_renders_read_only_shortcuts() {
+    dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+    let bootstrap = GuiBootstrap {
+        config: GuiConfig {
+            settings: DesktopSettings::default(),
+        },
+        platform: Rc::new(FakePlatform::default()),
+    };
+    let mut dom = VirtualDom::new(modal_settings_test_root).with_root_context(bootstrap);
+    dom.rebuild_in_place();
+    click(&dom, 10);
+    dom.render_immediate_to_vec();
+    let html = dioxus_ssr::render(&dom);
+    for expected in [
+        "<h3>Keybinds</h3>",
+        "Ctrl + W",
+        "Alt + 1–9",
+        "Alt + Arrow keys",
+        "Composer",
+        "command menu",
+        "directory picker",
+        "read-only",
+    ] {
+        assert!(html.contains(expected), "missing {expected}: {html}");
+    }
+    assert!(!html.contains("<input"), "{html}");
+}
+
+#[test]
+fn settings_tab_switch_replaces_scroll_container() {
+    use dioxus::core::Mutation;
+
+    dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+    let bootstrap = GuiBootstrap {
+        config: GuiConfig {
+            settings: DesktopSettings::default(),
+        },
+        platform: Rc::new(FakePlatform::default()),
+    };
+    let mut dom = VirtualDom::new(modal_settings_test_root).with_root_context(bootstrap);
+    dom.rebuild_in_place();
+    click(&dom, 10);
+    let first = dom.render_immediate_to_vec();
+    let scroll_container = first
+        .edits
+        .iter()
+        .find_map(|edit| match edit {
+            Mutation::SetAttribute {
+                name,
+                value: dioxus::core::AttributeValue::Text(value),
+                id,
+                ..
+            } if *name == "class" && value == "settings-content" => Some(*id),
+            _ => None,
+        })
+        .expect("keybinds scroll container mounted");
+    click(&dom, 10);
+    let same_tab = dom.render_immediate_to_vec();
+    assert!(
+        !same_tab.edits.iter().any(
+            |edit| matches!(edit, Mutation::ReplaceWith { id, .. } if *id == scroll_container)
+        )
+    );
+    click(&dom, 9);
+    let second = dom.render_immediate_to_vec();
+    assert!(
+        second.edits.iter().any(
+            |edit| matches!(edit, Mutation::ReplaceWith { id, .. } if *id == scroll_container)
+        ),
+        "scroll container must be replaced on tab switch: {:?}",
+        second.edits
+    );
+    let html = dioxus_ssr::render(&dom);
+    assert!(html.contains("<h3>Appearance</h3>"));
+    assert!(html.contains("Conversation and composer max width (characters): 85"));
+    assert!(html.contains("id=\"conversation-max-width\""));
+}
+
+#[test]
 fn settings_renders_profile_cards_and_local_controls_for_remote_selection() {
     let mut settings = DesktopSettings::default();
     let remote = ConnectionProfile::new_remote("Remote test", ConnectionSettings::default());
@@ -397,6 +551,7 @@ fn settings_renders_profile_cards_and_local_controls_for_remote_selection() {
     dom.rebuild_in_place();
     let html = dioxus_ssr::render(&dom);
     assert!(html.contains("settings-nav"), "{html}");
+    assert!(html.contains(">Providers</button>"), "{html}");
     assert!(html.contains("profile-card active"), "{html}");
     assert!(html.contains("Remote test"), "{html}");
     assert!(html.contains("Selected"), "{html}");
@@ -421,6 +576,30 @@ fn message_content_is_escaped_not_rendered_as_html() {
     assert!(html.contains("&#60;script&#62;"), "{html}");
     assert!(!html.contains("<script>"));
     assert!(html.contains("Human"));
+}
+
+#[test]
+fn agent_markdown_streaming_keeps_content_blocks_separate() {
+    use llm_api::api::{ContentBlock, ImageBlock, MediaSource};
+    let mut message = Message::text(MessageType::Agent, "**before");
+    message.content.push(ContentBlock::Image(ImageBlock {
+        source: MediaSource::Inline {
+            mime_type: "image/png".into(),
+            data: vec![1],
+        },
+        detail: None,
+    }));
+    let after = Message::text(MessageType::Agent, "after**");
+    message.content.extend(after.content);
+    let kind = EventType::Message(message);
+    let html = dioxus_ssr::render_element(rsx! {
+        crate::views::EventRow { kind, provisional: true, results: Rc::new(HashMap::new()) }
+    });
+    assert!(
+        html.contains("streaming") && html.contains("Image attachment"),
+        "{html}"
+    );
+    assert!(!html.contains("<strong>"), "{html}");
 }
 
 #[test]
@@ -519,6 +698,45 @@ fn draft_promotion_keeps_preview_navigation_from_discarding_edits() {
 }
 
 #[test]
+fn double_click_promotes_and_optionally_opens_details() {
+    for enabled in [true, false] {
+        let mut ui = crate::app::Ui::new(DesktopSettings::default());
+        ui.settings.preferences.double_click_session_opens_details = enabled;
+        ui.sidebar.collapsed = true;
+        let target = TranscriptTarget {
+            session_id: SessionId(1),
+            agent_id: AgentId(1),
+        };
+        ui.open_session_target(target, false, false);
+        assert!(ui.sidebar.collapsed);
+        ui.open_session_target(target, true, true);
+        assert_eq!(ui.sidebar.collapsed, !enabled);
+        assert_eq!(
+            ui.sidebar.expanded_mode,
+            if enabled {
+                SidebarMode::Details
+            } else {
+                SidebarMode::Browser
+            }
+        );
+        ui.open(
+            TranscriptTarget {
+                session_id: SessionId(2),
+                agent_id: AgentId(2),
+            },
+            false,
+        );
+        assert_eq!(ui.workspace.groups()[0].tabs.len(), 2);
+        assert!(
+            ui.workspace.groups()[0]
+                .tabs
+                .iter()
+                .any(|tab| tab.target == target)
+        );
+    }
+}
+
+#[test]
 fn draft_root_tabs_are_not_persisted() {
     let mut ui = crate::app::Ui::new(DesktopSettings::default());
     let target = TranscriptTarget {
@@ -538,4 +756,140 @@ fn draft_root_tabs_are_not_persisted() {
     );
     assert!(!restored.last_agents.contains_key(&target.session_id));
     assert!(restored.drafts.is_empty());
+}
+
+fn provider_cards_test_root() -> Element {
+    use llm_api::providers::ProviderType;
+    let ui = use_signal(|| crate::app::Ui::new(DesktopSettings::default()));
+    use_context_provider(|| ui);
+    let providers = use_signal(|| {
+        vec![
+            psa_api::ProviderInfo {
+                id: ProviderType::Openrouter,
+                authed: true,
+            },
+            psa_api::ProviderInfo {
+                id: ProviderType::OpenAiCodex,
+                authed: false,
+            },
+        ]
+    });
+    rsx! { for provider in providers() { crate::views::ProviderCard { key: "{provider.id.as_str()}", id:provider.id, authed:provider.authed, providers } } }
+}
+
+#[test]
+fn provider_cards_show_redacted_status_and_confirm_deletion() {
+    use dioxus::core::Mutation;
+    dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+    let mut dom = VirtualDom::new(provider_cards_test_root);
+    let mutations = dom.rebuild_to_vec();
+    let buttons: Vec<_> = mutations
+        .edits
+        .iter()
+        .filter_map(|edit| match edit {
+            Mutation::NewEventListener { name, id } if name == "click" => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let html = dioxus_ssr::render(&dom);
+    assert!(
+        html.contains("OpenRouter") && html.contains("Configured"),
+        "{html}"
+    );
+    assert!(
+        html.contains("OpenAI Codex") && html.contains("Not configured"),
+        "{html}"
+    );
+    assert!(!html.contains("type=\"password\""), "{html}");
+    click(&dom, buttons[0].0);
+    let mutations = dom.render_immediate_to_vec();
+    let html = dioxus_ssr::render(&dom);
+    assert!(
+        html.contains("Delete credentials for OpenRouter?"),
+        "{html}"
+    );
+    let actions: Vec<_> = mutations
+        .edits
+        .iter()
+        .filter_map(|edit| match edit {
+            Mutation::NewEventListener { name, id } if name == "click" => Some(*id),
+            _ => None,
+        })
+        .collect();
+    click(&dom, actions.last().unwrap().0);
+    dom.render_immediate_to_vec();
+    assert!(!dioxus_ssr::render(&dom).contains("Confirm delete"));
+}
+
+#[test]
+fn provider_editor_uses_password_and_clears_on_cancel() {
+    use dioxus::{
+        core::Mutation,
+        html::{PlatformEventData, SerializedFormData},
+    };
+    use std::any::Any;
+    dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+    let mut dom = VirtualDom::new(provider_cards_test_root);
+    let mutations = dom.rebuild_to_vec();
+    let edit = mutations
+        .edits
+        .iter()
+        .filter_map(|edit| match edit {
+            Mutation::NewEventListener { name, id } if name == "click" => Some(*id),
+            _ => None,
+        })
+        .nth(1)
+        .unwrap();
+    click(&dom, edit.0);
+    let mutations = dom.render_immediate_to_vec();
+    let html = dioxus_ssr::render(&dom);
+    assert!(
+        html.contains("type=\"password\"") && html.contains("API key"),
+        "{html}"
+    );
+    assert!(html.contains("disabled"), "{html}");
+    let input = mutations
+        .edits
+        .iter()
+        .find_map(|edit| match edit {
+            Mutation::NewEventListener { name, id } if name == "input" => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let cancel = mutations
+        .edits
+        .iter()
+        .filter_map(|edit| match edit {
+            Mutation::NewEventListener { name, id } if name == "click" => Some(*id),
+            _ => None,
+        })
+        .last()
+        .unwrap();
+    let event = Event::new(
+        Rc::new(PlatformEventData::new(Box::new(SerializedFormData::new(
+            "secret-sentinel".into(),
+            vec![],
+        )))) as Rc<dyn Any>,
+        true,
+    );
+    dom.runtime().handle_event("input", event, input);
+    dom.render_immediate_to_vec();
+    click(&dom, cancel.0);
+    let mutations = dom.render_immediate_to_vec();
+    assert!(!dioxus_ssr::render(&dom).contains("secret-sentinel"));
+    let edit = mutations
+        .edits
+        .iter()
+        .find_map(|edit| match edit {
+            Mutation::NewEventListener { name, id } if name == "click" => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    click(&dom, edit.0);
+    dom.render_immediate_to_vec();
+    let html = dioxus_ssr::render(&dom);
+    assert!(
+        !html.contains("secret-sentinel") && html.contains("disabled"),
+        "{html}"
+    );
 }

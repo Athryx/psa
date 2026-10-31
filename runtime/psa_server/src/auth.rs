@@ -51,6 +51,15 @@ pub async fn ensure_keys(path: &Path) -> Result<AuthKeys, AuthError> {
         document["psa"]["client_key"] = toml_edit::value(&keys.client_key);
     }
 
+    write_document(path, &document).await?;
+    Ok(keys)
+}
+
+/// Atomically replace a locked auth document with owner-only permissions.
+pub(crate) async fn write_document(
+    path: &Path,
+    document: &toml_edit::DocumentMut,
+) -> Result<(), AuthError> {
     let temporary = path.with_extension(format!("{}.tmp", psa_api::probes::Uuid::new_v4()));
     let mut options = tokio::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -68,7 +77,7 @@ pub async fn ensure_keys(path: &Path) -> Result<AuthKeys, AuthError> {
         let _ = tokio::fs::remove_file(&temporary).await;
     }
     result?;
-    Ok(keys)
+    Ok(())
 }
 
 pub(crate) fn has_bearer_key(headers: &axum::http::HeaderMap, key: &str) -> bool {
@@ -81,6 +90,16 @@ pub(crate) fn has_bearer_key(headers: &axum::http::HeaderMap, key: &str) -> bool
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .is_some_and(|supplied| bool::from(supplied.as_bytes().ct_eq(key.as_bytes())))
+}
+
+pub(crate) fn validate_existing_keys(document: &toml_edit::DocumentMut) -> Result<(), AuthError> {
+    let table = document
+        .get("psa")
+        .map(|psa| psa.as_table().ok_or(AuthError::Invalid))
+        .transpose()?;
+    parse_key(table, "probe_key")?;
+    parse_key(table, "client_key")?;
+    Ok(())
 }
 
 fn parse_key(table: Option<&toml_edit::Table>, name: &str) -> Result<Option<String>, AuthError> {

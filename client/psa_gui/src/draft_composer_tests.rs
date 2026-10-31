@@ -19,12 +19,127 @@ fn root_command_stages_distinguish_completion_and_selection() {
         draft_command_stage("/model search", false, false),
         Some(SessionModels)
     );
+    assert_eq!(
+        draft_command_stage("/effort", false, false),
+        Some(Completion)
+    );
+    assert_eq!(
+        draft_command_stage("/effort high", false, false),
+        Some(SessionEfforts)
+    );
     for input in ["//agent", "/agents", "hello"] {
         assert_eq!(draft_command_stage(input, false, false), None);
     }
     assert_eq!(draft_command_stage("", false, true), Some(Models));
     assert_eq!(draft_command_stage("/agent ", true, false), None);
     assert_eq!(draft_command_stage("", true, true), None);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn root_effort_picker_only_offers_current_model_options() {
+    let (mut dom, textarea) = mount_root();
+    root_input(&mut dom, textarea, "/eff");
+    root_key(&mut dom, textarea, Key::Enter);
+    let html = dioxus_ssr::render(&dom);
+    assert!(
+        html.contains("Session default effort")
+            && html.contains(">low<")
+            && html.contains(">high<"),
+        "{html}"
+    );
+    assert!(!html.contains(">medium<"), "{html}");
+    root_key(&mut dom, textarea, Key::ArrowDown);
+    let html = dioxus_ssr::render(&dom);
+    assert!(
+        html.contains("aria-selected=true><span class=\"command-title\">high"),
+        "{html}"
+    );
+    root_key(&mut dom, textarea, Key::Enter);
+    assert!(dioxus_ssr::render(&dom).contains("<textarea value=\"\""));
+    root_input(&mut dom, textarea, "/effort invalid");
+    root_key(&mut dom, textarea, Key::Enter);
+    assert!(dioxus_ssr::render(&dom).contains("/effort invalid"));
+}
+
+#[test]
+fn effort_options_require_known_model_and_valid_catalog_entry() {
+    let config: ModelConfig = serde_json::from_value(
+        serde_json::json!({"model":{"provider":"Openrouter","api_name":"model"},"effort":"Low"}),
+    )
+    .unwrap();
+    let mut model: ModelInfo = serde_json::from_value(serde_json::json!({
+        "model":{"provider":"Openrouter","api_name":"model"}, "name":"model",
+        "input_modalities":[], "context_window":null, "max_output_tokens":null,
+        "cost":{"tiers":[]}, "reasoning":true,
+        "reasoning_options":[{"effort":"Low","wire_effort":"Low"},{"effort":"High","wire_effort":"High"}],
+        "authed":true, "pinned":false, "refreshed_at":"2026-01-01T00:00:00Z"
+    })).unwrap();
+    assert!(session_efforts(&[], Some(&config), "").is_empty());
+    assert!(effort_model_config(&[], Some(&config), Effort::Low).is_none());
+    assert!(effort_model_config(&[model.clone()], None, Effort::High).is_none());
+    assert!(effort_model_config(&[model.clone()], Some(&config), Effort::Medium).is_none());
+    let updated = effort_model_config(&[model.clone()], Some(&config), Effort::High).unwrap();
+    assert_eq!(updated.model, config.model);
+    assert_eq!(updated.effort, Effort::High);
+    model.reasoning_options.clear();
+    assert!(session_efforts(&[model.clone()], Some(&config), "").is_empty());
+    assert!(effort_model_config(&[model], Some(&config), Effort::Low).is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn effort_update_sends_session_model_and_selected_effort() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut data = Vec::new();
+        let mut buffer = [0; 4096];
+        let (end, len) = loop {
+            let n = stream.read(&mut buffer).unwrap();
+            assert!(n > 0);
+            data.extend_from_slice(&buffer[..n]);
+            if let Some(end) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&data[..end]);
+                let len = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                if data.len() >= end + 4 + len {
+                    break (end + 4, len);
+                }
+            }
+        };
+        let headers = String::from_utf8_lossy(&data[..end]);
+        assert!(headers.starts_with("PATCH /sessions/1 "), "{headers}");
+        let request: serde_json::Value = serde_json::from_slice(&data[end..end + len]).unwrap();
+        let response = serde_json::json!({"id":1,"parent_id":null,"name":"test","working_directory":"/tmp","probe_id":"00000000-0000-0000-0000-000000000001","model_config":request["model_config"],"busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}).to_string();
+        write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).unwrap();
+        request
+    });
+    let mut dom = VirtualDom::new(|| rsx! { div {} });
+    dom.rebuild_in_place();
+    let mut settings = DesktopSettings::default();
+    settings.active_profile_mut().connection.api_url = format!("http://{address}");
+    let ui = dom.in_scope(ScopeId::ROOT, || Signal::new(Ui::new(settings)));
+    let config: ModelConfig = serde_json::from_value(serde_json::json!({"model":{"provider":"Openrouter","api_name":"favorite"},"effort":"High"})).unwrap();
+    let mut run = Box::pin(change_model(ui, SessionId(1), config));
+    std::future::poll_fn(|cx| dom.in_scope(ScopeId::ROOT, || run.as_mut().poll(cx))).await;
+    let request = server.join().unwrap();
+    assert_eq!(request["model_config"]["model"]["provider"], "Openrouter");
+    assert_eq!(request["model_config"]["model"]["api_name"], "favorite");
+    assert_eq!(request["model_config"]["effort"], "High");
+    assert!(ui.read().notice.is_some());
 }
 
 #[test]
@@ -60,6 +175,15 @@ fn root_fixture() -> Element {
           "models":["Parent","Global",{"Fixed":{"model":"provider/model","effort":"Global"}}], "default":false},
         "status":{"missing_components":[]}
     })).unwrap();
+    state.sessions.push(
+        serde_json::from_value(serde_json::json!({
+            "id":1,"parent_id":null,"name":"test","working_directory":"/tmp",
+            "probe_id":"00000000-0000-0000-0000-000000000001",
+            "model_config":{"model":{"provider":"Openrouter","api_name":"favorite"},"effort":"Low"},
+            "busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"
+        }))
+        .unwrap(),
+    );
     let mut draft = crate::app::DraftRoot::default();
     draft.configs.push(status);
     draft.ready = true;
@@ -69,7 +193,7 @@ fn root_fixture() -> Element {
             serde_json::from_value(serde_json::json!({
                 "model":{"provider":"Openrouter","api_name":name.to_lowercase()}, "name":name,
                 "input_modalities":[], "context_window":null, "max_output_tokens":null,
-                "cost":{"tiers":[]}, "reasoning":false, "reasoning_options":[],
+                "cost":{"tiers":[]}, "reasoning":true, "reasoning_options":[{"effort":"Low","wire_effort":"Low"},{"effort":"High","wire_effort":"High"}],
                 "authed":true, "pinned":pinned, "refreshed_at":"2026-01-01T00:00:00Z"
             }))
             .unwrap(),
@@ -164,6 +288,20 @@ fn root_completion_and_two_step_selection() {
     root_input(&mut dom, textarea, "/agent ");
     root_key(&mut dom, textarea, Key::Enter);
     assert!(dioxus_ssr::render(&dom).contains("Choose the root agent model policy"));
+}
+
+#[test]
+fn root_info_shows_unknown_usage_before_agent_creation() {
+    let (mut dom, textarea) = mount_root();
+    root_input(&mut dom, textarea, "/info");
+    root_key(&mut dom, textarea, Key::Enter);
+    let html = dioxus_ssr::render(&dom);
+    assert!(html.contains("aria-label=\"Agent information\""), "{html}");
+    assert!(
+        html.contains("Input tokens") && html.contains("Unknown"),
+        "{html}"
+    );
+    assert!(html.contains("<textarea value=\"\""), "{html}");
 }
 
 #[test]

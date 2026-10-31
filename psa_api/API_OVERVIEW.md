@@ -42,6 +42,15 @@ not guarantee a matching agent configuration exists.
 - get agents
 - submit requests to either interrupt or send steering message
 
+`GET /sessions/{session_id}/agents/{agent_id}/status` returns an
+`AgentStatusSnapshot` with the effective model configuration, the last inference's
+reported total tokens (or the sum when both input and output are reported), and
+an inclusive agent event `head`. Token usage is neither cumulative spend nor an
+exact current context size; it is unknown after a reset, compaction, failed or
+cancelled inference, or missing usage. To reconcile with an already subscribed
+stream, apply committed agent events newer than `head` in agent event order;
+ignore older replay. The model catalog provides the optional model context limit.
+
 /sessions/{id}/agents/{id}/events
 - query events in a range
   - optional flag to include non persisted events
@@ -300,7 +309,11 @@ snapshot for both metadata edits and busy-state changes. There is no separate
 projection share the publication gate, preventing stale busy values from
 overwriting newer transitions. Apply snapshots in stream order; activity-only
 changes do not advance the persisted `updated_at` timestamp.
-Agent views include state and cumulative token usage. See `../runtime/psa_server/README.md` for startup, `auth.toml`, client examples,
+Agent views include state and cumulative token usage. `cache_write_tokens` counts
+reported cache writes (currently OpenRouter chat `prompt_tokens_details.cache_write_tokens`);
+it is null when any included call did not report a count. Totals include fork-inherited
+calls and compactions, so summing across forks double-counts inherited usage.
+See `../runtime/psa_server/README.md` for startup, `auth.toml`, client examples,
 queue/shutdown semantics, and the trusted-client-only security boundary.
 
 ## Client queries
@@ -476,6 +489,17 @@ server configuration exposes this as `ResolvedConfig.session_defaults: ModelConf
 `ProviderType::name()`. Authentication means a
 credential is configured in the running server; it does not verify token validity,
 model entitlement, or account balance. Credentials never appear in responses.
+
+`PUT /providers/credential` takes `{"provider":"Openrouter","credential":"..."}`
+to set or replace a credential; `credential: null` removes it. Both fields are
+required. The response is a `ProviderInfo`, never the credential. The typed client
+method is `set_provider_credential(&SetProviderCredential)`. Changes are applied
+to future inference and catalog status immediately; in-flight inference keeps its
+existing provider. External file edits are not automatically reloaded; restart or
+another successful credential update loads them. Credentials are not
+validated against the provider and token refresh is not implemented. The existing
+client key is full-trust: any client with it can change provider credentials and
+incur spending. Protect traffic with a trusted encrypted tunnel.
 
 `GET /models` returns a `ModelInfo[]`. Optional `provider`, `authed`, and `pinned`
 query parameters combine with AND. Omitted filters include both values; for

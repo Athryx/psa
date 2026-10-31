@@ -212,6 +212,73 @@ async fn discovery_filters_lookup_reasoning_and_etags() {
 }
 
 #[tokio::test]
+async fn credential_updates_are_visible_across_catalog_views() {
+    let fixture = Fixture::new().await;
+    let registry =
+        ProviderRegistry::default().with_auth_path(fixture.directory.path().join("auth.toml"));
+    let mut runtime =
+        ModelCatalogRuntime::start(fixture.database.clone(), &registry, fixture.source.clone())
+            .await
+            .unwrap();
+    runtime.handle.resync(None).await.unwrap();
+    let model = config().model;
+    for (credential, expected) in [(Some("secret".to_owned()), true), (None, false)] {
+        runtime
+            .handle
+            .set_provider_credential(psa_api::SetProviderCredential {
+                provider: ProviderType::Openrouter,
+                credential,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime
+                .handle
+                .providers()
+                .into_iter()
+                .find(|p| p.id == ProviderType::Openrouter)
+                .unwrap()
+                .authed,
+            expected
+        );
+        assert_eq!(
+            runtime
+                .handle
+                .model_info(&model)
+                .await
+                .unwrap()
+                .unwrap()
+                .authed,
+            expected
+        );
+        assert_eq!(
+            runtime
+                .handle
+                .set_pinned(PinModel {
+                    model: model.clone(),
+                    pinned: true
+                })
+                .await
+                .unwrap()
+                .unwrap()
+                .authed,
+            expected
+        );
+        let models = runtime
+            .handle
+            .list_models(ListModels {
+                provider: Some(ProviderType::Openrouter),
+                authed: Some(expected),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(!models.is_empty());
+    }
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn pins_survive_replacements_disappearance_and_restart() {
     let fixture = Fixture::new().await;
     let mut runtime = fixture.synced_runtime().await;

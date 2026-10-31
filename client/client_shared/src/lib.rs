@@ -5,7 +5,9 @@ pub mod connection;
 pub mod local;
 pub mod sessions;
 pub mod settings;
+pub mod status;
 pub mod transcript;
+pub mod usage;
 pub mod workspace;
 
 pub use agents::*;
@@ -14,7 +16,9 @@ pub use connection::*;
 pub use local::*;
 pub use sessions::*;
 pub use settings::*;
+pub use status::*;
 pub use transcript::*;
+pub use usage::*;
 pub use workspace::*;
 
 #[cfg(test)]

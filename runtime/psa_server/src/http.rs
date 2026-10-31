@@ -106,11 +106,21 @@ pub enum HttpError {
     Invalid(String),
     #[error(transparent)]
     Catalog(#[from] crate::models::CatalogError),
+    #[error(transparent)]
+    ProviderAuth(#[from] crate::providers::AuthError),
 }
 
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
+            Self::ProviderAuth(crate::providers::AuthError::InvalidCredential) => {
+                (StatusCode::BAD_REQUEST, "invalid_input", self.to_string())
+            }
+            Self::ProviderAuth(crate::providers::AuthError::Unavailable) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                self.to_string(),
+            ),
             Self::Catalog(crate::models::CatalogError::NotFound) => {
                 (StatusCode::NOT_FOUND, "not_found", self.to_string())
             }
@@ -216,12 +226,18 @@ pub fn router(state: AppState) -> Router {
         .route(routes::FORK, post(fork_session))
         .route(routes::AGENTS, post(create_agent).get(list_agents))
         .route(routes::AGENT, get(get_agent))
+        .route(routes::AGENT_STATUS, get(get_agent_status))
         .route(routes::AGENT_RESULTS, get(get_agent_results))
         .route(routes::REQUESTS, post(submit_request))
         .route(routes::CLIENT_QUERY_RESPONSE, post(respond_to_client_query))
         .route(routes::SESSION_EVENTS, get(session_events))
         .route(routes::AGENT_EVENTS, get(agent_events))
         .route(routes::PROVIDERS, get(list_providers))
+        .route(
+            routes::PROVIDER_CREDENTIAL,
+            axum::routing::put(set_provider_credential)
+                .layer(axum::extract::DefaultBodyLimit::max(16 * 1024)),
+        )
         .route(routes::MODELS, get(list_models))
         .route(routes::MODEL_LOOKUP, get(lookup_model))
         .route(routes::MODEL_PIN, axum::routing::put(pin_model))
@@ -270,6 +286,21 @@ async fn list_providers(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<api::ProviderInfo>>, HttpError> {
     Ok(Json(require_catalog(&state)?.providers()))
+}
+
+async fn set_provider_credential(
+    State(state): State<AppState>,
+    request: Result<Json<api::SetProviderCredential>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<api::ProviderInfo>, HttpError> {
+    state.require_accepting()?;
+    // Never echo deserialization errors, which may contain submitted secrets.
+    let Json(request) =
+        request.map_err(|_| HttpError::Invalid("invalid provider credential request".into()))?;
+    Ok(Json(
+        require_catalog(&state)?
+            .set_provider_credential(request)
+            .await?,
+    ))
 }
 
 async fn list_models(
@@ -574,6 +605,17 @@ async fn get_agent(
         .get_agent(SessionId(session), AgentId(agent))
         .await?;
     Ok(Json(agent.into()))
+}
+
+async fn get_agent_status(
+    State(state): State<AppState>,
+    ApiPath((session, agent)): ApiPath<(u64, u64)>,
+) -> Result<Json<api::AgentStatusSnapshot>, HttpError> {
+    let mut cursor = state.database.cursor().await?;
+    let status = cursor
+        .load_agent_status(SessionId(session), AgentId(agent))
+        .await?;
+    Ok(Json(status))
 }
 
 async fn get_agent_results(
@@ -1147,6 +1189,7 @@ mod tests {
             ("GET", routes::AGENTS),
             ("POST", routes::AGENTS),
             ("GET", routes::AGENT),
+            ("GET", routes::AGENT_STATUS),
             ("POST", routes::REQUESTS),
             ("POST", routes::CLIENT_QUERY_RESPONSE),
             ("GET", routes::SESSION_EVENTS),

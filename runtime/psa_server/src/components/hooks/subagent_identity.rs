@@ -1,4 +1,4 @@
-//! Identity uses core agent ancestry, independently of fork lineage.
+//! Identity is emitted at creation; forks preserve their inherited prompt.
 use super::{Hook, HookError};
 use crate::{
     agents::{agent_context::AgentContext, session_manager::RuntimeError},
@@ -7,10 +7,7 @@ use crate::{
 use psa_api::events::{EventType, Message, MessageType, NewEvent};
 use std::time::Duration;
 
-#[derive(Default)]
-pub struct SubagentIdentity {
-    emitted_identity: Option<String>,
-}
+pub struct SubagentIdentity;
 impl SubagentIdentity {
     async fn build_identity(context: &AgentContext<'_>) -> Result<String, String> {
         let agent = context.agent();
@@ -54,19 +51,19 @@ impl Hook for SubagentIdentity {
         context: &mut AgentContext<'_>,
         mut cancellation: Cancellation,
     ) -> Result<(), HookError> {
+        if context.agent().parent_id.is_some() {
+            return Ok(());
+        }
+
         let identity = tokio::select! {
             biased;
             _ = cancellation.cancelled() => return Ok(()),
             result = Self::build_identity(context) => result.map_err(RuntimeError::Invalid)?,
         };
 
-        if self.emitted_identity.as_ref() == Some(&identity) {
-            return Ok(());
-        }
-
         let events = [NewEvent::new(EventType::Message(Message::text(
             MessageType::System,
-            identity.clone(),
+            identity,
         )))];
         tokio::select! {
             biased;
@@ -74,7 +71,6 @@ impl Hook for SubagentIdentity {
             result = context.save_events(&events) => { result?; },
         }
 
-        self.emitted_identity = Some(identity);
         Ok(())
     }
 }

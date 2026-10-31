@@ -68,14 +68,18 @@ impl SidebarState {
 pub struct UiPreferences {
     pub show_hidden_agents: bool,
     pub transcript_font_size: u16,
+    pub conversation_max_width_ch: u16,
     pub auto_follow: bool,
+    pub double_click_session_opens_details: bool,
 }
 impl Default for UiPreferences {
     fn default() -> Self {
         Self {
             show_hidden_agents: false,
             transcript_font_size: 14,
+            conversation_max_width_ch: 85,
             auto_follow: true,
+            double_click_session_opens_details: true,
         }
     }
 }
@@ -276,11 +280,25 @@ mod tests {
     fn defaults_and_secret_redaction() {
         let s: DesktopSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.preferences.transcript_font_size, 14);
+        assert_eq!(s.preferences.conversation_max_width_ch, 85);
         let c = ConnectionSettings {
             client_key: "sensitive".into(),
             ..Default::default()
         };
         assert!(!format!("{c:?}").contains("sensitive"));
+    }
+    #[test]
+    fn conversation_width_is_global_and_persists() {
+        let mut settings = DesktopSettings::default();
+        settings.preferences.conversation_max_width_ch = 110;
+        let remote = ConnectionProfile::new_remote("Remote", ConnectionSettings::default());
+        settings.active_profile_id = remote.id.clone();
+        settings.profiles.push(remote);
+        let encoded = serde_json::to_string(&settings).unwrap();
+        let mut restored: DesktopSettings = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored.preferences.conversation_max_width_ch, 110);
+        restored.active_profile_id = LOCAL_PROFILE_ID.into();
+        assert_eq!(restored.preferences.conversation_max_width_ch, 110);
     }
     #[test]
     fn profile_isolation_and_protection() {
@@ -296,6 +314,19 @@ mod tests {
         assert_eq!(s.active_profile_id, LOCAL_PROFILE_ID);
         assert!(s.current_server().unwrap().sidebar.collapsed);
     }
+    #[test]
+    fn double_click_details_preference_defaults_and_roundtrips() {
+        let mut settings: DesktopSettings = serde_json::from_str("{}").unwrap();
+        assert!(settings.preferences.double_click_session_opens_details);
+        settings.preferences.double_click_session_opens_details = false;
+        let encoded = serde_json::to_string(&settings).unwrap();
+        let restored: DesktopSettings = serde_json::from_str(&encoded).unwrap();
+        assert!(!restored.preferences.double_click_session_opens_details);
+        let legacy: UiPreferences = serde_json::from_str(r#"{"auto_follow":false}"#).unwrap();
+        assert_eq!(legacy.conversation_max_width_ch, 85);
+        assert!(legacy.double_click_session_opens_details);
+    }
+
     #[test]
     fn migrates_legacy_settings_and_roundtrips() {
         let json = r#"{"connection":{"api_url":"https://remote/","client_key":"secret"},"preferences":{"transcript_font_size":18},"servers":[{"server_url":"https://remote","sidebar":{"collapsed":true}},{"server_url":"https://other","sidebar":{"collapsed":true}}]}"#;

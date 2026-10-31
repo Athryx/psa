@@ -255,6 +255,9 @@ impl InstalledComponents {
                     .install(agent, session, &mut installer)?;
             }
 
+            // Initialize context before bundle-owned creation prompts. Other
+            // stages retain bundle-first ordering.
+            let bundle_create_hooks = std::mem::take(&mut installer.hooks.agent_create);
             for (stage, ids) in [
                 (HookStage::AgentCreate, &definition.hooks.agent_create),
                 (HookStage::SessionUpdate, &definition.hooks.session_update),
@@ -265,6 +268,7 @@ impl InstalledComponents {
                     installer.add_hook(stage, HookKind::from_config(config));
                 }
             }
+            installer.hooks.agent_create.extend(bundle_create_hooks);
             Ok(())
         }))
         .unwrap_or_else(|panic| {

@@ -1,7 +1,7 @@
 use psa_api::events::{EventType, ToolCall, ToolResult};
 use psa_api::{
-    Agent, AgentId, ClientQueryId, ClientQueryRequest, EventEnvelope, EventsPage, PendingEvent,
-    Session, SessionId, StreamMessage,
+    Agent, AgentId, AgentStatusSnapshot, ClientQueryId, ClientQueryRequest, EventEnvelope,
+    EventsPage, PendingEvent, Session, SessionId, StreamMessage,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -65,6 +65,8 @@ pub struct Transcript {
     pub queries: BTreeMap<ClientQueryId, ClientQueryRequest>,
     pub agents: HashMap<AgentId, Agent>,
     pub session: Option<Session>,
+    /// Server projection at a committed agent event boundary.
+    pub status_snapshot: Option<AgentStatusSnapshot>,
     pub request_failures: HashMap<String, String>,
     pub cursor: u64,
     pub needs_resync: bool,
@@ -82,6 +84,7 @@ impl Transcript {
             queries: BTreeMap::new(),
             agents: HashMap::new(),
             session: None,
+            status_snapshot: None,
             request_failures: HashMap::new(),
             cursor: 0,
             needs_resync: false,
@@ -103,12 +106,16 @@ impl Transcript {
     fn insert_event(&mut self, event: EventEnvelope) {
         if self.matches(event.session_id, event.agent_id) {
             let key = self.position(&event);
+            if let Some(status) = &mut self.status_snapshot {
+                status.apply_event(&event.event);
+            }
             self.committed.entry(key).or_insert(event);
         }
     }
     /// Call only before connecting the stream. The captured head is its replay cursor.
     pub fn bootstrap(&mut self, page: EventsPage) {
         self.cursor = page.head;
+        self.status_snapshot = None;
         self.pending.clear();
         self.queries.clear();
         self.retired_pending.clear();

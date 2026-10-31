@@ -6,6 +6,8 @@ pub const CONFIG: &str = "/config";
 
 /// GET the supported providers and configured-authentication flags.
 pub const PROVIDERS: &str = "/providers";
+/// PUT a provider credential or remove it without returning the secret.
+pub const PROVIDER_CREDENTIAL: &str = "/providers/credential";
 /// GET model catalog entries with optional filters.
 pub const MODELS: &str = "/models";
 /// GET one model using flat provider/model query parameters.
@@ -38,6 +40,8 @@ pub const FORK: &str = "/sessions/{session_id}/fork";
 pub const AGENTS: &str = "/sessions/{session_id}/agents";
 /// GET one agent within its session.
 pub const AGENT: &str = "/sessions/{session_id}/agents/{agent_id}";
+/// Effective model and last inference usage at an agent event boundary.
+pub const AGENT_STATUS: &str = "/sessions/{session_id}/agents/{agent_id}/status";
 /// POST an interrupt or message request to an agent.
 pub const REQUESTS: &str = "/sessions/{session_id}/agents/{agent_id}/requests";
 /// POST a response to an outstanding scoped client query.

@@ -198,6 +198,9 @@ pub struct AgentUsage {
     pub total_tokens: Option<u64>,
     /// Cumulative cached input tokens, or unknown.
     pub cached_input_tokens: Option<u64>,
+    /// Cumulative input tokens written to provider caches, or unknown.
+    #[serde(default)]
+    pub cache_write_tokens: Option<u64>,
     /// Cumulative reasoning output tokens, or unknown.
     pub reasoning_output_tokens: Option<u64>,
 }
@@ -209,7 +212,55 @@ impl Default for AgentUsage {
             output_tokens: Some(0),
             total_tokens: Some(0),
             cached_input_tokens: Some(0),
+            cache_write_tokens: Some(0),
             reasoning_output_tokens: Some(0),
+        }
+    }
+}
+
+/// Per-agent model and most recent inference usage at an event boundary.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentStatusSnapshot {
+    /// Inclusive agent event sequence represented by this snapshot.
+    pub head: u64,
+    /// Effective model in the current context; unknown before a model event.
+    pub model_config: Option<ModelConfig>,
+    /// Last inference total tokens, not the current context size or cumulative usage.
+    pub context_tokens: Option<u64>,
+}
+
+impl AgentStatusSnapshot {
+    /// Incorporate a newer committed event. Older replay and history are ignored.
+    pub fn apply_event(&mut self, event: &Event) {
+        if event.id.0 <= self.head {
+            return;
+        }
+        self.head = event.id.0;
+        match &event.kind {
+            EventType::NewContext => {
+                self.model_config = None;
+                self.context_tokens = None;
+            }
+            EventType::Model(config) => self.model_config = Some(config.clone()),
+            EventType::Compaction(_) => self.context_tokens = None,
+            EventType::InferenceResultEnd(end) => {
+                self.context_tokens = if matches!(
+                    end.outcome,
+                    llm_api::api::Outcome::Completed { .. }
+                        | llm_api::api::Outcome::Incomplete { .. }
+                ) {
+                    end.usage.total_tokens.or_else(|| {
+                        Some(
+                            end.usage
+                                .input_tokens?
+                                .saturating_add(end.usage.output_tokens?),
+                        )
+                    })
+                } else {
+                    None
+                };
+            }
+            _ => {}
         }
     }
 }

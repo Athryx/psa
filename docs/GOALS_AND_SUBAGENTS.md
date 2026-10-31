@@ -101,6 +101,11 @@ The parent must be in the same session. `Agent.parent_id` remains fork lineage.
 Session forks remap ancestry to copied agent IDs. Existing checkpoint logs are
 not imported; preexisting agents default to no subagent parent.
 
+The bundle emits its identity/instructions system prompt once on agent creation,
+after configured startup hooks initialize context. It does not refresh identity
+on requests, worker reloads, or server restarts. Forks preserve the inherited
+prompt unchanged, keeping the existing model-history prefix cacheable.
+
 - `create_agent(name, task, agent_template?)` starts a fresh noninteractive child
   using an explicitly permitted definition. Missing/null templates are rejected.
   Creation establishes parentage atomically and rejects duplicate session names.

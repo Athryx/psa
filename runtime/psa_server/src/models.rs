@@ -52,7 +52,7 @@ pub(crate) struct ProviderSyncState {
 #[derive(Clone)]
 pub struct ModelCatalog {
     database: Database,
-    authed: Vec<ProviderType>,
+    providers: ProviderRegistry,
     commands: UnboundedMailboxHandle<Command>,
 }
 
@@ -62,9 +62,21 @@ impl ModelCatalog {
             .into_iter()
             .map(|id| ProviderInfo {
                 id,
-                authed: self.authed.contains(&id),
+                authed: self.providers.provider(id).is_some(),
             })
             .collect()
+    }
+
+    pub(crate) async fn set_provider_credential(
+        &self,
+        request: psa_api::SetProviderCredential,
+    ) -> Result<ProviderInfo, crate::providers::AuthError> {
+        // A disconnected client must not cancel between the durable rename and
+        // publishing the new in-memory snapshot.
+        let providers = self.providers.clone();
+        tokio::spawn(async move { providers.set_credential(request).await })
+            .await
+            .map_err(|_| crate::providers::AuthError::Unavailable)?
     }
 
     pub async fn list_models(&self, query: ListModels) -> Result<Vec<ModelInfo>, CatalogError> {
@@ -73,7 +85,7 @@ impl ModelCatalog {
         cursor.rollback().await?;
 
         for model in &mut models {
-            model.authed = self.authed.contains(&model.model.provider);
+            model.authed = self.providers.provider(model.model.provider).is_some();
         }
         models.retain(|model| {
             query
@@ -91,7 +103,7 @@ impl ModelCatalog {
         cursor.rollback().await?;
 
         if let Some(info) = &mut info {
-            info.authed = self.authed.contains(&model.provider);
+            info.authed = self.providers.provider(model.provider).is_some();
         }
         Ok(info)
     }
@@ -111,7 +123,7 @@ impl ModelCatalog {
 
         if let Some(info) = &mut info {
             info.pinned = request.pinned;
-            info.authed = self.authed.contains(&request.model.provider);
+            info.authed = self.providers.provider(request.model.provider).is_some();
         }
         Ok(info)
     }
@@ -195,10 +207,7 @@ impl ModelCatalogRuntime {
         let (commands, mailbox) = actors::unbounded_channel();
         let handle = ModelCatalog {
             database: database.clone(),
-            authed: ProviderType::ALL
-                .into_iter()
-                .filter(|provider| providers.provider(*provider).is_some())
-                .collect(),
+            providers: providers.clone(),
             commands,
         };
         let state = State {

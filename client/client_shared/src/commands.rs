@@ -2,8 +2,10 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandId {
     SessionModel,
+    SessionEffort,
     Agent,
     Refresh,
+    Info,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandSpec {
@@ -26,6 +28,16 @@ pub const COMMANDS: &[CommandSpec] = &[
         id: CommandId::Refresh,
         name: "refresh",
         description: "Refresh root agent configurations",
+    },
+    CommandSpec {
+        id: CommandId::SessionEffort,
+        name: "effort",
+        description: "Change this session's default reasoning effort",
+    },
+    CommandSpec {
+        id: CommandId::Info,
+        name: "info",
+        description: "Show agent information and token usage",
     },
 ];
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +156,21 @@ mod tests {
         );
         assert_eq!(complete_commands("/ag")[0].id, CommandId::Agent);
         assert!(complete_commands("/agent worker").is_empty());
+    }
+    #[test]
+    fn effort_command_parses_and_completes() {
+        assert_eq!(
+            parse_composer_input("/effort high"),
+            ComposerInput::Command {
+                id: CommandId::SessionEffort,
+                arguments: "high".into(),
+            }
+        );
+        assert_eq!(complete_commands("/eff")[0].id, CommandId::SessionEffort);
+        assert_eq!(
+            parse_composer_input("//effort high"),
+            ComposerInput::Text("/effort high".into())
+        );
     }
     #[test]
     fn empty_and_dismissed_completion_are_safe() {

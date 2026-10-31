@@ -15,6 +15,23 @@ pub enum SplitAxis {
     Horizontal,
     Vertical,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Clone, Copy)]
+struct GroupRect {
+    id: GroupId,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tab {
     pub id: ViewId,
@@ -59,6 +76,41 @@ impl Default for Workspace {
     }
 }
 impl SplitNode {
+    fn collect_rects(&self, rect: GroupRect, out: &mut Vec<GroupRect>) {
+        match self {
+            Self::Group(group) => out.push(GroupRect {
+                id: group.id,
+                ..rect
+            }),
+            Self::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } => {
+                let ratio = if ratio.is_finite() {
+                    ratio.clamp(0.1, 0.9)
+                } else {
+                    0.5
+                };
+                let (mut first_rect, mut second_rect) = (rect, rect);
+                match axis {
+                    SplitAxis::Horizontal => {
+                        let x = rect.left + (rect.right - rect.left) * ratio;
+                        first_rect.right = x;
+                        second_rect.left = x;
+                    }
+                    SplitAxis::Vertical => {
+                        let y = rect.top + (rect.bottom - rect.top) * ratio;
+                        first_rect.bottom = y;
+                        second_rect.top = y;
+                    }
+                }
+                first.collect_rects(first_rect, out);
+                second.collect_rects(second_rect, out);
+            }
+        }
+    }
     fn collect<'a>(&'a self, out: &mut Vec<&'a TabGroup>) {
         match self {
             Self::Group(group) => out.push(group),
@@ -112,35 +164,24 @@ impl SplitNode {
             _ => false,
         }
     }
-    fn prune(self) -> Self {
-        match self {
-            Self::Split {
-                axis,
-                ratio,
-                first,
-                second,
-            } => {
-                let first = first.prune();
-                let second = second.prune();
-                if matches!(&first, Self::Group(g) if g.tabs.is_empty()) {
-                    return second;
-                }
-                if matches!(&second, Self::Group(g) if g.tabs.is_empty()) {
-                    return first;
-                }
-                Self::Split {
-                    axis,
-                    ratio: if ratio.is_finite() {
-                        ratio.clamp(0.1, 0.9)
-                    } else {
-                        0.5
-                    },
-                    first: Box::new(first),
-                    second: Box::new(second),
-                }
-            }
-            other => other,
-        }
+    // Remove only the requested leaf, returning a group in its sibling subtree.
+    fn remove_group(&mut self, id: GroupId) -> Option<GroupId> {
+        let Self::Split { first, second, .. } = self else {
+            return None;
+        };
+        let sibling = if matches!(&**first, Self::Group(g) if g.id == id) {
+            Some((**second).clone())
+        } else if matches!(&**second, Self::Group(g) if g.id == id) {
+            Some((**first).clone())
+        } else {
+            return first.remove_group(id).or_else(|| second.remove_group(id));
+        };
+        let sibling = sibling.unwrap();
+        let mut groups = Vec::new();
+        sibling.collect(&mut groups);
+        let focus = groups[0].id;
+        *self = sibling;
+        Some(focus)
     }
 }
 impl Workspace {
@@ -181,6 +222,90 @@ impl Workspace {
             .find(|g| g.id == self.focused_group)?;
         group.tabs.iter().find(|t| Some(t.id) == group.active)
     }
+    /// Focus a zero-based tab index in the focused group.
+    pub fn focus_tab_at(&mut self, index: usize) -> bool {
+        let view = self
+            .groups()
+            .into_iter()
+            .find(|group| group.id == self.focused_group)
+            .and_then(|group| group.tabs.get(index))
+            .map(|tab| tab.id);
+        view.is_some_and(|view| self.focus(view))
+    }
+
+    /// Focus the closest pane in a direction, preferring panes that overlap on
+    /// the perpendicular axis. Empty panes are navigable too.
+    pub fn focus_direction(&mut self, direction: FocusDirection) -> bool {
+        let mut rects = Vec::new();
+        self.root.collect_rects(
+            GroupRect {
+                id: self.focused_group,
+                left: 0.0,
+                top: 0.0,
+                right: 1.0,
+                bottom: 1.0,
+            },
+            &mut rects,
+        );
+        let Some(source) = rects
+            .iter()
+            .find(|rect| rect.id == self.focused_group)
+            .copied()
+        else {
+            return false;
+        };
+        let mut candidates = rects
+            .into_iter()
+            .filter_map(|rect| {
+                if rect.id == source.id {
+                    return None;
+                }
+                let (primary, perpendicular) = match direction {
+                    FocusDirection::Right if rect.left >= source.right - 1e-6 => (
+                        rect.left - source.right,
+                        (source.top, source.bottom, rect.top, rect.bottom),
+                    ),
+                    FocusDirection::Left if rect.right <= source.left + 1e-6 => (
+                        source.left - rect.right,
+                        (source.top, source.bottom, rect.top, rect.bottom),
+                    ),
+                    FocusDirection::Down if rect.top >= source.bottom - 1e-6 => (
+                        rect.top - source.bottom,
+                        (source.left, source.right, rect.left, rect.right),
+                    ),
+                    FocusDirection::Up if rect.bottom <= source.top + 1e-6 => (
+                        source.top - rect.bottom,
+                        (source.left, source.right, rect.left, rect.right),
+                    ),
+                    _ => return None,
+                };
+                let (a, b, c, d) = perpendicular;
+                let gap = (a - d).max(c - b).max(0.0);
+                let center_distance = ((a + b) - (c + d)).abs();
+                Some((rect.id, gap, primary.max(0.0), center_distance))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|a, b| {
+            a.1.total_cmp(&b.1)
+                .then(a.2.total_cmp(&b.2))
+                .then(a.3.total_cmp(&b.3))
+        });
+        let Some((id, ..)) = candidates.first().copied() else {
+            return false;
+        };
+        let active = self
+            .groups()
+            .into_iter()
+            .find(|group| group.id == id)
+            .and_then(|group| group.active);
+        if let Some(view) = active {
+            self.focus(view)
+        } else {
+            self.focused_group = id;
+            true
+        }
+    }
+
     pub fn focus(&mut self, view: ViewId) -> bool {
         let Some(group) = self
             .groups()
@@ -278,13 +403,34 @@ impl Workspace {
                 .get(index.min(g.tabs.len().saturating_sub(1)))
                 .map(|t| t.id);
         }
-        self.prune_empty_groups();
+        if g.tabs.is_empty() {
+            self.close_empty_group(id);
+        }
         true
     }
-    fn prune_empty_groups(&mut self) {
-        self.root = self.root.clone().prune();
-        if !self.groups().iter().any(|g| g.id == self.focused_group) {
-            self.focused_group = self.groups()[0].id;
+    /// Close an empty pane, retaining the final pane and all unrelated panes.
+    pub fn close_empty_group(&mut self, id: GroupId) -> bool {
+        if !self
+            .groups()
+            .iter()
+            .any(|g| g.id == id && g.tabs.is_empty())
+        {
+            return false;
+        }
+        let Some(fallback) = self.root.remove_group(id) else {
+            return false;
+        };
+        if self.focused_group == id {
+            self.focused_group = fallback;
+        }
+        true
+    }
+    /// Close the active tab, or the focused pane if it is empty.
+    pub fn close_active(&mut self) -> bool {
+        if let Some(view) = self.active_tab().map(|tab| tab.id) {
+            self.close(view)
+        } else {
+            self.close_empty_group(self.focused_group)
         }
     }
     pub fn move_tab(&mut self, view: ViewId, destination: GroupId, index: usize) -> bool {
@@ -313,7 +459,9 @@ impl Workspace {
         }
         group.tabs.insert(index.min(group.tabs.len()), tab);
         self.focus(view);
-        self.prune_empty_groups();
+        if source != destination {
+            self.close_empty_group(source);
+        }
         true
     }
     /// Repairs malformed layout references without dropping unavailable remote targets.
@@ -364,7 +512,9 @@ impl Workspace {
         }
         repair(&mut self.root, &mut used, &mut next);
         self.next_identity = self.next_identity.max(next);
-        self.prune_empty_groups();
+        if !self.groups().iter().any(|g| g.id == self.focused_group) {
+            self.focused_group = self.groups()[0].id;
+        }
     }
 }
 
@@ -377,6 +527,44 @@ mod tests {
             agent_id: AgentId(n),
         }
     }
+    #[test]
+    fn focus_tab_index_is_local_and_out_of_bounds_is_noop() {
+        let mut w = Workspace::default();
+        let a = w.open(target(1), true);
+        let b = w.open(target(2), true);
+        let group = w.split(w.focused_group, SplitAxis::Horizontal).unwrap();
+        w.focused_group = group;
+        let c = w.open(target(3), true);
+        assert!(!w.focus_tab_at(1));
+        assert_eq!(w.active_tab().unwrap().id, c);
+        assert!(w.focus(a));
+        assert!(w.focus_tab_at(1));
+        assert_eq!(w.active_tab().unwrap().id, b);
+        assert!(!w.focus_tab_at(9));
+        assert_eq!(w.active_tab().unwrap().id, b);
+    }
+
+    #[test]
+    fn directional_focus_uses_geometry_and_can_enter_empty_panes() {
+        let mut w = Workspace::default();
+        let a = w.open(target(1), true);
+        let left = w.focused_group;
+        let right_top = w.split(left, SplitAxis::Horizontal).unwrap();
+        w.focused_group = right_top;
+        let b = w.open(target(2), true);
+        let right_bottom = w.split(right_top, SplitAxis::Vertical).unwrap();
+
+        assert!(w.focus_direction(FocusDirection::Down));
+        assert_eq!(w.focused_group, right_bottom);
+        assert!(w.active_tab().is_none());
+        assert!(w.focus_direction(FocusDirection::Left));
+        assert_eq!(w.active_tab().unwrap().id, a);
+        assert!(!w.focus_direction(FocusDirection::Left));
+        assert!(w.focus_direction(FocusDirection::Right));
+        assert_eq!(w.active_tab().unwrap().id, b);
+        assert!(!w.focus_direction(FocusDirection::Up));
+    }
+
     #[test]
     fn preview_and_global_focus() {
         let mut w = Workspace::default();
@@ -438,6 +626,41 @@ mod tests {
         assert_eq!(w.active_tab().unwrap().id, second);
         assert!(w.active_tab().unwrap().preview);
     }
+    #[test]
+    fn close_and_move_only_remove_their_own_empty_group() {
+        let mut w = Workspace::default();
+        let a = w.open(target(1), true);
+        let first = w.focused_group;
+        let empty = w.split(first, SplitAxis::Horizontal).unwrap();
+        let destination = w.split(empty, SplitAxis::Vertical).unwrap();
+        w.focused_group = empty;
+        assert!(w.move_tab(a, destination, 0));
+        assert_eq!(w.focused_group, destination);
+        assert!(w.groups().iter().any(|g| g.id == empty));
+        assert!(!w.groups().iter().any(|g| g.id == first));
+        assert!(w.close(a));
+        assert_eq!(w.focused_group, empty);
+        assert_eq!(w.groups().len(), 1);
+        assert!(!w.close_active());
+    }
+
+    #[test]
+    fn close_empty_pane_and_restore_preserve_other_empty_panes() {
+        let mut w = Workspace::default();
+        let first = w.focused_group;
+        let second = w.split(first, SplitAxis::Horizontal).unwrap();
+        let third = w.split(second, SplitAxis::Vertical).unwrap();
+        w.focused_group = second;
+        w.restore();
+        assert_eq!(w.groups().len(), 3);
+        assert!(w.close_active());
+        assert_eq!(w.focused_group, third);
+        assert_eq!(w.groups().len(), 2);
+        assert!(w.close_empty_group(first));
+        assert_eq!(w.focused_group, third);
+        assert!(!w.close_active());
+    }
+
     #[test]
     fn move_to_empty_split_keeps_destination() {
         let mut w = Workspace::default();

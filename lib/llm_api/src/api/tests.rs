@@ -303,6 +303,57 @@ async fn completions_http_round_trip() {
 }
 
 #[tokio::test]
+async fn completions_tool_usage_trailer_http_round_trip() {
+    let chunks = [
+        json!({"id":"chat-1","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls -la\"}"}}]},"finish_reason":null}]}),
+        json!({"id":"chat-1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+        json!({"id":"chat-1","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"tool_calls","native_finish_reason":"tool_calls"}],"usage":{"prompt_tokens":307,"completion_tokens":55,"total_tokens":362}}),
+    ];
+    let mut body = chunks
+        .iter()
+        .map(|chunk| format!("data: {chunk}\n\n"))
+        .collect::<String>();
+    body.push_str("data: [DONE]\n\n");
+    let (url, request) = server("200 OK", "text/event-stream", "", body).await;
+    let client = provider_at_url(ProviderType::Openrouter, url);
+    let mut stream = client
+        .generate(
+            &history(ProviderType::Openrouter),
+            &RequestConfig::default(),
+        )
+        .await
+        .unwrap();
+    let mut finished = 0;
+    while let Some(event) = stream.next_event().await {
+        if matches!(event.unwrap(), TurnEvent::Finished) {
+            finished += 1;
+        }
+    }
+
+    assert_eq!(finished, 1);
+    let output = stream.into_output();
+    assert!(matches!(
+        output.outcome,
+        Outcome::Completed {
+            reason: StopReason::ToolCalls
+        }
+    ));
+    assert_eq!(output.usage.total_tokens, Some(362));
+    let calls = output
+        .items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            HistoryItemKind::ToolCall(call) => Some(call),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].name, "bash");
+    assert_eq!(calls[0].arguments, "{\"command\":\"ls -la\"}");
+    request.await.unwrap();
+}
+
+#[tokio::test]
 async fn responses_http_round_trip() {
     let (url, request) = server("200 OK", "text/event-stream", "", responses_stream()).await;
     let client = OpenAiResponses::new(url, "test-key", ProviderType::OpenAiCodex).unwrap();
