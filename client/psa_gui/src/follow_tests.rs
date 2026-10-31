@@ -84,7 +84,7 @@ fn HistoryFixture() -> Element {
             };
             transcript.apply(StreamMessage::Upsert { pending });
         }
-        ui.transcripts.insert(target, transcript);
+        ui.transcripts.insert(target, transcript.into());
         ui
     });
     use_context_provider(|| ui);
@@ -140,7 +140,7 @@ fn EmptyHistoryFixture() -> Element {
         let mut ui = Ui::new(DesktopSettings::default());
         ui.transcripts.insert(
             target,
-            Transcript::new(target.session_id, Some(target.agent_id)),
+            Transcript::new(target.session_id, Some(target.agent_id)).into(),
         );
         ui
     });

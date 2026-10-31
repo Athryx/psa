@@ -5,12 +5,18 @@ use dioxus::prelude::*;
 use std::{future::Future, pin::Pin, rc::Rc};
 
 mod app;
+mod composer;
 mod creation;
+mod input;
+mod interaction;
 mod markdown;
 mod network;
+mod persistence;
+mod reactive;
 mod style;
 #[cfg(test)]
 mod tests;
+mod transcript_view;
 mod views;
 
 /// Initial settings, loaded asynchronously by the platform before mounting.
@@ -19,9 +25,14 @@ pub struct GuiConfig {
     pub settings: DesktopSettings,
 }
 
+/// Flush the GUI's latest durable snapshot before a platform closes its window.
+pub type SettingsFlush = Rc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>>>>>;
+
 /// The deliberately small platform boundary. Futures need not be `Send`:
 /// web and native renderers may both own thread-local platform resources.
 pub trait GuiPlatform {
+    fn set_settings_flush(&self, _flush: Option<SettingsFlush>) {}
+
     fn save_settings(
         &self,
         settings: DesktopSettings,

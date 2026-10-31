@@ -173,7 +173,7 @@ fn reconnecting_picker_test_root() -> Element {
                 "label": null, "data_dir": "/tmp", "home_dir": "/home/test", "host": false,
                 "is_active": true, "created_at": "2026-01-01T00:00:00Z",
                 "last_connected_at": "2026-01-01T00:00:00Z"
-            })).unwrap()];
+            })).unwrap()].into();
         }, "Reconnect probe" }
         crate::creation::CreateSessionPicker {}
     }
@@ -852,7 +852,7 @@ fn provider_editor_uses_password_and_clears_on_cancel() {
         html.contains("type=\"password\"") && html.contains("API key"),
         "{html}"
     );
-    assert!(html.contains("disabled"), "{html}");
+    assert!(html.contains("required"), "{html}");
     let input = mutations
         .edits
         .iter()
@@ -894,7 +894,96 @@ fn provider_editor_uses_password_and_clears_on_cancel() {
     dom.render_immediate_to_vec();
     let html = dioxus_ssr::render(&dom);
     assert!(
-        !html.contains("secret-sentinel") && html.contains("disabled"),
+        !html.contains("secret-sentinel") && html.contains("required"),
         "{html}"
     );
+}
+
+#[test]
+fn profile_submit_reads_fresh_native_values_without_waiting_for_edit_snapshots() {
+    use dioxus::{
+        core::{Mutation, ScopeId},
+        html::{PlatformEventData, SerializedFormData, SerializedFormObject},
+    };
+    use std::any::Any;
+
+    dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+    let mut settings = DesktopSettings::default();
+    let profile = ConnectionProfile::new_remote("Old name", ConnectionSettings::default());
+    settings.active_profile_id = profile.id.clone();
+    settings.profiles.push(profile);
+    let mut dom = VirtualDom::new(settings_test_root).with_root_context(GuiBootstrap {
+        config: GuiConfig { settings },
+        platform: Rc::new(FakePlatform::default()),
+    });
+    let edits = dom.rebuild_to_vec();
+    let form = edits
+        .edits
+        .iter()
+        .find_map(|edit| match edit {
+            Mutation::NewEventListener { name, id } if name == "submit" => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let values = [
+        ("profile-name", "Latest name"),
+        ("api-url", "https://latest.invalid"),
+        ("api-key", "latest-client-key"),
+    ]
+    .into_iter()
+    .map(|(key, text)| SerializedFormObject {
+        key: key.into(),
+        text: Some(text.into()),
+        file: None,
+    })
+    .collect();
+    let event = Event::new(
+        Rc::new(PlatformEventData::new(Box::new(SerializedFormData::new(
+            String::new(),
+            values,
+        )))) as Rc<dyn Any>,
+        true,
+    );
+    // No input events have updated the Rust-side name/URL/key signals.
+    dom.runtime().handle_event("submit", event.clone(), form);
+    assert!(!event.default_action_enabled());
+    let ui = dom.in_scope(ScopeId::APP, consume_context::<Signal<crate::app::Ui>>);
+    let state = ui.peek();
+    assert_eq!(state.settings.active_profile().name, "Latest name");
+    assert_eq!(
+        state.settings.active_profile().connection.api_url,
+        "https://latest.invalid"
+    );
+    assert_eq!(
+        state.settings.active_profile().connection.client_key,
+        "latest-client-key"
+    );
+}
+
+#[test]
+fn closing_the_last_view_releases_history_but_retains_unsent_drafts() {
+    let mut ui = crate::app::Ui::new(DesktopSettings::default());
+    let keep = TranscriptTarget {
+        session_id: SessionId(1),
+        agent_id: AgentId(1),
+    };
+    let closed = TranscriptTarget {
+        session_id: SessionId(2),
+        agent_id: AgentId(2),
+    };
+    for target in [keep, closed] {
+        ui.transcripts.insert(
+            target,
+            Transcript::new(target.session_id, Some(target.agent_id)).into(),
+        );
+        ui.transcript_status.insert(target, "Live".into());
+        ui.history_requests.insert(target, ui.generation);
+        ui.drafts.insert(target, "unsent draft".into());
+    }
+    ui.prune_closed_transcripts(&std::collections::HashSet::from([keep]));
+    assert!(ui.transcripts.contains_key(&keep));
+    assert!(!ui.transcripts.contains_key(&closed));
+    assert!(!ui.transcript_status.contains_key(&closed));
+    assert!(!ui.history_requests.contains_key(&closed));
+    assert_eq!(ui.drafts.get(&closed).unwrap(), "unsent draft");
 }

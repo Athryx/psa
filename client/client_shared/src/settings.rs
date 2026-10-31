@@ -2,7 +2,7 @@ use crate::{TranscriptTarget, Workspace};
 use psa_api::ProbeId;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ConnectionSettings {
     pub api_url: String,
@@ -39,7 +39,7 @@ pub enum SidebarMode {
     Browser,
     Details,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SidebarState {
     pub collapsed: bool,
@@ -71,7 +71,7 @@ pub enum ReasoningDisplay {
     Shown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiPreferences {
     pub show_hidden_agents: bool,
@@ -97,7 +97,7 @@ impl Default for UiPreferences {
         }
     }
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerWorkspace {
     pub server_url: String,
@@ -115,7 +115,7 @@ impl ServerWorkspace {
 }
 pub const LOCAL_PROFILE_ID: &str = "local";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ConnectionProfile {
     pub id: String,
@@ -164,7 +164,7 @@ impl ConnectionProfile {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DesktopSettings {
     pub profiles: Vec<ConnectionProfile>,
     pub active_profile_id: String,

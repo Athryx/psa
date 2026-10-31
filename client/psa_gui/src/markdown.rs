@@ -2,6 +2,10 @@
 //! inert until the platform has an explicit external-URL opening boundary.
 use dioxus::prelude::*;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
+use tokio::{runtime::Handle, sync::watch};
+
+const ASYNC_PARSE_BYTES: usize = 16 * 1024;
 
 #[cfg(test)]
 #[path = "markdown_tests.rs"]
@@ -174,8 +178,105 @@ fn render_node(node: &Node) -> Element {
     }
 }
 
+#[derive(Debug)]
+struct ParsedMarkdown {
+    text: Arc<str>,
+    nodes: Vec<Node>,
+}
+
+/// One actor per mounted component, with one running parse and one latest slot.
+/// Always parse the whole snapshot: late reference definitions and closing fences
+/// can change the interpretation of any earlier block.
+async fn run_parse_worker(
+    mut requests: watch::Receiver<Option<Arc<str>>>,
+    runtime: Handle,
+    parse: impl Fn(&str) -> Vec<Node> + Send + Sync + 'static,
+    mut publish: impl FnMut(ParsedMarkdown),
+) {
+    let parse = Arc::new(parse);
+    while requests.changed().await.is_ok() {
+        let Some(text) = requests.borrow_and_update().clone() else {
+            continue;
+        };
+        let input = text.clone();
+        let parse = parse.clone();
+        let result = runtime.spawn_blocking(move || parse(&input)).await;
+
+        // A closed channel means unmounted, even if it still contains this text.
+        if requests.has_changed().is_err() {
+            return;
+        }
+        let is_current = requests
+            .borrow()
+            .as_ref()
+            .is_some_and(|latest| Arc::ptr_eq(latest, &text));
+        if is_current && let Ok(nodes) = result {
+            publish(ParsedMarkdown { text, nodes });
+        }
+    }
+}
+
 #[component]
 pub(crate) fn Markdown(text: String) -> Element {
-    let nodes = parse_markdown(&text);
-    rsx! { div { class: "markdown", {nodes.iter().map(render_node)} } }
+    let mut parsed = use_signal(|| None::<ParsedMarkdown>);
+    let worker = use_hook(|| Rc::new(RefCell::new(None::<watch::Sender<Option<Arc<str>>>>)));
+    let runtime = Handle::try_current().ok();
+
+    // Small messages and renderer-free SSR keep the synchronous behavior. An
+    // intervening small snapshot must also invalidate any outstanding large one.
+    if text.len() < ASYNC_PARSE_BYTES || runtime.is_none() {
+        if let Some(requests) = worker.borrow().as_ref() {
+            requests.send_if_modified(|latest| latest.take().is_some());
+        }
+        let nodes = parse_markdown(&text);
+        return rsx! { div { class: "markdown", {nodes.iter().map(render_node)} } };
+    }
+
+    let mut worker = worker.borrow_mut();
+    let requests = worker.get_or_insert_with(|| {
+        let (requests, receiver) = watch::channel(None);
+        #[cfg(test)]
+        let parser_override = try_use_context::<tests::ParserOverride>();
+        // Scope ownership cancels delivery on unmount. A blocking parse already
+        // running may finish, but cannot publish or start another queued parse.
+        spawn(run_parse_worker(
+            receiver,
+            runtime.unwrap(),
+            move |text| {
+                #[cfg(test)]
+                if let Some(parser) = &parser_override {
+                    return (parser.0)(text);
+                }
+                parse_markdown(text)
+            },
+            move |result| parsed.set(Some(result)),
+        ));
+        requests
+    });
+    requests.send_if_modified(|latest| {
+        if latest.as_deref() == Some(text.as_str()) {
+            return false;
+        }
+        *latest = Some(Arc::from(text.as_str()));
+        true
+    });
+    let current = requests.borrow().clone().unwrap();
+    drop(worker);
+
+    let parsed = parsed.read();
+    let current_nodes = parsed
+        .as_ref()
+        .filter(|result| Arc::ptr_eq(&result.text, &current));
+    rsx! {
+        div { class: "markdown",
+            if let Some(result) = current_nodes {
+                {result.nodes.iter().map(render_node)}
+            } else {
+                // Never hide streaming updates behind an old AST, nor treat
+                // pending text as HTML. Whitespace stays visible without <pre>'s
+                // code-block styling or horizontal overflow.
+                div { class: "markdown-pending", style: "white-space: pre-wrap; overflow-wrap: anywhere;", "{text}" }
+            }
+        }
+    }
 }

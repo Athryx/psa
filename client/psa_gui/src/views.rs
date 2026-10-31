@@ -1,15 +1,13 @@
-use crate::{app::Ui, network};
+use crate::{app::Ui, network, reactive::use_ui_subscription};
 use client_shared::*;
-use dioxus::{core::spawn_forever, prelude::*};
-use llm_api::{
-    api::ContentBlock,
-    providers::{Effort, Model, ModelConfig, ProviderType},
-};
-use psa_api::*;
+use dioxus::prelude::*;
+use llm_api::providers::ProviderType;
 
 #[cfg(test)]
-#[path = "follow_tests.rs"]
-mod follow_tests;
+pub(crate) use crate::transcript_view::EventRow;
+use crate::transcript_view::TranscriptView;
+use psa_api::*;
+
 #[cfg(test)]
 #[path = "tab_spinner_tests.rs"]
 mod tab_spinner_tests;
@@ -17,9 +15,10 @@ mod tab_spinner_tests;
 #[component]
 pub fn Rail() -> Element {
     let mut ui = use_context::<Signal<Ui>>();
+    use_ui_subscription(|state| state.sidebar.clone());
     rsx! {nav{class:"rail","aria-label":"Workspace navigation",
-        button{title:"Session browser","aria-label":"Session browser","aria-pressed":!ui.read().sidebar.collapsed && ui.read().sidebar.expanded_mode == SidebarMode::Browser,onclick:move |_|ui.write().sidebar.toggle_mode(SidebarMode::Browser),"▤"}
-        button{title:"Current session and agents","aria-label":"Current session and agents","aria-pressed":!ui.read().sidebar.collapsed && ui.read().sidebar.expanded_mode == SidebarMode::Details,onclick:move |_|ui.write().sidebar.toggle_mode(SidebarMode::Details),"♧"}
+        button{title:"Session browser","aria-label":"Session browser","aria-pressed":!ui.peek().sidebar.collapsed && ui.peek().sidebar.expanded_mode == SidebarMode::Browser,onclick:move |_|ui.write().sidebar.toggle_mode(SidebarMode::Browser),"▤"}
+        button{title:"Current session and agents","aria-label":"Current session and agents","aria-pressed":!ui.peek().sidebar.collapsed && ui.peek().sidebar.expanded_mode == SidebarMode::Details,onclick:move |_|ui.write().sidebar.toggle_mode(SidebarMode::Details),"♧"}
         div{class:"spacer"}
         button{title:"Settings",onclick:move |_|ui.write().settings_open=true,"⚙"}
     }}
@@ -29,7 +28,22 @@ pub fn Rail() -> Element {
 pub fn Sidebar() -> Element {
     let mut ui = use_context::<Signal<Ui>>();
     let mut frozen_order = use_signal(|| None::<Vec<SessionId>>);
-    let state = ui.read();
+    use_ui_subscription(|state| {
+        (
+            state.sidebar.clone(),
+            state.selected_probe,
+            state.sessions.clone(),
+            state.fresh_sessions.clone(),
+            state.probes.clone(),
+            state.connection.clone(),
+            state.next_sessions.is_some(),
+            state.generation,
+            state.creation_target.clone(),
+            state.creation_revision,
+            state.creation_pending,
+        )
+    });
+    let state = ui.peek();
     if state.sidebar.expanded_mode == SidebarMode::Details {
         return rsx! {aside{class:"sidebar",Details{}}};
     }
@@ -170,8 +184,9 @@ pub(crate) fn ProbeName(id: ProbeId) -> Element {
     let mut open = use_signal(|| false);
     let mut trigger = use_signal(|| None::<std::rc::Rc<MountedData>>);
     crate::app::register_modal(open);
+    use_ui_subscription(|state| state.probes.clone());
     let probe = ui
-        .read()
+        .peek()
         .probes
         .iter()
         .find(|p| p.metadata.id == id)
@@ -213,7 +228,15 @@ pub(crate) fn ProbeName(id: ProbeId) -> Element {
 #[component]
 fn Details() -> Element {
     let mut ui = use_context::<Signal<Ui>>();
-    let state = ui.read();
+    use_ui_subscription(|state| {
+        (
+            state.workspace.active_tab().map(|tab| tab.target),
+            state.sessions.clone(),
+            state.agents.clone(),
+            state.settings.preferences.show_hidden_agents,
+        )
+    });
+    let state = ui.peek();
     let Some(tab) = state.workspace.active_tab() else {
         return rsx! {h2{"Current session"}p{class:"muted","Select a session or agent tab."}};
     };
@@ -258,9 +281,12 @@ fn Details() -> Element {
 #[component]
 pub fn Layout(node: SplitNode, path: Vec<bool>) -> Element {
     let mut ui = use_context::<Signal<Ui>>();
-    let mut mounted = use_signal(|| None::<std::rc::Rc<MountedData>>);
-    let mut resizing = use_signal(|| false);
-    let mut bounds = use_signal(|| None::<(f64, f64)>);
+    let split_id = format!(
+        "psa-split-{}",
+        path.iter()
+            .map(|side| if *side { '1' } else { '0' })
+            .collect::<String>()
+    );
     match node {
         SplitNode::Group(group) => rsx! {Pane{group}},
         SplitNode::Split {
@@ -274,45 +300,11 @@ pub fn Layout(node: SplitNode, path: Vec<bool>) -> Element {
             first_path.push(false);
             let mut second_path = path.clone();
             second_path.push(true);
-            let mouse_path = path.clone();
-            rsx! {div{class:if vertical{"split vertical"}else{"split"},
-                onmounted: move |event| mounted.set(Some(event.data())),
-                onmousemove: move |event| {
-                    if resizing() && let Some((origin, size)) = bounds() {
-                        let point = event.client_coordinates();
-                        if let Some(value) = drag_ratio(if vertical { point.y } else { point.x }, origin, size) {
-                            set_ratio(&mut ui.write().workspace.root, &mouse_path, value);
-                        }
-                    }
-                },
-                onmouseup: move |_| { resizing.set(false); bounds.set(None); },
-                onmouseleave: move |_| { resizing.set(false); bounds.set(None); },
+            rsx! {div{id:split_id.clone(),class:if vertical{"split vertical"}else{"split"},
                 div{class:"branch",style:"flex:{ratio};",Layout{node:*first,path:first_path}}
-                div{class:"divider",role:"separator",tabindex:0,title:"Drag to resize split; arrow keys also resize","aria-label":"Resize split",
-                    "aria-orientation": if vertical { "horizontal" } else { "vertical" },
-                    "aria-valuemin":"10","aria-valuemax":"90","aria-valuenow":(ratio*100.0).round().to_string(),
-                    onmousedown: move |event| {
-                        event.prevent_default(); event.stop_propagation();
-                        resizing.set(true);
-                        bounds.set(None);
-                        let node = mounted.read().clone();
-                        spawn(async move {
-                            if let Some(node) = node && let Ok(rect) = node.get_client_rect().await && resizing() {
-                                bounds.set(Some(if vertical { (rect.origin.y, rect.size.height) } else { (rect.origin.x, rect.size.width) }));
-                            }
-                        });
-                    },
-                    onkeydown: move |event| {
-                        let delta = match event.key() {
-                            Key::ArrowLeft if !vertical => -0.02,
-                            Key::ArrowRight if !vertical => 0.02,
-                            Key::ArrowUp if vertical => -0.02,
-                            Key::ArrowDown if vertical => 0.02,
-                            _ => return,
-                        };
-                        event.prevent_default();
-                        set_ratio(&mut ui.write().workspace.root, &path, ratio + delta);
-                    }
+                crate::interaction::SplitDivider {
+                    split_id:split_id.clone(), path: path.clone(), axis, ratio: f64::from(ratio),
+                    oncommit: move |value| set_ratio(&mut ui.write().workspace.root, &path, value as f32),
                 }
                 div{class:"branch",style:"flex:{1.0-ratio};",Layout{node:*second,path:second_path}}
             }}
@@ -320,6 +312,7 @@ pub fn Layout(node: SplitNode, path: Vec<bool>) -> Element {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn drag_ratio(coordinate: f64, origin: f64, size: f64) -> Option<f32> {
     if !coordinate.is_finite() || !origin.is_finite() || !size.is_finite() || size <= 0.0 {
         return None;
@@ -345,7 +338,17 @@ fn set_ratio(node: &mut SplitNode, path: &[bool], ratio: f32) {
 #[component]
 fn Pane(group: TabGroup) -> Element {
     let mut ui = use_context::<Signal<Ui>>();
-    let state = ui.read();
+    use_ui_subscription(|state| {
+        (
+            state.workspace.focused_group,
+            state.dragging,
+            state.sessions.clone(),
+            state.agents.clone(),
+            state.connection.clone(),
+            state.transcript_status.clone(),
+        )
+    });
+    let state = ui.peek();
     let focused = state.workspace.focused_group == group.id;
     let active = group
         .tabs
@@ -353,8 +356,8 @@ fn Pane(group: TabGroup) -> Element {
         .find(|t| Some(t.id) == group.active)
         .cloned();
     rsx! {section{class:if focused{"pane focused"}else{"pane"}, "data-pane-id":"{group.id.0}",
-        onmousedown:move |_|{ui.write().workspace.focused_group=group.id;},
-        onfocusin:move |_|{ui.write().workspace.focused_group=group.id;},
+        onmousedown:move |_|{if ui.peek().workspace.focused_group != group.id { ui.write().workspace.focused_group=group.id; }},
+        onfocusin:move |_|{if ui.peek().workspace.focused_group != group.id { ui.write().workspace.focused_group=group.id; }},
         ondragover:move |event|event.prevent_default(),
         ondrop:move |event|{event.prevent_default();let dragging=ui.read().dragging;if let Some(view)=dragging{ui.write().workspace.move_tab(view,group.id,usize::MAX);}ui.write().dragging=None;},
         div{class:"tabs",
@@ -456,1514 +459,35 @@ fn tab_title(state: &Ui, target: TranscriptTarget) -> String {
     format!("{session} · {agent}")
 }
 
-fn update_following_from_scroll(mut following: Signal<bool>, near_bottom: bool) {
-    // A redundant signal write reruns the follow effect, pulling a user who is
-    // scrolling within the bottom threshold straight back to the end.
-    if *following.peek() != near_bottom {
-        following.set(near_bottom);
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum HistoryAction {
-    Reveal,
-    Fetch,
-    None,
-}
-
-fn history_trigger(top: f64, active: bool, latched: &mut bool) -> bool {
-    if top > 80.0 {
-        *latched = false;
-        return false;
-    }
-    if !active || *latched {
-        return false;
-    }
-    *latched = true;
-    true
-}
-
-fn history_action(count: usize, visible: usize, has_older: bool, busy: bool) -> HistoryAction {
-    if count > visible {
-        HistoryAction::Reveal
-    } else if has_older && !busy {
-        HistoryAction::Fetch
-    } else {
-        HistoryAction::None
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
-struct HistorySnapshot {
-    count: usize,
-    boundary: Option<u64>,
-    latest: Option<u64>,
-    pending: std::collections::HashSet<String>,
-}
-
-fn updated_history_limit(
-    limit: usize,
-    previous: Option<(usize, Option<u64>)>,
-    count: usize,
-    boundary: Option<u64>,
-    live_added: usize,
-) -> usize {
-    match previous {
-        None => count.min(150),
-        Some((previous_count, old_boundary)) if old_boundary == boundary => {
-            (limit + count.saturating_sub(previous_count)).min(count)
-        }
-        _ => (limit + live_added).min(count),
-    }
-}
-
-fn history_needs_continuation(old_height: f64, new_height: f64, client_height: f64) -> bool {
-    new_height <= client_height + 1.0 || new_height <= old_height + 1.0
-}
-
-fn restored_history_top(old_height: f64, old_top: f64, new_height: f64) -> f64 {
-    (old_top + new_height - old_height).max(0.0)
-}
-
-fn scroll_transcript_to_bottom(element: Signal<Option<std::rc::Rc<MountedData>>>) {
-    if let Some(node) = element.peek().clone() {
-        spawn(async move {
-            // Scroll the transcript itself, not a sentinel via scrollIntoView: the
-            // latter can move ancestor panes and may already be considered visible.
-            let _ = node
-                .scroll(
-                    dioxus::html::geometry::PixelsVector2D::new(0.0, 1.0e9),
-                    ScrollBehavior::Instant,
-                )
-                .await;
-        });
-    }
-}
-
-#[component]
-fn TranscriptView(tab: Tab, active: bool) -> Element {
-    let mut ui = use_context::<Signal<Ui>>();
-    let mut following = use_signal(|| ui.read().settings.preferences.auto_follow);
-    let mut visible = use_signal(|| {
-        ui.read()
-            .transcripts
-            .get(&tab.target)
-            .map(|t| (t.committed.len() + t.pending.len()).min(150))
-            .unwrap_or(150)
-    });
-    let mut history_snapshot = use_signal(|| {
-        ui.read()
-            .transcripts
-            .get(&tab.target)
-            .map(|t| HistorySnapshot {
-                count: t.committed.len() + t.pending.len(),
-                boundary: t.next_before,
-                latest: t.committed.last_key_value().map(|(id, _)| *id),
-                pending: t.pending.keys().cloned().collect(),
-            })
-    });
-    // Each pane owns its trigger and scroll anchor, even for duplicate tabs.
-    let mut top_latched = use_signal(|| false);
-    let mut scroll_metrics = use_signal(|| (0.0_f64, 0.0_f64, 0.0_f64));
-    let mut restore = use_signal(|| None::<(f64, f64, f64)>);
-    let mut load_request = use_signal(|| 0_u64);
-    let mut load_steps = use_signal(|| 0_usize);
-    let mut history_busy = use_signal(|| false);
-    let mut history_waiting = use_signal(|| false);
-    let mut history_error = use_signal(|| false);
-    let mut history_auto_fill = use_signal(|| false);
-    let mut view_active = use_signal(|| active);
-    let state = ui.read();
-    let target = tab.target;
-    let transcript = state.transcripts.get(&target);
-    let rows = transcript
-        .map(|t| t.recent_rows(visible()))
-        .unwrap_or_default();
-    let queries = transcript
-        .map(|t| t.queries.values().cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
-    let call_ids: std::collections::HashSet<_> = rows
-        .iter()
-        .filter_map(|r| {
-            if let psa_api::events::EventType::ToolCall(call) = &r.kind {
-                Some(call.call_id.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-    let tool_results: std::collections::HashMap<_, _> = transcript
-        .map(|t| {
-            t.tool_exchanges_for(&call_ids)
-                .into_iter()
-                .filter_map(|exchange| exchange.result.map(|r| (exchange.call_id, r)))
-                .collect()
-        })
-        .unwrap_or_default();
-    let tool_results = std::rc::Rc::new(tool_results);
-    let mut element = use_signal(|| None::<std::rc::Rc<MountedData>>);
-    use_effect(use_reactive((&active,), move |(active,)| {
-        view_active.set(active)
-    }));
-    use_effect(move || {
-        let state = ui.read();
-        let Some(t) = state.transcripts.get(&target) else {
-            return;
-        };
-        let snapshot = HistorySnapshot {
-            count: t.committed.len() + t.pending.len(),
-            boundary: t.next_before,
-            latest: t.committed.last_key_value().map(|(id, _)| *id),
-            pending: t.pending.keys().cloned().collect(),
-        };
-        let old = history_snapshot.peek().clone();
-        if old.as_ref() == Some(&snapshot) {
-            return;
-        }
-        let live_added = old
-            .as_ref()
-            .map(|previous| {
-                let start = match previous.latest {
-                    Some(id) => std::ops::Bound::Excluded(id),
-                    None => std::ops::Bound::Included(previous.boundary.unwrap_or(0)),
-                };
-                let committed = t
-                    .committed
-                    .range((start, std::ops::Bound::Unbounded))
-                    .count();
-                let added = snapshot.pending.difference(&previous.pending).count();
-                let removed = previous.pending.difference(&snapshot.pending).count();
-                (committed + added).saturating_sub(removed)
-            })
-            .unwrap_or(0);
-        drop(state);
-        let limit = *visible.peek();
-        let old_summary = old.map(|old| (old.count, old.boundary));
-        let new_limit = updated_history_limit(
-            limit,
-            old_summary,
-            snapshot.count,
-            snapshot.boundary,
-            live_added,
-        );
-        if limit != new_limit {
-            visible.set(new_limit);
-        }
-        history_snapshot.set(Some(snapshot));
-    });
-    let changed = use_memo(move || {
-        let state = ui.read();
-        state
-            .transcripts
-            .get(&target)
-            .map(|t| {
-                (
-                    t.cursor,
-                    t.pending.values().map(|p| p.revision).sum::<u64>(),
-                )
-            })
-            .unwrap_or_default()
-    });
-    use_effect(move || {
-        if let Some((old_height, old_top, client_height)) = restore() {
-            restore.set(None);
-            if let Some(node) = element.peek().clone() {
-                spawn(async move {
-                    if let Ok(size) = node.get_scroll_size().await {
-                        // Do not override a user who moved while layout was measured.
-                        if (scroll_metrics.peek().1 - old_top).abs() > 1.0 {
-                            history_busy.set(false);
-                            return;
-                        }
-                        let top = if *history_auto_fill.peek() && *following.peek() {
-                            (size.height - client_height).max(0.0)
-                        } else {
-                            restored_history_top(old_height, old_top, size.height)
-                        };
-                        let _ = node
-                            .scroll(
-                                dioxus::html::geometry::PixelsVector2D::new(0.0, top),
-                                ScrollBehavior::Instant,
-                            )
-                            .await;
-                        // Invisible rows and short pages need another page without
-                        // requiring an impossible additional scroll gesture. Bound
-                        // automatic continuation for a misbehaving server.
-                        if history_needs_continuation(old_height, size.height, client_height)
-                            && *view_active.peek()
-                        {
-                            scroll_metrics.set((size.height, top, client_height));
-                            load_steps += 1;
-                            if *load_steps.peek() >= 10 {
-                                // Yield between batches while retaining cancellation on unmount.
-                                tokio::task::yield_now().await;
-                                load_steps.set(0);
-                            }
-                            load_request += 1;
-                            return;
-                        }
-                    }
-                    history_busy.set(false);
-                });
-            } else {
-                history_busy.set(false);
-            }
-        }
-    });
-    use_effect(move || {
-        if load_request() == 0 {
-            return;
-        }
-        let state = ui.peek();
-        let transcript = state.transcripts.get(&target);
-        let count = transcript
-            .map(|t| t.committed.len() + t.pending.len())
-            .unwrap_or(0);
-        let has_older = transcript.is_some_and(|t| t.has_older);
-        let generation = state.generation;
-        let busy = state.history_requests.get(&target) == Some(&generation);
-        drop(state);
-        let (height, top, client_height) = *scroll_metrics.peek();
-        let limit = *visible.peek();
-        match history_action(count, limit, has_older, busy) {
-            HistoryAction::Reveal => {
-                if !*history_auto_fill.peek() {
-                    following.set(false);
-                }
-                restore.set(Some((height, top, client_height)));
-                visible.set((limit + 150).min(count));
-            }
-            HistoryAction::Fetch => {
-                // Do not allow a short tail limit to expose shared rows before
-                // this pane can capture and restore its anchor.
-                visible.set(limit.min(count));
-                if !*history_auto_fill.peek() {
-                    following.set(false);
-                }
-                ui.write().history_requests.insert(target, generation);
-                dioxus::core::spawn_forever(async move {
-                    let loaded = network::older(ui, target).await;
-                    let owns_request = ui.read().history_requests.get(&target) == Some(&generation);
-                    if owns_request {
-                        ui.write().history_requests.remove(&target);
-                    }
-                    if loaded && ui.read().generation == generation {
-                        if let Ok(metrics) = scroll_metrics.try_peek() {
-                            let (height, top, client_height) = *metrics;
-                            if top <= 80.0 {
-                                if let (Ok(mut anchor), Ok(mut limit)) =
-                                    (restore.try_write(), visible.try_write())
-                                {
-                                    *anchor = Some((height, top, client_height));
-                                    let count = ui
-                                        .peek()
-                                        .transcripts
-                                        .get(&target)
-                                        .map(|t| t.committed.len() + t.pending.len())
-                                        .unwrap_or(0);
-                                    *limit = (*limit + 150).min(count);
-                                    return;
-                                }
-                            }
-                        }
-                    } else {
-                        if let Ok(mut latch) = top_latched.try_write() {
-                            *latch = false;
-                        }
-                        if let Ok(mut error) = history_error.try_write() {
-                            *error = true;
-                        }
-                    }
-                    if let Ok(mut busy) = history_busy.try_write() {
-                        *busy = false;
-                    }
-                });
-            }
-            HistoryAction::None => {
-                if busy && has_older {
-                    history_waiting.set(true);
-                } else {
-                    history_busy.set(false);
-                }
-            }
-        }
-    });
-    // Other panes may already be fetching this target. Wait for that request,
-    // then reveal from this pane's own anchor rather than issuing a duplicate.
-    use_effect(move || {
-        if !history_waiting() {
-            return;
-        }
-        let state = ui.read();
-        let busy = state.history_requests.get(&target) == Some(&state.generation);
-        drop(state);
-        if !busy {
-            history_waiting.set(false);
-            if *view_active.peek() && scroll_metrics.peek().1 <= 80.0 {
-                load_request += 1;
-            } else {
-                history_busy.set(false);
-            }
-        }
-    });
-    // An initially short (or newly activated) pane cannot emit a scroll event.
-    use_effect(use_reactive((&active,), move |(active,)| {
-        let node = element.read().clone();
-        let state = ui.read();
-        let has_history = state
-            .transcripts
-            .get(&target)
-            .is_some_and(|t| t.has_older || t.committed.len() + t.pending.len() > *visible.peek());
-        drop(state);
-        if !active
-            || !has_history
-            || *history_busy.peek()
-            || *history_error.peek()
-            || *top_latched.peek()
-        {
-            return;
-        }
-        if let Some(node) = node {
-            history_busy.set(true);
-            spawn(async move {
-                let (size, offset, rect) = (
-                    node.get_scroll_size().await,
-                    node.get_scroll_offset().await,
-                    node.get_client_rect().await,
-                );
-                if let (Ok(size), Ok(offset), Ok(rect)) = (size, offset, rect) {
-                    if *view_active.peek() && size.height <= rect.size.height + 1.0 {
-                        scroll_metrics.set((size.height, offset.y, rect.size.height));
-                        top_latched.set(true);
-                        history_auto_fill.set(true);
-                        load_steps.set(0);
-                        load_request += 1;
-                        return;
-                    }
-                }
-                history_busy.set(false);
-            });
-        }
-    }));
-    let follow_request = use_memo(move || ui.read().follow_request);
-    let mut seen_follow_request = use_signal(|| follow_request.peek().0);
-    use_effect(move || {
-        let (revision, view) = follow_request();
-        if revision != *seen_follow_request.peek() {
-            seen_follow_request.set(revision);
-            if view == Some(tab.id) {
-                following.set(true);
-                scroll_transcript_to_bottom(element);
-            }
-        }
-    });
-    use_effect(use_reactive((&active,), move |(active,)| {
-        let _ = changed();
-        // Subscribe to mounting as well as transcript updates. Hidden tabs are
-        // scrolled when activated, after their layout becomes visible again.
-        let _ = element.read();
-        if active && following() {
-            scroll_transcript_to_bottom(element);
-        }
-    }));
-    let overflow_anchor = if history_busy() { "none" } else { "auto" };
-    rsx! {
-        div{class:"transcript",style:"font-size:{state.settings.preferences.transcript_font_size}px;--conversation-max-width:{state.settings.preferences.conversation_max_width_ch}rch;overflow-anchor:{overflow_anchor}",
-            onmounted:move |event|element.set(Some(event.data())),
-            onscroll:move |event|{
-                let top = event.scroll_top();
-                let height = event.scroll_height() as f64;
-                scroll_metrics.set((height, top, event.client_height() as f64));
-                let near_bottom = (event.scroll_height()-event.client_height()) as f64-top<80.0;
-                if !near_bottom {
-                    history_auto_fill.set(false);
-                    update_following_from_scroll(following, false);
-                } else if !*history_busy.peek() && (top > 80.0 || !*top_latched.peek()) {
-                    update_following_from_scroll(following, true);
-                }
-                let mut latched = *top_latched.peek();
-                let short_follow = *following.peek() && height <= event.client_height() as f64 + 1.0;
-                let trigger = !short_follow && history_trigger(top, active, &mut latched);
-                if latched != *top_latched.peek() {
-                    top_latched.set(latched);
-                }
-                if trigger && !*history_busy.peek() {
-                    history_auto_fill.set(false);
-                    history_error.set(false);
-                    history_busy.set(true);
-                    load_steps.set(0);
-                    load_request += 1;
-                }
-            },
-            onwheel:move |event| {
-                let upward = event.delta().strip_units().y < 0.0;
-                if active && upward && *history_busy.peek() {
-                    history_auto_fill.set(false);
-                    following.set(false);
-                }
-                if active && upward && !*history_busy.peek() {
-                    if let Some(node) = element.peek().clone() {
-                        top_latched.set(true);
-                        history_auto_fill.set(false);
-                        history_error.set(false);
-                        history_busy.set(true);
-                        spawn(async move {
-                            let (size, offset, rect) = (node.get_scroll_size().await, node.get_scroll_offset().await, node.get_client_rect().await);
-                            if let (Ok(size), Ok(offset), Ok(rect)) = (size, offset, rect) {
-                                if offset.y <= 80.0 {
-                                    scroll_metrics.set((size.height, offset.y, rect.size.height));
-                                    load_steps.set(0);
-                                    load_request += 1;
-                                    return;
-                                }
-                            }
-                            top_latched.set(false);
-                            history_busy.set(false);
-                        });
-                    }
-                }
-            },
-            if history_error() { button { onclick: move |_| { history_auto_fill.set(false); history_error.set(false); history_busy.set(true); load_steps.set(0); load_request += 1; }, "Retry loading history" } }
-            for row in rows.into_iter().filter(|row|!matches!(&row.kind,psa_api::events::EventType::ToolResult(result) if call_ids.contains(&result.call_id))){
-                EventRow{key:"{row.id:?}",kind:row.kind,provisional:row.provisional,results:tool_results.clone()}
-            }
-            for query in queries{Question{key:"{query.id}",query}}
-            if !following(){button{class:"new-activity",onclick:move |_|{following.set(true);scroll_transcript_to_bottom(element);},"Follow new activity ↓"}}
-        }
-        if target.agent_id == crate::app::DRAFT_ROOT { DraftComposer { tab } } else { Composer{tab} }
-    }
-}
-
-fn blocks(content: &[ContentBlock]) -> String {
-    content
-        .iter()
-        .map(|block| match block {
-            ContentBlock::Text(text) => text.text.clone(),
-            ContentBlock::Refusal(refusal) => refusal.text.clone(),
-            ContentBlock::Image(_) => "[Image attachment]".into(),
-            ContentBlock::Audio(audio) => audio
-                .transcript
-                .clone()
-                .unwrap_or_else(|| "[Audio attachment]".into()),
-            ContentBlock::File(file) => format!(
-                "[File attachment: {}]",
-                file.filename.as_deref().unwrap_or("unnamed")
-            ),
-            ContentBlock::ProviderContent(content) => format!(
-                "[Provider content: {} / {}]",
-                content.provider.as_str(),
-                content.content_type
-            ),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-#[derive(Props, Clone)]
-pub(crate) struct EventRowProps {
-    kind: psa_api::events::EventType,
-    provisional: bool,
-    results: std::rc::Rc<std::collections::HashMap<String, psa_api::events::ToolResult>>,
-}
-impl PartialEq for EventRowProps {
-    fn eq(&self, _: &Self) -> bool {
-        false
-    }
-}
-#[allow(non_snake_case)]
-pub(crate) fn EventRow(props: EventRowProps) -> Element {
-    let EventRowProps {
-        kind,
-        provisional,
-        results,
-    } = props;
-    use psa_api::events::EventType;
-    let preferences = try_use_context::<Signal<Ui>>()
-        .map(|ui| ui.read().settings.preferences.clone())
-        .unwrap_or_default();
-    match kind {
-        EventType::Message(message) => {
-            if matches!(message.message_type, psa_api::events::MessageType::System) {
-                let content = blocks(&message.content);
-                return rsx! {details{class:"tool system-prompt",summary{"System Prompt" if let Some(description) = &message.description { " · {description}" }}pre{"{content}"}}};
-            }
-            let is_agent = matches!(
-                message.message_type,
-                psa_api::events::MessageType::Agent | psa_api::events::MessageType::Subagent
-            );
-            let is_human = matches!(message.message_type, psa_api::events::MessageType::Human);
-            rsx! {article{class:if is_human { "message human-message" } else if is_agent { "message agent-message" } else { "message" },
-                if !is_human && !is_agent { div{class:"role","{message.message_type:?}"} }
-                if provisional { span { class:"streaming-indicator", "Streaming" } }
-                if is_agent {
-                    for block in &message.content {
-                        match block {
-                            ContentBlock::Text(text) => rsx! { crate::markdown::Markdown { text: text.text.clone() } },
-                            _ => rsx! { pre { "{blocks(std::slice::from_ref(block))}" } },
-                        }
-                    }
-                } else { pre { "{blocks(&message.content)}" } }
-            }}
-        }
-        EventType::Log(log) => {
-            rsx! {article{class:if log.error{"message error"}else{"message muted"},div{class:"role","Harness log"}pre{"{log.message}"}}}
-        }
-        EventType::ToolCall(call) => {
-            let result = results.get(&call.call_id);
-            let status = result
-                .map(|r| if r.error { "error" } else { "complete" })
-                .unwrap_or("running / awaiting result");
-            let preview = call.arguments.chars().take(100).collect::<String>();
-            rsx! {details{class:if result.is_some_and(|r|r.error){"tool error"}else{"tool"},summary{"{call.tool_name} · {status} · {preview}"}h4{"Arguments"}pre{"{call.arguments}"}if let Some(result)=result{h4{"Result"}pre{"{blocks(&result.content)}"}}}}
-        }
-        EventType::ToolResult(result) => {
-            rsx! {details{class:"tool",summary{"Unmatched tool result · {result.call_id}"}pre{"{blocks(&result.content)}"}}}
-        }
-        EventType::Compaction(compaction) => {
-            rsx! {details{class:"tool",summary{"Context compaction"}pre{"{serde_json::to_string_pretty(&compaction).unwrap_or_default()}"}}}
-        }
-        EventType::ProviderItem(item) => {
-            rsx! {details{class:"tool",summary{"Provider-native event"}pre{"{serde_json::to_string_pretty(&item).unwrap_or_default()}"}}}
-        }
-        EventType::Thinking(thinking) => {
-            let text = thinking.contents.summary.join("\n");
-            if text.is_empty() {
-                return rsx! {};
-            }
-            match preferences.reasoning_display {
-                ReasoningDisplay::Hidden => rsx! {},
-                ReasoningDisplay::Collapsed => {
-                    rsx! {details{class:"tool reasoning",summary{"Reasoning"}pre{"{text}"}}}
-                }
-                ReasoningDisplay::Shown => rsx! {article{class:"message reasoning",pre{"{text}"}}},
-            }
-        }
-        EventType::Result(result) => {
-            if preferences.hide_text_recorded_results && matches!(result, AgentResult::Text(_)) {
-                rsx! {}
-            } else {
-                rsx! {details{class:"tool",summary{"Recorded result"}pre{"{serde_json::to_string_pretty(&result).unwrap_or_default()}"}}}
-            }
-        }
-        EventType::InferenceResultEnd(end) => match end.outcome {
-            llm_api::api::Outcome::Failed(error) => {
-                rsx! {article{class:"message error",role:"alert",
-                    div{class:"role","Inference failed"}
-                    pre{"{error}"}
-                    details{summary{"Error details"}pre{"{serde_json::to_string_pretty(&error).unwrap_or_default()}"}}
-                }}
-            }
-            llm_api::api::Outcome::Cancelled => {
-                rsx! {article{class:"message muted",div{class:"role","Inference cancelled"}}}
-            }
-            llm_api::api::Outcome::Incomplete { reason } => {
-                use llm_api::api::StopReason;
-                let reason = match reason {
-                    StopReason::EndTurn => "End of turn".to_string(),
-                    StopReason::ToolCalls => "Tool calls".to_string(),
-                    StopReason::StopSequence => "Stop sequence".to_string(),
-                    StopReason::TokenLimit => "Token limit reached".to_string(),
-                    StopReason::ContentFilter => "Content filtered".to_string(),
-                    StopReason::Other(reason) => reason,
-                };
-                rsx! {article{class:"message",div{class:"role","Inference incomplete"}pre{"{reason}"}}}
-            }
-            llm_api::api::Outcome::Completed { .. } | llm_api::api::Outcome::InProgress => rsx! {},
-        },
-        EventType::StatusChange(status) => {
-            if status.new_status == AgentState::Interrupted {
-                rsx! {div{class:"error","Agent Interrupted"}}
-            } else if preferences.hide_agent_statuses {
-                rsx! {}
-            } else {
-                rsx! {div{class:"muted","Agent {status.new_status:?}"}}
-            }
-        }
-        _ => rsx! {},
-    }
-}
-
-#[cfg(test)]
-#[path = "appearance_event_tests.rs"]
-mod appearance_event_tests;
-#[cfg(test)]
-#[path = "inference_result_tests.rs"]
-mod inference_result_tests;
-#[cfg(test)]
-#[path = "transcript_visual_tests.rs"]
-mod transcript_visual_tests;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DraftCommandStage {
-    Completion,
-    Configurations,
-    Models,
-    SessionModels,
-    SessionEfforts,
-}
-
-fn draft_command_stage(
-    text: &str,
-    dismissed: bool,
-    choosing_model: bool,
-) -> Option<DraftCommandStage> {
-    if dismissed {
-        return None;
-    }
-    if choosing_model {
-        return Some(DraftCommandStage::Models);
-    }
-    if text
-        .strip_prefix("/agent")
-        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
-    {
-        return Some(DraftCommandStage::Configurations);
-    }
-    if text
-        .strip_prefix("/model")
-        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
-    {
-        return Some(DraftCommandStage::SessionModels);
-    }
-    if text
-        .strip_prefix("/effort")
-        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
-    {
-        return Some(DraftCommandStage::SessionEfforts);
-    }
-    (!complete_commands(text).is_empty()).then_some(DraftCommandStage::Completion)
-}
-
-fn draft_model_label(model: &ModelSelection) -> String {
-    match model {
-        ModelSelection::Global | ModelSelection::Parent => {
-            "Session default model and effort".into()
-        }
-        ModelSelection::Fixed { model, effort } => {
-            let effort = match effort {
-                EffortSelection::Global | EffortSelection::Parent => "session effort".to_string(),
-                EffortSelection::Fixed(effort) => effort.as_str().to_string(),
-            };
-            format!("{model} · {effort}")
-        }
-    }
-}
-
-fn select_draft_config(
-    mut ui: Signal<Ui>,
-    session_id: SessionId,
-    target: TranscriptTarget,
-    id: ConfigId,
-) -> bool {
-    let mut state = ui.write();
-    let choosing_model = if let Some(draft) = state.draft_roots.get_mut(&session_id) {
-        draft.select_config(id);
-        draft.model_choices().len() > 1
-    } else {
-        false
-    };
-    state.drafts.remove(&target);
-    choosing_model
-}
-
-fn refresh_draft_configs(mut ui: Signal<Ui>, session_id: SessionId, target: TranscriptTarget) {
-    {
-        let mut state = ui.write();
-        let Some(draft) = state.draft_roots.get_mut(&session_id) else {
-            return;
-        };
-        if draft.loading || draft.pending {
-            return;
-        }
-        draft.ready = false;
-        state.drafts.remove(&target);
-    }
-    spawn(network::load_draft_root(ui, session_id));
-}
-
-#[cfg(test)]
-#[path = "draft_composer_tests.rs"]
-mod draft_composer_tests;
-
-#[cfg(test)]
-#[path = "status_tests.rs"]
-mod status_tests;
-
-#[component]
-fn ComposerStatus(
-    path: Option<String>,
-    model: Option<String>,
-    effort: Option<Effort>,
-    context_tokens: Option<u64>,
-    context_window: Option<u64>,
-) -> Element {
-    let usage = format_context_usage(context_tokens, context_window);
-    let effort_class = effort
-        .map(|e| format!("effort-{}", e.as_str()))
-        .unwrap_or_default();
-    rsx! {
-        div { class:"composer-status", "aria-label":"Composer status",
-            span { class:"composer-status-path", title:"{path.as_deref().unwrap_or(\"Unknown working directory\")}", "{path.as_deref().unwrap_or(\"Unknown working directory\")}" }
-            span { class:"composer-status-details",
-                span { class:"composer-status-model", "{model.as_deref().unwrap_or(\"Unknown model\")}" }
-                if let Some(effort) = effort { " · " span { class:"{effort_class}", "{effort.as_str()}" } }
-                span { class:"composer-status-usage", title:"Last inference token usage; not exact current context", "{usage}" }
-            }
-        }
-    }
-}
-
-fn format_context_usage(tokens: Option<u64>, window: Option<u64>) -> String {
-    let percent = match (tokens, window) {
-        (Some(tokens), Some(window)) if window > 0 => {
-            format!(
-                "{}%",
-                (u128::from(tokens) * 100 + u128::from(window) / 2) / u128::from(window)
-            )
-        }
-        _ => "?".to_string(),
-    };
-    let window = window
-        .filter(|window| *window > 0)
-        .map(format_token_count)
-        .unwrap_or_else(|| "?".to_string());
-    format!("({percent} / {window})")
-}
-
-fn draft_status_model(
-    selection: Option<&ModelSelection>,
-    session: Option<&ModelConfig>,
-) -> (Option<Model>, Option<Effort>) {
-    match selection {
-        Some(ModelSelection::Global | ModelSelection::Parent) => session
-            .map(|config| (Some(config.model.clone()), Some(config.effort)))
-            .unwrap_or_default(),
-        Some(ModelSelection::Fixed { model, effort }) => {
-            let effort = match effort {
-                EffortSelection::Fixed(effort) => Some(*effort),
-                EffortSelection::Global | EffortSelection::Parent => {
-                    session.map(|config| config.effort)
-                }
-            };
-            (Model::parse_slug(model).ok(), effort)
-        }
-        None => (None, None),
-    }
-}
-
-fn format_token_count(count: u64) -> String {
-    if count < 1_000 {
-        return count.to_string();
-    }
-    format!("{}k", (u128::from(count) + 500) / 1_000)
-}
-
-fn info_location(state: &Ui, session_id: SessionId) -> (Option<String>, Option<ProbeId>) {
-    let Some(session) = state.sessions.iter().find(|s| s.id == session_id) else {
-        return (None, None);
-    };
-    let path = Some(session.working_directory.to_string_lossy().into_owned());
-    let probe = Some(session.probe_id);
-    (path, probe)
-}
-
-fn token_difference(total: Option<u64>, part: Option<u64>) -> Option<u64> {
-    total?.checked_sub(part?)
-}
-
-#[component]
-fn ResolvedTemplate(id: AgentDefinitionId) -> Element {
-    let ui = use_context::<Signal<Ui>>();
-    let mut name = use_signal(|| None::<String>);
-    use_effect(move || {
-        name.set(None);
-        spawn(async move {
-            if let Ok(client) = network::client(ui) {
-                if let Ok(Some(snapshot)) = client.get_resolved_agent_config(id).await {
-                    name.set(Some(snapshot.config.config_id.name));
-                }
-            }
-        });
-    });
-    rsx! { "{name.read().as_deref().unwrap_or(\"Unknown\")}" }
-}
-
-#[component]
-fn AgentInfo(
-    name: String,
-    template: Option<String>,
-    definition_id: Option<AgentDefinitionId>,
-    path: Option<String>,
-    probe: Option<ProbeId>,
-    model: Option<String>,
-    effort: Option<Effort>,
-    usage: Option<AgentUsage>,
-    mut open: Signal<bool>,
-) -> Element {
-    crate::app::register_modal(open);
-    let count = |value: Option<u64>| {
-        value
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "Unknown".into())
-    };
-    let input = usage.as_ref().and_then(|u| u.input_tokens);
-    let cached = usage.as_ref().and_then(|u| u.cached_input_tokens);
-    let cache_write = usage.as_ref().and_then(|u| u.cache_write_tokens);
-    let hit = usage
-        .as_ref()
-        .and_then(cache_hit_rate)
-        .map(|rate| format!("{:.1}%", rate * 100.0))
-        .unwrap_or_else(|| "Unknown".into());
-    let output = usage.as_ref().and_then(|u| u.output_tokens);
-    let thinking = usage.as_ref().and_then(|u| u.reasoning_output_tokens);
-    let effort_class = effort
-        .map(|e| format!("effort-{}", e.as_str()))
-        .unwrap_or_default();
-    rsx! {
-        div { class:"modal-backdrop", onclick:move |event| { event.stop_propagation(); open.set(false); },
-            section { class:"settings agent-info", role:"dialog", "aria-modal":"true", "aria-label":"Agent information", tabindex:"-1",
-                onclick:move |event| event.stop_propagation(),
-                onmounted:move |event| { spawn(async move { let _ = event.data().set_focus(true).await; }); },
-                onkeydown:move |event| { if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); open.set(false); } },
-                header { h2 { "Agent information" } button { "aria-label":"Close agent information", onclick:move |_| open.set(false), "×" } }
-                dl { class:"info-grid",
-                    dt { "Name" } dd { "{name}" }
-                    dt { "Template" } dd { if let Some(id) = definition_id { ResolvedTemplate { id } } else { "{template.as_deref().unwrap_or(\"Unknown\")}" } }
-                    dt { "Path" } dd { "{path.as_deref().unwrap_or(\"Unknown\")}" }
-                    dt { "Probe" } dd { if let Some(id) = probe { ProbeName { id } } else { "Unknown" } }
-                    dt { "Model" } dd { "{model.as_deref().unwrap_or(\"Unknown\")}" " · " span { class:"{effort_class}", "{effort.map(|e| e.as_str()).unwrap_or(\"Unknown\")}" } }
-                    dt { "Input tokens" } dd { "{count(input)}" }
-                    dt { class:"info-detail", "Cached" } dd { "{count(cached)}" }
-                    dt { class:"info-detail", "Cache hit rate" } dd { "{hit}" }
-                    dt { class:"info-detail", "Uncached" } dd { "{count(token_difference(input, cached))}" }
-                    if let Some(cache_write) = cache_write { dt { class:"info-detail", "Cache write" } dd { "{cache_write}" } }
-                    dt { "Output tokens" } dd { "{count(output)}" }
-                    dt { class:"info-detail", "Thinking" } dd { "{count(thinking)}" }
-                    dt { class:"info-detail", "Non-thinking" } dd { "{count(token_difference(output, thinking))}" }
-                    dt { "Total tokens" } dd { "{count(usage.as_ref().and_then(|u| u.total_tokens))}" }
-                }
-            }
-        }
-    }
-}
-
-type MenuNodes = Signal<Vec<Option<std::rc::Rc<MountedData>>>>;
-
-fn register_menu_option(mut nodes: MenuNodes, index: usize, node: std::rc::Rc<MountedData>) {
-    let mut nodes = nodes.write();
-    if nodes.len() <= index {
-        nodes.resize_with(index + 1, || None);
-    }
-    nodes[index] = Some(node);
-}
-
-fn scroll_menu_option(
-    popup: Signal<Option<std::rc::Rc<MountedData>>>,
-    nodes: MenuNodes,
-    selected: Signal<usize>,
-    index: usize,
-) {
-    let popup = popup.peek().clone();
-    let option = nodes.peek().get(index).and_then(Clone::clone);
-    if let (Some(popup), Some(option)) = (popup, option) {
-        spawn(async move {
-            let (Ok(container), Ok(item), Ok(offset)) = (
-                popup.get_client_rect().await,
-                option.get_client_rect().await,
-                popup.get_scroll_offset().await,
-            ) else {
-                return;
-            };
-            let delta = menu_scroll_delta(
-                container.origin.y as f64,
-                container.size.height as f64,
-                item.origin.y as f64,
-                item.size.height as f64,
-            );
-            if delta != 0.0 && *selected.peek() == index {
-                let _ = popup
-                    .scroll(
-                        dioxus::html::geometry::PixelsVector2D::new(offset.x, offset.y + delta),
-                        ScrollBehavior::Instant,
-                    )
-                    .await;
-            }
-        });
-    }
-}
-
-fn menu_scroll_delta(top: f64, height: f64, item_top: f64, item_height: f64) -> f64 {
-    if item_top < top {
-        item_top - top
-    } else {
-        (item_top + item_height - top - height).max(0.0)
-    }
-}
-
-#[component]
-fn DraftComposer(tab: Tab) -> Element {
-    let mut ui = use_context::<Signal<Ui>>();
-    let target = tab.target;
-    let session_id = target.session_id;
-    let mut selected_index = use_signal(|| 0usize);
-    let mut menu_popup = use_signal(|| None::<std::rc::Rc<MountedData>>);
-    let menu_nodes = use_signal(Vec::new);
-    let mut dismissed = use_signal(|| false);
-    let mut choosing_model = use_signal(|| false);
-    let mut all_models = use_signal(|| false);
-    let mut textarea_node = use_signal(|| None::<std::rc::Rc<MountedData>>);
-    let mut info_open = use_signal(|| false);
-    // Submission promotes this draft to a real agent, unmounting this component.
-    // Its task must outlive the composer until the request outcome is handled.
-    use_effect(move || {
-        spawn(network::load_draft_root(ui, session_id));
-    });
-    let state = ui.read();
-    let text = state.drafts.get(&target).cloned().unwrap_or_default();
-    let draft = state.draft_roots.get(&session_id);
-    let stage = draft_command_stage(&text, dismissed(), choosing_model());
-    let filter = text
-        .strip_prefix("/agent")
-        .unwrap_or("")
-        .trim()
-        .to_lowercase();
-    let configs: Vec<_> = draft
-        .map(|d| {
-            d.configs
-                .iter()
-                .filter(|c| c.config.config_id.name.to_lowercase().contains(&filter))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
-    let key_configs = configs.clone();
-    let commands = complete_commands(&text);
-    let key_commands = commands.clone();
-    let current = state
-        .sessions
-        .iter()
-        .find(|s| s.id == session_id)
-        .map(|s| s.model_config.clone());
-    let (status_model, status_effort) =
-        draft_status_model(draft.and_then(|d| d.model.as_ref()), current.as_ref());
-    let status_info = status_model
-        .as_ref()
-        .and_then(|model| state.models.iter().find(|info| info.model == *model));
-    let status_name = status_info.map(|info| info.name.clone()).or_else(|| {
-        status_model
-            .as_ref()
-            .map(|model| model.model_name().to_owned())
-    });
-    let status_window = status_info.and_then(|info| info.context_window);
-    let info_name = draft
-        .and_then(|d| d.selected.as_ref())
-        .map(|id| id.name.clone())
-        .unwrap_or_else(|| "Unselected root agent".into());
-    let (info_path, info_probe) = info_location(&state, session_id);
-    let default_effort = current.as_ref().map(|c| c.effort).unwrap_or(Effort::Medium);
-    let model_filter = text
-        .strip_prefix("/model")
-        .unwrap_or("")
-        .trim()
-        .to_lowercase();
-    let session_models: Vec<_> = state
-        .models
-        .iter()
-        .filter(|m| {
-            (all_models() || m.pinned || current.as_ref().is_some_and(|c| c.model == m.model))
-                && (model_filter.is_empty()
-                    || m.name.to_lowercase().contains(&model_filter)
-                    || m.model.api_name.to_lowercase().contains(&model_filter))
-        })
-        .cloned()
-        .collect();
-    let key_session_models = session_models.clone();
-    let effort_filter = text
-        .strip_prefix("/effort")
-        .unwrap_or("")
-        .trim()
-        .to_lowercase();
-    let efforts = session_efforts(&state.models, current.as_ref(), &effort_filter);
-    let key_efforts = efforts.clone();
-    let models = draft.map(|d| d.model_choices()).unwrap_or_default();
-    let key_models = models.clone();
-    let pending = draft.is_none_or(|d| d.loading || d.pending);
-    let blocked = pending
-        || draft.is_some_and(|d| d.uncertain)
-        || matches!(parse_composer_input(&text), ComposerInput::Command { .. });
-    let count = match stage {
-        Some(DraftCommandStage::Completion) => commands.len(),
-        Some(DraftCommandStage::Configurations) => configs.len(),
-        Some(DraftCommandStage::Models) => models.len(),
-        Some(DraftCommandStage::SessionModels) => session_models.len(),
-        Some(DraftCommandStage::SessionEfforts) => efforts.len(),
-        None => 0,
-    };
-    rsx! { div { class:"composer", style:"--conversation-max-width:{state.settings.preferences.conversation_max_width_ch}rch",
-        if info_open() { AgentInfo { name:info_name.clone(), template:draft.and_then(|d| d.selected.as_ref()).map(|id| id.name.clone()), definition_id:None, path:info_path, probe:info_probe, model:status_name.clone(), effort:status_effort, usage:None, open:info_open } }
-        if let Some(stage) = stage { div { class:"popup command-popup", role:"listbox", onmounted:move |event| menu_popup.set(Some(event.data())),
-            "aria-label": match stage { DraftCommandStage::Completion => "Slash commands", DraftCommandStage::Configurations => "Agent configurations", DraftCommandStage::Models => "Root agent model policy", DraftCommandStage::SessionModels => "Session default model", DraftCommandStage::SessionEfforts => "Session default effort" },
-            match stage {
-                DraftCommandStage::Completion => rsx! {
-                    for (index, command) in commands.iter().copied().enumerate() {
-                        button { class:if selected_index()==index { "command-option selected" } else { "command-option" }, role:"option", "aria-selected":selected_index()==index, onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),
-                            onmousedown:move |event| event.prevent_default(),
-                            onclick:move |_| { if command.id == CommandId::Refresh { refresh_draft_configs(ui, session_id, target); } else if command.id == CommandId::Info { ui.write().drafts.remove(&target); info_open.set(true); } else { ui.write().drafts.insert(target, format!("/{} ", command.name)); } selected_index.set(0); if command.id != CommandId::Info { if let Some(node)=textarea_node.read().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } } },
-                            span { class:"command-title", "/{command.name}" }
-                            span { class:"command-description", "{command.description}" }
-                        }
-                    }
-                    p { class:"command-hint", "Tab to complete · Enter to select · Esc to dismiss" }
-                },
-                DraftCommandStage::Configurations => rsx! {
-                    strong { class:"command-heading", "Choose a root agent" }
-                    if configs.is_empty() { p { class:"command-empty", "No matching usable configurations." } }
-                    for (index, config) in configs.iter().enumerate() {
-                        { let id = config.config.config_id.clone(); let name = id.name.clone(); let group = format!("{:?}", id.config_group); let description = config.config.description.clone(); rsx! {
-                            button { class:if selected_index()==index { "command-option selected" } else { "command-option" }, role:"option", "aria-selected":selected_index()==index, onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),
-                                onmousedown:move |event| event.prevent_default(),
-                                onclick:move |_| { choosing_model.set(select_draft_config(ui, session_id, target, id.clone())); selected_index.set(0); dismissed.set(false); if let Some(node)=textarea_node.read().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } },
-                                span { class:"command-title", "{name}" }
-                                span { class:"command-description", "{group}" if !description.is_empty() { " · {description}" } }
-                            }
-                        }}
-                    }
-                    p { class:"command-hint", "↑↓ to navigate · Enter to select · Esc to dismiss" }
-                },
-                DraftCommandStage::SessionModels => rsx! {
-                    strong { class:"command-heading", "Session default model (not individual agents)" }
-                    if let Some(config)=&current { p { class:"muted", "Current: {config.model.provider.as_str()}/{config.model.api_name} · {config.effort.as_str()}" } }
-                    button { onmousedown:move |event| event.prevent_default(), onclick:move |_| { all_models.set(!all_models()); selected_index.set(0); if let Some(node)=textarea_node.read().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } }, if all_models() { "Show favorites" } else { "All models…" } }
-                    if session_models.is_empty() { p { class:"command-empty", if model_filter.is_empty() { "No favorite models. Open settings to pin models, or choose All models." } else { "No matching models. Try another search or choose All models." } } }
-                    for (index, model) in session_models.iter().cloned().enumerate() {
-                        button { class:if selected_index()==index { "command-option selected" } else { "command-option" }, role:"option", "aria-selected":selected_index()==index, onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),
-                            onmousedown:move |event| event.prevent_default(),
-                            onclick:move |_| { spawn(change_model(ui, session_id, ModelConfig { model:model.model.clone(), effort:choose_effort(&model, default_effort) })); ui.write().drafts.remove(&target); if let Some(node)=textarea_node.read().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } },
-                            span { class:"command-title", "{model.name}" }
-                            span { class:"command-description", "{model.model.provider.as_str()}/{model.model.api_name}" }
-                        }
-                    }
-                    p { class:"command-hint", "↑↓ to navigate · Enter to select · Esc to dismiss" }
-                },
-                DraftCommandStage::SessionEfforts => rsx! {
-                    strong { class:"command-heading", "Session default effort (not individual agents)" }
-                    if let Some(config)=&current { p { class:"muted", "Current: {config.effort.as_str()}" } }
-                    if efforts.is_empty() { p { class:"command-empty", "No matching effort options for the current model." } }
-                    for (index, effort) in efforts.iter().copied().enumerate() {
-                        button { class:if selected_index()==index { "command-option selected" } else { "command-option" }, role:"option", "aria-selected":selected_index()==index, onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),
-                            onmousedown:move |event| event.prevent_default(),
-                            onclick:move |_| { select_session_effort(ui, target, effort); selected_index.set(0); if let Some(node)=textarea_node.read().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } },
-                            span { class:"command-title", "{effort.as_str()}" }
-                        }
-                    }
-                    p { class:"command-hint", "↑↓ to navigate · Enter to select · Esc to dismiss" }
-                },
-                DraftCommandStage::Models => rsx! {
-                    strong { class:"command-heading", "Choose the root agent model policy" }
-                    if models.is_empty() { p { class:"command-empty", "No model policies available." } }
-                    for (index, model) in models.iter().cloned().enumerate() {
-                        { let label = draft_model_label(&model); rsx! {
-                            button { class:if selected_index()==index { "command-option selected" } else { "command-option" }, role:"option", "aria-selected":selected_index()==index, onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),
-                                onmousedown:move |event| event.prevent_default(),
-                                onclick:move |_| { if let Some(draft)=ui.write().draft_roots.get_mut(&session_id) { draft.model=Some(model.clone()); } choosing_model.set(false); selected_index.set(0); if let Some(node)=textarea_node.read().clone() { spawn(async move { let _ = node.set_focus(true).await; }); } },
-                                span { class:"command-title", "{label}" }
-                            }
-                        }}
-                    }
-                    p { class:"command-hint", "↑↓ to navigate · Enter to select · Esc to dismiss" }
-                }
-            }
-        } }
-        div { class:"composer-input",
-          div { class:"composer-grow",
-            div { class:"composer-mirror", "aria-hidden":"true", "{text} " }
-        textarea { value:text.clone(), rows:"1", "aria-label":"Message to agent", disabled:pending,
-            onmounted:move |event| textarea_node.set(Some(event.data())),
-            oninput:move |event| { let mut state=ui.write(); state.workspace.promote(tab.id); state.drafts.insert(target,event.value()); selected_index.set(0); dismissed.set(false); choosing_model.set(false); },
-            onkeydown:move |event| {
-                if let Some(stage) = stage {
-                    match event.key() {
-                        Key::ArrowDown => { event.prevent_default(); if count > 0 { let next = (selected_index()+1)%count; selected_index.set(next); scroll_menu_option(menu_popup, menu_nodes, selected_index, next); } }
-                        Key::ArrowUp => { event.prevent_default(); if count > 0 { let next = (selected_index()+count-1)%count; selected_index.set(next); scroll_menu_option(menu_popup, menu_nodes, selected_index, next); } }
-                        Key::Escape => { event.prevent_default(); event.stop_propagation(); dismissed.set(true); choosing_model.set(false); }
-                        Key::Tab if stage == DraftCommandStage::Completion && !event.modifiers().contains(Modifiers::SHIFT) => {
-                            event.prevent_default(); if let Some(command)=key_commands.get(selected_index()) { ui.write().drafts.insert(target,if command.id == CommandId::Refresh { "/refresh".into() } else { format!("/{} ", command.name) }); selected_index.set(0); }
-                        }
-                        Key::Enter if !event.modifiers().contains(Modifiers::SHIFT) => {
-                            event.prevent_default();
-                            match stage {
-                                DraftCommandStage::Completion => if let Some(command)=key_commands.get(selected_index()) { if command.id == CommandId::Refresh { refresh_draft_configs(ui,session_id,target); } else if command.id == CommandId::Info { ui.write().drafts.remove(&target); info_open.set(true); } else { ui.write().drafts.insert(target,format!("/{} ", command.name)); } selected_index.set(0); }
-                                DraftCommandStage::Configurations => if let Some(config)=key_configs.get(selected_index()) {
-                                    choosing_model.set(select_draft_config(ui,session_id,target,config.config.config_id.clone())); selected_index.set(0);
-                                },
-                                DraftCommandStage::SessionModels => if let Some(model)=key_session_models.get(selected_index()) {
-                                    spawn(change_model(ui,session_id,ModelConfig { model:model.model.clone(), effort:choose_effort(model,default_effort) })); ui.write().drafts.remove(&target); selected_index.set(0);
-                                },
-                                DraftCommandStage::SessionEfforts => if let Some(effort)=key_efforts.get(selected_index()) {
-                                    select_session_effort(ui,target,*effort); selected_index.set(0);
-                                },
-                                DraftCommandStage::Models => if let Some(model)=key_models.get(selected_index()) {
-                                    if let Some(draft)=ui.write().draft_roots.get_mut(&session_id) { draft.model=Some(model.clone()); }
-                                    choosing_model.set(false); selected_index.set(0);
-                                },
-                            }
-                        }
-                        _ => {}
-                    }
-                } else if event.key()==Key::Enter && !event.modifiers().contains(Modifiers::SHIFT) {
-                    event.prevent_default();
-                    if matches!(parse_composer_input(&text), ComposerInput::Command { id: CommandId::Refresh, .. }) { refresh_draft_configs(ui,session_id,target); }
-                    else if matches!(parse_composer_input(&text), ComposerInput::Command { id: CommandId::Info, .. }) { ui.write().drafts.remove(&target); info_open.set(true); }
-                    else { spawn_forever(network::submit_draft_root(ui,session_id)); }
-                }
-            }
-        }
-          }
-          button { class:"primary composer-send", "aria-label":"Send first message", disabled:blocked, onclick:move |_| { spawn_forever(network::submit_draft_root(ui,session_id)); }, "↑" }
-        }
-        ComposerStatus { path: state.sessions.iter().find(|s| s.id == session_id).map(|s| s.working_directory.to_string_lossy().into_owned()), model: status_name, effort: status_effort, context_tokens: None, context_window: status_window }
-    }}
-}
-
-#[cfg(test)]
-#[path = "composer_tests.rs"]
-mod composer_tests;
-
-#[component]
-fn Composer(tab: Tab) -> Element {
-    let mut ui = use_context::<Signal<Ui>>();
-    let mut all = use_signal(|| false);
-    let mut selected = use_signal(|| 0usize);
-    let mut menu_popup = use_signal(|| None::<std::rc::Rc<MountedData>>);
-    let menu_nodes = use_signal(Vec::new);
-    let mut dismissed = use_signal(|| false);
-    let mut info_open = use_signal(|| false);
-    let state = ui.read();
-    let target = tab.target;
-    let status = state
-        .transcripts
-        .get(&target)
-        .map(|transcript| agent_status(transcript, &state.models));
-    let status_model = status
-        .as_ref()
-        .and_then(|status| status.model_config.as_ref())
-        .map(|config| {
-            state
-                .models
-                .iter()
-                .find(|model| model.model == config.model)
-                .map(|model| model.name.clone())
-                .unwrap_or_else(|| config.model.model_name().to_owned())
-        });
-    let status_effort = status
-        .as_ref()
-        .and_then(|status| status.model_config.as_ref())
-        .map(|config| config.effort);
-    let status_tokens = status.as_ref().and_then(|status| status.context_tokens);
-    let status_window = status.as_ref().and_then(|status| status.context_window);
-    let draft = state.drafts.get(&target).cloned().unwrap_or_default();
-    let uncertain = state.uncertain_submissions.contains(&target);
-    let parsed = parse_composer_input(&draft);
-    let info_command = matches!(
-        parsed,
-        ComposerInput::Command {
-            id: CommandId::Info,
-            ..
-        }
-    );
-    let agent_command = matches!(
-        parsed,
-        ComposerInput::Command {
-            id: CommandId::Agent,
-            ..
-        }
-    );
-    let refresh_command = matches!(
-        parsed,
-        ComposerInput::Command {
-            id: CommandId::Refresh,
-            ..
-        }
-    );
-    let commands: Vec<_> = complete_commands(&draft)
-        .into_iter()
-        .filter(|c| {
-            matches!(
-                c.id,
-                CommandId::SessionModel | CommandId::SessionEffort | CommandId::Info
-            )
-        })
-        .collect();
-    // A complete command name remains a completion until a space starts its arguments.
-    let model_command = commands.is_empty()
-        && matches!(
-            parsed,
-            ComposerInput::Command {
-                id: CommandId::SessionModel,
-                ..
-            }
-        );
-    let effort_command = commands.is_empty()
-        && matches!(
-            parsed,
-            ComposerInput::Command {
-                id: CommandId::SessionEffort,
-                ..
-            }
-        );
-    let command = !dismissed() && (model_command || effort_command || !commands.is_empty());
-    let current = state
-        .sessions
-        .iter()
-        .find(|s| s.id == target.session_id)
-        .map(|s| s.model_config.clone());
-    let filter = draft
-        .strip_prefix("/model")
-        .unwrap_or("")
-        .trim()
-        .to_lowercase();
-    let models: Vec<_> = state
-        .models
-        .iter()
-        .filter(|m| {
-            (all() || m.pinned || current.as_ref().is_some_and(|c| c.model == m.model))
-                && (filter.is_empty()
-                    || m.name.to_lowercase().contains(&filter)
-                    || m.model.api_name.to_lowercase().contains(&filter))
-        })
-        .cloned()
-        .collect();
-    let key_models = models.clone();
-    let default_effort = current.as_ref().map(|c| c.effort).unwrap_or(Effort::Medium);
-    let effort_filter = draft
-        .strip_prefix("/effort")
-        .unwrap_or("")
-        .trim()
-        .to_lowercase();
-    let efforts = session_efforts(&state.models, current.as_ref(), &effort_filter);
-    let key_efforts = efforts.clone();
-    let key_commands = commands.clone();
-    let agent = state
-        .agents
-        .get(&target.session_id)
-        .and_then(|agents| agents.iter().find(|agent| agent.id == target.agent_id));
-    let info_name = agent
-        .map(|agent| agent.name.clone())
-        .unwrap_or_else(|| "Unknown agent".into());
-    let info_usage = agent.map(|agent| agent.usage.clone());
-    let (info_path, info_probe) = info_location(&state, target.session_id);
-    rsx! {div{class:"composer",style:"--conversation-max-width:{state.settings.preferences.conversation_max_width_ch}rch",
-        if info_open() { AgentInfo { name:info_name, template:None, definition_id:agent.map(|a| a.definition_id), path:info_path, probe:info_probe, model:status_model.clone(), effort:status_effort, usage:info_usage, open:info_open } }
-        if command{div{class:"popup command-popup",role:"listbox","aria-label":"Slash commands",onmounted:move |event| menu_popup.set(Some(event.data())),
-            if !model_command && !effort_command{
-                div{class:"command-heading","Commands"}
-                for (index, spec) in commands.iter().copied().enumerate() {
-                    button{class:if selected()==index{"command-option selected"}else{"command-option"},role:"option","aria-selected":(selected()==index).to_string(),onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),onclick:move |_|{if spec.id == CommandId::Info { ui.write().drafts.remove(&target); info_open.set(true); } else { ui.write().drafts.insert(target,format!("/{} ", spec.name)); } selected.set(0);},
-                        span{class:"command-title","/{spec.name}"} span{class:"command-description","{spec.description}"}
-                    }
-                }
-                div{class:"command-hint","↑↓ navigate · Enter select · Tab complete · Esc dismiss"}
-            }
-            else if effort_command {
-                div{class:"command-heading","Session default effort (not individual agents)"}
-                if let Some(config)=&current { p{class:"muted","Current: {config.effort.as_str()}"} }
-                if efforts.is_empty() { p{class:"command-empty","No matching effort options for the current model."} }
-                for (index, effort) in efforts.iter().copied().enumerate() {
-                    button{class:if selected()==index{"command-option selected"}else{"command-option"},role:"option","aria-selected":(selected()==index).to_string(),onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),onclick:move |_|{select_session_effort(ui,target,effort);selected.set(0);},
-                        span{class:"command-title","{effort.as_str()}"}
-                    }
-                }
-                div{class:"command-hint","↑↓ navigate · Enter select · Esc dismiss"}
-            }
-            else{
-                div{class:"command-heading","Session default model (not individual agents)"}
-                if let Some(config)=&current{p{class:"muted","Current: {config.model.provider.as_str()}/{config.model.api_name} · {config.effort.as_str()}"}}
-                button{onclick:move |_|{all.set(!all());selected.set(0);},if all(){"Show favorites"}else{"All models…"}}
-                if models.is_empty(){p{class:"command-empty",if filter.is_empty(){"No favorite models. Open settings to pin models, or choose All models."}else{"No matching models. Try another search or choose All models."}}}
-                for (index,model) in models.iter().cloned().enumerate(){
-                    button{class:if selected()==index{"command-option selected"}else{"command-option"},role:"option","aria-selected":(selected()==index).to_string(),onmounted:move |event| register_menu_option(menu_nodes, index, event.data()),onclick:move |_|{spawn(change_model(ui,target.session_id,ModelConfig{model:model.model.clone(),effort:choose_effort(&model,default_effort)}));ui.write().drafts.remove(&target);},
-                        span{class:"command-title","{model.name}"} span{class:"command-description","{model.model.provider.as_str()}/{model.model.api_name}"}
-                    }
-                }
-                div{class:"command-hint","↑↓ navigate · Enter select · Esc dismiss"}
-            }
-        }}
-        if agent_command { p { class:"command-hint", "The /agent command is only available before creating the root agent. Use //agent to send it as text." } }
-        if refresh_command { p { class:"command-hint", "The /refresh command is only available before creating the root agent. Use //refresh to send it as text." } }
-        div { class:"composer-input",
-          div { class:"composer-grow",
-            div { class:"composer-mirror", "aria-hidden":"true", "{draft} " }
-        textarea{value:draft.clone(),rows:"1", "aria-label":"Message to agent",
-            oninput:move |event|{let mut s=ui.write();s.workspace.promote(tab.id);s.drafts.insert(target,event.value());selected.set(0);dismissed.set(false);},
-            onkeydown:move |event|{
-                if command{
-                    match event.key(){
-                        Key::ArrowDown=>{event.prevent_default();let count=if model_command{key_models.len()}else if effort_command{key_efforts.len()}else{key_commands.len()};if count > 0 { let next=(selected()+1)%count; selected.set(next); scroll_menu_option(menu_popup,menu_nodes,selected,next); }},
-                        Key::ArrowUp=>{event.prevent_default();let count=if model_command{key_models.len()}else if effort_command{key_efforts.len()}else{key_commands.len()};if count > 0 { let next=(selected()+count-1)%count; selected.set(next); scroll_menu_option(menu_popup,menu_nodes,selected,next); }},
-                        Key::Escape=>{event.prevent_default();event.stop_propagation();dismissed.set(true);},
-                        Key::Tab if !model_command && !effort_command && !event.modifiers().contains(Modifiers::SHIFT)=>{event.prevent_default();if let Some(spec)=key_commands.get(selected()){ui.write().drafts.insert(target,format!("/{} ",spec.name));selected.set(0);}},
-                        Key::Enter if !event.modifiers().contains(Modifiers::SHIFT)=>{event.prevent_default();if model_command{if let Some(model)=key_models.get(selected()){spawn(change_model(ui,target.session_id,ModelConfig{model:model.model.clone(),effort:choose_effort(model,default_effort)}));ui.write().drafts.remove(&target);}}else if effort_command {if let Some(effort)=key_efforts.get(selected()){select_session_effort(ui,target,*effort);selected.set(0);}}else if let Some(spec)=key_commands.get(selected()){if spec.id == CommandId::Info { ui.write().drafts.remove(&target); info_open.set(true); } else { ui.write().drafts.insert(target,format!("/{} ",spec.name)); } selected.set(0);}},
-                        _=>{},
-                    }
-                } else if event.key()==Key::Escape { event.prevent_default(); event.stop_propagation(); let generation=ui.read().generation; spawn(async move { if ui.read().generation == generation { network::submit(ui,target,true).await; } }); }
-                else if event.key()==Key::Enter&&!event.modifiers().contains(Modifiers::SHIFT){event.prevent_default();if info_command { ui.write().drafts.remove(&target); info_open.set(true); } else { ui.write().workspace.promote(tab.id);spawn(network::submit(ui,target,false)); }}
-            }
-        }
-          }
-          button{class:"primary composer-send","aria-label":"Send steer",disabled:uncertain || matches!(parsed, ComposerInput::Command { .. }),onclick:move |_|{ui.write().workspace.promote(tab.id);spawn(network::submit(ui,target,false));},"↑"}
-        }
-        ComposerStatus { path: state.sessions.iter().find(|s| s.id == target.session_id).map(|s| s.working_directory.to_string_lossy().into_owned()), model: status_model, effort: status_effort, context_tokens: status_tokens, context_window: status_window }
-        if uncertain || state.transcript_status.get(&target).is_some_and(|status| status != "Live") {
-            div{class:"composer-actions",
-                if uncertain { button { onclick:move |_| { ui.write().uncertain_submissions.remove(&target); }, "I checked delivery; enable retry" } }
-                if let Some(status) = state.transcript_status.get(&target).filter(|status| *status != "Live") { span{class:"muted","{status}"} }
-            }
-        }
-    }}
-}
-fn session_efforts(
-    models: &[ModelInfo],
-    current: Option<&ModelConfig>,
-    filter: &str,
-) -> Vec<Effort> {
-    current
-        .and_then(|config| models.iter().find(|model| model.model == config.model))
-        .map(|model| {
-            model
-                .reasoning_options
-                .iter()
-                .map(|option| option.effort)
-                .filter(|effort| effort.as_str().contains(filter))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn effort_model_config(
-    models: &[ModelInfo],
-    current: Option<&ModelConfig>,
-    effort: Effort,
-) -> Option<ModelConfig> {
-    if !session_efforts(models, current, "").contains(&effort) {
-        return None;
-    }
-    current.cloned().map(|mut config| {
-        config.effort = effort;
-        config
-    })
-}
-
-fn select_session_effort(mut ui: Signal<Ui>, target: TranscriptTarget, effort: Effort) {
-    let config = {
-        let state = ui.read();
-        let current = state
-            .sessions
-            .iter()
-            .find(|session| session.id == target.session_id)
-            .map(|session| &session.model_config);
-        effort_model_config(&state.models, current, effort)
-    };
-    if let Some(config) = config {
-        let generation = ui.read().generation;
-        spawn(async move {
-            if ui.read().generation == generation {
-                change_model(ui, target.session_id, config).await;
-            }
-        });
-        ui.write().drafts.remove(&target);
-    }
-}
-
-fn choose_effort(model: &ModelInfo, preferred: Effort) -> Effort {
-    if model
-        .reasoning_options
-        .iter()
-        .any(|o| o.effort == preferred)
-    {
-        preferred
-    } else {
-        model
-            .reasoning_options
-            .first()
-            .map(|o| o.effort)
-            .unwrap_or(Effort::Off)
-    }
-}
-async fn change_model(mut ui: Signal<Ui>, session_id: SessionId, model_config: ModelConfig) {
-    let generation = ui.read().generation;
-    let Ok(api) = network::client(ui) else {
-        return;
-    };
-    let result = api
-        .update_session(
-            session_id,
-            &UpdateSession {
-                model_config: Some(model_config),
-                ..Default::default()
-            },
-        )
-        .await;
-    if generation != ui.read().generation {
-        return;
-    }
-    match result {
-        Ok(_) => {
-            ui.write().notice = Some("Session default updated. Pinned agents are unchanged.".into())
-        }
-        Err(_) => {
-            ui.write().error = Some("Unable to change the session default model/effort".into())
-        }
-    }
-}
-
-#[component]
-fn Question(query: ClientQueryRequest) -> Element {
-    let mut ui = use_context::<Signal<Ui>>();
-    let ClientQuery::AskQuestion(request) = &query.payload;
-    let count = request.questions.len();
-    let mut answers = use_signal(move || vec![String::new(); count]);
-    let mut submitting = use_signal(|| false);
-    let submit_query = query.clone();
-    rsx! {section{class:"question",h4{"Agent needs your input"}
-        for (index,question) in request.questions.iter().enumerate(){
-            label{"{question.question}"}
-            for choice in question.choices.clone(){button{onclick:move |_|answers.write()[index]=choice.clone(),"{choice}"}}
-            input{value:answers.read()[index].clone(),"aria-label":question.question.clone(),oninput:move |event|answers.write()[index]=event.value()}
-        }
-        button{class:"primary",disabled:submitting()||answers.read().iter().any(|a|a.trim().is_empty()),onclick:move |_|{
-            let query=submit_query.clone();let response=ClientQueryResponse::AskQuestion(AskQuestionResponse{answers:answers.read().iter().map(|answer|ClientAnswer{answer:answer.clone(),notes:None}).collect()});
-            let generation = ui.read().generation;
-            submitting.set(true);spawn(async move{
-                let failed = match network::client(ui) {
-                    Ok(api) => api.respond_to_client_query(query.session_id,query.agent_id,query.id,&response).await.is_err(),
-                    Err(_) => true,
-                };
-                if ui.read().generation != generation { return; }
-                if failed { ui.write().error=Some("Unable to answer question; it may have been answered elsewhere.".into()); }
-                submitting.set(false);
-            });
-        },"Submit answers"}
-    }}
-}
-
 #[component]
 pub fn Settings() -> Element {
     let mut ui = use_context::<Signal<Ui>>();
     let mut tab = use_signal(|| "profiles".to_string());
-    let state = ui.read();
+    use_ui_subscription(|state| {
+        (
+            state.settings.clone(),
+            state.models.clone(),
+            state.error.clone(),
+            state.generation,
+        )
+    });
+    let state = ui.peek();
     let profile_id = state.settings.active_profile_id.clone();
     let mut filter = use_signal(String::new);
-    let mut models: Vec<_> = state
-        .models
-        .iter()
-        .filter(|m| {
-            m.name.to_lowercase().contains(&filter().to_lowercase())
-                || m.model
-                    .api_name
-                    .to_lowercase()
-                    .contains(&filter().to_lowercase())
-        })
-        .cloned()
-        .collect();
+    let needle = filter().to_lowercase();
+    let mut models: Vec<_> = if tab() == "models" {
+        state
+            .models
+            .iter()
+            .filter(|model| {
+                model.name.to_lowercase().contains(&needle)
+                    || model.model.api_name.to_lowercase().contains(&needle)
+            })
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
     models.sort_by_key(|model| !model.pinned);
     let favorite_count = models.iter().take_while(|model| model.pinned).count();
     let show_divider = favorite_count > 0 && favorite_count < models.len();
@@ -1990,7 +514,7 @@ pub fn Settings() -> Element {
         if tab() == "models" {
             h3{"Model favorites"}p{class:"muted","Pins are stored on this server and shared with its other clients."}
             button{onclick:move |_|{spawn(network::refresh_metadata(ui));},"Refresh probes and model catalog"}
-            input{placeholder:"Filter models",value:filter(),oninput:move |event|filter.set(event.value()),"aria-label":"Filter model favorites"}
+            crate::input::BrowserInput { placeholder:"Filter models", initial_value:filter(), onedit:move |snapshot: crate::input::InputSnapshot| { if *filter.peek() != snapshot.text { filter.set(snapshot.text); } }, aria_label:"Filter model favorites" }
             div{class:"models",for (index, model) in models.iter().cloned().enumerate(){
                 if show_divider && index == favorite_count { div { class:"favorites-divider", role:"separator" } }
                 div{class:"model-row",
@@ -2013,9 +537,26 @@ pub fn Settings() -> Element {
             label{input{r#type:"checkbox",checked:state.settings.preferences.hide_text_recorded_results,onchange:move |e|ui.write().settings.preferences.hide_text_recorded_results=e.checked()},"Hide text recorded results"}
             label{input{r#type:"checkbox",checked:state.settings.preferences.hide_agent_statuses,onchange:move |e|ui.write().settings.preferences.hide_agent_statuses=e.checked()},"Hide agent statuses (interrupted always shown)"}
             label{input{r#type:"checkbox",checked:state.settings.preferences.double_click_session_opens_details,onchange:move |e|ui.write().settings.preferences.double_click_session_opens_details=e.checked()},"Open current session details when double-clicking a session"}
-            label{r#for:"transcript-font-size","Transcript font size"}input{id:"transcript-font-size",r#type:"range",min:"11",max:"22",value:state.settings.preferences.transcript_font_size.to_string(),oninput:move |e|{if let Ok(size)=e.value().parse(){ui.write().settings.preferences.transcript_font_size=size;}}}
+            label{r#for:"transcript-font-size","Transcript font size"}
+            crate::interaction::RangeInput {
+                id:"transcript-font-size", aria_label:"Transcript font size", min:11.0, max:22.0,
+                value:f64::from(state.settings.preferences.transcript_font_size),
+                preview_property:Some("--psa-transcript-font-size".to_string()), preview_unit:"px",
+                oncommit:move |size: f64| {
+                    let size = size.round().clamp(11.0, 22.0) as u16;
+                    if ui.peek().settings.preferences.transcript_font_size != size { ui.write().settings.preferences.transcript_font_size=size; }
+                },
+            }
             label{r#for:"conversation-max-width","Conversation and composer max width (characters): {state.settings.preferences.conversation_max_width_ch}"}
-            input{id:"conversation-max-width",r#type:"range",min:"40",max:"160",value:state.settings.preferences.conversation_max_width_ch.to_string(),oninput:move |e|{if let Ok(width)=e.value().parse::<u16>(){ui.write().settings.preferences.conversation_max_width_ch=width.clamp(40,160);}}}
+            crate::interaction::RangeInput {
+                id:"conversation-max-width", aria_label:"Conversation and composer max width", min:40.0, max:160.0,
+                value:f64::from(state.settings.preferences.conversation_max_width_ch),
+                preview_property:Some("--psa-conversation-width".to_string()), preview_unit:"rch",
+                oncommit:move |width: f64| {
+                    let width = width.round().clamp(40.0, 160.0) as u16;
+                    if ui.peek().settings.preferences.conversation_max_width_ch != width { ui.write().settings.preferences.conversation_max_width_ch=width; }
+                },
+            }
         }
         }
         }
@@ -2098,7 +639,8 @@ fn KeybindSettings() -> Element {
 fn ProfileSettings() -> Element {
     let mut ui = use_context::<Signal<Ui>>();
     let bootstrap = use_context::<crate::GuiBootstrap>();
-    let state = ui.read();
+    use_ui_subscription(|state| state.settings.clone());
+    let state = ui.peek();
     let profile = state.settings.active_profile().clone();
     let profiles = state.settings.profiles.clone();
     let mut name = use_signal(|| profile.name.clone());
@@ -2215,16 +757,23 @@ fn ProfileSettings() -> Element {
                 }
             }
         } else if is_active {
-            label { r#for:"profile-name", "Profile name" } input { id:"profile-name", value:name(), oninput:move |e|name.set(e.value()) }
-            label{r#for:"api-url","API URL"}input{id:"api-url",value:url(),oninput:move |event|url.set(event.value())}
-            label{r#for:"api-key","API client key"}input{id:"api-key",r#type:"password",autocomplete:"off",value:key(),oninput:move |event|key.set(event.value())}
+            form { onsubmit:move |event: FormEvent| {
+                event.prevent_default(); event.stop_propagation();
+                let Some(profile_name) = form_text(&event, "profile-name") else { return; };
+                let Some(api_url) = form_text(&event, "api-url") else { return; };
+                let Some(client_key) = form_text(&event, "api-key") else { return; };
+                if profile_name.trim().is_empty() || Client::new(&api_url,&client_key).is_err() { ui.write().error=Some("Enter a profile name and valid API URL and client key".into()); return; }
+                let mut state = ui.write();
+                state.settings.active_profile_mut().name = profile_name;
+                state.change_connection(api_url,client_key);
+                state.settings_open = true;
+            },
+            label { r#for:"profile-name", "Profile name" } crate::input::BrowserInput { id:"profile-name", name:"profile-name", aria_label:"Profile name", initial_value:name(), onedit:move |snapshot: crate::input::InputSnapshot| { if *name.peek() != snapshot.text { name.set(snapshot.text); } } }
+            label{r#for:"api-url","API URL"}crate::input::BrowserInput { id:"api-url", name:"api-url", aria_label:"API URL", initial_value:url(), onedit:move |snapshot: crate::input::InputSnapshot| { if *url.peek() != snapshot.text { url.set(snapshot.text); } } }
+            label{r#for:"api-key","API client key"}crate::input::BrowserInput { id:"api-key", name:"api-key", aria_label:"API client key", r#type:"password", initial_value:key(), onedit:move |snapshot: crate::input::InputSnapshot| { if *key.peek() != snapshot.text { key.set(snapshot.text); } } }
             p{class:"muted","Saved in desktop.toml as plaintext with owner-only permissions where supported. Provider credentials are never stored here."}
-            button{class:"primary",onclick:move |_|{
-                if name().trim().is_empty() || Client::new(&url(),&key()).is_err() { ui.write().error=Some("Enter a profile name and valid API URL and client key".into()); return; }
-                ui.write().settings.active_profile_mut().name = name();
-                ui.write().change_connection(url(),key());
-                ui.write().settings_open = true;
-            },"Save connection and reconnect"}
+            button{class:"primary",r#type:"submit","Save connection and reconnect"}
+            }
         }
             }
               }
@@ -2237,6 +786,13 @@ fn ProfileSettings() -> Element {
             ui.write().select_profile(id);
         }, "＋ Add remote profile" }
         }
+    }
+}
+
+fn form_text(event: &FormEvent, name: &str) -> Option<String> {
+    match event.get_first(name)? {
+        dioxus::html::FormValue::Text(text) => Some(text),
+        dioxus::html::FormValue::File(_) => None,
     }
 }
 
@@ -2355,12 +911,20 @@ pub(crate) fn ProviderCard(
             }
             if let Some(message) = error() { p { class:"error", role:"alert", "{message}" } }
             if editing() {
+                form { onsubmit:move |event: FormEvent| {
+                    event.prevent_default(); event.stop_propagation();
+                    if pending() { return; }
+                    if let Some(value) = form_text(&event, "credential") {
+                        if !value.trim().is_empty() { save(Some(value)); }
+                    }
+                },
                 label { r#for:format!("provider-credential-{}", id.as_str()), "{credential_name}" }
-                input { id:format!("provider-credential-{}", id.as_str()), r#type:"password", autocomplete:"off", value:credential(), disabled:pending(), oninput:move |event|credential.set(event.value()) }
+                crate::input::BrowserInput { id:format!("provider-credential-{}", id.as_str()), name:"credential", aria_label:credential_name, r#type:"password", required:true, initial_value:credential(), disabled:pending(), onedit:move |snapshot: crate::input::InputSnapshot| { if *credential.peek() != snapshot.text { credential.set(snapshot.text); } } }
                 p { class:"muted", "Enter a new credential" }
                 div { class:"provider-actions",
-                    button { class:"primary", disabled:pending() || credential().trim().is_empty(), onclick:move |_|save(Some(credential())), "Save" }
-                    button { disabled:pending(), onclick:move |_| { credential.set(String::new()); editing.set(false); error.set(None); }, "Cancel" }
+                    button { class:"primary", r#type:"submit", disabled:pending(), "Save" }
+                    button { r#type:"button", disabled:pending(), onclick:move |_| { credential.set(String::new()); editing.set(false); error.set(None); }, "Cancel" }
+                }
                 }
             }
             if authed && !editing() && !confirming() {

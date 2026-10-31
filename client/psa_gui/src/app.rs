@@ -1,7 +1,10 @@
-use crate::{GuiBootstrap, network, style, views};
+use crate::{
+    GuiBootstrap, network,
+    reactive::{Shared, use_ui_selector, use_ui_subscription},
+    style, views,
+};
 use client_shared::*;
 use dioxus::{core::Task, document, prelude::*};
-use futures_util::StreamExt;
 use psa_api::*;
 use std::{
     cell::RefCell,
@@ -9,6 +12,8 @@ use std::{
     rc::Rc,
 };
 
+#[cfg(test)]
+mod focus_tests;
 #[cfg(test)]
 mod shortcuts_tests;
 
@@ -118,17 +123,65 @@ pub(crate) fn handle_workspace_key(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ComposerFocusIntent(u64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ComposerFocusRequest {
+    group: GroupId,
+    view: ViewId,
+    intent: Option<ComposerFocusIntent>,
+}
+
+pub(crate) fn begin_composer_open() -> ComposerFocusIntent {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_INTENT: AtomicU64 = AtomicU64::new(1);
+    let intent = ComposerFocusIntent(NEXT_INTENT.fetch_add(1, Ordering::Relaxed));
+    document::eval(&format!("window.psaBeginComposerOpen?.({});", intent.0));
+    intent
+}
+
+fn focus_composer(request: ComposerFocusRequest) {
+    let intent = request
+        .intent
+        .map(|intent| format!(", {}", intent.0))
+        .unwrap_or_default();
+    document::eval(&format!(
+        "window.psaFocusComposer?.({}, {}{intent});",
+        request.group.0, request.view.0
+    ));
+}
+
 pub(crate) fn request_composer_focus(ui: Signal<Ui>) {
     let state = ui.peek();
     if let Some(tab) = state.workspace.active_tab() {
-        document::eval(&format!(
-            "window.psaFocusComposer?.({}, {});",
-            state.workspace.focused_group.0, tab.id.0
-        ));
+        focus_composer(ComposerFocusRequest {
+            group: state.workspace.focused_group,
+            view: tab.id,
+            intent: None,
+        });
     }
 }
 
-#[derive(Default)]
+fn use_open_composer_focus(ui: Signal<Ui>) {
+    let requests = use_ui_selector(|state| (state.generation, state.composer_focus_request));
+    use_effect(move || {
+        let Some(request) = requests.read().1 else {
+            return;
+        };
+        let state = ui.peek();
+        if state.workspace.focused_group == request.group
+            && state
+                .workspace
+                .active_tab()
+                .is_some_and(|tab| tab.id == request.view)
+        {
+            focus_composer(request);
+        }
+    });
+}
+
+#[derive(Clone, Default)]
 pub struct DraftRoot {
     pub configs: Vec<AgentConfigStatus>,
     pub selected: Option<ConfigId>,
@@ -207,8 +260,8 @@ fn root_models_match(left: &ModelSelection, right: &ModelSelection) -> bool {
 }
 
 pub struct Ui {
-    pub settings: DesktopSettings,
-    pub workspace: Workspace,
+    pub settings: Shared<DesktopSettings>,
+    pub workspace: Shared<Workspace>,
     pub sidebar: SidebarState,
     pub selected_probe: Option<ProbeId>,
     pub creation_target: Option<crate::creation::CreationTarget>,
@@ -217,33 +270,31 @@ pub struct Ui {
     pub creation_pending: bool,
     pub creation_error: Option<String>,
     pub creation_uncertain: bool,
-    pub last_agents: HashMap<SessionId, AgentId>,
-    pub sessions: Vec<Session>,
-    pub fresh_sessions: HashSet<SessionId>,
-    pub probes: Vec<Probe>,
+    pub last_agents: Shared<HashMap<SessionId, AgentId>>,
+    pub sessions: Shared<Vec<Session>>,
+    pub fresh_sessions: Shared<HashSet<SessionId>>,
+    pub probes: Shared<Vec<Probe>>,
     pub probe_error: Option<String>,
-    pub agents: HashMap<SessionId, Vec<Agent>>,
-    pub models: Vec<ModelInfo>,
-    pub transcripts: HashMap<TranscriptTarget, Transcript>,
+    pub agents: Shared<HashMap<SessionId, Shared<Vec<Agent>>>>,
+    pub models: Shared<Vec<ModelInfo>>,
+    pub transcripts: HashMap<TranscriptTarget, Shared<Transcript>>,
     pub transcript_status: HashMap<TranscriptTarget, String>,
     pub history_requests: HashMap<TranscriptTarget, u64>,
-    pub drafts: HashMap<TranscriptTarget, String>,
+    pub drafts: crate::input::DraftStore,
     pub uncertain_submissions: HashSet<TranscriptTarget>,
     pub pending_submissions: HashSet<TranscriptTarget>,
     pub pending_interrupts: HashSet<TranscriptTarget>,
-    pub draft_roots: HashMap<SessionId, DraftRoot>,
-    pub revisions: HashMap<SessionId, u64>,
+    pub draft_roots: HashMap<SessionId, Shared<DraftRoot>>,
+    pub network: RefCell<network::NetworkState>,
     pub next_sessions: Option<String>,
     pub generation: u64,
-    pub selection_request: u64,
-    pub list_request: u64,
-    pub probe_request: u64,
     pub connection: String,
     pub settings_open: bool,
     pub error: Option<String>,
     pub notice: Option<String>,
     pub dragging: Option<ViewId>,
     pub follow_request: (u64, Option<ViewId>),
+    composer_focus_request: Option<ComposerFocusRequest>,
 }
 impl Ui {
     pub fn new(settings: DesktopSettings) -> Self {
@@ -251,8 +302,8 @@ impl Ui {
         let mut workspace = saved.workspace;
         workspace.restore();
         Self {
-            settings,
-            workspace,
+            settings: settings.into(),
+            workspace: workspace.into(),
             sidebar: saved.sidebar,
             selected_probe: saved.selected_probe,
             creation_target: None,
@@ -265,39 +316,38 @@ impl Ui {
                 .last_viewed_agents
                 .into_iter()
                 .map(|t| (t.session_id, t.agent_id))
-                .collect(),
-            sessions: Vec::new(),
-            fresh_sessions: HashSet::new(),
-            probes: Vec::new(),
+                .collect::<HashMap<_, _>>()
+                .into(),
+            sessions: Shared::default(),
+            fresh_sessions: Shared::default(),
+            probes: Shared::default(),
             probe_error: None,
-            agents: HashMap::new(),
-            models: Vec::new(),
+            agents: Shared::default(),
+            models: Shared::default(),
             transcripts: HashMap::new(),
             transcript_status: HashMap::new(),
             history_requests: HashMap::new(),
-            drafts: HashMap::new(),
+            drafts: crate::input::DraftStore::default(),
             uncertain_submissions: HashSet::new(),
             pending_submissions: HashSet::new(),
             pending_interrupts: HashSet::new(),
             draft_roots: HashMap::new(),
-            revisions: HashMap::new(),
+            network: RefCell::default(),
             next_sessions: None,
             generation: 0,
-            selection_request: 0,
-            list_request: 0,
-            probe_request: 0,
             connection: "Not connected".into(),
             settings_open: false,
             error: None,
             notice: None,
             dragging: None,
             follow_request: (0, None),
+            composer_focus_request: None,
         }
     }
     pub fn persisted(&self) -> DesktopSettings {
-        let mut settings = self.settings.clone();
+        let mut settings = (*self.settings).clone();
         let saved = settings.ensure_current_server();
-        saved.workspace = self.workspace.clone();
+        saved.workspace = (*self.workspace).clone();
         let draft_tabs: Vec<_> = saved
             .workspace
             .groups()
@@ -323,31 +373,74 @@ impl Ui {
         settings
     }
     pub fn open(&mut self, target: TranscriptTarget, permanent: bool) {
-        self.workspace.open(target, permanent);
+        self.open_with_focus(target, permanent, None);
+    }
+    fn open_with_focus(
+        &mut self,
+        target: TranscriptTarget,
+        permanent: bool,
+        intent: Option<ComposerFocusIntent>,
+    ) {
+        let existing = self
+            .workspace
+            .groups()
+            .iter()
+            .any(|group| group.tabs.iter().any(|tab| tab.target == target));
+        let view = self.workspace.open(target, permanent);
+        if !existing {
+            self.composer_focus_request = Some(ComposerFocusRequest {
+                group: self.workspace.focused_group,
+                view,
+                intent,
+            });
+        }
         if target.agent_id != DRAFT_ROOT {
             self.last_agents.insert(target.session_id, target.agent_id);
         }
     }
+    #[cfg(test)]
     pub fn open_session_target(
         &mut self,
         target: TranscriptTarget,
         permanent: bool,
         from_double_click: bool,
     ) {
-        self.open(target, permanent);
+        self.open_session_target_with_focus(target, permanent, from_double_click, None);
+    }
+    pub(crate) fn open_session_target_with_focus(
+        &mut self,
+        target: TranscriptTarget,
+        permanent: bool,
+        from_double_click: bool,
+        intent: Option<ComposerFocusIntent>,
+    ) {
+        self.open_with_focus(target, permanent, intent);
         if from_double_click && self.settings.preferences.double_click_session_opens_details {
             self.sidebar.expanded_mode = SidebarMode::Details;
             self.sidebar.collapsed = false;
         }
     }
     pub fn upsert_session(&mut self, session: Session) {
-        self.fresh_sessions.insert(session.id);
+        if !self.fresh_sessions.contains(&session.id) {
+            self.fresh_sessions.insert(session.id);
+        }
         if let Some(old) = self.sessions.iter_mut().find(|s| s.id == session.id) {
             *old = session;
         } else {
             self.sessions.push(session);
         }
     }
+    /// Loaded transcript payloads belong to open views, not the draft cache.
+    /// Closing the final view releases its history; reopening bootstraps afresh.
+    pub fn prune_closed_transcripts(&mut self, targets: &HashSet<TranscriptTarget>) {
+        self.transcripts
+            .retain(|target, _| targets.contains(target));
+        self.transcript_status
+            .retain(|target, _| targets.contains(target));
+        self.history_requests
+            .retain(|target, _| targets.contains(target));
+    }
+
     pub fn change_connection(&mut self, url: String, key: String) {
         let mut settings = self.persisted();
         let profile = settings.active_profile_mut();
@@ -378,13 +471,14 @@ impl Ui {
 pub fn app() -> Element {
     let bootstrap = use_context::<GuiBootstrap>();
     let initial = bootstrap.config.settings.clone();
-    let ui = use_signal(move || Ui::new(initial));
+    let mut ui = use_signal(move || Ui::new(initial));
     use_context_provider(|| ui);
     let modals = use_context_provider(ModalRegistry::default);
     // Key events targeted at the document (for example after the focused tab
     // is removed) do not bubble through the shell. Forward those to it.
     use_effect(|| {
         document::eval(include_str!("pane_focus.js"));
+        document::eval(include_str!("wheel.js"));
         document::eval(
             r#"
             if (!window.psaWorkspaceKeyForwarder) {
@@ -405,12 +499,25 @@ pub fn app() -> Element {
     });
     use_drop(|| {
         document::eval(
-            "window.removeEventListener('keydown', window.psaWorkspaceKeyForwarder, true); delete window.psaWorkspaceKeyForwarder; window.psaRemovePaneFocus?.();",
+            "window.removeEventListener('keydown', window.psaWorkspaceKeyForwarder, true); delete window.psaWorkspaceKeyForwarder; window.psaRemovePaneFocus?.(); window.psaRemoveHoveredWheel?.();",
         );
     });
+    use_open_composer_focus(ui);
     let platform = bootstrap.platform.clone();
     let mut local_ui = ui;
     let generation = use_memo(move || ui.read().generation);
+    let browser_generation = use_hook(|| Rc::new(std::cell::Cell::new(*generation.peek())));
+    use_effect(move || {
+        let current = generation();
+        let previous = browser_generation.replace(current);
+        if previous != current {
+            // Old profile editors can still be connected until this render's
+            // DOM edits land. Do not discard drafts belonging to the new scope.
+            document::eval(&format!(
+                "requestAnimationFrame(() => requestAnimationFrame(() => window.psaInputs?.pruneDisconnectedGroups?.('psa:{previous}:')));"
+            ));
+        }
+    });
     use_effect(move || {
         let selected_generation = generation();
         if local_ui.peek().settings.active_profile_id != LOCAL_PROFILE_ID {
@@ -471,15 +578,35 @@ pub fn app() -> Element {
         >::new()))
     });
     let task_generation = use_hook(|| Rc::new(RefCell::new(0u64)));
+    let open_views = use_ui_selector(|state| (state.generation, state.workspace.clone()));
     use_effect(move || {
-        let state = ui.read();
-        let generation = state.generation;
-        let targets: HashSet<_> = state
-            .workspace
+        let selected = open_views.read();
+        let generation = selected.0;
+        let targets: HashSet<_> = selected
+            .1
             .groups()
             .iter()
             .flat_map(|g| g.tabs.iter().map(|t| t.target))
             .collect();
+        drop(selected);
+        if ui
+            .peek()
+            .transcripts
+            .keys()
+            .any(|target| !targets.contains(target))
+            || ui
+                .peek()
+                .transcript_status
+                .keys()
+                .any(|target| !targets.contains(target))
+            || ui
+                .peek()
+                .history_requests
+                .keys()
+                .any(|target| !targets.contains(target))
+        {
+            ui.write().prune_closed_transcripts(&targets);
+        }
         let mut sessions = HashMap::<SessionId, Vec<TranscriptTarget>>::new();
         for target in targets {
             if target.agent_id != DRAFT_ROOT {
@@ -513,29 +640,75 @@ pub fn app() -> Element {
             });
         }
     });
-    let last_saved = use_hook(|| Rc::new(RefCell::new(String::new())));
+    let durable = use_ui_selector(|state| {
+        (
+            state.settings.clone(),
+            state.workspace.clone(),
+            state.sidebar.clone(),
+            state.selected_probe,
+            state.last_agents.clone(),
+        )
+    });
+    let last_saved = use_hook(|| Rc::new(RefCell::new(None::<DesktopSettings>)));
     let platform = bootstrap.platform.clone();
     let mut save_ui = ui;
-    let saver = use_coroutine(move |mut requests: UnboundedReceiver<DesktopSettings>| {
-        let platform = platform.clone();
-        async move {
-            while let Some(settings) = requests.next().await {
-                if platform.save_settings(settings).await.is_err() {
-                    save_ui.write().error = Some("Unable to save desktop settings".into());
-                }
-            }
-        }
+    let saver = use_hook(move || {
+        let (handle, receiver) = crate::persistence::settings_save_channel();
+        dioxus::core::spawn_forever(async move {
+            let _ = receiver
+                .run(
+                    std::time::Duration::from_millis(200),
+                    std::time::Duration::from_secs(1),
+                    move |settings| {
+                        let platform = platform.clone();
+                        async move { platform.save_settings(settings).await }
+                    },
+                    move |_| {
+                        if let Ok(mut state) = save_ui.try_write() {
+                            state.error = Some("Unable to save desktop settings; retrying".into());
+                        }
+                    },
+                )
+                .await;
+        });
+        handle
+    });
+    let flush_platform = bootstrap.platform.clone();
+    let flushing_saver = saver.clone();
+    use_hook(move || {
+        flush_platform.set_settings_flush(Some(Rc::new(move || {
+            // A close can precede the durable-projection effect's next poll.
+            flushing_saver.submit(ui.peek().persisted());
+            let handle = flushing_saver.clone();
+            Box::pin(async move { handle.flush().await })
+        })));
+    });
+    let closing_saver = saver.clone();
+    let closing_platform = bootstrap.platform.clone();
+    use_drop(move || {
+        closing_platform.set_settings_flush(None);
+        dioxus::core::spawn_forever(async move {
+            let _ = closing_saver.shutdown().await;
+        });
     });
     use_effect(move || {
-        let settings = ui.read().persisted();
-        let encoded = serde_json::to_string(&settings).unwrap_or_default();
-        if *last_saved.borrow() == encoded {
+        let _ = durable.read();
+        let settings = ui.peek().persisted();
+        if last_saved.borrow().as_ref() == Some(&settings) {
             return;
         }
-        *last_saved.borrow_mut() = encoded;
-        saver.send(settings);
+        *last_saved.borrow_mut() = Some(settings.clone());
+        saver.submit(settings);
     });
-    let state = ui.read();
+    use_ui_subscription(|state| {
+        (
+            state.generation,
+            state.workspace.clone(),
+            state.sidebar.collapsed,
+            state.settings_open,
+        )
+    });
+    let state = ui.peek();
     rsx! {
         style { "{style::CSS}" }
         div { id:"psa-shell", class:"shell", onkeydown: move |event| handle_workspace_key(ui, &modals, event),
@@ -552,7 +725,16 @@ pub fn app() -> Element {
 
 #[component]
 pub(crate) fn StatusBar(mut ui: Signal<Ui>) -> Element {
-    let state = ui.read();
+    let notifications = use_memo(move || {
+        let state = ui.read();
+        (
+            state.connection.clone(),
+            state.error.clone(),
+            state.notice.clone(),
+        )
+    });
+    let _ = notifications.read();
+    let state = ui.peek();
     rsx! {
         div { class:"connection",
             span { class:"connection-label", title:"{state.connection}", "{state.connection}" }

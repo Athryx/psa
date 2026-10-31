@@ -53,8 +53,10 @@ directory convention as the server and probe. On Linux the default is
 files are reported, not silently replaced. Configure connection profiles in the
 GUI; legacy settings with a single `[connection]` are migrated when loaded.
 
-Settings are saved asynchronously through a single platform interface, using a
-private temporary file and atomic replacement. On Unix the resulting file is
+Settings are saved asynchronously through a debounced, latest-snapshot writer,
+using a private temporary file and atomic replacement. Window close waits for the
+latest durable state to flush; on failure the window reopens so the save can be
+retried. Forced process termination cannot guarantee a final flush. On Unix the resulting file is
 mode 0600. The client key is stored in plaintext: protect this directory, and do
 not commit or share the file. Parse errors and Debug output do not include the
 key. Desktop settings do not overwrite `auth.toml`, `config.toml`, or `probe.toml`.
@@ -79,6 +81,7 @@ override agents whose definitions pin their own model.
 
 ```sh
 cargo test --locked -p client_shared -p psa_gui -p psa_desktop
+node --test client/psa_gui/src/*.test.cjs
 cargo check --locked -p psa_desktop --features native
 ```
 

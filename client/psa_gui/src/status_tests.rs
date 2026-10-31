@@ -45,12 +45,15 @@ fn agent_composer_fixture() -> Element {
             .unwrap(),
         );
         let mut transcript = Transcript::new(target.session_id, Some(target.agent_id));
-        transcript.committed.insert(1, serde_json::from_value(serde_json::json!({
-            "session_id":1,"agent_id":2,"position":1,
-            "event":{"id":1,"source_agent_id":2,"timestamp":"2026-01-01T00:00:00Z",
-                "kind":{"Model":{"model":{"provider":"Openrouter","api_name":"actual"},"effort":"High"}}}
-        })).unwrap());
-        state.transcripts.insert(target, transcript);
+        transcript.apply(StreamMessage::Committed {
+            event:serde_json::from_value(serde_json::json!({
+                "session_id":1,"agent_id":2,"position":1,
+                "event":{"id":1,"source_agent_id":2,"timestamp":"2026-01-01T00:00:00Z",
+                    "kind":{"Model":{"model":{"provider":"Openrouter","api_name":"actual"},"effort":"High"}}}
+            })).unwrap(),
+            pending_id:None,
+        });
+        state.transcripts.insert(target, transcript.into());
         state
     });
     use_context_provider(|| ui);
@@ -144,7 +147,8 @@ fn draft_status_fixture() -> Element {
                 }),
                 ready: true,
                 ..Default::default()
-            },
+            }
+            .into(),
         );
         state
     });

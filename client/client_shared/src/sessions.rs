@@ -80,7 +80,6 @@ impl SessionIndex {
             .sessions
             .values()
             .filter(|s| probe.is_none_or(|p| &s.probe_id == p))
-            .cloned()
             .collect();
         sessions.sort_by(|a, b| {
             b.updated_at
@@ -88,23 +87,24 @@ impl SessionIndex {
                 .then_with(|| b.id.0.cmp(&a.id.0))
         });
         let mut groups: Vec<SessionGroup> = Vec::new();
+        let mut group_indices = HashMap::new();
         for session in sessions {
-            // Compare the original wire spelling, not Path's component-normalizing equality.
-            if let Some(group) = groups.iter_mut().find(|g| {
-                g.probe_id == session.probe_id
-                    && g.working_directory.as_os_str() == session.working_directory.as_os_str()
-            }) {
-                group.busy |= session.busy;
-                group.sessions.push(session);
-            } else {
+            // Hash the original wire spelling, not Path's component-normalizing equality.
+            let key = (session.probe_id, session.working_directory.as_os_str());
+            let index = *group_indices.entry(key).or_insert_with(|| {
+                let index = groups.len();
                 groups.push(SessionGroup {
                     probe_id: session.probe_id,
                     working_directory: session.working_directory.clone(),
-                    busy: session.busy,
-                    sessions: vec![session],
+                    busy: false,
+                    sessions: Vec::new(),
                     complete: self.fully_loaded,
                 });
-            }
+                index
+            });
+            let group = &mut groups[index];
+            group.busy |= session.busy;
+            group.sessions.push(session.clone());
         }
         // First appearance is newest; deterministic session-ID order also breaks group ties.
         groups

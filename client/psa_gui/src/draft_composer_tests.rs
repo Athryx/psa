@@ -55,10 +55,10 @@ async fn root_effort_picker_only_offers_current_model_options() {
         "{html}"
     );
     root_key(&mut dom, textarea, Key::Enter);
-    assert!(dioxus_ssr::render(&dom).contains("<textarea value=\"\""));
+    assert!(root_draft(&dom).is_empty());
     root_input(&mut dom, textarea, "/effort invalid");
     root_key(&mut dom, textarea, Key::Enter);
-    assert!(dioxus_ssr::render(&dom).contains("/effort invalid"));
+    assert_eq!(root_draft(&dom), "/effort invalid");
 }
 
 #[test]
@@ -188,7 +188,7 @@ fn submission_fixture() -> Element {
     draft.ready = true;
     draft.configs.push(status.clone());
     draft.select_config(status.config.config_id);
-    state.draft_roots.insert(SessionId(1), draft);
+    state.draft_roots.insert(SessionId(1), draft.into());
     let ui = use_signal(|| state);
     let hidden = use_signal(|| false);
     HIDE_SUBMISSION_COMPOSER.with(|slot| slot.set(Some(hidden)));
@@ -370,7 +370,7 @@ fn root_fixture() -> Element {
     let mut draft = crate::app::DraftRoot::default();
     draft.configs.push(status);
     draft.ready = true;
-    state.draft_roots.insert(SessionId(1), draft);
+    state.draft_roots.insert(SessionId(1), draft.into());
     for (name, pinned) in [("Favorite", true), ("Other", false)] {
         state.models.push(
             serde_json::from_value(serde_json::json!({
@@ -406,7 +406,28 @@ fn mount_root() -> (VirtualDom, ElementId) {
     (dom, textarea)
 }
 
+fn root_ui(dom: &VirtualDom) -> Signal<Ui> {
+    dom.in_scope(ScopeId::APP, consume_context::<Signal<Ui>>)
+}
+
+fn root_draft(dom: &VirtualDom) -> String {
+    root_ui(dom)
+        .peek()
+        .drafts
+        .get(&TranscriptTarget {
+            session_id: SessionId(1),
+            agent_id: crate::app::DRAFT_ROOT,
+        })
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn root_input(dom: &mut VirtualDom, id: ElementId, value: &str) {
+    root_input_without_render(dom, id, value);
+    super::composer_tests::flush_dom(dom);
+}
+
+fn root_input_without_render(dom: &mut VirtualDom, id: ElementId, value: &str) {
     let data = SerializedFormData::new(value.into(), vec![]);
     dom.runtime().handle_event(
         "input",
@@ -416,7 +437,6 @@ fn root_input(dom: &mut VirtualDom, id: ElementId, value: &str) {
         ),
         id,
     );
-    dom.render_immediate_to_vec();
 }
 
 fn root_key(dom: &mut VirtualDom, id: ElementId, key: Key) {
@@ -436,7 +456,32 @@ fn root_key(dom: &mut VirtualDom, id: ElementId, key: Key) {
         ),
         id,
     );
-    dom.render_immediate_to_vec();
+    super::composer_tests::flush_dom(dom);
+}
+
+#[test]
+fn root_key_uses_fresh_text_before_the_next_render() {
+    let (mut dom, textarea) = mount_root();
+    root_input_without_render(&mut dom, textarea, "/ag");
+    root_key(&mut dom, textarea, Key::Enter);
+    assert_eq!(root_draft(&dom), "/agent ");
+    assert!(dioxus_ssr::render(&dom).contains("Choose a root agent"));
+}
+
+#[test]
+fn root_key_rebuilds_configuration_candidates_from_current_metadata() {
+    let (mut dom, textarea) = mount_root();
+    root_input(&mut dom, textarea, "/agent ");
+    root_ui(&dom)
+        .write()
+        .draft_roots
+        .get_mut(&SessionId(1))
+        .unwrap()
+        .configs
+        .clear();
+    root_key(&mut dom, textarea, Key::Enter);
+    assert_eq!(root_draft(&dom), "/agent ");
+    assert!(dioxus_ssr::render(&dom).contains("No matching usable configurations"));
 }
 
 #[test]
@@ -446,7 +491,7 @@ fn root_completion_and_two_step_selection() {
     assert!(dioxus_ssr::render(&dom).contains("aria-label=\"Slash commands\""));
     root_key(&mut dom, textarea, Key::Tab);
     let html = dioxus_ssr::render(&dom);
-    assert!(html.contains("/agent "), "{html}");
+    assert_eq!(root_draft(&dom), "/agent ");
     assert!(html.contains("Choose a root agent"), "{html}");
     root_key(&mut dom, textarea, Key::Enter);
     let html = dioxus_ssr::render(&dom);
@@ -484,21 +529,21 @@ fn root_info_shows_unknown_usage_before_agent_creation() {
         html.contains("Input tokens") && html.contains("Unknown"),
         "{html}"
     );
-    assert!(html.contains("<textarea value=\"\""), "{html}");
+    assert!(root_draft(&dom).is_empty(), "{html}");
 }
 
 #[test]
 fn root_composer_is_blank_and_refresh_is_a_command() {
     let (mut dom, textarea) = mount_root();
     let html = dioxus_ssr::render(&dom);
-    assert!(html.contains("<textarea value=\"\""), "{html}");
+    assert!(root_draft(&dom).is_empty(), "{html}");
     assert!(!html.contains("placeholder="), "{html}");
     assert!(html.contains("aria-label=\"Send first message\""), "{html}");
     assert!(!html.contains("Refresh configurations"), "{html}");
     root_input(&mut dom, textarea, "/ref");
     assert!(dioxus_ssr::render(&dom).contains("/refresh"));
     root_key(&mut dom, textarea, Key::Tab);
-    assert!(dioxus_ssr::render(&dom).contains("value=\"/refresh\""));
+    assert_eq!(root_draft(&dom), "/refresh");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -507,7 +552,7 @@ async fn root_refresh_executes_from_completion_and_is_not_sent_as_text() {
     root_input(&mut dom, textarea, "/refresh");
     root_key(&mut dom, textarea, Key::Enter);
     let html = dioxus_ssr::render(&dom);
-    assert!(html.contains("<textarea value=\"\""), "{html}");
+    assert!(root_draft(&dom).is_empty(), "{html}");
     assert!(!html.contains("aria-label=\"Slash commands\""), "{html}");
 }
 
@@ -531,7 +576,7 @@ async fn root_supports_session_model_command_without_changing_root_policy() {
     assert!(html.contains("/model") && html.contains("/agent"), "{html}");
     root_key(&mut dom, textarea, Key::Enter);
     let html = dioxus_ssr::render(&dom);
-    assert!(html.contains("/model "), "{html}");
+    assert_eq!(root_draft(&dom), "/model ");
     assert!(
         html.contains("Session default model (not individual agents)"),
         "{html}"

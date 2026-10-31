@@ -1,7 +1,7 @@
 //! Per-agent status projected from a server snapshot and newer committed events.
 use crate::Transcript;
 use llm_api::providers::ModelConfig;
-use psa_api::{AgentStatusSnapshot, ModelInfo};
+use psa_api::ModelInfo;
 
 #[derive(Debug, Clone, Default)]
 pub struct AgentStatus {
@@ -18,8 +18,9 @@ pub fn agent_status(transcript: &Transcript, models: &[ModelInfo]) -> AgentStatu
     };
     let mut snapshot = transcript
         .status_snapshot
-        .clone()
-        .unwrap_or_else(AgentStatusSnapshot::default);
+        .as_ref()
+        .unwrap_or_else(|| transcript.fallback_status_snapshot())
+        .clone();
     for (_, envelope) in transcript.committed.range((
         std::ops::Bound::Excluded(snapshot.head),
         std::ops::Bound::Unbounded,
@@ -49,7 +50,8 @@ mod tests {
         providers::{Effort, Model, ProviderType},
     };
     use psa_api::{
-        AgentId, EventEnvelope, SessionId,
+        AgentId, AgentStatusSnapshot, EventEnvelope, EventsPage, PendingEvent, SessionId,
+        StreamMessage,
         events::{Event, EventId, EventType, InferenceResultEnd},
     };
 
@@ -92,9 +94,10 @@ mod tests {
     #[test]
     fn catalog_limit_matches_full_model_identity_and_unknown_is_preserved() {
         let mut transcript = Transcript::new(SessionId(1), Some(AgentId(1)));
-        transcript
-            .committed
-            .insert(1, event(1, EventType::Model(config("test"))));
+        transcript.apply(StreamMessage::Committed {
+            event: event(1, EventType::Model(config("test"))),
+            pending_id: None,
+        });
         let model: ModelInfo = serde_json::from_value(serde_json::json!({
             "model": {"provider":"Openrouter", "api_name":"test"},
             "name":"Test", "input_modalities":[], "context_window":1000,
@@ -108,6 +111,85 @@ mod tests {
             Some(1000)
         );
         assert_eq!(agent_status(&transcript, &[]).context_window, None);
+    }
+
+    #[test]
+    fn fallback_rebuilds_in_event_order_when_older_model_history_arrives() {
+        let mut transcript = Transcript::new(SessionId(1), Some(AgentId(1)));
+        transcript.apply(StreamMessage::Committed {
+            event: event(20, end(Some(100), None, None)),
+            pending_id: None,
+        });
+        let first = agent_status(&transcript, &[]);
+        assert!(first.model_config.is_none());
+        assert_eq!(first.context_tokens, Some(100));
+        let before_history = transcript.clone();
+        transcript.merge_history(EventsPage {
+            events: vec![event(10, EventType::Model(config("late-model")))],
+            pending: Vec::new(),
+            queries: Vec::new(),
+            next_after: 20,
+            next_before: None,
+            has_older: false,
+            head: 20,
+            has_more: false,
+        });
+        let status = agent_status(&transcript, &[]);
+        assert_eq!(status.model_config, Some(config("late-model")));
+        assert_eq!(status.context_tokens, Some(100));
+        assert_eq!(transcript.fallback_status_snapshot().head, 20);
+        assert!(!std::ptr::eq(
+            before_history.fallback_status_snapshot(),
+            transcript.fallback_status_snapshot()
+        ));
+        assert!(transcript.status_snapshot.is_none());
+    }
+
+    #[test]
+    fn pending_only_clones_and_duplicate_commits_share_initialized_fallback() {
+        let mut original = Transcript::new(SessionId(1), Some(AgentId(1)));
+        original.apply(StreamMessage::Committed {
+            event: event(1, EventType::Model(config("cached"))),
+            pending_id: None,
+        });
+        let cached = original.fallback_status_snapshot();
+        let mut transcript = original.clone();
+        transcript.apply(StreamMessage::Upsert {
+            pending: PendingEvent {
+                id: "pending".into(),
+                revision: 1,
+                session_id: SessionId(1),
+                agent_id: AgentId(1),
+                kind: EventType::NewContext,
+            },
+        });
+        assert!(std::ptr::eq(cached, transcript.fallback_status_snapshot()));
+        transcript.apply(StreamMessage::Snapshot {
+            cursor: 1,
+            pending: Vec::new(),
+            queries: Vec::new(),
+        });
+        assert!(std::ptr::eq(cached, transcript.fallback_status_snapshot()));
+        transcript.apply(StreamMessage::Removed {
+            session_id: SessionId(1),
+            agent_id: AgentId(1),
+            id: "pending".into(),
+        });
+        transcript.apply(StreamMessage::Committed {
+            event: event(1, EventType::NewContext),
+            pending_id: None,
+        });
+        assert!(std::ptr::eq(cached, transcript.fallback_status_snapshot()));
+        assert_eq!(
+            agent_status(&transcript, &[]).model_config,
+            Some(config("cached"))
+        );
+        transcript.apply(StreamMessage::Committed {
+            event: event(2, EventType::NewContext),
+            pending_id: None,
+        });
+        assert!(!std::ptr::eq(cached, transcript.fallback_status_snapshot()));
+        assert!(agent_status(&transcript, &[]).model_config.is_none());
     }
 
     #[test]
@@ -140,24 +222,28 @@ mod tests {
             model_config: Some(config("current")),
             context_tokens: Some(50),
         });
-        transcript
-            .committed
-            .insert(3, event(3, EventType::Model(config("old"))));
+        transcript.apply(StreamMessage::Committed {
+            event: event(3, EventType::Model(config("old"))),
+            pending_id: None,
+        });
         assert_eq!(
             agent_status(&transcript, &[]).model_config,
             Some(config("current"))
         );
-        transcript
-            .committed
-            .insert(11, event(11, end(None, Some(80), Some(20))));
+        transcript.apply(StreamMessage::Committed {
+            event: event(11, end(None, Some(80), Some(20))),
+            pending_id: None,
+        });
         assert_eq!(agent_status(&transcript, &[]).context_tokens, Some(100));
-        transcript
-            .committed
-            .insert(12, event(12, end(None, Some(3), None)));
+        transcript.apply(StreamMessage::Committed {
+            event: event(12, end(None, Some(3), None)),
+            pending_id: None,
+        });
         assert_eq!(agent_status(&transcript, &[]).context_tokens, None);
-        transcript
-            .committed
-            .insert(13, event(13, EventType::NewContext));
+        transcript.apply(StreamMessage::Committed {
+            event: event(13, EventType::NewContext),
+            pending_id: None,
+        });
         let status = agent_status(&transcript, &[]);
         assert!(status.model_config.is_none());
         assert_eq!(status.context_tokens, None);

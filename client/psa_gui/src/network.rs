@@ -3,6 +3,93 @@ use client_shared::*;
 use dioxus::prelude::*;
 use futures_util::StreamExt;
 use psa_api::*;
+use std::collections::HashMap;
+use tokio::time::{Duration, Instant};
+
+/// Transport cursors and request epochs do not invalidate UI selectors.
+#[derive(Default)]
+pub(crate) struct NetworkState {
+    revisions: HashMap<SessionId, u64>,
+    list_request: u64,
+    probe_request: u64,
+    selection_request: u64,
+}
+
+fn set_connection(mut ui: Signal<Ui>, connection: &str) {
+    if ui.peek().connection != connection {
+        ui.write().connection = connection.into();
+    }
+}
+
+fn sessions_match(left: &Session, right: &Session) -> bool {
+    left.id == right.id
+        && left.parent_id == right.parent_id
+        && left.name == right.name
+        && left.working_directory == right.working_directory
+        && left.probe_id == right.probe_id
+        && left.model_config == right.model_config
+        && left.busy == right.busy
+        && left.created_at == right.created_at
+        && left.updated_at == right.updated_at
+}
+
+fn session_changes(state: &Ui, session: &Session) -> bool {
+    !state.fresh_sessions.contains(&session.id)
+        || state
+            .sessions
+            .iter()
+            .find(|old| old.id == session.id)
+            .is_none_or(|old| !sessions_match(old, session))
+}
+
+fn collect_summary_updates(
+    state: &Ui,
+    updates: impl IntoIterator<Item = (u64, Session)>,
+) -> Vec<Session> {
+    let mut network = state.network.borrow_mut();
+    let mut accepted = Vec::<Session>::new();
+    for (revision, session) in updates {
+        if network
+            .revisions
+            .get(&session.id)
+            .is_some_and(|old| *old > revision)
+        {
+            continue;
+        }
+        network.revisions.insert(session.id, revision);
+        // Preserve the first insertion's list position, but keep the final
+        // accepted snapshot, including equal-revision replacements.
+        if let Some(old) = accepted.iter_mut().find(|old| old.id == session.id) {
+            *old = session;
+        } else {
+            accepted.push(session);
+        }
+    }
+    accepted
+        .into_iter()
+        .filter(|session| session_changes(state, session))
+        .collect()
+}
+
+fn apply_summary_updates(mut ui: Signal<Ui>, updates: Vec<(u64, Session)>) -> bool {
+    let updates = collect_summary_updates(&ui.peek(), updates);
+    if updates.is_empty() {
+        return false;
+    }
+    let mut state = ui.write();
+    for session in updates {
+        state.upsert_session(session);
+    }
+    true
+}
+
+fn publish_summary_batch(ui: Signal<Ui>, generation: u64, batch: &mut Vec<(u64, Session)>) -> bool {
+    let updates = std::mem::take(batch);
+    if ui.peek().generation != generation {
+        return false;
+    }
+    apply_summary_updates(ui, updates)
+}
 
 pub fn client(ui: Signal<Ui>) -> Result<Client, ClientError> {
     let state = ui.read();
@@ -23,13 +110,13 @@ fn disconnected(error: &ClientError) -> &'static str {
 
 /// Subscribe before fetching summaries. The feed buffers while HTTP is in
 /// flight. Per-ID revisions prevent late pages from overwriting a live upsert.
-pub async fn summaries(mut ui: Signal<Ui>, generation: u64) {
+pub async fn summaries(ui: Signal<Ui>, generation: u64) {
     let mut backoff = ReconnectBackoff::default();
     loop {
         if ui.read().generation != generation {
             return;
         }
-        ui.write().connection = "Connecting…".into();
+        set_connection(ui, "Connecting…");
         let result = summary_connection(ui, generation).await;
         if ui.read().generation != generation {
             return;
@@ -38,7 +125,7 @@ pub async fn summaries(mut ui: Signal<Ui>, generation: u64) {
             if ui.read().connection == "Connected" {
                 backoff.reset();
             }
-            ui.write().connection = disconnected(&error).into();
+            set_connection(ui, disconnected(&error));
             if !can_retry_connection(&error) {
                 return;
             }
@@ -63,10 +150,16 @@ async fn summary_connection(mut ui: Signal<Ui>, generation: u64) -> Result<(), C
     if ui.read().generation != generation {
         return Ok(());
     }
-    ui.write().revisions.clear();
-    ui.write().fresh_sessions.clear();
-    ui.write().list_request += 1;
-    let request = ui.read().list_request;
+    let request = {
+        let state = ui.peek();
+        let mut network = state.network.borrow_mut();
+        network.revisions.clear();
+        network.list_request += 1;
+        network.list_request
+    };
+    if !ui.peek().fresh_sessions.is_empty() {
+        ui.write().fresh_sessions.clear();
+    }
     let filter = ui.read().selected_probe;
     let page = api
         .query_sessions(&SessionListQuery {
@@ -79,30 +172,50 @@ async fn summary_connection(mut ui: Signal<Ui>, generation: u64) -> Result<(), C
     if ui.read().generation != generation {
         return Ok(());
     }
-    if ui.read().selected_probe == filter && ui.read().list_request == request {
+    if ui.read().selected_probe == filter && ui.peek().network.borrow().list_request == request {
         merge_page(ui, page);
     }
     refresh_probes(ui).await;
+    if ui.peek().generation != generation {
+        return Ok(());
+    }
     if let Ok(models) = api.list_models(&ListModels::default()).await {
         if ui.read().generation != generation {
             return Ok(());
         }
-        ui.write().models = models;
+        apply_models(ui, models);
     }
     if ui.read().generation != generation {
         return Ok(());
     }
-    ui.write().connection = "Connected".into();
+    set_connection(ui, "Connected");
     // Probe connections are not included in the global session event feed.
     // Reconcile periodically, including when a probe reconnects after the server.
     let mut refresh = tokio::time::interval(std::time::Duration::from_secs(5));
     refresh.tick().await;
     let mut probe_refresh: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>> = None;
+    let mut batch = Vec::new();
+    let mut deadline = Instant::now() + STREAM_FRAME;
     loop {
+        if ui.peek().generation != generation {
+            return Ok(());
+        }
         let event = tokio::select! {
-            event = feed.next() => match event {
-                Some(event) => event?,
-                None => return Err(ClientError::Stream("Summary stream ended".into())),
+            biased;
+            _ = tokio::time::sleep_until(deadline), if !batch.is_empty() => {
+                publish_summary_batch(ui, generation, &mut batch);
+                deadline = Instant::now() + STREAM_FRAME;
+                continue;
+            }
+            event = feed.next(), if batch.len() < MAX_STREAM_BATCH => match event {
+                Some(Ok(event)) => event,
+                result => {
+                    publish_summary_batch(ui, generation, &mut batch);
+                    return Err(match result {
+                        Some(Err(error)) => error,
+                        _ => ClientError::Stream("Summary stream ended".into()),
+                    });
+                }
             },
             _ = refresh.tick(), if probe_refresh.is_none() => {
                 probe_refresh = Some(Box::pin(refresh_probes(ui)));
@@ -118,17 +231,23 @@ async fn summary_connection(mut ui: Signal<Ui>, generation: u64) -> Result<(), C
         }
         match event.message {
             GlobalStreamMessage::SessionUpdated { revision, session } => {
-                let mut state = ui.write();
-                if state
-                    .revisions
-                    .get(&session.id)
-                    .is_none_or(|r| *r <= revision)
-                {
-                    state.revisions.insert(session.id, revision);
-                    state.upsert_session(session);
+                if batch.is_empty() {
+                    deadline = Instant::now() + STREAM_FRAME;
+                }
+                let lifecycle = ui
+                    .peek()
+                    .sessions
+                    .iter()
+                    .find(|old| old.id == session.id)
+                    .is_none_or(|old| old.busy != session.busy);
+                batch.push((revision, session));
+                if lifecycle {
+                    publish_summary_batch(ui, generation, &mut batch);
+                    deadline = Instant::now() + STREAM_FRAME;
                 }
             }
             GlobalStreamMessage::ResyncRequired => {
+                publish_summary_batch(ui, generation, &mut batch);
                 return Err(ClientError::Stream("Summary resync requested".into()));
             }
             GlobalStreamMessage::Ready { .. } => {}
@@ -137,23 +256,29 @@ async fn summary_connection(mut ui: Signal<Ui>, generation: u64) -> Result<(), C
 }
 
 fn merge_page(mut ui: Signal<Ui>, page: SessionsPage) {
+    let updates = collect_summary_updates(
+        &ui.peek(),
+        page.sessions
+            .into_iter()
+            .map(|session| (page.revision, session)),
+    );
+    if updates.is_empty() && ui.peek().next_sessions == page.next_before {
+        return;
+    }
     let mut state = ui.write();
-    for session in page.sessions {
-        if state
-            .revisions
-            .get(&session.id)
-            .is_none_or(|r| *r <= page.revision)
-        {
-            state.revisions.insert(session.id, page.revision);
-            state.upsert_session(session);
-        }
+    for session in updates {
+        state.upsert_session(session);
     }
     state.next_sessions = page.next_before;
 }
 
 pub async fn load_sessions(mut ui: Signal<Ui>, older: bool) {
-    ui.write().list_request += 1;
-    let request = ui.read().list_request;
+    let request = {
+        let state = ui.peek();
+        let mut network = state.network.borrow_mut();
+        network.list_request += 1;
+        network.list_request
+    };
     let (generation, filter, cursor) = {
         let state = ui.read();
         (
@@ -185,7 +310,7 @@ pub async fn load_sessions(mut ui: Signal<Ui>, older: bool) {
         Ok(page)
             if generation == ui.read().generation
                 && filter == ui.read().selected_probe
-                && request == ui.read().list_request =>
+                && request == ui.peek().network.borrow().list_request =>
         {
             merge_page(ui, page)
         }
@@ -199,10 +324,14 @@ pub async fn more_sessions(ui: Signal<Ui>) {
     load_sessions(ui, true).await;
 }
 
-pub async fn refresh_probes(mut ui: Signal<Ui>) {
+pub async fn refresh_probes(ui: Signal<Ui>) {
     let generation = ui.read().generation;
-    ui.write().probe_request += 1;
-    let request = ui.read().probe_request;
+    let request = {
+        let state = ui.peek();
+        let mut network = state.network.borrow_mut();
+        network.probe_request += 1;
+        network.probe_request
+    };
     let result = match client(ui) {
         Ok(api) => {
             match tokio::time::timeout(std::time::Duration::from_secs(5), api.list_probes()).await {
@@ -212,7 +341,58 @@ pub async fn refresh_probes(mut ui: Signal<Ui>) {
         }
         Err(error) => Err(format!("Unable to refresh probes: {error}")),
     };
+    publish_probe_refresh(ui, generation, request, result);
+}
+
+fn publish_probe_refresh(
+    mut ui: Signal<Ui>,
+    generation: u64,
+    request: u64,
+    result: Result<Vec<Probe>, String>,
+) -> bool {
+    if !probe_refresh_changes(&ui.peek(), generation, request, &result) {
+        return false;
+    }
     apply_probe_refresh(&mut ui.write(), generation, request, result);
+    true
+}
+
+fn probes_match(left: &Probe, right: &Probe) -> bool {
+    let (a, b) = (&left.metadata, &right.metadata);
+    a.id == b.id
+        && a.hostname == b.hostname
+        && a.os == b.os
+        && a.architecture == b.architecture
+        && a.label == b.label
+        && a.data_dir == b.data_dir
+        && a.home_dir == b.home_dir
+        && a.host == b.host
+        && left.is_active == right.is_active
+        && left.created_at == right.created_at
+        && left.last_connected_at == right.last_connected_at
+}
+
+fn probe_lists_match(left: &[Probe], right: &[Probe]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(old, new)| probes_match(old, new))
+}
+
+fn probe_refresh_changes(
+    state: &Ui,
+    generation: u64,
+    request: u64,
+    result: &Result<Vec<Probe>, String>,
+) -> bool {
+    if state.generation != generation || state.network.borrow().probe_request != request {
+        return false;
+    }
+    match result {
+        Ok(probes) => state.probe_error.is_some() || !probe_lists_match(&state.probes, probes),
+        Err(error) => state.probe_error.as_ref() != Some(error),
+    }
 }
 
 fn apply_probe_refresh(
@@ -221,15 +401,25 @@ fn apply_probe_refresh(
     request: u64,
     result: Result<Vec<Probe>, String>,
 ) {
-    if state.generation != generation || state.probe_request != request {
+    if !probe_refresh_changes(state, generation, request, &result) {
         return;
     }
     match result {
         Ok(probes) => {
-            state.probes = probes;
+            if !probe_lists_match(&state.probes, &probes) {
+                state.probes = probes.into();
+            }
             state.probe_error = None;
         }
         Err(error) => state.probe_error = Some(error),
+    }
+}
+
+fn apply_models(mut ui: Signal<Ui>, models: Vec<ModelInfo>) {
+    // Catalog refreshes are infrequent; wire equality includes pricing and all
+    // optional metadata without teaching the GUI a second model schema.
+    if serde_json::to_vec(&*ui.peek().models).ok() != serde_json::to_vec(&models).ok() {
+        ui.write().models = models.into();
     }
 }
 
@@ -243,7 +433,7 @@ pub async fn refresh_metadata(mut ui: Signal<Ui>) {
         return;
     }
     match api.list_models(&ListModels::default()).await {
-        Ok(models) if ui.read().generation == generation => ui.write().models = models,
+        Ok(models) if ui.read().generation == generation => apply_models(ui, models),
         Err(_) if ui.read().generation == generation => {
             ui.write().error = Some("Unable to refresh model catalog".into())
         }
@@ -267,13 +457,20 @@ pub async fn pin_model(mut ui: Signal<Ui>, model: ModelInfo) {
     }
     match result {
         Ok(_) => {
-            if let Some(found) = ui
-                .write()
+            let changed = ui
+                .peek()
                 .models
-                .iter_mut()
-                .find(|m| m.model == model.model)
-            {
-                found.pinned = !model.pinned;
+                .iter()
+                .any(|found| found.model == model.model && found.pinned == model.pinned);
+            if changed {
+                if let Some(found) = ui
+                    .write()
+                    .models
+                    .iter_mut()
+                    .find(|found| found.model == model.model)
+                {
+                    found.pinned = !model.pinned;
+                }
             }
         }
         Err(_) => ui.write().error = Some("Unable to update server model pin".into()),
@@ -281,11 +478,22 @@ pub async fn pin_model(mut ui: Signal<Ui>, model: ModelInfo) {
 }
 
 pub async fn open_session(ui: Signal<Ui>, id: SessionId, permanent: bool) {
-    open_session_selection(ui, id, permanent, false).await;
+    let intent = crate::app::begin_composer_open();
+    open_session_with_focus(ui, id, permanent, intent).await;
+}
+
+pub(crate) async fn open_session_with_focus(
+    ui: Signal<Ui>,
+    id: SessionId,
+    permanent: bool,
+    intent: crate::app::ComposerFocusIntent,
+) {
+    open_session_selection(ui, id, permanent, false, intent).await;
 }
 
 pub async fn double_click_session(ui: Signal<Ui>, id: SessionId) {
-    open_session_selection(ui, id, true, true).await;
+    let intent = crate::app::begin_composer_open();
+    open_session_selection(ui, id, true, true, intent).await;
 }
 
 async fn open_session_selection(
@@ -293,16 +501,22 @@ async fn open_session_selection(
     id: SessionId,
     permanent: bool,
     from_double_click: bool,
+    intent: crate::app::ComposerFocusIntent,
 ) {
-    ui.write().selection_request += 1;
-    let request = ui.read().selection_request;
+    let request = {
+        let state = ui.peek();
+        let mut network = state.network.borrow_mut();
+        network.selection_request += 1;
+        network.selection_request
+    };
     let generation = ui.read().generation;
     let Ok(api) = client(ui) else {
         return;
     };
     match api.list_agents(id).await {
         Ok(agents)
-            if generation == ui.read().generation && request == ui.read().selection_request =>
+            if generation == ui.read().generation
+                && request == ui.peek().network.borrow().selection_request =>
         {
             if agents
                 .iter()
@@ -313,24 +527,26 @@ async fn open_session_selection(
             }
             let selected = select_session_agent(&agents, ui.read().last_agents.get(&id).copied());
             let rootless = agents.is_empty();
-            ui.write().agents.insert(id, agents);
+            ui.write().agents.insert(id, agents.into());
             if let Some(agent_id) = selected {
-                ui.write().open_session_target(
+                ui.write().open_session_target_with_focus(
                     TranscriptTarget {
                         session_id: id,
                         agent_id,
                     },
                     permanent,
                     from_double_click,
+                    Some(intent),
                 );
             } else if rootless {
-                ui.write().open_session_target(
+                ui.write().open_session_target_with_focus(
                     TranscriptTarget {
                         session_id: id,
                         agent_id: crate::app::DRAFT_ROOT,
                     },
                     permanent,
                     from_double_click,
+                    Some(intent),
                 );
                 load_draft_root(ui, id).await;
             } else {
@@ -346,19 +562,19 @@ async fn open_session_selection(
 
 /// A single session stream is reference-counted by the open views. Target-set
 /// changes restart the ordered bootstrap; duplicate panes never add connections.
-pub async fn session(mut ui: Signal<Ui>, session_id: SessionId, targets: Vec<TranscriptTarget>) {
+pub async fn session(ui: Signal<Ui>, session_id: SessionId, targets: Vec<TranscriptTarget>) {
     let mut backoff = ReconnectBackoff::default();
     let generation = ui.read().generation;
     loop {
         if ui.read().generation != generation {
             return;
         }
-        if let Err(error) = session_connection(ui, session_id, &targets).await {
-            for target in &targets {
-                ui.write()
-                    .transcript_status
-                    .insert(*target, disconnected(&error).into());
-            }
+        let result = session_connection(ui, session_id, &targets).await;
+        if ui.peek().generation != generation {
+            return;
+        }
+        if let Err(error) = result {
+            set_transcript_status(ui, &targets, disconnected(&error));
             if !can_retry_connection(&error) {
                 return;
             }
@@ -374,12 +590,27 @@ async fn session_connection(
 ) -> Result<(), ClientError> {
     let api = client(ui)?;
     let generation = ui.read().generation;
-    let known_revision = ui.read().revisions.get(&session_id).copied();
+    let known_revision = ui
+        .peek()
+        .network
+        .borrow()
+        .revisions
+        .get(&session_id)
+        .copied();
     let session = api.get_session(session_id).await?;
     if ui.read().generation != generation {
         return Ok(());
     }
-    if ui.read().revisions.get(&session_id).copied() == known_revision {
+    if ui
+        .peek()
+        .network
+        .borrow()
+        .revisions
+        .get(&session_id)
+        .copied()
+        == known_revision
+        && session_changes(&ui.peek(), &session)
+    {
         ui.write().upsert_session(session);
     }
     // Session positions and agent event IDs are distinct. Capture the session
@@ -395,6 +626,9 @@ async fn session_connection(
             },
         )
         .await?;
+    if ui.peek().generation != generation {
+        return Ok(());
+    }
     let mut stream = api
         .stream_events(
             session_id,
@@ -407,6 +641,9 @@ async fn session_connection(
             None,
         )
         .await?;
+    if ui.peek().generation != generation {
+        return Ok(());
+    }
     for target in targets {
         let page = api
             .events(
@@ -420,6 +657,9 @@ async fn session_connection(
                 },
             )
             .await?;
+        if ui.peek().generation != generation {
+            return Ok(());
+        }
         // A status snapshot may be newer than the page. The subscribed stream
         // buffers all later events, and the projection ignores replay through its head.
         let status = api.get_agent_status(session_id, target.agent_id).await.ok();
@@ -430,7 +670,7 @@ async fn session_connection(
         let transcript = state
             .transcripts
             .entry(*target)
-            .or_insert_with(|| Transcript::new(session_id, Some(target.agent_id)));
+            .or_insert_with(|| Transcript::new(session_id, Some(target.agent_id)).into());
         transcript.bootstrap(page);
         transcript.status_snapshot = status;
     }
@@ -440,48 +680,363 @@ async fn session_connection(
     if ui.read().generation != generation {
         return Ok(());
     }
-    ui.write().agents.insert(session_id, agents);
-    for target in targets {
-        ui.write().transcript_status.insert(*target, "Live".into());
+    ui.write().agents.insert(session_id, agents.into());
+    set_transcript_status(ui, targets, "Live");
+    consume_session_stream(ui, generation, session_id, targets, &mut stream).await
+}
+
+fn set_transcript_status(mut ui: Signal<Ui>, targets: &[TranscriptTarget], status: &str) {
+    if !targets
+        .iter()
+        .any(|target| ui.peek().transcript_status.get(target).map(String::as_str) != Some(status))
+    {
+        return;
     }
-    while let Some(item) = stream.next().await {
-        if ui.read().generation != generation {
+    let mut state = ui.write();
+    for target in targets {
+        if state.transcript_status.get(target).map(String::as_str) != Some(status) {
+            state.transcript_status.insert(*target, status.into());
+        }
+    }
+}
+
+const STREAM_FRAME: Duration = Duration::from_millis(16);
+const MAX_STREAM_BATCH: usize = 128;
+
+/// Backpressure bounds both queued payloads and reducer work per frame. Only
+/// adjacent provisional replacements are compacted; all other ordering is kept.
+#[derive(Default)]
+struct StreamBatch {
+    messages: Vec<StreamMessage>,
+    received: usize,
+}
+
+impl StreamBatch {
+    fn push(&mut self, message: StreamMessage) {
+        self.received += 1;
+        if let (
+            Some(StreamMessage::Upsert { pending: previous }),
+            StreamMessage::Upsert { pending },
+        ) = (self.messages.last_mut(), &message)
+        {
+            if previous.session_id == pending.session_id
+                && previous.agent_id == pending.agent_id
+                && previous.id == pending.id
+            {
+                if pending.revision > previous.revision {
+                    *self.messages.last_mut().unwrap() = message;
+                }
+                return;
+            }
+        }
+        self.messages.push(message);
+    }
+
+    fn is_full(&self) -> bool {
+        self.received >= MAX_STREAM_BATCH
+    }
+}
+
+fn message_target(message: &StreamMessage) -> Option<TranscriptTarget> {
+    let (session_id, agent_id) = match message {
+        StreamMessage::Upsert { pending } => (pending.session_id, pending.agent_id),
+        StreamMessage::Committed { event, .. } => (event.session_id, event.agent_id),
+        StreamMessage::Removed {
+            session_id,
+            agent_id,
+            ..
+        }
+        | StreamMessage::ClientQueryRemoved {
+            session_id,
+            agent_id,
+            ..
+        }
+        | StreamMessage::RequestFailed {
+            session_id,
+            agent_id,
+            ..
+        } => (*session_id, *agent_id),
+        StreamMessage::ClientQueryRequested { query } => (query.session_id, query.agent_id),
+        StreamMessage::AgentUpdated { agent } => (agent.session_id, agent.id),
+        _ => return None,
+    };
+    Some(TranscriptTarget {
+        session_id,
+        agent_id,
+    })
+}
+
+fn message_matches_target(message: &StreamMessage, target: TranscriptTarget) -> bool {
+    match message {
+        StreamMessage::Snapshot { .. } | StreamMessage::ResyncRequired => true,
+        StreamMessage::SessionUpdated { session } => session.id == target.session_id,
+        _ => message_target(message) == Some(target),
+    }
+}
+
+fn agents_match(left: &Agent, right: &Agent) -> bool {
+    left.id == right.id
+        && left.session_id == right.session_id
+        && left.definition_id == right.definition_id
+        && left.parent_id == right.parent_id
+        && left.subagent_parent_id == right.subagent_parent_id
+        && left.name == right.name
+        && left.interactive == right.interactive
+        && left.hidden == right.hidden
+        && left.state == right.state
+        && left.usage == right.usage
+        && left.next_event_id == right.next_event_id
+        && left.created_at == right.created_at
+        && left.updated_at == right.updated_at
+}
+
+fn agent_metadata_changes(state: &Ui, agent: &Agent) -> bool {
+    state
+        .agents
+        .get(&agent.session_id)
+        .and_then(|agents| agents.iter().find(|old| old.id == agent.id))
+        .is_none_or(|old| !agents_match(old, agent))
+}
+
+fn transcript_may_change(transcript: &Transcript, message: &StreamMessage) -> bool {
+    match message {
+        StreamMessage::Upsert { pending } => transcript
+            .pending
+            .get(&pending.id)
+            .is_none_or(|old| old.revision < pending.revision),
+        StreamMessage::ClientQueryRequested { query } => {
+            transcript.queries.get(&query.id) != Some(query)
+        }
+        StreamMessage::ClientQueryRemoved { query_id, .. } => {
+            transcript.queries.contains_key(query_id)
+        }
+        StreamMessage::AgentUpdated { agent } => transcript
+            .agents
+            .get(&agent.id)
+            .is_none_or(|old| !agents_match(old, agent)),
+        StreamMessage::SessionUpdated { session } => transcript
+            .session
+            .as_ref()
+            .is_none_or(|old| !sessions_match(old, session)),
+        StreamMessage::RequestFailed {
+            request_id,
+            message,
+            ..
+        } => transcript.request_failures.get(request_id) != Some(message),
+        // Snapshots and removals can change the private retired-pending set even
+        // when visible collections match. Never optimize those barriers away.
+        _ => true,
+    }
+}
+
+fn has_message_destination(
+    state: &Ui,
+    session_id: SessionId,
+    targets: &[TranscriptTarget],
+    message: &StreamMessage,
+) -> bool {
+    let metadata_changes = match message {
+        StreamMessage::AgentUpdated { agent } => {
+            agent.session_id == session_id && agent_metadata_changes(state, agent)
+        }
+        StreamMessage::RequestFailed {
+            session_id: failed_session,
+            request_id,
+            message,
+            ..
+        } => {
+            *failed_session == session_id
+                && state.error.as_deref()
+                    != Some(format!("Request {request_id}: {message}").as_str())
+        }
+        _ => false,
+    };
+    metadata_changes
+        || targets.iter().any(|target| {
+            target.session_id == session_id
+                && message_matches_target(message, *target)
+                && state
+                    .transcripts
+                    .get(target)
+                    .is_some_and(|transcript| transcript_may_change(transcript, message))
+        })
+}
+
+fn message_is_immediate(message: &StreamMessage) -> bool {
+    match message {
+        StreamMessage::Upsert { .. } => false,
+        StreamMessage::Committed { event, .. } => matches!(
+            event.event.kind,
+            psa_api::events::EventType::StatusChange(_)
+                | psa_api::events::EventType::InferenceResultStart(_)
+                | psa_api::events::EventType::InferenceResultEnd(_)
+        ),
+        _ => true,
+    }
+}
+
+fn apply_session_message(
+    state: &mut Ui,
+    session_id: SessionId,
+    targets: &[TranscriptTarget],
+    message: StreamMessage,
+) {
+    match &message {
+        StreamMessage::AgentUpdated { agent }
+            if agent.session_id == session_id && agent_metadata_changes(state, agent) =>
+        {
+            let agents = state.agents.entry(agent.session_id).or_default();
+            if let Some(old) = agents.iter_mut().find(|a| a.id == agent.id) {
+                *old = agent.clone();
+            } else {
+                agents.push(agent.clone());
+            }
+        }
+        StreamMessage::RequestFailed {
+            session_id: failed_session,
+            request_id,
+            message,
+            ..
+        } if *failed_session == session_id => {
+            state.error = Some(format!("Request {request_id}: {message}"))
+        }
+        _ => {}
+    }
+    if let Some(target) = message_target(&message) {
+        if target.session_id == session_id
+            && targets.contains(&target)
+            && state
+                .transcripts
+                .get(&target)
+                .is_some_and(|transcript| transcript_may_change(transcript, &message))
+        {
+            // Agent-scoped payloads have exactly one projection owner. Move the
+            // payload rather than cloning a growing streaming message.
+            state.transcripts.get_mut(&target).unwrap().apply(message);
+        }
+        return;
+    }
+    // Routing precedes cloning. A session snapshot is authoritative even when
+    // this target has no pending items/queries, so empty target slices still apply.
+    for target in targets {
+        if target.session_id != session_id
+            || !message_matches_target(&message, *target)
+            || !state
+                .transcripts
+                .get(target)
+                .is_some_and(|transcript| transcript_may_change(transcript, &message))
+        {
+            continue;
+        }
+        let Some(transcript) = state.transcripts.get_mut(target) else {
+            continue;
+        };
+        let routed = match &message {
+            StreamMessage::Snapshot {
+                pending, queries, ..
+            } => StreamMessage::Snapshot {
+                // Session positions must never replace agent history cursors.
+                cursor: transcript.cursor,
+                pending: pending
+                    .iter()
+                    .filter(|item| {
+                        item.session_id == target.session_id && item.agent_id == target.agent_id
+                    })
+                    .cloned()
+                    .collect(),
+                queries: queries
+                    .iter()
+                    .filter(|item| {
+                        item.session_id == target.session_id && item.agent_id == target.agent_id
+                    })
+                    .cloned()
+                    .collect(),
+            },
+            _ => message.clone(),
+        };
+        transcript.apply(routed);
+    }
+}
+
+fn publish_session_batch(
+    mut ui: Signal<Ui>,
+    generation: u64,
+    session_id: SessionId,
+    targets: &[TranscriptTarget],
+    batch: &mut StreamBatch,
+) -> bool {
+    let active = ui.peek().generation == generation;
+    let messages = std::mem::take(&mut batch.messages);
+    batch.received = 0;
+    if !active
+        || !messages
+            .iter()
+            .any(|message| has_message_destination(&ui.peek(), session_id, targets, message))
+    {
+        return false;
+    }
+    let mut state = ui.write();
+    // Reduce into the current projection, not a cached frame-start clone: older
+    // history responses and other panes may have updated it during this frame.
+    for message in messages {
+        apply_session_message(&mut state, session_id, targets, message);
+    }
+    true
+}
+
+async fn consume_session_stream(
+    ui: Signal<Ui>,
+    generation: u64,
+    session_id: SessionId,
+    targets: &[TranscriptTarget],
+    stream: &mut EventStream,
+) -> Result<(), ClientError> {
+    let mut batch = StreamBatch::default();
+    let mut deadline = Instant::now() + STREAM_FRAME;
+    loop {
+        if ui.peek().generation != generation {
             return Ok(());
         }
-        let message = item?.message;
-        let mut state = ui.write();
-        match &message {
-            StreamMessage::ResyncRequired => {
-                return Err(ClientError::Stream("Transcript resync requested".into()));
+        let item = tokio::select! {
+            biased;
+            _ = tokio::time::sleep_until(deadline), if batch.received > 0 => {
+                publish_session_batch(ui, generation, session_id, targets, &mut batch);
+                deadline = Instant::now() + STREAM_FRAME;
+                continue;
             }
-            StreamMessage::AgentUpdated { agent } => {
-                let agents = state.agents.entry(agent.session_id).or_default();
-                if let Some(old) = agents.iter_mut().find(|a| a.id == agent.id) {
-                    *old = agent.clone();
-                } else {
-                    agents.push(agent.clone());
-                }
-            }
-            StreamMessage::RequestFailed {
-                request_id,
-                message,
-                ..
-            } => state.error = Some(format!("Request {request_id}: {message}")),
-            _ => {}
+            item = stream.next(), if !batch.is_full() => item,
+        };
+        if ui.peek().generation != generation {
+            return Ok(());
         }
-        for target in targets {
-            if let Some(transcript) = state.transcripts.get_mut(target) {
-                let mut message = message.clone();
-                // Never assign a session-position snapshot cursor to an agent
-                // transcript. Committed events advance the agent's own cursor.
-                if let StreamMessage::Snapshot { cursor, .. } = &mut message {
-                    *cursor = transcript.cursor;
-                }
-                transcript.apply(message);
+        let message = match item {
+            Some(Ok(event)) => event.message,
+            result => {
+                publish_session_batch(ui, generation, session_id, targets, &mut batch);
+                return Err(match result {
+                    Some(Err(error)) => error,
+                    _ => ClientError::Stream("Transcript stream ended".into()),
+                });
             }
+        };
+        if matches!(message, StreamMessage::ResyncRequired) {
+            publish_session_batch(ui, generation, session_id, targets, &mut batch);
+            return Err(ClientError::Stream("Transcript resync requested".into()));
+        }
+        if batch.received == 0 {
+            deadline = Instant::now() + STREAM_FRAME;
+        }
+        if !has_message_destination(&ui.peek(), session_id, targets, &message) {
+            batch.received += 1;
+            continue;
+        }
+        let immediate = message_is_immediate(&message);
+        batch.push(message);
+        if immediate {
+            publish_session_batch(ui, generation, session_id, targets, &mut batch);
+            deadline = Instant::now() + STREAM_FRAME;
         }
     }
-    Err(ClientError::Stream("Transcript stream ended".into()))
 }
 
 fn advancing_history_cursor(
@@ -565,12 +1120,47 @@ pub async fn older(mut ui: Signal<Ui>, target: TranscriptTarget) -> bool {
     }
 }
 
-pub async fn submit(mut ui: Signal<Ui>, target: TranscriptTarget, interrupt: bool) {
-    let generation = ui.read().generation;
-    if interrupt && target.agent_id == crate::app::DRAFT_ROOT {
+struct CapturedDraft {
+    text: String,
+    revision: u64,
+    generation: u64,
+}
+
+fn capture_draft(ui: Signal<Ui>, target: TranscriptTarget) -> CapturedDraft {
+    let state = ui.peek();
+    CapturedDraft {
+        text: state.drafts.get(&target).cloned().unwrap_or_default(),
+        revision: state.drafts.revision(&target),
+        generation: state.generation,
+    }
+}
+
+/// Capture at the user action, before a spawned future can observe another edit.
+pub fn submit(
+    ui: Signal<Ui>,
+    target: TranscriptTarget,
+    interrupt: bool,
+) -> impl std::future::Future<Output = ()> {
+    let draft = capture_draft(ui, target);
+    submit_captured(ui, target, interrupt, draft)
+}
+
+async fn submit_captured(
+    mut ui: Signal<Ui>,
+    target: TranscriptTarget,
+    interrupt: bool,
+    draft: CapturedDraft,
+) {
+    let CapturedDraft {
+        text,
+        revision: draft_revision,
+        generation,
+    } = draft;
+    if ui.peek().generation != generation
+        || (interrupt && target.agent_id == crate::app::DRAFT_ROOT)
+    {
         return;
     }
-    let text = ui.read().drafts.get(&target).cloned().unwrap_or_default();
     if !interrupt && (text.trim().is_empty() || ui.read().uncertain_submissions.contains(&target)) {
         return;
     }
@@ -619,8 +1209,8 @@ pub async fn submit(mut ui: Signal<Ui>, target: TranscriptTarget, interrupt: boo
     match result {
         Ok(accepted) => {
             let mut state = ui.write();
-            if !interrupt && state.drafts.get(&target) == Some(&text) {
-                state.drafts.remove(&target);
+            if !interrupt {
+                state.drafts.clear_if_revision(&target, draft_revision);
             }
             state.notice = Some(format!(
                 "Request {} accepted; delivery pending",
@@ -688,14 +1278,19 @@ fn apply_draft_configs(
 
 /// Load the draft's choices without creating an agent.
 pub async fn load_draft_root(mut ui: Signal<Ui>, session_id: SessionId) {
+    if ui
+        .peek()
+        .draft_roots
+        .get(&session_id)
+        .is_some_and(|draft| draft.loading || draft.ready)
     {
-        let mut state = ui.write();
-        let draft = state.draft_roots.entry(session_id).or_default();
-        if draft.loading || draft.ready {
-            return;
-        }
-        draft.loading = true;
+        return;
     }
+    ui.write()
+        .draft_roots
+        .entry(session_id)
+        .or_default()
+        .loading = true;
     let generation = ui.read().generation;
     let result = async {
         let api = client(ui)?;
@@ -721,7 +1316,11 @@ pub async fn load_draft_root(mut ui: Signal<Ui>, session_id: SessionId) {
     }
 }
 
-fn promote_draft_root(state: &mut Ui, session_id: SessionId, agent: Agent) -> TranscriptTarget {
+fn promote_draft_root(
+    state: &mut Ui,
+    session_id: SessionId,
+    agent: Agent,
+) -> Option<TranscriptTarget> {
     let from = TranscriptTarget {
         session_id,
         agent_id: crate::app::DRAFT_ROOT,
@@ -730,61 +1329,111 @@ fn promote_draft_root(state: &mut Ui, session_id: SessionId, agent: Agent) -> Tr
         session_id,
         agent_id: agent.id,
     };
-    state.workspace.replace_target(from, to);
-    if let Some(text) = state.drafts.remove(&from) {
-        state.drafts.entry(to).or_insert(text);
+    if !state.drafts.can_transfer(&from, &to) || !state.drafts.transfer(&from, to) {
+        let draft = state.draft_roots.entry(session_id).or_default();
+        draft.pending = false;
+        draft.uncertain = true;
+        state.notice = Some("Existing agent already has an editor/draft; first message retained here. Copy or merge it into the existing agent's editor before sending.".into());
+        return None;
     }
+    state.workspace.replace_target(from, to);
     state.last_agents.insert(session_id, agent.id);
     let agents = state.agents.entry(session_id).or_default();
     if !agents.iter().any(|a| a.id == agent.id) {
         agents.push(agent);
     }
     state.draft_roots.remove(&session_id);
-    to
+    Some(to)
 }
 
-pub async fn submit_draft_root(mut ui: Signal<Ui>, session_id: SessionId) {
-    let target = TranscriptTarget {
-        session_id,
-        agent_id: crate::app::DRAFT_ROOT,
+struct CapturedRootSubmission {
+    draft: CapturedDraft,
+    config: AgentConfig,
+    model: ModelSelection,
+}
+
+fn require_root_selection(
+    draft: &crate::app::DraftRoot,
+) -> Result<(AgentConfig, ModelSelection), &'static str> {
+    let config = draft
+        .configs
+        .iter()
+        .find(|config| Some(&config.config.config_id) == draft.selected.as_ref())
+        .ok_or("Select an available agent configuration first using /agent.")?;
+    let model = draft
+        .model
+        .clone()
+        .filter(|model| config.config.models.contains(model))
+        .ok_or("Choose an allowed model policy using /agent before sending the first message.")?;
+    Ok((config.config.clone(), model))
+}
+
+fn capture_root_submission(
+    mut ui: Signal<Ui>,
+    session_id: SessionId,
+) -> Option<CapturedRootSubmission> {
+    let draft = capture_draft(
+        ui,
+        TranscriptTarget {
+            session_id,
+            agent_id: crate::app::DRAFT_ROOT,
+        },
+    );
+    if draft.text.trim().is_empty()
+        || !matches!(parse_composer_input(&draft.text), ComposerInput::Text(_))
+    {
+        return None;
+    }
+    let selection = {
+        let state = ui.peek();
+        let root = state.draft_roots.get(&session_id)?;
+        if root.pending || root.uncertain {
+            return None;
+        }
+        require_root_selection(root)
     };
-    let text = ui.read().drafts.get(&target).cloned().unwrap_or_default();
-    if text.trim().is_empty() || !matches!(parse_composer_input(&text), ComposerInput::Text(_)) {
+    let (config, model) = match selection {
+        Ok(selection) => selection,
+        Err(error) => {
+            ui.write().error = Some(error.into());
+            return None;
+        }
+    };
+    // Deduplicate actions immediately, including futures not polled yet.
+    ui.write().draft_roots.get_mut(&session_id).unwrap().pending = true;
+    Some(CapturedRootSubmission {
+        draft,
+        config,
+        model,
+    })
+}
+
+pub fn submit_draft_root(
+    ui: Signal<Ui>,
+    session_id: SessionId,
+) -> impl std::future::Future<Output = ()> {
+    let captured = capture_root_submission(ui, session_id);
+    async move {
+        if let Some(captured) = captured {
+            submit_captured_root(ui, session_id, captured).await;
+        }
+    }
+}
+
+async fn submit_captured_root(
+    mut ui: Signal<Ui>,
+    session_id: SessionId,
+    captured: CapturedRootSubmission,
+) {
+    let CapturedRootSubmission {
+        draft: captured_draft,
+        config,
+        model,
+    } = captured;
+    let generation = captured_draft.generation;
+    if ui.peek().generation != generation {
         return;
     }
-    let (config, model) = {
-        let mut state = ui.write();
-        let Some(draft) = state.draft_roots.get_mut(&session_id) else {
-            return;
-        };
-        if draft.pending || draft.uncertain {
-            return;
-        }
-        let Some(config) = draft
-            .configs
-            .iter()
-            .find(|c| Some(&c.config.config_id) == draft.selected.as_ref())
-            .cloned()
-        else {
-            state.error =
-                Some("Select an available agent configuration first using /agent.".into());
-            return;
-        };
-        let Some(model) = draft
-            .model
-            .clone()
-            .filter(|m| config.config.models.contains(m))
-        else {
-            state.error = Some(
-                "Choose an allowed model policy using /agent before sending the first message."
-                    .into(),
-            );
-            return;
-        };
-        draft.pending = true;
-        (config.config, model)
-    };
-    let generation = ui.read().generation;
     let Ok(api) = client(ui) else {
         ui.write().draft_roots.get_mut(&session_id).unwrap().pending = false;
         return;
@@ -816,9 +1465,11 @@ pub async fn submit_draft_root(mut ui: Signal<Ui>, session_id: SessionId) {
     if !agents.is_empty() {
         if let Some(id) = select_session_agent(&agents, None) {
             let agent = agents.into_iter().find(|a| a.id == id).unwrap();
-            promote_draft_root(&mut ui.write(), session_id, agent);
-            ui.write().notice =
-                Some("An agent already exists. Review the retained draft before sending.".into());
+            if promote_draft_root(&mut ui.write(), session_id, agent).is_some() {
+                ui.write().notice = Some(
+                    "An agent already exists. Review the retained draft before sending.".into(),
+                );
+            }
         } else {
             ui.write().draft_roots.get_mut(&session_id).unwrap().pending = false;
             ui.write().error = Some("This session already has agents but no visible root.".into());
@@ -849,8 +1500,10 @@ pub async fn submit_draft_root(mut ui: Signal<Ui>, session_id: SessionId) {
             );
         }
         Ok(agent) => {
-            let real = promote_draft_root(&mut ui.write(), session_id, agent);
-            submit(ui, real, false).await;
+            let promoted = promote_draft_root(&mut ui.write(), session_id, agent);
+            if let Some(real) = promoted {
+                submit_captured(ui, real, false, captured_draft).await;
+            }
         }
         Err(_) => {
             let mut state = ui.write();
@@ -861,6 +1514,10 @@ pub async fn submit_draft_root(mut ui: Signal<Ui>, session_id: SessionId) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "network/performance_tests.rs"]
+mod performance_tests;
 
 #[cfg(test)]
 mod history_tests {
@@ -1004,7 +1661,7 @@ mod probe_refresh_tests {
     #[test]
     fn stale_probe_responses_cannot_override_newer_requests_or_profiles() {
         let mut ui = Ui::new(DesktopSettings::default());
-        ui.probe_request = 2;
+        ui.network.borrow_mut().probe_request = 2;
         apply_probe_refresh(&mut ui, 0, 2, Err("new failure".into()));
         apply_probe_refresh(&mut ui, 0, 1, Ok(Vec::new()));
         assert_eq!(ui.probe_error.as_deref(), Some("new failure"));
@@ -1239,7 +1896,7 @@ mod draft_root_tests {
         let tab = ui.workspace.groups()[0].tabs[0].id;
         ui.drafts.insert(from, "first message".into());
         let agent: Agent = serde_json::from_value(serde_json::json!({"id":42,"definition_id":1,"session_id":1,"parent_id":null,"subagent_parent_id":null,"name":"root","hidden":false,"interactive":true,"state":"Idle","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"cached_input_tokens":0,"reasoning_output_tokens":0},"next_event_id":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"})).unwrap();
-        let to = promote_draft_root(&mut ui, SessionId(1), agent);
+        let to = promote_draft_root(&mut ui, SessionId(1), agent).unwrap();
         assert_eq!(ui.workspace.groups()[0].tabs[0].id, tab);
         assert_eq!(ui.workspace.groups()[0].tabs[0].target, to);
         assert_eq!(

@@ -47,57 +47,52 @@ impl AgentIndex {
 /// Ancestry uses subagent parents only. Missing parents and cycles remain renderable.
 pub fn agent_tree(agents: &[Agent], show_hidden: bool) -> Vec<AgentTreeRow> {
     let by_id: HashMap<_, _> = agents.iter().map(|a| (a.id, a)).collect();
-    let mut included: HashSet<_> = agents
-        .iter()
-        .filter(|a| show_hidden || !a.hidden)
-        .map(|a| a.id)
-        .collect();
+    let mut included = HashSet::new();
     for a in agents.iter().filter(|a| !a.hidden || show_hidden) {
-        let mut current = a.subagent_parent_id;
-        let mut seen = HashSet::new();
+        let mut current = Some(a.id);
         while let Some(id) = current {
-            if !seen.insert(id) {
-                break;
-            }
             let Some(parent) = by_id.get(&id) else {
                 break;
             };
-            included.insert(id);
+            // Every retained ancestor is expanded once, including shared chains and cycles.
+            if !included.insert(id) {
+                break;
+            }
             current = parent.subagent_parent_id;
         }
     }
     let mut sorted: Vec<_> = agents.iter().filter(|a| included.contains(&a.id)).collect();
     sorted.sort_by_key(|a| a.id.0);
-    let mut out = Vec::new();
-    let mut visited = HashSet::new();
-    fn visit(
-        a: &Agent,
-        depth: usize,
-        sorted: &[&Agent],
-        visited: &mut HashSet<AgentId>,
-        out: &mut Vec<AgentTreeRow>,
-        show_hidden: bool,
-    ) {
-        if !visited.insert(a.id) {
-            return;
-        }
-        out.push(AgentTreeRow {
-            agent: a.clone(),
-            depth,
-            context_only: a.hidden && !show_hidden,
-        });
-        for child in sorted.iter().filter(|c| c.subagent_parent_id == Some(a.id)) {
-            visit(child, depth + 1, sorted, visited, out, show_hidden);
-        }
-    }
-    for a in sorted
-        .iter()
-        .filter(|a| a.subagent_parent_id.is_none_or(|p| !included.contains(&p)))
-    {
-        visit(a, 0, &sorted, &mut visited, &mut out, show_hidden);
-    }
+    let mut children: HashMap<AgentId, Vec<&Agent>> = HashMap::new();
     for a in &sorted {
-        visit(a, 0, &sorted, &mut visited, &mut out, show_hidden);
+        if let Some(parent) = a.subagent_parent_id {
+            children.entry(parent).or_default().push(a);
+        }
+    }
+
+    let mut out = Vec::with_capacity(sorted.len());
+    let mut visited = HashSet::new();
+    let mut pending = Vec::new();
+    let roots = sorted
+        .iter()
+        .filter(|a| a.subagent_parent_id.is_none_or(|p| !included.contains(&p)));
+    // Roots come first; remaining IDs deterministically break rootless cycles.
+    for a in roots.chain(sorted.iter()) {
+        pending.push((*a, 0));
+        while let Some((a, depth)) = pending.pop() {
+            if !visited.insert(a.id) {
+                continue;
+            }
+            out.push(AgentTreeRow {
+                agent: a.clone(),
+                depth,
+                context_only: a.hidden && !show_hidden,
+            });
+            if let Some(children) = children.get(&a.id) {
+                // Reversing the stack insertion retains ascending sibling order.
+                pending.extend(children.iter().rev().map(|child| (*child, depth + 1)));
+            }
+        }
     }
     out
 }

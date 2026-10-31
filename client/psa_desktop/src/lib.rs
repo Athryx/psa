@@ -4,8 +4,9 @@ use client_shared::{
     DesktopSettings,
     local::{LocalServerManager, LocalServerStatus},
 };
-use psa_gui::GuiPlatform;
+use psa_gui::{GuiPlatform, SettingsFlush};
 use std::{
+    cell::RefCell,
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
@@ -64,6 +65,7 @@ pub struct DesktopPlatform {
     path: PathBuf,
     writes: tokio::sync::Mutex<()>,
     local_server: LocalServerManager,
+    settings_flush: RefCell<Option<SettingsFlush>>,
 }
 
 impl DesktopPlatform {
@@ -81,11 +83,22 @@ impl DesktopPlatform {
             path,
             writes: tokio::sync::Mutex::new(()),
             local_server: LocalServerManager::new(executable, data_dir),
+            settings_flush: RefCell::new(None),
         }
     }
 
     pub fn settings_path(&self) -> &Path {
         &self.path
+    }
+
+    /// Await the GUI's latest durable snapshot before allowing a native close.
+    /// Clone the callback before awaiting: it may unregister itself on unmount.
+    pub async fn flush_pending_settings(&self) -> Result<(), String> {
+        let flush = self.settings_flush.borrow().clone();
+        match flush {
+            Some(flush) => flush().await,
+            None => Ok(()),
+        }
     }
 
     pub async fn save(&self, settings: &DesktopSettings) -> Result<(), SettingsError> {
@@ -141,6 +154,10 @@ impl DesktopPlatform {
 }
 
 impl GuiPlatform for DesktopPlatform {
+    fn set_settings_flush(&self, flush: Option<SettingsFlush>) {
+        *self.settings_flush.borrow_mut() = flush;
+    }
+
     fn local_server_status(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<LocalServerStatus, String>> + '_>> {
@@ -326,6 +343,73 @@ mod tests {
         ));
         assert!(platform.local_server_start().await.is_err());
         assert!(directory.path().join("server.operation.lock").exists());
+    }
+
+    #[tokio::test]
+    async fn close_flush_uses_latest_registration_and_releases_borrow_before_await() {
+        use std::{cell::Cell, rc::Rc};
+
+        let directory = tempfile::tempdir().unwrap();
+        let platform = Rc::new(DesktopPlatform::new(directory.path().join("desktop.toml")));
+        platform.flush_pending_settings().await.unwrap();
+        platform.set_settings_flush(Some(Rc::new(|| {
+            Box::pin(async { panic!("replaced callback must not run") })
+        })));
+        let called = Rc::new(Cell::new(false));
+        let called_by_flush = called.clone();
+        let weak_platform = Rc::downgrade(&platform);
+        platform.set_settings_flush(Some(Rc::new(move || {
+            let platform = weak_platform.upgrade().unwrap();
+            let called = called_by_flush.clone();
+            Box::pin(async move {
+                tokio::task::yield_now().await;
+                platform.set_settings_flush(None);
+                called.set(true);
+                Ok(())
+            })
+        })));
+        platform.flush_pending_settings().await.unwrap();
+        assert!(called.get());
+        called.set(false);
+        platform.flush_pending_settings().await.unwrap();
+        assert!(!called.get(), "unmounted callback is no longer invoked");
+    }
+
+    #[tokio::test]
+    async fn close_flush_waits_for_completion_and_propagates_failure_for_retry() {
+        use std::{cell::Cell, rc::Rc};
+        use tokio::sync::Notify;
+
+        let directory = tempfile::tempdir().unwrap();
+        let platform = DesktopPlatform::new(directory.path().join("desktop.toml"));
+        let started = Rc::new(Notify::new());
+        let release = Rc::new(Notify::new());
+        let complete = Rc::new(Cell::new(false));
+        let started_by_flush = started.clone();
+        let release_by_flush = release.clone();
+        platform.set_settings_flush(Some(Rc::new(move || {
+            let started = started_by_flush.clone();
+            let release = release_by_flush.clone();
+            Box::pin(async move {
+                started.notify_one();
+                release.notified().await;
+                Err("save failed".into())
+            })
+        })));
+        let flush = async {
+            let result = platform.flush_pending_settings().await;
+            complete.set(true);
+            result
+        };
+        let driver = async {
+            started.notified().await;
+            assert!(!complete.get(), "native close must await the flush");
+            release.notify_one();
+        };
+        let (result, ()) = tokio::join!(flush, driver);
+        assert_eq!(result, Err("save failed".into()));
+        platform.set_settings_flush(Some(Rc::new(|| Box::pin(async { Ok(()) }))));
+        platform.flush_pending_settings().await.unwrap();
     }
 
     #[test]

@@ -30,7 +30,8 @@ fn fixture() -> Ui {
             agent(1, 1, AgentState::Running),
             agent(2, 1, AgentState::Idle),
             agent(0, 1, AgentState::Running),
-        ],
+        ]
+        .into(),
     );
     for target in [target(1, 1), target(1, 2), target(1, 0), target(2, 1)] {
         state.transcript_status.insert(target, "Live".into());

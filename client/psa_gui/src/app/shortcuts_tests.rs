@@ -30,10 +30,8 @@ fn shortcut_root() -> Element {
         };
         ui.workspace.open(first, true);
         ui.workspace.open(second, true);
-        let group = ui
-            .workspace
-            .split(ui.workspace.focused_group, SplitAxis::Horizontal)
-            .unwrap();
+        let focused = ui.workspace.focused_group;
+        let group = ui.workspace.split(focused, SplitAxis::Horizontal).unwrap();
         ui.workspace.focused_group = group;
         ui.workspace.open(
             TranscriptTarget {
@@ -170,7 +168,7 @@ fn shortcuts_work_from_textarea_and_target_focused_pane() {
         Modifiers::CONTROL | Modifiers::SHIFT,
     );
     assert!(event.default_action_enabled());
-    ui.write().workspace = Workspace::default();
+    ui.write().workspace = Workspace::default().into();
     // Closing an empty pane is still prevented and is a no-op.
     let event = press(
         &dom,

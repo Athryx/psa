@@ -42,9 +42,12 @@ pending events and queries. A resync signal requires reconnect/rebootstrap.
 Older-page HTTP responses go to `merge_history`, **not** `bootstrap`: they cannot
 replace live provisional state, questions, or the replay cursor. Do not mix agent
 event IDs with session positions. The reducer deduplicates replay and retires
-provisional IDs on commit/removal. `recent_rows` bounds rendering work, while raw
-`EventType` preserves unsupported content for safe generic fallbacks. Tool
-correlation uses agent plus call ID, including incomplete/orphan history.
+provisional IDs on commit/removal. Shared immutable payload maps keep snapshots
+cheap; mutate them only through `bootstrap`, `merge_history` and `apply`, so the
+display-rank and tool-result indexes remain consistent. `display_window` supports
+a bounded viewport independent of loaded history, while raw `EventType` preserves
+unsupported content for safe fallbacks. Tool correlation uses agent plus call ID,
+including incomplete/orphan history.
 
 Share one transcript/network subscription per scope across duplicate views.
 Keep `FollowState` and UI expansion state per `ViewId`. `Drafts` is keyed by
