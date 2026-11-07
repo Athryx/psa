@@ -23,6 +23,7 @@ pub(crate) mod goal;
 mod noop;
 mod read;
 mod record_result;
+mod reset_codemode;
 pub(crate) mod subagents;
 mod write;
 
@@ -34,6 +35,7 @@ pub use goal::{SetGoal, SetGoalStatus};
 pub use noop::Noop;
 pub use read::Read;
 pub use record_result::RecordResult;
+pub use reset_codemode::ResetCodeMode;
 pub use subagents::{CreateAgent, ListAgents, SendMessage, WaitMessage};
 pub use write::Write;
 
@@ -120,6 +122,7 @@ pub fn tool_definition(id: ToolId) -> Option<ToolDefinition> {
         ToolId::AskQuestion => AskQuestion::definition(),
         ToolId::Noop => Noop::definition(),
         ToolId::CodeMode => CodeMode::definition(),
+        ToolId::ResetCodeMode => ResetCodeMode::definition(),
         ToolId::Read => Read.tool_definition(),
         ToolId::Edit => Edit.tool_definition(),
         ToolId::Write => Write.tool_definition(),
@@ -231,6 +234,7 @@ pub enum ToolKind {
     RecordResult(RecordResult),
     Noop(Noop),
     CodeMode(CodeMode),
+    ResetCodeMode(ResetCodeMode),
     Read(Read),
     Edit(Edit),
     Write(Write),
@@ -256,6 +260,7 @@ impl ToolKind {
             Self::RecordResult(_) => ToolId::RecordResult,
             Self::Noop(_) => ToolId::Noop,
             Self::CodeMode(_) => ToolId::CodeMode,
+            Self::ResetCodeMode(_) => ToolId::ResetCodeMode,
             Self::Read(_) => ToolId::Read,
             Self::Edit(_) => ToolId::Edit,
             Self::Write(_) => ToolId::Write,
@@ -281,6 +286,7 @@ impl ToolKind {
             Self::RecordResult(tool) => tool.tool_definition(),
             Self::Noop(tool) => tool.tool_definition(),
             Self::CodeMode(tool) => tool.tool_definition(),
+            Self::ResetCodeMode(tool) => tool.tool_definition(),
             Self::Read(tool) => tool.tool_definition(),
             Self::Edit(tool) => tool.tool_definition(),
             Self::Write(tool) => tool.tool_definition(),
@@ -312,6 +318,7 @@ impl Tool for ToolKind {
             Self::RecordResult(tool) => tool.system_prompt(),
             Self::Noop(tool) => tool.system_prompt(),
             Self::CodeMode(tool) => tool.system_prompt(),
+            Self::ResetCodeMode(tool) => tool.system_prompt(),
             Self::Read(tool) => tool.system_prompt(),
             Self::Edit(tool) => tool.system_prompt(),
             Self::Write(tool) => tool.system_prompt(),
@@ -337,6 +344,7 @@ impl Tool for ToolKind {
             Self::RecordResult(tool) => tool.execution_mode(),
             Self::Noop(tool) => tool.execution_mode(),
             Self::CodeMode(tool) => tool.execution_mode(),
+            Self::ResetCodeMode(tool) => tool.execution_mode(),
             Self::Read(tool) => tool.execution_mode(),
             Self::Edit(tool) => tool.execution_mode(),
             Self::Write(tool) => tool.execution_mode(),
@@ -362,6 +370,7 @@ impl Tool for ToolKind {
             Self::RecordResult(tool) => tool.cancellation_timeout(),
             Self::Noop(tool) => tool.cancellation_timeout(),
             Self::CodeMode(tool) => tool.cancellation_timeout(),
+            Self::ResetCodeMode(tool) => tool.cancellation_timeout(),
             Self::Read(tool) => tool.cancellation_timeout(),
             Self::Edit(tool) => tool.cancellation_timeout(),
             Self::Write(tool) => tool.cancellation_timeout(),
@@ -392,6 +401,7 @@ impl Tool for ToolKind {
             Self::RecordResult(tool) => tool.execute(arguments, context, cancellation).await,
             Self::Noop(tool) => tool.execute(arguments, context, cancellation).await,
             Self::CodeMode(tool) => tool.execute(arguments, context, cancellation).await,
+            Self::ResetCodeMode(tool) => tool.execute(arguments, context, cancellation).await,
             Self::Read(tool) => tool.execute(arguments, context, cancellation).await,
             Self::Edit(tool) => tool.execute(arguments, context, cancellation).await,
             Self::Write(tool) => tool.execute(arguments, context, cancellation).await,

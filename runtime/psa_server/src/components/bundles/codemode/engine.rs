@@ -2,20 +2,27 @@
 //! persistence and sequential scheduling are the worker's responsibility.
 
 use std::{
-    collections::{HashMap, VecDeque},
-    path::PathBuf,
+    collections::{BTreeMap, HashMap, VecDeque},
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
-use futures_util::{StreamExt, stream::FuturesUnordered};
+use futures_util::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use monty_pool::{Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent, on_print_sync};
-use monty_types::{CallArgs, ExcType, MontyException, MontyObject, ObjectRef, ResourceLimits};
+use monty_types::{
+    CallArgs, ExcType, MontyException, MontyObject, ObjectRef, OsFunctionCall, OsPolicy,
+    ResourceLimits, SleepMode,
+};
 use serde_json::{Map, Value};
 use tokio::sync::{OnceCell, watch};
 
 use crate::{
     agents::agent_context::AgentContext,
-    components::{cancellation::Cancellation, codemode_functions::CodeModeFunction},
+    components::{
+        cancellation::Cancellation,
+        codemode_functions::{CodeModeFunction, CodeModeFunctionKind},
+    },
     db::{MAX_CODEMODE_SNAPSHOT_BYTES, PrivateEvent, PrivateEventKind},
 };
 
@@ -31,7 +38,14 @@ const OUTER_CLEANUP_TIMEOUT: Duration = Duration::from_secs(11);
 // A registered wait_message call can legitimately wait for 600 seconds;
 // leave time for interpreter work and protocol overhead around it.
 const WALL_TIMEOUT: Duration = Duration::from_secs(660);
-const FEED_TIMEOUT: Duration = Duration::from_secs(10);
+const FEED_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_INTERPRETER_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Default)]
+struct ExecutionProgress {
+    script_started: bool,
+    host_call_started: AtomicBool,
+}
 
 pub(crate) struct EngineOutput {
     pub text: String,
@@ -68,6 +82,65 @@ impl MontyEngine {
         }
     }
 
+    /// Build a fresh checkpoint without reading or modifying committed history.
+    pub async fn reset(&self, cancellation: &mut Cancellation) -> Result<Vec<u8>, String> {
+        let mut shutdown = self.shutdown.subscribe();
+        if *shutdown.borrow() {
+            return Err("Code mode has shut down".into());
+        }
+
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => Err("Code mode has shut down".into()),
+            _ = cancellation.cancelled() => Err("CodeMode reset cancelled".into()),
+            result = tokio::time::timeout(
+                FEED_TIMEOUT + Duration::from_secs(2),
+                self.build_fresh_snapshot(),
+            ) => result.map_err(|_| "CodeMode reset timed out".to_owned())?,
+        }
+    }
+
+    async fn build_fresh_snapshot(&self) -> Result<Vec<u8>, String> {
+        let pool = self.ensure_pool().await?;
+        let mut session = pool
+            .checkout(&build_repl_config())
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut no_print = on_print_sync(|_, _: &str| {});
+        let event = session
+            .feed("", vec![], vec![], false, &mut no_print)
+            .await
+            .map_err(|e| format!("Cannot initialize fresh interpreter: {e}"))?;
+        if !matches!(event, TurnEvent::Complete(_)) {
+            return Err("Fresh interpreter did not complete initialization".into());
+        }
+
+        let snapshot = session
+            .dump()
+            .await
+            .map_err(|e| format!("Cannot create fresh checkpoint: {e}"))?;
+        validate_checkpoint_size(snapshot.len())?;
+        session.finish().await.map_err(|e| e.to_string())?;
+        Ok(snapshot)
+    }
+
+    async fn ensure_pool(&self) -> Result<&Pool, String> {
+        self.pool
+            .get_or_try_init(|| async {
+                let binary = resolve_worker_path(&self.binary).await?;
+                let mut config = PoolConfig::subprocess(binary);
+                config.min_processes = 0;
+                config.max_processes = 1;
+                // Each invocation restores a checkpoint; never retain a worker between checkouts.
+                config.max_checkouts_per_worker = Some(1);
+                config.checkout_timeout = Some(WALL_TIMEOUT);
+                config.request_timeout = Some(FEED_TIMEOUT + Duration::from_secs(2));
+                Pool::new(config).await.map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e: String| format!("Cannot initialize interpreter: {e}"))
+    }
+
     pub async fn execute(
         &self,
         script: &str,
@@ -85,7 +158,9 @@ impl MontyEngine {
 
         let mut output = BoundedOutput::new(MAX_PRINT_CHARS);
         let (stop, stopped) = watch::channel(false);
-        let mut execution = Box::pin(self.execute_script(script, context, &mut output, stopped));
+        let mut progress = ExecutionProgress::default();
+        let mut execution =
+            Box::pin(self.execute_script(script, context, &mut output, stopped, &mut progress));
         let result = tokio::select! {
             biased;
             _ = shutdown.changed() => {
@@ -117,7 +192,7 @@ impl MontyEngine {
         let error = error_message.is_some();
         let mut text = output.finish();
         if let Some(message) = error_message {
-            append_error_output(&mut text, &message, snapshot.is_none());
+            append_error_output(&mut text, &message, snapshot.is_none(), &progress);
         }
         EngineOutput {
             text,
@@ -132,6 +207,7 @@ impl MontyEngine {
         context: &AgentContext<'_>,
         output: &mut BoundedOutput,
         mut stopped: watch::Receiver<bool>,
+        progress: &mut ExecutionProgress,
     ) -> Result<(Vec<u8>, Option<String>), String> {
         if script.len() > MAX_SOURCE_BYTES {
             return Err("Script exceeds 256 KiB".into());
@@ -145,37 +221,13 @@ impl MontyEngine {
             .map(|event| match event {
                 PrivateEvent::CodeModeSnapshot(bytes) => bytes,
             });
-        if snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.len() > MAX_CODEMODE_SNAPSHOT_BYTES)
-        {
-            return Err("Checkpoint exceeds 16 MiB".into());
+        if let Some(snapshot) = &snapshot {
+            validate_checkpoint_size(snapshot.len())
+                .map_err(|error| format!("Cannot restore stored checkpoint: {error}"))?;
         }
 
-        let pool = self
-            .pool
-            .get_or_try_init(|| async {
-                let mut config = PoolConfig::subprocess(self.binary.clone());
-                config.min_processes = 0;
-                config.max_processes = 1;
-                // Agents may be retired for a long time; do not retain one
-                // subprocess per agent between checkpointed invocations.
-                config.max_checkouts_per_worker = Some(1);
-                config.checkout_timeout = Some(WALL_TIMEOUT);
-                config.request_timeout = Some(FEED_TIMEOUT + Duration::from_secs(2));
-                Pool::new(config).await
-            })
-            .await
-            .map_err(|e| format!("Cannot initialize interpreter: {e}"))?;
-
-        let repl = ReplConfig {
-            limits: Some(
-                ResourceLimits::default()
-                    .max_feed_duration(FEED_TIMEOUT)
-                    .max_memory(64 * 1024 * 1024),
-            ),
-            ..Default::default()
-        };
+        let pool = self.ensure_pool().await?;
+        let repl = build_repl_config();
         let mut session = pool.checkout(&repl).await.map_err(|e| e.to_string())?;
         let mut print = on_print_sync(|_, text: &str| output.push_str(text));
         if let Some(snapshot) = snapshot {
@@ -188,8 +240,12 @@ impl MontyEngine {
             }
         }
 
-        let mut pending = FuturesUnordered::new();
+        let mut pending: FuturesUnordered<BoxFuture<'_, (u32, ResumeValue)>> =
+            FuturesUnordered::new();
         let mut ready = HashMap::new();
+        // Keep names until their replies reach the interpreter, including completed
+        // futures waiting in `ready`. Completion alone does not mean they were awaited.
+        let mut outstanding = BTreeMap::new();
         let (abort, aborted) = watch::channel(false);
         macro_rules! cancellable_turn {
             ($operation:expr) => {
@@ -204,7 +260,20 @@ impl MontyEngine {
                 }
             };
         }
-        let mut event = cancellable_turn!(session.feed(script, vec![], vec![], false, &mut print));
+        progress.script_started = true;
+        let inputs = context
+            .codemode_functions()
+            .iter()
+            .filter(|function| matches!(function, CodeModeFunctionKind::PriorResults(_)))
+            .map(|function| {
+                let definition = function.definition();
+                (
+                    definition.name.clone(),
+                    MontyObject::function(definition.name, Some(definition.description)),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut event = cancellable_turn!(session.feed(script, inputs, vec![], false, &mut print));
         let mut call_count = 0;
         let exception = loop {
             if *stopped.borrow() {
@@ -238,8 +307,13 @@ impl MontyEngine {
                     ..
                 } => {
                     call_count += 1;
+                    let function = context
+                        .codemode_functions()
+                        .iter()
+                        .find(|function| function.definition().name == function_name);
                     if call_count > MAX_HOST_CALLS
-                        || pending.len() + ready.len() >= MAX_PENDING_CALLS
+                        || (matches!(function, Some(CodeModeFunctionKind::Tool(_)))
+                            && outstanding.len() >= MAX_PENDING_CALLS)
                         || object_id.is_some()
                     {
                         let error = MontyException::new(
@@ -247,10 +321,32 @@ impl MontyEngine {
                             Some("Host call limit exceeded or unsupported host object".into()),
                         );
                         cancellable_turn!(session.resume(ResumeValue::Error(error), &mut print))
+                    } else if let Some(function) = function {
+                        let call = execute_function(
+                            context,
+                            function,
+                            args,
+                            aborted.clone(),
+                            &progress.host_call_started,
+                        );
+                        if matches!(function, CodeModeFunctionKind::PriorResults(_)) {
+                            // History lookup suspends the worker for server-side IO,
+                            // but resumes with a plain string rather than a Python future.
+                            let value = cancellable_turn!(call);
+                            cancellable_turn!(session.resume(value, &mut print))
+                        } else {
+                            outstanding.insert(call_id, function_name);
+                            pending.push(Box::pin(async move { (call_id, call.await) }));
+                            cancellable_turn!(session.resume(ResumeValue::Future, &mut print))
+                        }
                     } else {
-                        let call = execute_function(context, function_name, args, aborted.clone());
-                        pending.push(async move { (call_id, call.await) });
-                        cancellable_turn!(session.resume(ResumeValue::Future, &mut print))
+                        // Reject unknown calls before creating a host future. Otherwise
+                        // a plain typo only fails when awaited, or leaves a dangling call.
+                        let error = MontyException::new(
+                            ExcType::NameError,
+                            Some(format!("name '{function_name}' is not defined")),
+                        );
+                        cancellable_turn!(session.resume(ResumeValue::Error(error), &mut print))
                     }
                 }
                 TurnEvent::ResolveFutures {
@@ -275,10 +371,45 @@ impl MontyEngine {
                         };
                         ready.insert(id, result);
                     };
+                    outstanding.remove(&id);
                     cancellable_turn!(session.resume_futures(vec![(id, result)], &mut print))
                 }
                 TurnEvent::NameLookup { .. } => {
                     cancellable_turn!(session.resume_name_lookup(None, &mut print))
+                }
+                TurnEvent::OsCall {
+                    function_name,
+                    call_id,
+                    system_sleep: Some(delay),
+                    ..
+                } => {
+                    // `allow_eager_await` only describes an optional fast path, not
+                    // whether this call is asynchronous. Gathered sleeps need futures too.
+                    let asynchronous = OsFunctionCall::accepts_future(&function_name);
+                    call_count += 1;
+                    if call_count > MAX_HOST_CALLS
+                        || (asynchronous && outstanding.len() >= MAX_PENDING_CALLS)
+                    {
+                        let error = MontyException::new(
+                            ExcType::RuntimeError,
+                            Some("Host call limit exceeded".into()),
+                        );
+                        cancellable_turn!(session.resume(ResumeValue::Error(error), &mut print))
+                    } else {
+                        let now = tokio::time::Instant::now();
+                        // Extremely large delays may not fit the host clock. Such
+                        // sleeps will be interrupted by the script's wall timeout.
+                        let deadline = now.checked_add(delay).unwrap_or(now + WALL_TIMEOUT);
+                        let sleep = wait_for_sleep(deadline, aborted.clone());
+                        if asynchronous {
+                            outstanding.insert(call_id, "asyncio.sleep".into());
+                            pending.push(Box::pin(async move { (call_id, sleep.await) }));
+                            cancellable_turn!(session.resume(ResumeValue::Future, &mut print))
+                        } else {
+                            let value = cancellable_turn!(sleep);
+                            cancellable_turn!(session.resume(value, &mut print))
+                        }
+                    }
                 }
                 TurnEvent::OsCall { .. } => {
                     cancellable_turn!(session.resume(ResumeValue::NotHandled, &mut print))
@@ -286,19 +417,20 @@ impl MontyEngine {
             };
         };
         // No detached callbacks may outlive the turn or race checkpoint persistence.
-        if !pending.is_empty() || !ready.is_empty() {
+        if !outstanding.is_empty() {
             let _ = abort.send(true);
             while pending.next().await.is_some() {}
-            return Err(unresolved_calls_error(exception.as_deref()));
+            return Err(unresolved_calls_error(&outstanding, exception.as_deref()));
         }
         drop(print);
-        let snapshot = session
-            .dump()
-            .await
-            .map_err(|e| format!("Cannot serialize checkpoint: {e}"))?;
-        if snapshot.len() > MAX_CODEMODE_SNAPSHOT_BYTES {
-            return Err("Checkpoint exceeds 16 MiB".into());
-        }
+        let snapshot = session.dump().await.map_err(|e| {
+            format!(
+                "Cannot serialize checkpoint: {e}. Checkpoints have a 16 MiB serialized limit, \
+                     separate from the 64 MiB interpreter memory limit; serialization also needs \
+                     memory. Reduce retained REPL data or save it through write() if available."
+            )
+        })?;
+        validate_checkpoint_size(snapshot.len())?;
         session.finish().await.map_err(|e| e.to_string())?;
         // Runtime errors can also be a rejected host reply, in which case
         // Monty leaves the session suspended rather than ending the feed.
@@ -311,6 +443,60 @@ impl MontyEngine {
         }
         Ok((snapshot, exception))
     }
+}
+
+fn build_repl_config() -> ReplConfig {
+    ReplConfig {
+        limits: Some(
+            ResourceLimits::default()
+                .max_feed_duration(FEED_TIMEOUT)
+                .max_memory(MAX_INTERPRETER_MEMORY_BYTES),
+        ),
+        os_policy: OsPolicy {
+            // The script's wall timeout already bounds waits; do not shorten sleeps.
+            sleep: SleepMode::System(Duration::MAX),
+            ..Default::default()
+        },
+        print_flush_interval: Some(Duration::ZERO),
+        ..Default::default()
+    }
+}
+
+async fn resolve_worker_path(binary: &Path) -> Result<PathBuf, String> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    resolve_worker_path_with_search_path(binary, &path).await
+}
+
+async fn resolve_worker_path_with_search_path(
+    binary: &Path,
+    search_path: &std::ffi::OsStr,
+) -> Result<PathBuf, String> {
+    if binary.is_absolute() || binary.components().count() > 1 {
+        return tokio::fs::canonicalize(binary)
+            .await
+            .map_err(|e| format!("Cannot resolve worker {}: {e}", binary.display()));
+    }
+
+    for directory in std::env::split_paths(search_path) {
+        let candidate = directory.join(binary);
+        let Ok(metadata) = tokio::fs::metadata(&candidate).await else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o111 == 0 {
+                continue;
+            }
+        }
+        if let Ok(path) = tokio::fs::canonicalize(candidate).await {
+            return Ok(path);
+        }
+    }
+    Err(format!("Worker {} not found on PATH", binary.display()))
 }
 
 async fn validate_idle_snapshot(
@@ -331,23 +517,45 @@ async fn validate_idle_snapshot(
     Ok(())
 }
 
-async fn execute_function(
-    context: &AgentContext<'_>,
-    name: String,
-    args: CallArgs,
+async fn wait_for_sleep(
+    deadline: tokio::time::Instant,
     mut aborted: watch::Receiver<bool>,
 ) -> ResumeValue {
-    let Some(function) = context
-        .codemode_functions()
-        .iter()
-        .find(|f| f.definition().name == name)
-    else {
+    tokio::select! {
+        biased;
+        _ = aborted.changed() => ResumeValue::Error(MontyException::new(
+            ExcType::RuntimeError,
+            Some("Sleep cancelled".into()),
+        )),
+        _ = tokio::time::sleep_until(deadline) => ResumeValue::Return(MontyObject::none()),
+    }
+}
+
+fn validate_checkpoint_size(size: usize) -> Result<(), String> {
+    if size <= MAX_CODEMODE_SNAPSHOT_BYTES {
+        return Ok(());
+    }
+    Err(format!(
+        "Serialized checkpoint is {size} bytes; limit is 16 MiB ({MAX_CODEMODE_SNAPSHOT_BYTES} bytes). \
+         The separate 64 MiB interpreter memory limit does not guarantee persistent state capacity. \
+         Reduce retained REPL data or save it through write() if available."
+    ))
+}
+
+async fn execute_function(
+    context: &AgentContext<'_>,
+    function: &CodeModeFunctionKind,
+    args: CallArgs,
+    mut aborted: watch::Receiver<bool>,
+    host_call_started: &AtomicBool,
+) -> ResumeValue {
+    if *aborted.borrow() {
         return ResumeValue::Error(MontyException::new(
-            ExcType::NameError,
-            Some(format!("Unknown function: {name}")),
+            ExcType::RuntimeError,
+            Some("Host call cancelled".into()),
         ));
-    };
-    let arguments = match parse_call_arguments(&args) {
+    }
+    let arguments = match parse_function_arguments(function, &args) {
         Ok(value) => value,
         Err(error) => {
             return ResumeValue::Error(MontyException::new(ExcType::TypeError, Some(error)));
@@ -360,6 +568,9 @@ async fn execute_function(
         ));
     };
     let (sender, cancellation) = Cancellation::channel();
+    if matches!(function, CodeModeFunctionKind::Tool(_)) {
+        host_call_started.store(true, Ordering::Relaxed);
+    }
     let mut invocation = Box::pin(function.execute(arguments, &mut child, cancellation));
     let result = tokio::select! {
         biased;
@@ -385,6 +596,21 @@ async fn execute_function(
             ResumeValue::Error(MontyException::new(kind, Some(error.message)))
         }
     }
+}
+
+fn parse_function_arguments(
+    function: &CodeModeFunctionKind,
+    args: &CallArgs,
+) -> Result<Value, String> {
+    if matches!(function, CodeModeFunctionKind::PriorResults(_))
+        && args.args().len() == 1
+        && args.kwargs().len() == 0
+    {
+        let mut budget = 100_000;
+        let index = monty_to_json(args.args().next().unwrap(), 0, &mut budget)?;
+        return Ok(serde_json::json!({"index": index}));
+    }
+    parse_call_arguments(args)
 }
 
 fn parse_call_arguments(args: &CallArgs) -> Result<Value, String> {
@@ -494,22 +720,42 @@ fn json_to_monty_inner(
     })
 }
 
-fn unresolved_calls_error(exception: Option<&str>) -> String {
-    const DIAGNOSTIC: &str = "Execution ended with unresolved host calls";
+fn unresolved_calls_error(outstanding: &BTreeMap<u32, String>, exception: Option<&str>) -> String {
+    let calls = outstanding
+        .iter()
+        .map(|(id, name)| format!("{name}() (call {id})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let diagnostic = format!(
+        "Execution ended with unresolved host calls: {calls}. \
+         Check for calls that were not awaited; await every async call, directly or with \
+         asyncio.gather, before finishing."
+    );
     match exception {
-        Some(exception) => format!("{DIAGNOSTIC}\n{exception}"),
-        None => DIAGNOSTIC.into(),
+        Some(exception) => format!("{diagnostic}\n{exception}"),
+        None => diagnostic,
     }
 }
 
-fn append_error_output(text: &mut String, message: &str, not_saved: bool) {
-    const NOT_SAVED: &str = "REPL changes were not saved; external tool effects may have occurred.";
+fn append_error_output(
+    text: &mut String,
+    message: &str,
+    not_saved: bool,
+    progress: &ExecutionProgress,
+) {
     if !text.is_empty() {
         text.push('\n');
     }
     if not_saved {
-        text.push_str(NOT_SAVED);
-        text.push('\n');
+        if progress.script_started {
+            text.push_str("REPL changes were not saved; previous checkpoint is unchanged");
+        } else {
+            text.push_str("Script did not run; previous checkpoint is unchanged");
+        }
+        if progress.host_call_started.load(Ordering::Relaxed) {
+            text.push_str("; external tool effects may have occurred");
+        }
+        text.push_str(".\n");
     }
     let room = MAX_OUTPUT_CHARS.saturating_sub(text.chars().count());
     let mut bounded_error = BoundedOutput::new(room);

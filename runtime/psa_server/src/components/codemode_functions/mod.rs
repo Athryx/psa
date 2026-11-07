@@ -4,6 +4,9 @@
 //! runtime-owned handles. The default adapter delegates to the tool's existing
 //! typed argument bridge and preserves its cancellation behavior.
 
+pub(crate) mod prior_results;
+
+use prior_results::PriorResults;
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
@@ -112,6 +115,7 @@ pub trait CodeModeFunction: Send + Sync {
 /// A distinct registration from a model-facing tool; both may share bundle state.
 pub enum CodeModeFunctionKind {
     Tool(ToolKind),
+    PriorResults(PriorResults),
 }
 
 impl CodeModeFunction for CodeModeFunctionKind {
@@ -125,12 +129,14 @@ impl CodeModeFunction for CodeModeFunctionKind {
                     parameters: definition.parameters,
                 }
             }
+            Self::PriorResults(function) => function.definition(),
         }
     }
 
     fn cancellation_timeout(&self) -> Duration {
         match self {
             Self::Tool(tool) => tool.cancellation_timeout(),
+            Self::PriorResults(function) => function.cancellation_timeout(),
         }
     }
 
@@ -144,6 +150,9 @@ impl CodeModeFunction for CodeModeFunctionKind {
             match self {
                 Self::Tool(tool) => {
                     adapt_tool_output(tool.execute(arguments, context, cancellation).await)
+                }
+                Self::PriorResults(function) => {
+                    function.execute(arguments, context, cancellation).await
                 }
             }
         })

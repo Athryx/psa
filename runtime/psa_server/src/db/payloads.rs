@@ -236,6 +236,7 @@ pub(super) async fn insert_payload(
                 ToolId::AskQuestion => "ask_question",
                 ToolId::RecordResult => "record_result",
                 ToolId::CodeMode => "codemode",
+                ToolId::ResetCodeMode => "reset_codemode",
             };
             let def = &value.definition;
             let parameters = serialize_json(&def.parameters)?;
@@ -497,6 +498,7 @@ pub(super) async fn load_payloads(
                 "ask_question" => ToolId::AskQuestion,
                 "record_result" => ToolId::RecordResult,
                 "codemode" => ToolId::CodeMode,
+                "reset_codemode" => ToolId::ResetCodeMode,
                 s => return Err(invalid(s)),
             },
             definition: api::ToolDefinition {

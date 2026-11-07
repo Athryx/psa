@@ -22,6 +22,7 @@ mod file_tools;
 mod hidden;
 mod interactive;
 mod models;
+mod reset_codemode_definition;
 mod results;
 mod subagents;
 mod usage;

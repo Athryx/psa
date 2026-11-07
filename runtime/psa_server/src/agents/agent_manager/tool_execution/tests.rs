@@ -22,7 +22,9 @@ mod codemode;
 #[path = "../../../../tests/support/fake_probe.rs"]
 mod fake_probe;
 mod monty_integration;
+mod prior_results;
 mod recovery;
+mod reset_codemode;
 
 #[derive(Debug)]
 enum Notice {

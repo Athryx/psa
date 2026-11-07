@@ -64,6 +64,7 @@ async fn registry_follows_bundle_installation_and_cleanup() {
         BundleConfig::FileTools { read_only: true },
         BundleConfig::Bash,
         BundleConfig::Noop,
+        BundleConfig::CodeMode,
         BundleConfig::AskQuestion {
             interactive_only: true,
         },
@@ -78,7 +79,14 @@ async fn registry_follows_bundle_installation_and_cleanup() {
         .collect();
     assert_eq!(
         names,
-        ["read", "bash", "interact_bash", "close_bash", "noop"]
+        [
+            "read",
+            "bash",
+            "interact_bash",
+            "close_bash",
+            "noop",
+            "PRIOR_RESULTS"
+        ]
     );
     components.cleanup().await.unwrap();
     assert!(components.codemode_functions.is_empty());

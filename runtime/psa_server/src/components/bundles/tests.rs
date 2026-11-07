@@ -530,6 +530,7 @@ async fn codemode_registry_rejects_recursive_and_completion_tools() {
         tools.iter().map(ToolKind::id).collect::<Vec<_>>(),
         [
             ToolId::CodeMode,
+            ToolId::ResetCodeMode,
             ToolId::SetGoal,
             ToolId::SetGoalStatus,
             ToolId::RecordResult,
@@ -541,11 +542,15 @@ async fn codemode_registry_rejects_recursive_and_completion_tools() {
             .unwrap_err();
         assert!(error.message.contains("codemode cannot expose"));
     }
-    assert!(installer.codemode_functions.is_empty());
+    assert_eq!(installer.codemode_functions.len(), 1);
+    assert_eq!(
+        installer.codemode_functions[0].definition().name,
+        "PRIOR_RESULTS"
+    );
     installer
         .add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::Read(Read)))
         .unwrap();
-    assert_eq!(installer.codemode_functions.len(), 1);
+    assert_eq!(installer.codemode_functions.len(), 2);
 
     drop(installer);
     result.cleanup().await.unwrap();

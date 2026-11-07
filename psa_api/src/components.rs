@@ -88,7 +88,7 @@ pub enum BundleConfig {
     },
     /// Installs Bash, InteractBash, and CloseBash with shared process sessions.
     Bash,
-    /// Installs the CodeMode tool.
+    /// Installs the CodeMode execution and reset tools.
     CodeMode,
     /// Installs goal tools and their goal-aware stopping policy.
     Goal {
@@ -448,6 +448,20 @@ mod tests {
                 .iter()
                 .any(|variant| variant["const"] == "CodeMode")
         );
+    }
+
+    #[test]
+    fn reset_code_mode_is_a_tool_identity_not_a_separate_bundle() {
+        let wire = json!("ResetCodeMode");
+        assert_eq!(serde_json::to_value(ToolId::ResetCodeMode).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<ToolId>(wire.clone()).unwrap(),
+            ToolId::ResetCodeMode
+        );
+        assert!(serde_json::from_value::<BundleConfig>(wire.clone()).is_err());
+        assert!(serde_json::from_value::<BundleId>(wire).is_err());
+        assert!(serde_json::from_value::<ToolId>(json!("reset_codemode")).is_err());
+        assert!(serde_json::from_value::<ToolId>(json!({"ResetCodeMode": {}})).is_err());
     }
 
     #[test]

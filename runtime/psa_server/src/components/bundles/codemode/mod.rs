@@ -7,7 +7,10 @@ use std::sync::Arc;
 use super::{Bundle, CleanupError, InstallError, Installer};
 use crate::{
     agents::Agent,
-    components::tools::{CodeMode, ToolKind},
+    components::{
+        codemode_functions::{CodeModeFunctionKind, prior_results::PriorResults},
+        tools::{CodeMode, ResetCodeMode, ToolKind},
+    },
     sessions::Session,
 };
 pub(crate) use engine::MontyEngine;
@@ -44,7 +47,11 @@ impl Bundle for CodeModeBundle {
         _session: &Session,
         installer: &mut Installer,
     ) -> Result<(), InstallError> {
-        installer.add_tool(ToolKind::CodeMode(CodeMode::new(self.engine.clone())))
+        installer.add_codemode_function(CodeModeFunctionKind::PriorResults(PriorResults))?;
+        installer.add_tool(ToolKind::CodeMode(CodeMode::new(self.engine.clone())))?;
+        installer.add_tool(ToolKind::ResetCodeMode(ResetCodeMode::new(
+            self.engine.clone(),
+        )))
     }
 
     async fn cleanup(&mut self) -> Result<(), CleanupError> {

@@ -37,6 +37,7 @@ fn every_tool_identity_has_metadata_without_runtime_resources() {
     for (id, name) in [
         (ToolId::AskQuestion, "ask_question"),
         (ToolId::Noop, "noop"),
+        (ToolId::ResetCodeMode, "reset_codemode"),
         (ToolId::Read, "read"),
         (ToolId::Edit, "edit"),
         (ToolId::Write, "write"),

@@ -70,6 +70,24 @@ fn rules_and_tool_directions_are_independent() {
 }
 
 #[test]
+fn codemode_history_guidance_is_published_in_the_rules_system_message() {
+    use crate::components::{bundles::codemode::MontyEngine, tools::CodeMode};
+    use std::sync::Arc;
+
+    let tool = CodeMode::new(Arc::new(MontyEngine::new("monty")));
+    let prompt = tool.system_prompt();
+    let rule = prompt.rules[0].clone();
+    let events = build_tool_events([(ToolId::CodeMode, tool.tool_definition(), prompt)]);
+    assert_eq!(events.len(), 3);
+    assert!(system_text(&events[1]).starts_with("<tools>"));
+    let rules = system_text(&events[2]);
+    assert!(rules.starts_with("<rules>"));
+    assert!(rules.contains(&rule));
+    assert!(rules.contains("PRIOR_RESULTS(-1)[2000:4000]"));
+    assert!(rules.contains("cannot recover truncated-away content"));
+}
+
+#[test]
 fn default_guidance_keeps_only_the_tool_snapshot() {
     let events = build_tool_events([(
         ToolId::Noop,

@@ -216,13 +216,14 @@ impl Installer {
     ) -> Result<(), InstallError> {
         if let CodeModeFunctionKind::Tool(
             ToolKind::CodeMode(_)
+            | ToolKind::ResetCodeMode(_)
             | ToolKind::SetGoal(_)
             | ToolKind::SetGoalStatus(_)
             | ToolKind::RecordResult(_),
         ) = &function
         {
             return Err(InstallError::new(
-                "codemode cannot expose codemode, goal, or result tools",
+                "codemode cannot expose codemode, reset_codemode, goal, or result tools",
             ));
         }
 

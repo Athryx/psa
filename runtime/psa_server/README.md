@@ -230,8 +230,9 @@ snapshots in stream order: activity-only changes do not advance `updated_at`.
 
 ### CodeMode
 
-The opt-in `CodeMode` bundle installs the model-facing `codemode` tool. It runs
-Monty's Python subset in an agent-local REPL, not a full CPython environment.
+The opt-in `CodeMode` bundle installs the model-facing `codemode` and
+`reset_codemode` tools. `codemode` runs Monty 1.4's Python subset in an agent-local
+REPL, not a full CPython environment.
 Monty supplies a language-level sandbox; the subprocess provides crash isolation,
 not an operating-system sandbox. Use additional OS isolation if the threat model
 requires protection against interpreter vulnerabilities. Install a separate,
@@ -246,7 +247,8 @@ cargo run -p psa_server -- start
 ```
 
 PSA uses the external worker at `PSA_MONTY_WORKER` when set, otherwise it finds
-`monty` on `PATH`. Use exactly version 1.4.0 to match the server's Monty crates.
+`monty` on `PATH`. A bare worker name is searched on `PATH`; relative paths are
+resolved against the server's working directory. Use exactly version 1.4.0 to match the server's Monty crates.
 The worker is started on demand, so a missing or incompatible executable causes
 CodeMode execution to fail rather than necessarily preventing server startup.
 
@@ -272,34 +274,119 @@ Rust clients can use `BundleConfig::CodeMode` and
 `BundleConfig::FileTools { read_only: true }`. Explicit lists replace inherited
 defaults, so include any other desired bundles and hooks. CodeMode needs no
 separate function configuration: participating installed bundles register their
-functions automatically. `ToolDefinitions` publishes the available functions and
-their argument schemas to the agent. Functions are async and are called with
-`await` and keyword arguments. CodeMode calls are sequential barriers around
-other model-issued tool calls; functions within a script can still run in parallel
-with `asyncio.gather`. For example:
+functions automatically. `ToolDefinitions` publishes the available functions,
+their calling conventions, and their generated argument schemas to the agent.
+Tool-backed functions are async and are called with `await` and keyword arguments;
+the built-in `PRIOR_RESULTS` function is synchronous and must not be awaited.
+CodeMode calls are sequential barriers around other model-issued tool calls;
+async functions within a script can still run in parallel with `asyncio.gather`.
+For example:
 
 ```python
 contents = await read(path="README.md")
 print(contents)
 ```
 
+CodeMode installs the read-only `PRIOR_RESULTS` function by default. Call
+`PRIOR_RESULTS()`, `PRIOR_RESULTS(index=-1)`, or `PRIOR_RESULTS(-1)` **without
+`await`** to get the exact text string of one previous committed `codemode`
+invocation result, including errors and cancellations. Index `0` selects the
+oldest result, `-1` the latest, and other negative indices count from the end.
+Out-of-range indices raise `IndexError`; invalid arguments raise `TypeError`.
+The current invocation, native results from other tools, and durable agent
+completion `Result` events are excluded.
+
+Results are loaded lazily from server trace history, including visible fork
+ancestry. The archive is **not** copied into the Python checkpoint; only the small
+function binding persists. Fetched strings that you retain in Python become
+normal checkpoint data and can grow the checkpoint, so prefer printing or
+processing inline instead of saving each result:
+
+```python
+print(PRIOR_RESULTS())       # Latest committed codemode result, no await.
+print(PRIOR_RESULTS(0))      # Oldest visible codemode result.
+print(len(PRIOR_RESULTS(-1)))  # Process inline without retaining the string.
+```
+
+This returns the stored tool-result text, with its original output bounds and
+truncation intact; it cannot recover untruncated output beyond what was stored.
+The read-only lookup itself has no external side effects.
+
+Compatibility is limited to Monty's implemented Python features, not CPython's
+complete language or APIs. The stdlib import allowlist, verified against Monty
+1.4.0's `StandardLib::from_static` in `src/modules/mod.rs`, is:
+
+- `asyncio`, `base64`, `binascii`, `bisect`, `collections`, `copy`, `csv`,
+  `dataclasses`, `datetime`, `decimal`, `functools`, `hashlib`, `itertools`, `json`,
+  `math`, `os`, `os.path`, `pathlib`, `posixpath` (an alias for `os.path`), `random`,
+  `re`, `sys`, `time`, `tomllib`, `typing`, `unicodedata`.
+
+Module attributes and object methods are incomplete: importing a module does not
+promise its full CPython API. Imports of `os` or `pathlib` do **not** grant
+filesystem access. There is no direct filesystem or network access; use installed
+host functions for external operations. `globals()`, `dir()`, `vars()`, and
+`__import__()` are unavailable. At REPL/module and function scope, `locals()` is a
+snapshot, not a writable live namespace; inside `exec()`/`eval()` snippets it
+instead exposes the snippet's namespace dictionary. `hasattr()` is not reliable
+method/capability discovery and can raise `TypeError` for attributes that require
+non-simple evaluation (such as calls or awaits).
+
+Unknown function names raise `NameError` immediately, even without `await`.
+Await tool-backed functions and all coroutines before finishing the script;
+`asyncio.gather` supports independent parallel calls. Tool-backed functions return
+text strings on success and raise exceptions on failure. `time.sleep()` waits
+synchronously; `asyncio.sleep()` waits asynchronously and is cancellable. There is
+no separate sleep duration cap; the script's wall timeout still applies. Prefer
+`await asyncio.sleep(...)`.
+
 Use `print()` for visible output; the final expression is not displayed. Printed
-output is bounded to 12,000 characters; when exceeded, its middle is replaced
-with a truncation marker. The total result, including any exception, is bounded to
-16,000 characters. Current execution limits include 660 seconds wall time,
-10 seconds per interpreter feed, 64 MiB interpreter memory, and a 16 MiB
-checkpoint limit. Operations called through registered functions retain their own
-restrictions and can have external effects; the interpreter sandbox does not make
-those effects safe or reversible.
+output is preserved even when execution fails, bounded to 12,000 characters;
+when exceeded, its middle is replaced with a truncation marker. The total result,
+including any exception, is bounded to 16,000 characters. Execution limits are:
+
+- **60 seconds interpreter execution per feed**, excluding host waits.
+- **660 seconds wall time per script once started**, including host waits but not
+  time queued behind earlier calls.
+- **64 MiB interpreter execution memory**, not a guaranteed persistent-state
+  capacity or a whole-process memory limit.
+- **16 MiB serialized checkpoint**. Serialization inflation varies with the
+  stored values, and dumping can exhaust memory before reaching this size; a
+  value fitting during execution is not guaranteed to checkpoint successfully.
+
+Operations called through tool-backed functions retain their own restrictions
+and can have external effects; the interpreter sandbox does not make those
+effects safe or reversible.
 
 Completed idle executions checkpoint REPL state in a server-private event attached
 to the public tool result. Both are committed atomically for later calls, restart,
-and forks at the relevant history boundary. Ordinary uncaught Python exceptions also
-checkpoint mutations made before the exception. Interruptions, resource-limit
-failures, and checkpoint errors discard the new state; restoration can also fail
-if a checkpoint is incompatible. Do not depend on REPL state as the sole copy of
-important data. Forks do not inherit live Bash process sessions, even if a saved
-variable refers to one; external side effects are not rolled back.
+and forks at the relevant history boundary. Ordinary uncaught Python exceptions
+fail the call but preserve earlier mutations when an idle checkpoint succeeds.
+Interruptions, resource-limit failures, and failed checkpoint dumps discard only
+the new state: the latest successful checkpoint is retained, not a full reset.
+Restoration can still fail if that checkpoint is incompatible. Checkpoints retain
+their interpreter and sleep policies: agents restored from older checkpoints may
+still use the previous 10-second limits. Use `reset_codemode` or start a fresh
+agent to adopt the current policy; forking an older checkpoint retains its older
+policy. Do not depend on REPL state as the sole copy of important data. Forks do
+not inherit live Bash process sessions, even if a saved variable refers to one;
+external side effects are not rolled back.
+
+To recover from bad state, a corrupt/incompatible checkpoint, or large retained
+globals, call the separate native **`reset_codemode` tool with `{}` directly**,
+not from Python. It is installed automatically by CodeMode and runs as a
+sequential barrier. It must appear in the agent's tool snapshot: legacy agents
+and their forks may need a fresh root agent because tool definitions are
+snapshotted at agent creation, not automatically refreshed.
+Reset appends a fresh, valid private `CodeModeSnapshot`,
+clearing Python globals, imports, and functions; the next `codemode` call starts
+fresh with the current policy (including the 60-second interpreter feed limit
+and no separate sleep cap). The committed reset survives server restart.
+Older checkpoints and tool results are preserved, and `PRIOR_RESULTS` history
+remains available with the same visible-fork cutoffs. A historical fork before
+the reset still sees its earlier checkpoint. If reset creation fails or is
+cancelled, no new checkpoint is committed and the previous checkpoint remains.
+Reset does not undo external filesystem, network, or process effects, and does
+not stop live Bash sessions.
 
 ### Context compaction
 
