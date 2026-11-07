@@ -6,12 +6,13 @@ use crate::components::{
     cancellation::Cancellation,
     tools::{ExecutionMode, Tool, ToolOutput},
 };
+use crate::db::DbError;
 use futures_util::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use std::collections::VecDeque;
 use tokio::sync::watch;
 
 pub(crate) struct SaveRequest {
-    pub events: Vec<NewEvent>,
+    pub events: Vec<EventBatchItem>,
     pub reply: actors::Reply<Result<SavedEvents, AgentError>>,
 }
 
@@ -37,6 +38,7 @@ impl AgentManagerState {
             definition: self.definition.clone(),
             projection: Arc::new(self.context.clone()),
             tools: Arc::clone(&self.tools),
+            codemode_functions: Arc::clone(&self.codemode_functions),
             database: self.db.clone(),
             saves: self.invocation_save_handle.clone(),
         }
@@ -54,8 +56,15 @@ impl AgentManagerState {
     /// waiter (including a panic or grace timeout) cannot retract an append.
     pub(super) async fn drain_invocation_saves(&mut self) -> Result<(), AgentError> {
         while let Ok(request) = self.invocation_saves.try_recv() {
-            let events = self.persist_events(&request.events).await?;
-            let _ = request.reply.send(Ok(self.saved_events(events)));
+            match self.persist_event_batch(request.events).await {
+                Ok(events) => {
+                    let _ = request.reply.send(Ok(self.saved_events(events)));
+                }
+                Err(error @ AgentError::Database(DbError::InvalidInput(_))) => {
+                    let _ = request.reply.send(Err(error));
+                }
+                Err(error) => return Err(error),
+            }
         }
         Ok(())
     }
@@ -88,7 +97,7 @@ impl AgentManagerState {
             // while publication/database IO is in flight.
             if self.pending_persistence.is_none() {
                 if let Ok(request) = self.invocation_saves.try_recv() {
-                    self.start_persistence(&request.events, &[]);
+                    self.start_persistence(request.events, &[]);
                     if self.pending_persistence.is_some() {
                         save_reply = Some(request.reply);
                     } else {
@@ -103,7 +112,17 @@ impl AgentManagerState {
                         error: output.error,
                         metadata: Default::default(),
                     };
-                    self.start_persistence(&[NewEvent::new(EventType::ToolResult(result))], &[]);
+                    let events = std::iter::once(EventBatchItem::Public(NewEvent::new(
+                        EventType::ToolResult(result),
+                    )))
+                    .chain(
+                        output
+                            .private_events
+                            .into_iter()
+                            .map(EventBatchItem::Private),
+                    )
+                    .collect();
+                    self.start_persistence(events, &[]);
                 }
             }
 
@@ -147,14 +166,22 @@ impl AgentManagerState {
                 }
                 result = wait_for_persistence(&mut self.pending_persistence) => {
                     self.pending_persistence = None;
-                    let events = self.apply_persistence(result.map_err(AgentError::PersistenceTask)?)?;
-                    if let Some(reply) = save_reply.take() {
-                        let _ = reply.send(Ok(self.saved_events(events)));
+                    let result = result.map_err(AgentError::PersistenceTask)?;
+                    match result {
+                        Err(error @ AgentError::Database(DbError::InvalidInput(_))) if save_reply.is_some() => {
+                            let _ = save_reply.take().expect("reply exists").send(Err(error));
+                        }
+                        result => {
+                            let events = self.apply_persistence(result)?;
+                            if let Some(reply) = save_reply.take() {
+                                let _ = reply.send(Ok(self.saved_events(events)));
+                            }
+                        }
                     }
                 }
                 request = self.invocation_saves.recv(), if self.pending_persistence.is_none() => {
                     if let Some(request) = request {
-                        self.start_persistence(&request.events, &[]);
+                        self.start_persistence(request.events, &[]);
                         if self.pending_persistence.is_some() {
                             save_reply = Some(request.reply);
                         } else {
@@ -209,7 +236,7 @@ impl AgentManagerState {
 
 async fn wait_for_persistence(
     pending: &mut Option<PendingPersistence>,
-) -> Result<Result<(AddEventResult, AgentProjection), AgentError>, tokio::task::JoinError> {
+) -> Result<PersistenceResult, tokio::task::JoinError> {
     match pending {
         Some(pending) => pending.await,
         None => std::future::pending().await,

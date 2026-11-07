@@ -2,5 +2,6 @@
 
 pub mod bundles;
 pub mod cancellation;
+pub mod codemode_functions;
 pub mod hooks;
 pub mod tools;

@@ -67,6 +67,8 @@ pub enum BundleId {
     FileTools,
     /// Installs the Bash, InteractBash, and CloseBash tools with shared sessions.
     Bash,
+    /// Installs the CodeMode tool.
+    CodeMode,
     /// Installs goal tools and a goal-aware stopping policy.
     Goal,
     /// Installs the tool for requesting structured client input.
@@ -165,6 +167,8 @@ pub enum ToolId {
     InteractBash,
     /// Stops a running shell command.
     CloseBash,
+    /// Executes code through the CodeMode tool.
+    CodeMode,
     /// Sets the agent's goal when goal mode is installed.
     SetGoal,
     /// Updates the status of the agent's goal.

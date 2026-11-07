@@ -7,6 +7,7 @@
 
 mod ask_question;
 pub mod bash;
+pub mod codemode;
 mod file_tools;
 pub mod goal;
 mod noop;
@@ -20,6 +21,7 @@ pub(crate) mod typed_result;
 
 pub use ask_question::AskQuestionBundle;
 pub use bash::BashBundle;
+pub use codemode::CodeModeBundle;
 pub use file_tools::FileToolsBundle;
 pub use goal::GoalBundle;
 pub use noop::NoopBundle;
@@ -30,6 +32,7 @@ pub use typed_result::TypedResultBundle;
 use crate::{
     agents::{Agent, AgentDefinition},
     components::{
+        codemode_functions::{CodeModeFunction, CodeModeFunctionKind},
         hooks::{HookKind, Hooks},
         tools::ToolKind,
     },
@@ -63,6 +66,7 @@ pub enum BundleKind {
     Noop(NoopBundle),
     FileTools(FileToolsBundle),
     Bash(BashBundle),
+    CodeMode(CodeModeBundle),
     Goal(GoalBundle),
     AskQuestion(AskQuestionBundle),
     TypedResult(TypedResultBundle),
@@ -82,6 +86,7 @@ impl BundleKind {
                 Self::FileTools(FileToolsBundle::new(*read_only))
             }
             BundleConfig::Bash => Self::Bash(BashBundle::new()),
+            BundleConfig::CodeMode => Self::CodeMode(CodeModeBundle::new()),
             BundleConfig::Goal { interactive_only } => {
                 Self::Goal(GoalBundle::new(*interactive_only))
             }
@@ -107,6 +112,7 @@ impl BundleKind {
             Self::Noop(_) => "Noop".into(),
             Self::FileTools(_) => "FileTools".into(),
             Self::Bash(_) => "Bash".into(),
+            Self::CodeMode(_) => "CodeMode".into(),
             Self::Goal(_) => "Goal".into(),
             Self::AskQuestion(_) => "AskQuestion".into(),
             Self::TypedResult(_) => "TypedResult".into(),
@@ -128,6 +134,7 @@ impl Bundle for BundleKind {
             Self::Noop(bundle) => bundle.install(agent, session, installer),
             Self::FileTools(bundle) => bundle.install(agent, session, installer),
             Self::Bash(bundle) => bundle.install(agent, session, installer),
+            Self::CodeMode(bundle) => bundle.install(agent, session, installer),
             Self::Goal(bundle) => bundle.install(agent, session, installer),
             Self::AskQuestion(bundle) => bundle.install(agent, session, installer),
             Self::TypedResult(bundle) => bundle.install(agent, session, installer),
@@ -142,6 +149,7 @@ impl Bundle for BundleKind {
             Self::Noop(bundle) => bundle.cleanup().await,
             Self::FileTools(bundle) => bundle.cleanup().await,
             Self::Bash(bundle) => bundle.cleanup().await,
+            Self::CodeMode(bundle) => bundle.cleanup().await,
             Self::Goal(bundle) => bundle.cleanup().await,
             Self::AskQuestion(bundle) => bundle.cleanup().await,
             Self::TypedResult(bundle) => bundle.cleanup().await,
@@ -156,6 +164,7 @@ impl Bundle for BundleKind {
             Self::Noop(bundle) => bundle.cleanup_timeout(),
             Self::FileTools(bundle) => bundle.cleanup_timeout(),
             Self::Bash(bundle) => bundle.cleanup_timeout(),
+            Self::CodeMode(bundle) => bundle.cleanup_timeout(),
             Self::Goal(bundle) => bundle.cleanup_timeout(),
             Self::AskQuestion(bundle) => bundle.cleanup_timeout(),
             Self::TypedResult(bundle) => bundle.cleanup_timeout(),
@@ -178,6 +187,7 @@ pub enum HookStage {
 #[derive(Default)]
 pub struct Installer {
     tools: Vec<ToolKind>,
+    codemode_functions: Vec<CodeModeFunctionKind>,
     hooks: Hooks,
 }
 
@@ -199,6 +209,38 @@ impl Installer {
         Ok(())
     }
 
+    /// Register an internal function independently of model-facing tool names.
+    pub fn add_codemode_function(
+        &mut self,
+        function: CodeModeFunctionKind,
+    ) -> Result<(), InstallError> {
+        if let CodeModeFunctionKind::Tool(
+            ToolKind::CodeMode(_)
+            | ToolKind::SetGoal(_)
+            | ToolKind::SetGoalStatus(_)
+            | ToolKind::RecordResult(_),
+        ) = &function
+        {
+            return Err(InstallError::new(
+                "codemode cannot expose codemode, goal, or result tools",
+            ));
+        }
+
+        let name = function.definition().name;
+        if self
+            .codemode_functions
+            .iter()
+            .any(|existing| existing.definition().name == name)
+        {
+            return Err(InstallError::new(format!(
+                "duplicate codemode function name: {name}"
+            )));
+        }
+
+        self.codemode_functions.push(function);
+        Ok(())
+    }
+
     /// Hooks are intentionally not deduplicated, even within one stage.
     pub fn add_hook(&mut self, stage: HookStage, hook: HookKind) {
         let hooks = match stage {
@@ -214,6 +256,7 @@ impl Installer {
 #[derive(Default)]
 pub struct InstalledComponents {
     pub(crate) tools: Arc<[ToolKind]>,
+    pub(crate) codemode_functions: Arc<[CodeModeFunctionKind]>,
     pub(crate) hooks: Hooks,
     bundles: Vec<BundleKind>,
 }
@@ -288,6 +331,7 @@ impl InstalledComponents {
     ) -> Result<Self, InstallError> {
         let mut installed = Self {
             tools: installer.tools.into(),
+            codemode_functions: installer.codemode_functions.into(),
             hooks: installer.hooks,
             bundles,
         };
@@ -306,6 +350,7 @@ impl InstalledComponents {
     /// Draining ownership makes repeated calls harmless, including after errors.
     pub async fn cleanup(&mut self) -> Result<(), CleanupErrors> {
         self.tools = Arc::default();
+        self.codemode_functions = Arc::default();
         self.hooks = Hooks::default();
         let mut errors = Vec::new();
         let mut bundles = std::mem::take(&mut self.bundles);

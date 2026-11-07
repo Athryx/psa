@@ -1,7 +1,10 @@
 use super::{Bundle, CleanupError, InstallError, Installer};
 use crate::{
     agents::Agent,
-    components::tools::{Edit, Read, ToolKind, Write},
+    components::{
+        codemode_functions::CodeModeFunctionKind,
+        tools::{Edit, Read, ToolKind, Write},
+    },
     sessions::Session,
 };
 
@@ -26,12 +29,15 @@ impl Bundle for FileToolsBundle {
         installer: &mut Installer,
     ) -> Result<(), InstallError> {
         installer.add_tool(ToolKind::Read(Read))?;
+        installer.add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::Read(Read)))?;
         if self.read_only {
             return Ok(());
         }
 
         installer.add_tool(ToolKind::Edit(Edit))?;
         installer.add_tool(ToolKind::Write(Write))?;
+        installer.add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::Edit(Edit)))?;
+        installer.add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::Write(Write)))?;
         Ok(())
     }
 

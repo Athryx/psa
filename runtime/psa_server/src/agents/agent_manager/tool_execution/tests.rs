@@ -18,14 +18,17 @@ use tokio::{
     task::JoinHandle,
 };
 
+mod codemode;
 #[path = "../../../../tests/support/fake_probe.rs"]
 mod fake_probe;
+mod monty_integration;
 mod recovery;
 
 #[derive(Debug)]
 enum Notice {
     Enter(String, EventId, EventId, std::path::PathBuf),
     Saved(String, EventId),
+    Rejected(String),
     Cancelled(String),
     Exit(String),
 }
@@ -40,6 +43,8 @@ struct Args {
     stop: bool,
     #[serde(default)]
     panic: bool,
+    #[serde(default)]
+    invalid_save: bool,
 }
 
 pub struct ExecutionProbe {
@@ -75,6 +80,20 @@ impl ExecutionProbe {
             context.projection().last_event_id,
             context.session().working_directory.clone(),
         ));
+        if arguments.invalid_save {
+            let batch = [
+                EventBatchItem::Private(crate::db::PrivateEvent::CodeModeSnapshot(vec![7])),
+                EventBatchItem::Public(NewEvent::new(EventType::Log(Log {
+                    error: false,
+                    message: "invalid-save-must-not-publish".into(),
+                }))),
+            ];
+            assert!(matches!(
+                context.save_event_batch(&batch).await,
+                Err(AgentError::Database(DbError::InvalidInput(_)))
+            ));
+            let _ = self.notices.send(Notice::Rejected(label.clone()));
+        }
         for index in 0..arguments.saves {
             let events = context
                 .save_events(&[NewEvent::new(EventType::Log(Log {
@@ -508,6 +527,60 @@ async fn concurrent_saves_are_serialized_and_refresh_only_the_saving_invocation(
     .unwrap();
     assert_eq!(reloaded.agent.next_event_id, state.agent.next_event_id);
     assert_eq!(reloaded.context.last_event_id, state.context.last_event_id);
+    drop(controls);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn invalid_invocation_batch_replies_with_error_and_sibling_continues() {
+    let fixture = Fixture::new().await;
+    let (sender, mut notices) = mpsc::unbounded_channel();
+    let (parallel, release) = tool(ToolId::Noop, ExecutionMode::Parallel, &sender);
+    let state = fixture
+        .state(
+            vec![parallel],
+            &[
+                (
+                    "bad",
+                    "parallel",
+                    serde_json::json!({"label":"bad", "invalid_save":true}),
+                ),
+                (
+                    "good",
+                    "parallel",
+                    serde_json::json!({"label":"good", "saves":1}),
+                ),
+            ],
+        )
+        .await;
+    let mut stream = fixture.publication.lock().await.subscribe();
+    let (controls, run) = fixture.run(state).await;
+    let (mut rejected, mut saved) = (false, false);
+    while !rejected || !saved {
+        match notice(&mut notices).await {
+            Notice::Enter(..) => {}
+            Notice::Rejected(label) => {
+                assert_eq!(label, "bad");
+                rejected = true;
+            }
+            Notice::Saved(label, _) => {
+                assert_eq!(label, "good");
+                saved = true;
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    let mut committed = Vec::new();
+    while let Ok(message) = stream.try_recv() {
+        if let psa_api::StreamMessage::Committed { event, .. } = message {
+            committed.push(event.event.kind);
+        }
+    }
+    assert_eq!(committed.len(), 1);
+    assert!(matches!(&committed[0], EventType::Log(log) if log.message == "good-0"));
+    release.add_permits(2);
+    let state = finish(run).await;
+    assert_eq!(state.agent.state, AgentState::Running);
     drop(controls);
     fixture.close().await;
 }

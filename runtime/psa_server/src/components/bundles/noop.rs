@@ -1,7 +1,10 @@
 use super::{Bundle, CleanupError, InstallError, Installer};
 use crate::{
     agents::Agent,
-    components::tools::{Noop, ToolKind},
+    components::{
+        codemode_functions::CodeModeFunctionKind,
+        tools::{Noop, ToolKind},
+    },
     sessions::Session,
 };
 
@@ -17,6 +20,7 @@ impl Bundle for NoopBundle {
         installer: &mut Installer,
     ) -> Result<(), InstallError> {
         installer.add_tool(ToolKind::Noop(Noop))?;
+        installer.add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::Noop(Noop)))?;
         Ok(())
     }
 

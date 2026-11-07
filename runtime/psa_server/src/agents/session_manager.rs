@@ -106,6 +106,7 @@ impl Runtime {
 
         // Repair incomplete event streams left by a server crash.
         for agent in agents {
+            db.drain_commits(agent.id).await;
             recover_agent(&db, &publication, agent.id).await?;
         }
 
@@ -1093,6 +1094,9 @@ impl SessionManager {
         }
 
         let worker = self.workers.remove(&agent).expect("worker exists");
+        // A hard-aborted worker can leave an append task detached. Reconcile it
+        // before any recovery reads or a replacement worker loads its state.
+        self.db.drain_commits(agent).await;
         if result.is_err() {
             self.finish_run(
                 agent,

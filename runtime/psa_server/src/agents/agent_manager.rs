@@ -12,10 +12,11 @@ use crate::{
     components::{
         bundles::InstalledComponents,
         cancellation::wait_for_interrupt,
+        codemode_functions::CodeModeFunctionKind,
         hooks::run_hooks,
         tools::{self, ToolKind, failed_tool_result},
     },
-    db::{AddEventResult, Database},
+    db::{AddEventResult, Database, EventBatchItem},
     probes::{ProbeHandle, ProbeRegistry},
     prompts,
     providers::ProviderRegistry,
@@ -33,7 +34,8 @@ use tokio::{sync::Mutex, task::JoinHandle};
 
 pub(crate) mod tool_execution;
 
-type PendingPersistence = JoinHandle<Result<(AddEventResult, AgentProjection), AgentError>>;
+type PersistenceResult = Result<(AddEventResult, AgentProjection), AgentError>;
+type PendingPersistence = JoinHandle<PersistenceResult>;
 
 pub use psa_api::{AgentState, MessageDelivery};
 
@@ -52,6 +54,7 @@ pub struct AgentManagerState {
     session: Session,
     definition: psa_api::AgentDefinition,
     tools: Arc<[ToolKind]>,
+    codemode_functions: Arc<[CodeModeFunctionKind]>,
     components: Option<Arc<Mutex<InstalledComponents>>>,
     publication: Publication,
     pending_persistence: Option<PendingPersistence>,
@@ -82,6 +85,10 @@ impl AgentManagerState {
 
     pub fn tools(&self) -> &[ToolKind] {
         &self.tools
+    }
+
+    pub fn codemode_functions(&self) -> &[CodeModeFunctionKind] {
+        &self.codemode_functions
     }
 
     pub(crate) fn update_session(&mut self, session: Session) {
@@ -139,7 +146,11 @@ impl AgentManagerState {
     }
 
     pub(crate) async fn attach_components(&mut self, components: Arc<Mutex<InstalledComponents>>) {
-        self.tools = Arc::clone(&components.lock().await.tools);
+        {
+            let installed = components.lock().await;
+            self.tools = Arc::clone(&installed.tools);
+            self.codemode_functions = Arc::clone(&installed.codemode_functions);
+        }
         self.components = Some(components);
     }
 
@@ -164,6 +175,7 @@ impl AgentManagerState {
             session,
             definition,
             tools: Arc::default(),
+            codemode_functions: Arc::default(),
             components: None,
             context,
             pending_persistence: None,
@@ -181,28 +193,48 @@ impl AgentManagerState {
         events: &[NewEvent],
         promotions: &[(usize, String)],
     ) -> Result<Vec<Event>, AgentError> {
-        self.finish_persistence().await?;
+        let batch: Vec<_> = events.iter().cloned().map(EventBatchItem::Public).collect();
+        self.persist_event_batch_with_promotions(batch, promotions)
+            .await
+    }
 
+    pub(crate) async fn persist_event_batch(
+        &mut self,
+        events: Vec<EventBatchItem>,
+    ) -> Result<Vec<Event>, AgentError> {
+        self.persist_event_batch_with_promotions(events, &[]).await
+    }
+
+    async fn persist_event_batch_with_promotions(
+        &mut self,
+        events: Vec<EventBatchItem>,
+        promotions: &[(usize, String)],
+    ) -> Result<Vec<Event>, AgentError> {
+        self.finish_persistence().await?;
         self.start_persistence(events, promotions);
         self.finish_persistence().await
     }
 
     /// Start an append without borrowing the worker while the commit runs.
-    fn start_persistence(&mut self, events: &[NewEvent], promotions: &[(usize, String)]) {
+    fn start_persistence(&mut self, events: Vec<EventBatchItem>, promotions: &[(usize, String)]) {
         assert!(self.pending_persistence.is_none());
         let (events, promotions) = build_persistence_batch(events, promotions, self.agent.state);
         if events.is_empty() {
             return;
         }
 
-        // A tool/hook may be dropped after its cancellation grace period. Keep
-        // the append owned by the worker so a started commit always completes,
-        // then reconcile memory before any subsequent work or tool response.
+        // A tool/hook may be dropped after its cancellation grace period. Track
+        // the spawned append independently of the worker so supervisor recovery
+        // waits for it even if the worker is aborted. During normal operation,
+        // reconcile memory before subsequent work or a tool response.
         let db = self.db.clone();
         let publication = self.publication.clone();
         let agent = self.agent.id;
         let context = self.context.clone();
+        let finished = db.register_commit(agent);
         self.pending_persistence = Some(tokio::spawn(async move {
+            // Dropping this sender also signals completion on panic or task cancellation.
+            let _finished = finished;
             publication
                 .append(&db, agent, &events, &promotions, &context)
                 .await
@@ -216,13 +248,11 @@ impl AgentManagerState {
 
         let result = pending.await;
         self.pending_persistence = None;
-        self.apply_persistence(result.map_err(AgentError::PersistenceTask)?)
+        let result = result.map_err(AgentError::PersistenceTask)?;
+        self.apply_persistence(result)
     }
 
-    fn apply_persistence(
-        &mut self,
-        result: Result<(AddEventResult, AgentProjection), AgentError>,
-    ) -> Result<Vec<Event>, AgentError> {
+    fn apply_persistence(&mut self, result: PersistenceResult) -> Result<Vec<Event>, AgentError> {
         let (result, context) = result?;
         self.context = context;
         if let Some(state) = result.new_state {
@@ -519,25 +549,43 @@ fn build_item_event(item: &HistoryItem) -> Result<EventType, AgentError> {
     })
 }
 
-/// Omit redundant statuses while preserving promotion offsets after filtering.
+/// Filter redundant statuses without detaching private events from their public anchor.
+/// Promotion offsets count public events, not batch items.
 fn build_persistence_batch(
-    events: &[NewEvent],
+    events: Vec<EventBatchItem>,
     promotions: &[(usize, String)],
     mut status: AgentState,
-) -> (Vec<NewEvent>, Vec<(usize, String)>) {
+) -> (Vec<EventBatchItem>, Vec<(usize, String)>) {
     let mut filtered = Vec::new();
     let mut filtered_promotions = Vec::new();
-    for (index, event) in events.iter().enumerate() {
-        if let EventType::StatusChange(change) = &event.kind {
-            if change.new_status == status {
-                continue;
-            }
+    let mut public_index = 0;
+    let mut filtered_public_count = 0;
+    let mut events = events.into_iter().peekable();
+    while let Some(item) = events.next() {
+        let EventBatchItem::Public(event) = &item else {
+            // Leading private items remain invalid rather than being silently dropped.
+            filtered.push(item);
+            continue;
+        };
+        let has_private = matches!(events.peek(), Some(EventBatchItem::Private(_)));
+        let redundant = if let EventType::StatusChange(change) = &event.kind {
+            let redundant = change.new_status == status;
             status = change.new_status;
+            redundant
+        } else {
+            false
+        };
+        if !redundant || has_private {
+            for (_, id) in promotions
+                .iter()
+                .filter(|(offset, _)| *offset == public_index)
+            {
+                filtered_promotions.push((filtered_public_count, id.clone()));
+            }
+            filtered.push(item);
+            filtered_public_count += 1;
         }
-        for (_, id) in promotions.iter().filter(|(offset, _)| *offset == index) {
-            filtered_promotions.push((filtered.len(), id.clone()));
-        }
-        filtered.push(event.clone());
+        public_index += 1;
     }
 
     (filtered, filtered_promotions)

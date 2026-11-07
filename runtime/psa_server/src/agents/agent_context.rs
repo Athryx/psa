@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     components::cancellation::Cancellation,
-    db::{Database, DbError, InferenceResultEvents},
+    db::{Database, DbError, EventBatchItem, InferenceResultEvents},
     probes::ProbeHandle,
     sessions::Session,
 };
@@ -42,6 +42,8 @@ pub(crate) struct InvocationSnapshot {
     pub definition: psa_api::AgentDefinition,
     pub projection: std::sync::Arc<AgentProjection>,
     pub tools: std::sync::Arc<[crate::components::tools::ToolKind]>,
+    pub codemode_functions:
+        std::sync::Arc<[crate::components::codemode_functions::CodeModeFunctionKind]>,
     pub database: Database,
     pub saves: actors::UnboundedMailboxHandle<super::agent_manager::tool_execution::SaveRequest>,
 }
@@ -120,6 +122,29 @@ impl<'a> AgentContext<'a> {
         }
     }
 
+    pub fn codemode_functions(
+        &self,
+    ) -> &[crate::components::codemode_functions::CodeModeFunctionKind] {
+        match &self.state {
+            ContextState::Borrowed(state) => state.codemode_functions(),
+            ContextState::Invocation(snapshot) => &snapshot.codemode_functions,
+        }
+    }
+
+    /// Create an independent snapshot for a nested concurrent invocation.
+    /// Hook contexts cannot create children: their worker is not polling save requests.
+    /// Cancellation of the nested operation remains the caller's responsibility.
+    pub fn child_invocation(&self) -> Option<AgentContext<'_>> {
+        let ContextState::Invocation(snapshot) = &self.state else {
+            return None;
+        };
+        Some(AgentContext {
+            state: ContextState::Invocation(snapshot.clone()),
+            probe: self.probe,
+            sessions: self.sessions,
+        })
+    }
+
     pub fn projection(&self) -> &AgentProjection {
         match &self.state {
             ContextState::Borrowed(state) => state.context(),
@@ -159,13 +184,30 @@ impl<'a> AgentContext<'a> {
     /// Persist and publish events, updating the worker's projection and status.
     /// Tool responses are constructed and persisted separately by the worker.
     pub async fn save_events(&mut self, events: &[NewEvent]) -> Result<Vec<Event>, AgentError> {
+        let batch = events.iter().cloned().map(EventBatchItem::Public).collect();
+        self.save_owned_event_batch(batch).await
+    }
+
+    /// Atomically save public events and private attachments. Only public events
+    /// are returned or published; private items attach to the preceding public item.
+    pub async fn save_event_batch(
+        &mut self,
+        events: &[EventBatchItem],
+    ) -> Result<Vec<Event>, AgentError> {
+        self.save_owned_event_batch(events.to_vec()).await
+    }
+
+    async fn save_owned_event_batch(
+        &mut self,
+        events: Vec<EventBatchItem>,
+    ) -> Result<Vec<Event>, AgentError> {
         match &mut self.state {
-            ContextState::Borrowed(state) => state.persist_events(events).await,
+            ContextState::Borrowed(state) => state.persist_event_batch(events).await,
             ContextState::Invocation(snapshot) => {
                 let saved = snapshot
                     .saves
                     .request(|reply| super::agent_manager::tool_execution::SaveRequest {
-                        events: events.to_vec(),
+                        events,
                         reply,
                     })
                     .await
@@ -201,6 +243,19 @@ impl<'a> AgentContext<'a> {
         let events = cursor.load_events(self.agent().id, range).await?;
         cursor.rollback().await?;
         Ok(events)
+    }
+
+    /// Load the latest private event of this kind visible to the current agent.
+    pub async fn load_latest_private_event(
+        &self,
+        kind: crate::db::PrivateEventKind,
+    ) -> Result<Option<crate::db::PrivateEvent>, DbError> {
+        let mut cursor = self.database().cursor().await?;
+        let event = cursor
+            .load_latest_private_event(self.agent().id, None, kind)
+            .await?;
+        cursor.rollback().await?;
+        Ok(event)
     }
 
     pub async fn load_all_events(&self) -> Result<Vec<Event>, DbError> {

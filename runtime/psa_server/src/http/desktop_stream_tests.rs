@@ -46,7 +46,7 @@ async fn recent_to_sse_gap_replays_then_live_promotions_keep_identity() {
         .append(
             &state.database,
             agent.id,
-            &[event.clone()],
+            &[crate::db::EventBatchItem::Public(event.clone())],
             &[],
             &AgentProjection::default(),
         )
@@ -93,7 +93,7 @@ async fn recent_to_sse_gap_replays_then_live_promotions_keep_identity() {
         .append(
             &state.database,
             agent.id,
-            &[event],
+            &[crate::db::EventBatchItem::Public(event)],
             &[(0, "draft".into())],
             &context,
         )

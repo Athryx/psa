@@ -1,7 +1,10 @@
 use super::{Bundle, CleanupError, InstallError, Installer};
 use crate::{
     agents::Agent,
-    components::tools::{AskQuestion, ToolKind},
+    components::{
+        codemode_functions::CodeModeFunctionKind,
+        tools::{AskQuestion, ToolKind},
+    },
     sessions::Session,
 };
 
@@ -27,6 +30,9 @@ impl Bundle for AskQuestionBundle {
             return Ok(());
         }
         installer.add_tool(ToolKind::AskQuestion(AskQuestion))?;
+        installer.add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::AskQuestion(
+            AskQuestion,
+        )))?;
         Ok(())
     }
 

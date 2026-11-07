@@ -13,6 +13,38 @@ use psa_api::events::{Event, EventId, EventRange, EventType, NewEvent};
 use sqlx::{Acquire, SqliteConnection};
 use std::collections::HashSet;
 
+/// Maximum private codemode snapshot size accepted for one tool result.
+pub const MAX_CODEMODE_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
+
+/// An internal event batch item. Private events attach to the preceding public
+/// event in this batch and never consume a public event ID.
+#[derive(Debug, Clone)]
+pub enum EventBatchItem {
+    Public(NewEvent),
+    Private(PrivateEvent),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum PrivateEvent {
+    CodeModeSnapshot(Vec<u8>),
+}
+
+impl std::fmt::Debug for PrivateEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CodeModeSnapshot(bytes) => f
+                .debug_struct("CodeModeSnapshot")
+                .field("len", &bytes.len())
+                .finish(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivateEventKind {
+    CodeModeSnapshot,
+}
+
 /// Changes staged by an append; commit the cursor to persist them.
 #[derive(Debug, Clone)]
 pub struct AddEventResult {
@@ -27,6 +59,68 @@ impl DatabaseCursor {
         &mut self,
         agent: AgentId,
         events: &[NewEvent],
+    ) -> Result<AddEventResult, DbError> {
+        let batch: Vec<_> = events.iter().cloned().map(EventBatchItem::Public).collect();
+        self.add_event_batch(agent, &batch).await
+    }
+
+    /// Atomically stage public events and private attachments in batch order.
+    pub async fn add_event_batch(
+        &mut self,
+        agent: AgentId,
+        batch: &[EventBatchItem],
+    ) -> Result<AddEventResult, DbError> {
+        let mut events = Vec::new();
+        let mut private_events: Vec<Vec<&PrivateEvent>> = Vec::new();
+        for item in batch {
+            match item {
+                EventBatchItem::Public(event) => {
+                    events.push(event);
+                    private_events.push(Vec::new());
+                }
+                EventBatchItem::Private(private_event) => {
+                    let event = events.last().ok_or_else(|| {
+                        DbError::InvalidInput(
+                            "private event requires a preceding public event in the batch".into(),
+                        )
+                    })?;
+                    let attached = private_events
+                        .last_mut()
+                        .expect("public event has an attachment list");
+                    match private_event {
+                        PrivateEvent::CodeModeSnapshot(snapshot) => {
+                            if !matches!(event.kind, EventType::ToolResult(_)) {
+                                return Err(DbError::InvalidInput(
+                                    "snapshot requires a tool result".into(),
+                                ));
+                            }
+                            if snapshot.len() > MAX_CODEMODE_SNAPSHOT_BYTES {
+                                return Err(DbError::InvalidInput(
+                                    "codemode snapshot exceeds 16 MiB".into(),
+                                ));
+                            }
+                            if attached
+                                .iter()
+                                .any(|item| matches!(item, PrivateEvent::CodeModeSnapshot(_)))
+                            {
+                                return Err(DbError::InvalidInput(
+                                    "duplicate codemode snapshot for event".into(),
+                                ));
+                            }
+                        }
+                    }
+                    attached.push(private_event);
+                }
+            }
+        }
+        self.add_events_inner(agent, &events, &private_events).await
+    }
+
+    async fn add_events_inner(
+        &mut self,
+        agent: AgentId,
+        events: &[&NewEvent],
+        private_events: &[Vec<&PrivateEvent>],
     ) -> Result<AddEventResult, DbError> {
         let mut savepoint = self.transaction.begin().await?;
         let stream = get_agent(&mut savepoint, agent).await?;
@@ -80,6 +174,19 @@ impl DatabaseCursor {
             .execute(&mut *savepoint)
             .await?;
             insert_payload(&mut savepoint, result.last_insert_rowid(), &payload).await?;
+            for private_event in &private_events[offset] {
+                match private_event {
+                    PrivateEvent::CodeModeSnapshot(snapshot) => {
+                        sqlx::query(
+                            "INSERT INTO codemode_snapshots (event_pk, snapshot) VALUES (?, ?)",
+                        )
+                        .bind(result.last_insert_rowid())
+                        .bind(snapshot.as_slice())
+                        .execute(&mut *savepoint)
+                        .await?;
+                    }
+                }
+            }
             saved.push(Event {
                 id: EventId(decode_integer(seq)?),
                 source_agent_id: agent,
@@ -133,6 +240,39 @@ impl DatabaseCursor {
             new_state,
             new_usage,
         })
+    }
+
+    /// Load the latest private event of this kind visible through the agent's
+    /// fork lineage, optionally bounded by an inclusive public event sequence.
+    pub async fn load_latest_private_event(
+        &mut self,
+        agent: AgentId,
+        through: Option<EventId>,
+        kind: PrivateEventKind,
+    ) -> Result<Option<PrivateEvent>, DbError> {
+        let conn = self.connection();
+        let segments = load_segments(conn, agent, EventId(0), through).await?;
+        for (owner, lower, upper) in segments.into_iter().rev() {
+            let snapshot = match kind {
+                PrivateEventKind::CodeModeSnapshot => sqlx::query_scalar::<_, Vec<u8>>(
+                    "SELECT s.snapshot
+                 FROM codemode_snapshots s
+                 JOIN events e ON e.event_pk = s.event_pk
+                 WHERE e.agent_id = ? AND e.event_seq BETWEEN ? AND ?
+                 ORDER BY e.event_seq DESC LIMIT 1",
+                )
+                .bind(owner)
+                .bind(lower)
+                .bind(upper)
+                .fetch_optional(&mut *conn)
+                .await?
+                .map(PrivateEvent::CodeModeSnapshot),
+            };
+            if snapshot.is_some() {
+                return Ok(snapshot);
+            }
+        }
+        Ok(None)
     }
 
     pub async fn load_events(
@@ -190,7 +330,7 @@ impl DatabaseCursor {
     }
 }
 
-fn validate_result_transitions(mut state: AgentState, events: &[NewEvent]) -> Result<(), DbError> {
+fn validate_result_transitions(mut state: AgentState, events: &[&NewEvent]) -> Result<(), DbError> {
     for (index, event) in events.iter().enumerate() {
         match &event.kind {
             EventType::Result(_) => {

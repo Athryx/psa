@@ -16,6 +16,7 @@ use std::time::Duration;
 
 mod ask_question;
 pub(crate) mod bash;
+pub(crate) mod codemode;
 mod edit;
 mod file_ops;
 pub(crate) mod goal;
@@ -27,6 +28,7 @@ mod write;
 
 pub use ask_question::AskQuestion;
 pub use bash::{Bash, CloseBash, InteractBash};
+pub use codemode::CodeMode;
 pub use edit::Edit;
 pub use goal::{SetGoal, SetGoalStatus};
 pub use noop::Noop;
@@ -88,6 +90,8 @@ pub struct ToolSystemPrompt {
 pub struct ToolOutput {
     pub content: ToolResult,
     pub error: bool,
+    /// Private events committed atomically with this tool result.
+    pub(crate) private_events: Vec<crate::db::PrivateEvent>,
 }
 
 impl ToolOutput {
@@ -95,6 +99,7 @@ impl ToolOutput {
         Self {
             content,
             error: false,
+            private_events: Vec::new(),
         }
     }
 
@@ -102,6 +107,7 @@ impl ToolOutput {
         Self {
             content,
             error: true,
+            private_events: Vec::new(),
         }
     }
 }
@@ -113,6 +119,7 @@ pub fn tool_definition(id: ToolId) -> Option<ToolDefinition> {
         ToolId::RecordResult => return None,
         ToolId::AskQuestion => AskQuestion::definition(),
         ToolId::Noop => Noop::definition(),
+        ToolId::CodeMode => CodeMode::definition(),
         ToolId::Read => Read.tool_definition(),
         ToolId::Edit => Edit.tool_definition(),
         ToolId::Write => Write.tool_definition(),
@@ -223,6 +230,7 @@ pub enum ToolKind {
     AskQuestion(AskQuestion),
     RecordResult(RecordResult),
     Noop(Noop),
+    CodeMode(CodeMode),
     Read(Read),
     Edit(Edit),
     Write(Write),
@@ -247,6 +255,7 @@ impl ToolKind {
             Self::AskQuestion(_) => ToolId::AskQuestion,
             Self::RecordResult(_) => ToolId::RecordResult,
             Self::Noop(_) => ToolId::Noop,
+            Self::CodeMode(_) => ToolId::CodeMode,
             Self::Read(_) => ToolId::Read,
             Self::Edit(_) => ToolId::Edit,
             Self::Write(_) => ToolId::Write,
@@ -271,6 +280,7 @@ impl ToolKind {
             Self::AskQuestion(tool) => tool.tool_definition(),
             Self::RecordResult(tool) => tool.tool_definition(),
             Self::Noop(tool) => tool.tool_definition(),
+            Self::CodeMode(tool) => tool.tool_definition(),
             Self::Read(tool) => tool.tool_definition(),
             Self::Edit(tool) => tool.tool_definition(),
             Self::Write(tool) => tool.tool_definition(),
@@ -301,6 +311,7 @@ impl Tool for ToolKind {
             Self::AskQuestion(tool) => tool.system_prompt(),
             Self::RecordResult(tool) => tool.system_prompt(),
             Self::Noop(tool) => tool.system_prompt(),
+            Self::CodeMode(tool) => tool.system_prompt(),
             Self::Read(tool) => tool.system_prompt(),
             Self::Edit(tool) => tool.system_prompt(),
             Self::Write(tool) => tool.system_prompt(),
@@ -325,6 +336,7 @@ impl Tool for ToolKind {
             Self::AskQuestion(tool) => tool.execution_mode(),
             Self::RecordResult(tool) => tool.execution_mode(),
             Self::Noop(tool) => tool.execution_mode(),
+            Self::CodeMode(tool) => tool.execution_mode(),
             Self::Read(tool) => tool.execution_mode(),
             Self::Edit(tool) => tool.execution_mode(),
             Self::Write(tool) => tool.execution_mode(),
@@ -349,6 +361,7 @@ impl Tool for ToolKind {
             Self::AskQuestion(tool) => tool.cancellation_timeout(),
             Self::RecordResult(tool) => tool.cancellation_timeout(),
             Self::Noop(tool) => tool.cancellation_timeout(),
+            Self::CodeMode(tool) => tool.cancellation_timeout(),
             Self::Read(tool) => tool.cancellation_timeout(),
             Self::Edit(tool) => tool.cancellation_timeout(),
             Self::Write(tool) => tool.cancellation_timeout(),
@@ -378,6 +391,7 @@ impl Tool for ToolKind {
             Self::AskQuestion(tool) => tool.execute(arguments, context, cancellation).await,
             Self::RecordResult(tool) => tool.execute(arguments, context, cancellation).await,
             Self::Noop(tool) => tool.execute(arguments, context, cancellation).await,
+            Self::CodeMode(tool) => tool.execute(arguments, context, cancellation).await,
             Self::Read(tool) => tool.execute(arguments, context, cancellation).await,
             Self::Edit(tool) => tool.execute(arguments, context, cancellation).await,
             Self::Write(tool) => tool.execute(arguments, context, cancellation).await,

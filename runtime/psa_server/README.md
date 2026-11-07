@@ -228,6 +228,79 @@ and the supervisor's published activity projection share the publication gate,
 preventing stale busy values from overwriting newer transitions. Apply these
 snapshots in stream order: activity-only changes do not advance `updated_at`.
 
+### CodeMode
+
+The opt-in `CodeMode` bundle installs the model-facing `codemode` tool. It runs
+Monty's Python subset in an agent-local REPL, not a full CPython environment.
+Monty supplies a language-level sandbox; the subprocess provides crash isolation,
+not an operating-system sandbox. Use additional OS isolation if the threat model
+requires protection against interpreter vulnerabilities. Install a separate,
+compatible Monty worker on the **server host**; it is not bundled with PSA:
+
+```sh
+cargo install monty-runtime --version 1.4.0 --locked
+# Either put the installed `monty` executable on the server's PATH,
+# or set its explicit path before starting the server:
+export PSA_MONTY_WORKER="$HOME/.cargo/bin/monty"
+cargo run -p psa_server -- start
+```
+
+PSA uses the external worker at `PSA_MONTY_WORKER` when set, otherwise it finds
+`monty` on `PATH`. Use exactly version 1.4.0 to match the server's Monty crates.
+The worker is started on demand, so a missing or incompatible executable causes
+CodeMode execution to fail rather than necessarily preventing server startup.
+
+Add `"CodeMode"` to a bundle list alongside the bundles whose functions the
+agent needs. For example, this optional server-default configuration enables
+CodeMode and read-only file access:
+
+```toml
+[agent_defaults]
+bundles = ["CodeMode", { FileTools = { read_only = true } }]
+
+[agent_defaults.hooks]
+agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
+```
+
+For an API configuration, the corresponding JSON field is:
+
+```json
+{"bundles": ["CodeMode", {"FileTools": {"read_only": true}}]}
+```
+
+Rust clients can use `BundleConfig::CodeMode` and
+`BundleConfig::FileTools { read_only: true }`. Explicit lists replace inherited
+defaults, so include any other desired bundles and hooks. CodeMode needs no
+separate function configuration: participating installed bundles register their
+functions automatically. `ToolDefinitions` publishes the available functions and
+their argument schemas to the agent. Functions are async and are called with
+`await` and keyword arguments. CodeMode calls are sequential barriers around
+other model-issued tool calls; functions within a script can still run in parallel
+with `asyncio.gather`. For example:
+
+```python
+contents = await read(path="README.md")
+print(contents)
+```
+
+Use `print()` for visible output; the final expression is not displayed. Printed
+output is bounded to 12,000 characters; when exceeded, its middle is replaced
+with a truncation marker. The total result, including any exception, is bounded to
+16,000 characters. Current execution limits include 660 seconds wall time,
+10 seconds per interpreter feed, 64 MiB interpreter memory, and a 16 MiB
+checkpoint limit. Operations called through registered functions retain their own
+restrictions and can have external effects; the interpreter sandbox does not make
+those effects safe or reversible.
+
+Completed idle executions checkpoint REPL state in a server-private event attached
+to the public tool result. Both are committed atomically for later calls, restart,
+and forks at the relevant history boundary. Ordinary uncaught Python exceptions also
+checkpoint mutations made before the exception. Interruptions, resource-limit
+failures, and checkpoint errors discard the new state; restoration can also fail
+if a checkpoint is incompatible. Do not depend on REPL state as the sole copy of
+important data. Forks do not inherit live Bash process sessions, even if a saved
+variable refers to one; external side effects are not rolled back.
+
 ### Context compaction
 
 Generated defaults install `Compaction {}` in `before_request`. It summarizes
@@ -331,7 +404,9 @@ installs Read, Edit, and Write; true installs only Read. FileTools requires a
 payload, with `read_only` defaulting to false inside it; bare `"FileTools"` is
 invalid. JSON uses `{"FileTools":{"read_only":true}}`, and TOML bundle entries
 use `{ FileTools = { read_only = true } }`. `BundleConfig::Bash`
-installs `Bash`, `InteractBash`, and `CloseBash`.
+installs `Bash`, `InteractBash`, and `CloseBash`. `BundleConfig::CodeMode`
+installs the `codemode` tool; see [CodeMode](#codemode) for its external worker
+and optional bundle setup.
 `{"Goal":{"interactive_only":true}}` installs `SetGoal`/`SetGoalStatus` plus stopping
 policy; `{"AskQuestion":{"interactive_only":true}}` installs only `ask_question`,
 with no hooks. These variants require payloads, not bare unit strings. The flag

@@ -512,6 +512,48 @@ async fn dropping_cleanup_future_uses_concrete_drop_for_every_owner() {
 }
 
 #[tokio::test]
+async fn codemode_registry_rejects_recursive_and_completion_tools() {
+    use crate::components::codemode_functions::CodeModeFunctionKind;
+    use serde_json::json;
+
+    let (agent, session) = snapshots();
+    let mut installer = Installer::default();
+    let mut codemode = CodeModeBundle::new();
+    let mut goal = GoalBundle::new(false);
+    let mut result = TypedResultBundle::new(json!({"type": "object"}).into(), 3).unwrap();
+    codemode.install(&agent, &session, &mut installer).unwrap();
+    goal.install(&agent, &session, &mut installer).unwrap();
+    result.install(&agent, &session, &mut installer).unwrap();
+
+    let tools = std::mem::take(&mut installer.tools);
+    assert_eq!(
+        tools.iter().map(ToolKind::id).collect::<Vec<_>>(),
+        [
+            ToolId::CodeMode,
+            ToolId::SetGoal,
+            ToolId::SetGoalStatus,
+            ToolId::RecordResult,
+        ]
+    );
+    for tool in tools {
+        let error = installer
+            .add_codemode_function(CodeModeFunctionKind::Tool(tool))
+            .unwrap_err();
+        assert!(error.message.contains("codemode cannot expose"));
+    }
+    assert!(installer.codemode_functions.is_empty());
+    installer
+        .add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::Read(Read)))
+        .unwrap();
+    assert_eq!(installer.codemode_functions.len(), 1);
+
+    drop(installer);
+    result.cleanup().await.unwrap();
+    goal.cleanup().await.unwrap();
+    codemode.cleanup().await.unwrap();
+}
+
+#[tokio::test]
 async fn dropping_components_without_async_cleanup_still_drops_concrete_owners() {
     let (agent, session) = snapshots();
     let state = Arc::new(ProbeState::default());

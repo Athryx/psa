@@ -6,7 +6,10 @@ pub use coordinator::SubagentCoordinator;
 use super::{
     Bundle, CleanupError, HookStage, InstallError, Installer, session::SessionBundleHandle,
 };
-use crate::components::hooks::{HookKind, subagent_identity::SubagentIdentity};
+use crate::components::{
+    codemode_functions::CodeModeFunctionKind,
+    hooks::{HookKind, subagent_identity::SubagentIdentity},
+};
 use crate::{
     agents::Agent,
     components::tools::{
@@ -44,6 +47,9 @@ impl Bundle for SubagentsBundle {
             installer.add_tool(ToolKind::CreateAgent(CreateAgent::with_handle(
                 handle.clone(),
             )))?;
+            installer.add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::CreateAgent(
+                CreateAgent::with_handle(handle.clone()),
+            )))?;
         }
         installer.add_tool(ToolKind::SendMessage(SendMessage::with_handle(
             handle.clone(),
@@ -53,6 +59,15 @@ impl Bundle for SubagentsBundle {
         )))?;
         installer.add_tool(ToolKind::ListAgents(ListAgents::with_handle(
             handle.clone(),
+        )))?;
+        installer.add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::SendMessage(
+            SendMessage::with_handle(handle.clone()),
+        )))?;
+        installer.add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::WaitMessage(
+            WaitMessage::with_handle(handle.clone()),
+        )))?;
+        installer.add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::ListAgents(
+            ListAgents::with_handle(handle),
         )))?;
         installer.add_hook(
             HookStage::AgentCreate,

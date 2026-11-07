@@ -38,11 +38,14 @@ to introduce new general-purpose capabilities.
   identifies tools; every tool is installed by a bundle. There is no standalone
   tool configuration type, agent/defaults `tools` field, or tool config factory.
   Follow bundle installation and existing definition dispatch; do not create a
-  second registry or execution path.
+  second model-facing registry or execution path. CodeMode has an explicitly
+  separate, internal function registry: participating bundles install functions
+  with `installer.add_codemode_function(...)`, often using the existing tool
+  adapter and shared bundle handles. It is not an agent configuration list.
 - Adjacent tools run concurrently by default (`ExecutionMode::Parallel`). Override
   `execution_mode()` with `Sequential` when an operation must be a barrier before
-  and after its invocation; Goal setters are the working example. Do not depend
-  on declaration-order results or on another parallel invocation's side effects.
+  and after its invocation; Goal setters and CodeMode are working examples. Do not
+  depend on declaration-order results or on another parallel invocation's side effects.
 - Ordinary production concrete tools MUST use a typed argument struct and
   `typed_tool_execute!`. The schema-configured `record_result` tool is the
   deliberate dynamic-schema exception, using shared `CompiledToolSchema`
@@ -121,8 +124,10 @@ macro are unchanged.
   demonstrate state shared by two constructed tools and a hook.
 - Agent definitions select ordered bundle configurations, e.g.
   `"bundles": [{"FileTools":{"read_only":false}}, "Bash"]`.
-  `Noop` is a unit bundle installing Noop. `FileTools { read_only }` requires a
-  payload: false or omission inside that payload installs Read, Edit, and Write;
+  `Noop` is a unit bundle installing Noop. `CodeMode` installs a sequential
+  Python REPL tool using its own bundle-owned Monty runtime.
+  `FileTools { read_only }` requires a payload: false or omission inside that
+  payload installs Read, Edit, and Write;
   true installs only Read. Bare `"FileTools"` is invalid. TOML uses
   `{ FileTools = { read_only = true } }` in the bundle array.
   `Bash` installs Bash, InteractBash, and CloseBash. All tools require bundles;
@@ -286,8 +291,12 @@ to reach around their ownership or lifecycle rules.
   Hooks retain their direct worker context. A dropped save waiter cannot retract
   an already enqueued commit; do not bypass this path with direct database writes.
 - `save_events(&[NewEvent]).await`: persists and publishes auxiliary events and
-  updates the projection. The worker separately persists returned `ToolOutput` as
-  the tool result; do NOT duplicate that response as an auxiliary event.
+  updates the projection. `save_event_batch(&[EventBatchItem]).await` uses the
+  same worker-owned path for public events and server-private attachments; a
+  private item must follow its public anchor in the same atomic batch. Only the
+  public events are published and returned. The worker separately persists
+  returned `ToolOutput` as the tool result and atomically attaches its private
+  events; do NOT duplicate that response as an auxiliary event.
   Durable `EventType::Result` completion artifacts are separate metadata excluded
   from model history, not ordinary tool responses. Never synthesize one merely
   because a run failed/cancelled, or duplicate a completion within a run.

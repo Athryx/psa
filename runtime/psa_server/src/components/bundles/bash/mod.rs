@@ -14,6 +14,7 @@ use crate::{
     agents::Agent,
     components::{
         cancellation::Cancellation,
+        codemode_functions::CodeModeFunctionKind,
         tools::{self, ToolKind},
     },
     probes::ProbeHandle,
@@ -106,7 +107,18 @@ impl Bundle for BashBundle {
         installer.add_tool(ToolKind::InteractBash(tools::InteractBash::with_handle(
             handle.clone(),
         )))?;
-        installer.add_tool(ToolKind::CloseBash(tools::CloseBash::with_handle(handle)))?;
+        installer.add_tool(ToolKind::CloseBash(tools::CloseBash::with_handle(
+            handle.clone(),
+        )))?;
+        installer.add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::Bash(
+            tools::Bash::with_handle(handle.clone()),
+        )))?;
+        installer.add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::InteractBash(
+            tools::InteractBash::with_handle(handle.clone()),
+        )))?;
+        installer.add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::CloseBash(
+            tools::CloseBash::with_handle(handle),
+        )))?;
         Ok(())
     }
 

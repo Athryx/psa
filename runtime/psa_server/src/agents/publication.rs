@@ -2,7 +2,7 @@
 
 use super::{AgentError, AgentId, agent_projection::AgentProjection};
 use crate::{
-    db::{AddEventResult, Database, DbError},
+    db::{AddEventResult, Database, DbError, EventBatchItem},
     sessions::SessionId,
 };
 use psa_api::events::*;
@@ -143,13 +143,13 @@ impl Publication {
         &self,
         db: &Database,
         agent: AgentId,
-        events: &[NewEvent],
+        events: &[EventBatchItem],
         promotions: &[(usize, String)],
         context: &AgentProjection,
     ) -> Result<(AddEventResult, AgentProjection), AgentError> {
         let mut publication = self.lock().await;
         let mut cursor = db.cursor().await?;
-        let result = cursor.add_events(agent, events).await?;
+        let result = cursor.add_event_batch(agent, events).await?;
 
         let mut context = context.clone();
         for event in &result.events {

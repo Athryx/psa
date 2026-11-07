@@ -88,6 +88,8 @@ pub enum BundleConfig {
     },
     /// Installs Bash, InteractBash, and CloseBash with shared process sessions.
     Bash,
+    /// Installs the CodeMode tool.
+    CodeMode,
     /// Installs goal tools and their goal-aware stopping policy.
     Goal {
         /// When true, install only StopWithoutTools for noninteractive agents;
@@ -122,6 +124,7 @@ impl BundleConfig {
             Self::Noop => BundleId::Noop,
             Self::FileTools { .. } => BundleId::FileTools,
             Self::Bash => BundleId::Bash,
+            Self::CodeMode => BundleId::CodeMode,
             Self::Goal { .. } => BundleId::Goal,
             Self::AskQuestion { .. } => BundleId::AskQuestion,
             Self::Subagents => BundleId::Subagents,
@@ -195,6 +198,7 @@ mod tests {
                 BundleId::FileTools,
             ),
             (BundleConfig::Bash, BundleId::Bash),
+            (BundleConfig::CodeMode, BundleId::CodeMode),
             (
                 BundleConfig::Goal {
                     interactive_only: true,
@@ -414,6 +418,36 @@ mod tests {
                     .contains(&json!("interactive_only"))
             }));
         }
+    }
+
+    #[test]
+    fn code_mode_config_and_ids_roundtrip_as_unit_variants() {
+        let wire = json!("CodeMode");
+        assert_eq!(serde_json::to_value(BundleConfig::CodeMode).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<BundleConfig>(wire.clone()).unwrap(),
+            BundleConfig::CodeMode
+        );
+        assert_eq!(serde_json::to_value(BundleId::CodeMode).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<BundleId>(wire.clone()).unwrap(),
+            BundleId::CodeMode
+        );
+        assert_eq!(serde_json::to_value(ToolId::CodeMode).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<ToolId>(wire).unwrap(),
+            ToolId::CodeMode
+        );
+        assert!(serde_json::from_value::<BundleConfig>(json!({"CodeMode": {}})).is_err());
+
+        let schema = serde_json::to_value(schemars::schema_for!(BundleConfig)).unwrap();
+        assert!(
+            schema["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|variant| variant["const"] == "CodeMode")
+        );
     }
 
     #[test]
