@@ -18,6 +18,7 @@ mod syntax_highlight;
 #[cfg(test)]
 mod tests;
 mod tool_format;
+mod transcript_nav;
 mod transcript_view;
 mod views;
 

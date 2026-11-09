@@ -396,6 +396,59 @@ test('short invisible pages continue only after the previous history request fin
     f.root.dataset.hasOlder = 'false'; f.notify(); assert.equal(f.messages.length, 2);
 });
 
+test('compact rows contribute their own gap, not the default, to spacer estimates', () => {
+    const f = fixture(); f.flush();
+    assert.equal(f.spacerTop(), 100 * 60);
+    for (const row of f.mounted()) row.dataset.rowGap = '0';
+    f.notify();
+    assert.equal(f.spacerTop(), 100 * 48);
+});
+
+test('a requested jump waits for its row to mount, lands it below the top edge, and leaves follow', () => {
+    const f = fixture({ start: 850, following: true }); f.flush();
+    assert.equal(f.root.scrollTop, f.root.scrollHeight - 600);
+    Object.assign(f.root.dataset, { following: 'false', followRevision: '1', jumpRevision: '1', jumpRow: 'c:300' });
+    f.notify();
+    f.render(225); f.notify();
+    assert.equal(f.offset('c:300'), 12);
+    assert.equal(f.messages.filter(message => message.kind === 'window').length, 0, 'the jumped-to row is mid-window');
+
+    // A handled revision is not replayed by later layout work, and the row becomes the anchor.
+    f.setHeights(index => index < 300 ? 90 : 60); f.notify();
+    assert.equal(f.offset('c:300'), 12);
+    f.wheel(40);
+    assert.equal(f.offset('c:300'), -28);
+});
+
+test('a jump whose row never mounts expires, and user scrolling cancels a pending one', () => {
+    const f = fixture(); f.flush();
+    f.scroll(f.spacerTop() + 60 * 60);
+    Object.assign(f.root.dataset, { jumpRevision: '1', jumpRow: 'c:900' });
+    for (let pass = 0; pass < 4; pass++) f.notify();
+    f.render(825); f.notify();
+    assert.equal(f.offset('c:900') === 12, false, 'an expired jump must not fire later');
+
+    const g = fixture(); g.flush();
+    g.scroll(g.spacerTop() + 60 * 60);
+    Object.assign(g.root.dataset, { jumpRevision: '1', jumpRow: 'c:240' });
+    g.wheel(30, { scrollEvent: false });
+    assert.equal(g.offset('c:160'), -30);
+});
+
+test('the navigator marks the last user message at or above the reading position', () => {
+    const f = fixture(); f.flush();
+    const entries = [100, 150, 150, 240].map(index => ({ dataset: { navIndex: String(index) } }));
+    f.root.parentElement = { querySelectorAll: () => entries };
+    const current = () => entries.map(entry => entry.dataset.current === 'true');
+    f.scroll(f.spacerTop() + 60 * 60 + 9);
+    assert.deepEqual(current(), [false, true, true, false]);
+    f.scroll(f.spacerTop() + 40 * 60);
+    assert.deepEqual(current(), [true, false, false, false]);
+    assert.equal('current' in entries[1].dataset, false);
+    f.scroll(f.spacerTop() + 138 * 60);
+    assert.deepEqual(current(), [false, false, false, true]);
+});
+
 test('disposing removes observers/listeners, cancels queued frames, and releases the cache', () => {
     const f = fixture(); f.flush(); f.controller.refresh();
     f.controller.dispose(); f.controller.dispose();

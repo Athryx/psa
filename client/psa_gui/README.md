@@ -66,6 +66,22 @@ preferences. Large collapsed details are materialized only when expanded. Add
 rows through transcript reducers so display ranks and tool-result indexes remain
 consistent.
 
+Tool calls, system prompts, collapsed reasoning and similar events are compact
+one-line items that expand in place. `tool_format.rs` supplies their summaries:
+the target path, elided keyword arguments, and for `bash`/`codemode` a
+highlighted preview of the leading source lines (recovered from partial JSON
+while arguments stream). Consecutive items close up, and a run of the same tool
+or kind shares one label with its rows indented beneath. Runs are laid out over
+the mounted window only and the DOM stays a flat list of rows: a row marks a
+closed-up gap with `data-row-gap`, which the viewport controller reads when
+estimating recycled heights.
+
+`transcript_nav.rs` overlays the user's messages as ticks in the transcript's
+top-right corner; hovering or focusing them lists previews. Choosing one moves
+the window and publishes `data-jump-revision`/`data-jump-row`; the viewport
+controller scrolls to that row once mounted and marks the navigator entry for
+the current reading position. It lists the most recent loaded messages only.
+
 Run headless checks with `cargo test -p psa_gui` and browser-controller checks with
 `node --test client/psa_gui/src/*.test.cjs` from the workspace root. Tests cover the renderer-free
 root with a fake platform, transcript HTML escaping, bounded attachment fallbacks,

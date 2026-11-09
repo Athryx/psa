@@ -16,6 +16,8 @@ function createTranscriptViewport(root, send, environment = {}) {
     let following = root.dataset.following === 'true';
     let followRevision = Number(root.dataset.followRevision || 0);
     let scrollRevision = Number(root.dataset.scrollRevision || 0);
+    // A requested row may mount a render after its request; a few passes bound the wait.
+    let jumpRevision = Number(root.dataset.jumpRevision || 0), jump = null;
     const metrics = () => ({ height: root.scrollHeight, top: root.scrollTop, client_height: root.clientHeight });
     let lastScroll = metrics();
     let nearTop = lastScroll.top <= 80;
@@ -54,6 +56,38 @@ function createTranscriptViewport(root, send, environment = {}) {
         hasOlder: root.dataset.hasOlder === 'true', historyBusy: root.dataset.historyBusy === 'true',
     });
     const viewportTop = () => root.getBoundingClientRect().top + (root.clientTop || 0);
+    // Compact rows close up against each other; all other rows keep the default gap.
+    const gapAbove = row => row.dataset.rowGap === undefined ? 12 : Number(row.dataset.rowGap);
+    const syncJump = () => {
+        const revision = Number(root.dataset.jumpRevision || 0);
+        if (revision <= jumpRevision) return;
+        jumpRevision = revision;
+        jump = root.dataset.jumpRow ? { id: root.dataset.jumpRow, passes: 3 } : null;
+    };
+    // The navigator is a sibling overlay, outside the observed transcript. Its
+    // current entry is the last user message at or above the reading position.
+    const markCurrentMessage = mounted => {
+        const entries = root.parentElement?.querySelectorAll?.('[data-transcript-nav] [data-nav-index]');
+        if (!entries?.length) return;
+        const reading = viewportTop() + root.clientHeight * 0.4;
+        let index = -1;
+        for (const row of mounted) {
+            if (row.getBoundingClientRect().top > reading) break;
+            index = Number(row.dataset.rowIndex);
+        }
+        let current = -1;
+        for (const entry of entries) {
+            const position = Number(entry.dataset.navIndex);
+            if (position <= index && position > current) current = position;
+        }
+        for (const entry of entries) {
+            const marked = Number(entry.dataset.navIndex) === current;
+            if (marked !== (entry.dataset.current === 'true')) {
+                if (marked) entry.dataset.current = 'true';
+                else delete entry.dataset.current;
+            }
+        }
+    };
     const capture = mounted => {
         const top = viewportTop();
         const row = mounted.find(row => row.getBoundingClientRect().bottom > top);
@@ -107,6 +141,7 @@ function createTranscriptViewport(root, send, environment = {}) {
         const state = read();
         if (!state.active) { pending = null; return; }
         syncFollowing(state);
+        syncJump();
         // A routed wheel can be applied before its asynchronous scroll event.
         // Capture that position before a queued resize/recycler frame restores.
         observeScroll();
@@ -138,7 +173,7 @@ function createTranscriptViewport(root, send, environment = {}) {
         }
         let totalHeight = 0;
         for (const row of mounted) {
-            const height = row.getBoundingClientRect().height + 12;
+            const height = row.getBoundingClientRect().height + gapAbove(row);
             measurements.set(Number(row.dataset.rowIndex), { id: row.dataset.transcriptRow, height });
             totalHeight += height;
         }
@@ -151,7 +186,15 @@ function createTranscriptViewport(root, send, environment = {}) {
         if (bottomNode) bottomNode.style.height = `${bottom}px`;
 
         adjusting = true;
-        if (following) {
+        const target = jump && mounted.find(row => row.dataset.transcriptRow === jump.id);
+        if (jump && !target && --jump.passes <= 0) jump = null;
+        if (target) {
+            // A jump replaces the anchor: its row lands just below the top edge.
+            root.scrollTop += target.getBoundingClientRect().top - viewportTop() - 12;
+            target.animate?.([{ backgroundColor: 'rgba(154,174,255,.16)' }, { backgroundColor: 'transparent' }],
+                { duration: 1200, easing: 'ease-out' });
+            jump = null;
+        } else if (following) {
             root.scrollTop = root.scrollHeight;
         } else if (anchor) {
             const row = mounted.find(row => row.dataset.transcriptRow === anchor.id);
@@ -166,6 +209,7 @@ function createTranscriptViewport(root, send, environment = {}) {
         previousCount = state.count;
         const visible = capture(mounted);
         anchor = visible;
+        markCurrentMessage(mounted);
         for (const row of observed) {
             if (!mounted.includes(row)) { resize.unobserve(row); observed.delete(row); }
         }
@@ -221,8 +265,11 @@ function createTranscriptViewport(root, send, environment = {}) {
     const onUserScroll = event => {
         if (root.dataset.active !== 'true') return;
         syncFollowing(read());
+        // A request not yet seen by a frame is still older than this gesture.
+        syncJump();
         const delta = Number(event.detail?.deltaY || 0);
         if (delta !== 0) {
+            jump = null;
             userScrollTop = root.scrollTop;
             anchor = capture(rows());
         }
@@ -238,11 +285,13 @@ function createTranscriptViewport(root, send, environment = {}) {
         // accepts it. Follow and later wheels then share one ordered channel.
         event.preventDefault();
         syncFollowing(read());
+        syncJump();
         followRevision++;
         following = true;
         userScrollTop = null;
         pending = null;
         anchor = null;
+        jump = null;
         adjusting = true;
         root.scrollTop = root.scrollHeight;
         adjusting = false;
@@ -259,7 +308,7 @@ function createTranscriptViewport(root, send, environment = {}) {
     const resize = new Resize(schedule);
     const mutations = new Mutations(schedule);
     mutations.observe(root, { childList: true, subtree: true, characterData: true, attributes: true,
-        attributeFilter: ['data-window-start', 'data-window-end', 'data-row-count', 'data-first-row', 'data-active', 'data-following', 'data-follow-revision', 'data-scroll-revision', 'data-has-older', 'data-history-busy', 'open'] });
+        attributeFilter: ['data-window-start', 'data-window-end', 'data-row-count', 'data-first-row', 'data-active', 'data-following', 'data-follow-revision', 'data-scroll-revision', 'data-has-older', 'data-history-busy', 'data-jump-revision', 'open'] });
     root.addEventListener('scroll', onScroll, { passive: true, capture: true });
     root.addEventListener('psa:transcript-user-scroll', onUserScroll);
     root.addEventListener('psa:transcript-follow', onFollow);

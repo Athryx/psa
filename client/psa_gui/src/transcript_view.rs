@@ -5,6 +5,8 @@ use crate::{
     composer::{Composer, DraftComposer, Question},
     network,
     reactive::{Shared, use_ui_selector},
+    tool_format::{build_code_preview, summarize_call},
+    transcript_nav::{MessageNavigator, build_nav_entries},
 };
 use client_shared::*;
 use dioxus::prelude::*;
@@ -17,6 +19,7 @@ use std::{cell::RefCell, collections::HashSet, rc::Rc};
 const WINDOW_ROWS: usize = 150;
 const WINDOW_STEP: usize = WINDOW_ROWS / 2;
 const LAZY_DETAIL_BYTES: usize = 4096;
+const SUMMARY_PREVIEW_CHARS: usize = 160;
 
 // Expansion belongs to a pane, not a mounted row. Recycled rows restore their
 // state without retaining their event payloads; duplicate panes remain separate.
@@ -278,6 +281,16 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
             }
         }
     });
+    let nav_entries = use_memo(move || {
+        let selected = selection.read();
+        selected
+            .transcript
+            .as_ref()
+            .map(|transcript| build_nav_entries(transcript, &selected.preferences))
+            .unwrap_or_default()
+    });
+    // The browser controller scrolls to the requested row once it is mounted.
+    let mut jump = use_signal(|| (0_u64, String::new()));
     let mut element = use_signal(|| None::<Rc<MountedData>>);
     let mut controller = use_signal(|| None::<document::Eval>);
     let mut top_latched = use_signal(|| false);
@@ -542,15 +555,35 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
             }
         })
         .collect();
-    let rows: Vec<_> = current.rows.iter().enumerate().filter(|(_, payload)| {
+    let visible: Vec<_> = current.rows.iter().enumerate().filter(|(_, payload)| {
         !matches!(payload.kind(), psa_api::events::EventType::ToolResult(result) if call_ids.contains(&(payload.agent_id(), result.call_id.clone())))
             && row_is_visible(payload.kind(), &preferences)
-    }).map(|(offset, payload)| {
-        let result = if let psa_api::events::EventType::ToolCall(call) = payload.kind() {
-            transcript.and_then(|t| t.tool_result(payload.agent_id(), &call.call_id))
-        } else { None };
-        (current.start + offset, row_key(&payload.id()), payload.clone(), result)
     }).collect();
+    let row_preferences = RowPreferences::from(&preferences);
+    let layouts = layout_rows(
+        visible
+            .iter()
+            .map(|(_, payload)| (payload.agent_id(), payload.kind())),
+        &row_preferences,
+    );
+    let rows: Vec<_> = visible
+        .into_iter()
+        .zip(layouts)
+        .map(|((offset, payload), layout)| {
+            let result = if let psa_api::events::EventType::ToolCall(call) = payload.kind() {
+                transcript.and_then(|t| t.tool_result(payload.agent_id(), &call.call_id))
+            } else {
+                None
+            };
+            (
+                current.start + offset,
+                row_key(&payload.id()),
+                payload.clone(),
+                result,
+                layout,
+            )
+        })
+        .collect();
     let first = current
         .rows
         .first()
@@ -562,12 +595,15 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
     let has_older = transcript.is_some_and(|t| t.has_older);
     let font_size = preferences.transcript_font_size;
     let max_width = preferences.conversation_max_width_ch;
+    let (jump_revision, jump_row) = jump();
     rsx! {
+        div { class: "transcript-frame",
         div {
             id: dom_id, class: "transcript", "data-window-start": start, "data-window-end": end,
             "data-row-count": count, "data-first-row": first, "data-active": active,
             "data-following": following(), "data-follow-revision": follow_revision(),
             "data-scroll-revision": scroll_revision(), "data-has-older": has_older, "data-history-busy": history_busy(),
+            "data-jump-revision": jump_revision, "data-jump-row": jump_row,
             style: "font-size:var(--psa-transcript-font-size,{font_size}px);--conversation-max-width:var(--psa-conversation-width,{max_width}rch);overflow-anchor:none",
             onmounted: move |event| {
                 element.set(Some(event.data()));
@@ -682,9 +718,10 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
             if history_error() {
                 button { onclick: move |_| { history_auto_fill.set(false); history_error.set(false); history_busy.set(true); load_request += 1; }, "Retry loading history" }
             }
-            for (index, key, payload, result) in rows {
-                div { key: "{key}", "data-transcript-row": key, "data-row-index": index,
-                    CachedEventRow { payload, result, preferences: RowPreferences::from(&preferences) }
+            for (index, key, payload, result, layout) in rows {
+                div { key: "{key}", class: layout.class(), "data-transcript-row": key, "data-row-index": index,
+                    "data-row-gap": if layout.tight { "0" },
+                    CachedEventRow { payload, result, preferences: row_preferences.clone(), group: layout.group }
                 }
             }
             div { "data-transcript-spacer": "bottom", style: "height:0px;margin:0;flex-shrink:0", "aria-hidden": "true" }
@@ -694,6 +731,24 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
                 following.set(true);
                 if controller.peek().is_none() { scroll_transcript_to_bottom(element); }
             }, "Follow new activity ↓" } }
+        }
+        MessageNavigator {
+            entries: nav_entries,
+            onjump: move |id: RowId| {
+                let selected = selection.peek();
+                let Some(transcript) = selected.transcript.as_ref() else { return; };
+                let Some(position) = transcript.display_position(&id, &selected.preferences) else { return; };
+
+                // An explicit revision makes leaving follow authoritative over
+                // any wheel acknowledgement still in flight from the browser.
+                window.set(ViewWindow::select(transcript, &selected.preferences, position.saturating_sub(WINDOW_ROWS / 2)));
+                history_auto_fill.set(false);
+                follow_revision += 1;
+                following.set(false);
+                let revision = jump.peek().0 + 1;
+                jump.set((revision, row_key(&id)));
+            },
+        }
         }
         if target.agent_id == crate::app::DRAFT_ROOT { DraftComposer { tab } } else { Composer { tab } }
     }
@@ -746,17 +801,123 @@ impl From<&UiPreferences> for RowPreferences {
     }
 }
 
+/// Where a compact row sits within a run of consecutive rows sharing a label.
+/// The first row of a run carries the label; the others are indented below it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum GroupPosition {
+    #[default]
+    Single,
+    First,
+    Middle,
+    Last,
+}
+
+impl GroupPosition {
+    fn is_grouped(self) -> bool {
+        self != Self::Single
+    }
+}
+
+#[derive(PartialEq, Eq)]
+enum GroupKey<'a> {
+    SystemPrompt,
+    Reasoning,
+    Tool(&'a str),
+}
+
+fn group_key<'a>(
+    kind: &'a psa_api::events::EventType,
+    preferences: &RowPreferences,
+) -> Option<GroupKey<'a>> {
+    use psa_api::events::{EventType, MessageType};
+    match kind {
+        EventType::Message(message) if message.message_type == MessageType::System => {
+            Some(GroupKey::SystemPrompt)
+        }
+        EventType::ToolCall(call) => Some(GroupKey::Tool(&call.tool_name)),
+        EventType::Thinking(_) if preferences.reasoning_display == ReasoningDisplay::Collapsed => {
+            Some(GroupKey::Reasoning)
+        }
+        _ => None,
+    }
+}
+
+/// Rows drawn as one expandable line, which sit closer together than messages.
+fn is_compact_row(kind: &psa_api::events::EventType, preferences: &RowPreferences) -> bool {
+    use psa_api::events::EventType;
+    match kind {
+        EventType::ToolResult(_)
+        | EventType::Compaction(_)
+        | EventType::ProviderItem(_)
+        | EventType::Result(_) => true,
+        _ => group_key(kind, preferences).is_some(),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RowLayout {
+    group: GroupPosition,
+    compact: bool,
+    /// Follows another compact row, with no gap between the two.
+    tight: bool,
+}
+
+impl RowLayout {
+    fn class(self) -> &'static str {
+        match (self.compact, self.tight) {
+            (true, true) => "row compact tight",
+            (true, false) => "row compact",
+            _ => "row",
+        }
+    }
+}
+
+/// Lay out the mounted rows only: a run cut by the window edge simply restarts.
+fn layout_rows<'a>(
+    rows: impl Iterator<Item = (AgentId, &'a psa_api::events::EventType)>,
+    preferences: &RowPreferences,
+) -> Vec<RowLayout> {
+    let rows: Vec<_> = rows
+        .map(|(agent_id, kind)| {
+            let key = group_key(kind, preferences).map(|key| (agent_id, key));
+            (key, is_compact_row(kind, preferences))
+        })
+        .collect();
+
+    (0..rows.len())
+        .map(|index| {
+            let (key, compact) = &rows[index];
+            let joins = |other: Option<&(Option<(AgentId, GroupKey)>, bool)>| {
+                key.is_some() && other.is_some_and(|(other, _)| other == key)
+            };
+            let previous = index.checked_sub(1).and_then(|index| rows.get(index));
+            let group = match (joins(previous), joins(rows.get(index + 1))) {
+                (false, false) => GroupPosition::Single,
+                (false, true) => GroupPosition::First,
+                (true, true) => GroupPosition::Middle,
+                (true, false) => GroupPosition::Last,
+            };
+            RowLayout {
+                group,
+                compact: *compact,
+                tight: *compact && previous.is_some_and(|(_, compact)| *compact),
+            }
+        })
+        .collect()
+}
+
 #[component]
 fn CachedEventRow(
     payload: RowPayload,
     result: Option<RowPayload>,
     preferences: RowPreferences,
+    #[props(default)] group: GroupPosition,
 ) -> Element {
     #[cfg(test)]
     if let Some(counters) = try_use_context::<tests::RenderCounters>() {
         counters.record_row(payload.id());
     }
-    rsx! { EventContent { kind: EventKind::Payload(payload), result: result.map(EventKind::Payload), preferences } }
+    rsx! { EventContent { kind: EventKind::Payload(payload), result: result.map(EventKind::Payload), preferences, group } }
 }
 
 #[derive(Clone)]
@@ -945,14 +1106,15 @@ enum DetailMode {
     Error,
 }
 
+/// An expandable line. Its children form the always-visible summary.
 #[component]
 fn EventDetails(
     kind: EventKind,
     result: Option<EventKind>,
     mode: DetailMode,
-    title: String,
     class: String,
     lazy: bool,
+    children: Element,
 ) -> Element {
     let persistence = try_use_context::<ExpansionState>();
     let key = kind.row_id().map(|id| (id, mode));
@@ -991,9 +1153,9 @@ fn EventDetails(
                     if next { state.0.borrow_mut().insert(key.clone()); }
                     else { state.0.borrow_mut().remove(key); }
                 }
-            }, "{title}" }
+            }, {children} }
             if expanded() || !lazy {
-                DetailBody { kind, result, mode }
+                div { class: "item-body", DetailBody { kind, result, mode } }
             }
         }
     }
@@ -1009,15 +1171,19 @@ fn DetailBody(kind: EventKind, result: Option<EventKind>, mode: DetailMode) -> E
         (DetailMode::Tool, EventType::ToolCall(call)) => {
             let arguments = crate::tool_format::format_arguments(&call.tool_name, &call.arguments);
             rsx! {
-                if !arguments.kwargs.is_empty() { h4 { "Arguments" } pre { "{arguments.kwargs}" } }
                 if let Some((code, language)) = arguments.code {
                     h4 { if language == "bash" { "Command" } else { "Code" } }
-                    crate::syntax_highlight::HighlightedCode {
-                        code,
-                        language: if language == "bash" { crate::syntax_highlight::CodeLanguage::Bash } else { crate::syntax_highlight::CodeLanguage::Python },
-                    }
+                    crate::syntax_highlight::HighlightedCode { code, language: code_language(language) }
                 }
-                if let Some(EventType::ToolResult(result)) = result.as_ref().map(EventKind::kind) { h4 { "Result" } pre { "{blocks(&result.content)}" } }
+                if !arguments.kwargs.is_empty() { h4 { "Arguments" } pre { "{arguments.kwargs}" } }
+                for argument in arguments.text {
+                    h4 { class: "item-argument", "{argument.name}" }
+                    pre { "{argument.text}" }
+                }
+                if let Some(EventType::ToolResult(result)) = result.as_ref().map(EventKind::kind) {
+                    h4 { if result.error { "Error" } else { "Result" } }
+                    pre { "{blocks(&result.content)}" }
+                }
             }
         }
         (DetailMode::Unmatched, EventType::ToolResult(result)) => {
@@ -1045,29 +1211,77 @@ fn DetailBody(kind: EventKind, result: Option<EventKind>, mode: DetailMode) -> E
     }
 }
 
+fn code_language(name: &str) -> crate::syntax_highlight::CodeLanguage {
+    match name {
+        "bash" => crate::syntax_highlight::CodeLanguage::Bash,
+        _ => crate::syntax_highlight::CodeLanguage::Python,
+    }
+}
+
+/// The first non-blank line, bounded for a single-line summary. Markdown
+/// emphasis around a leading title is dropped, as the summary is plain text.
+fn build_line_preview<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
+    let line = parts
+        .into_iter()
+        .flat_map(str::lines)
+        .map(|line| line.trim_matches(|c: char| c.is_whitespace() || "*#`_".contains(c)))
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    match line.char_indices().nth(SUMMARY_PREVIEW_CHARS) {
+        Some((end, _)) => format!("{}…", &line[..end]),
+        None => line.to_owned(),
+    }
+}
+
 #[component]
 fn EventContent(
     kind: EventKind,
     result: Option<EventKind>,
     preferences: RowPreferences,
     #[props(default)] provisional: bool,
+    #[props(default)] group: GroupPosition,
 ) -> Element {
     use psa_api::events::EventType;
     let provisional = provisional || kind.is_provisional();
-    let details = |mode, title: String, class: &str, lazy| rsx! { EventDetails { kind: kind.clone(), result: result.clone(), mode, title, class: class.to_owned(), lazy } };
+    // A compact line: its label heads a run of like rows, or else the line itself.
+    let compact = |mode, label: &str, class: &str, lazy, summary: Element| {
+        let class = if group.is_grouped() {
+            format!("item grouped {class}")
+        } else {
+            format!("item {class}")
+        };
+        rsx! {
+            if group == GroupPosition::First {
+                div { class: if mode == DetailMode::Tool { "group-label tool" } else { "group-label" }, "{label}" }
+            }
+            EventDetails { kind: kind.clone(), result: result.clone(), mode, class, lazy,
+                span { class: "item-label", "{label}" }
+                {summary}
+            }
+        }
+    };
     match kind.kind() {
         EventType::Message(message) => {
             if matches!(message.message_type, psa_api::events::MessageType::System) {
-                let title = message
-                    .description
-                    .as_ref()
-                    .map(|description| format!("System Prompt · {description}"))
-                    .unwrap_or_else(|| "System Prompt".into());
-                return details(
+                // The body stays unbuilt while collapsed; an undescribed prompt
+                // is told apart by its size alone.
+                let description = message.description.clone().unwrap_or_else(|| {
+                    let characters: usize = message
+                        .content
+                        .iter()
+                        .map(|block| match block {
+                            ContentBlock::Text(text) => text.text.chars().count(),
+                            _ => 0,
+                        })
+                        .sum();
+                    format!("{characters} characters")
+                });
+                return compact(
                     DetailMode::System,
-                    title,
-                    "tool system-prompt",
+                    "System Prompt",
+                    "system-prompt",
                     blocks_are_large(&message.content),
+                    rsx! { span { class: "item-text", "{description}" } },
                 );
             }
             let is_agent = matches!(
@@ -1096,57 +1310,69 @@ fn EventContent(
                 EventType::ToolResult(result) => Some(result),
                 _ => None,
             });
-            let status = result
-                .map(|result| if result.error { "error" } else { "complete" })
-                .unwrap_or("running / awaiting result");
-            // Avoid parsing potentially enormous arguments on the collapsed path.
-            let preview = if call.arguments.len() <= LAZY_DETAIL_BYTES {
-                let arguments =
-                    crate::tool_format::format_arguments(&call.tool_name, &call.arguments);
-                let mut preview = arguments.kwargs;
-                if arguments.code.is_some() {
-                    if !preview.is_empty() {
-                        preview.push_str(", ");
-                    }
-                    preview.push_str(if call.tool_name == "bash" {
-                        "command=…"
-                    } else {
-                        "code=…"
-                    });
-                }
-                preview.chars().take(100).collect::<String>()
-            } else {
-                "…".into()
-            };
-            details(
+            let failed = result.is_some_and(|result| result.error);
+            let summary = summarize_call(&call.tool_name, &call.arguments);
+            let code = summary
+                .code
+                .as_ref()
+                .map(|(code, language)| (build_code_preview(code), code_language(language)));
+            let has_code = code.is_some();
+
+            compact(
                 DetailMode::Tool,
-                format!("{}({preview}) · {status}", call.tool_name),
-                if result.is_some_and(|result| result.error) {
-                    "tool error"
-                } else {
-                    "tool"
-                },
+                &call.tool_name,
+                if failed { "tool error" } else { "tool" },
                 call.arguments.len() > LAZY_DETAIL_BYTES
                     || result.is_some_and(|result| blocks_are_large(&result.content)),
+                rsx! {
+                    if let Some((preview, language)) = code {
+                        div { class: "item-code",
+                            span { class: "item-prompt", "aria-hidden": "true",
+                                if language == crate::syntax_highlight::CodeLanguage::Bash { "$" } else { ">>>" }
+                            }
+                            div { class: "item-source",
+                                crate::syntax_highlight::HighlightedCode { code: preview.text, language }
+                                if preview.hidden_lines > 0 {
+                                    span { class: "item-more", "+{preview.hidden_lines} more lines" }
+                                }
+                            }
+                        }
+                    } else {
+                        span { class: "item-text",
+                            if let Some(target) = &summary.target { span { class: "item-target", "{target}" } " " }
+                            if summary.target.is_none() && summary.kwargs.is_empty() { "(no arguments)" }
+                            "{summary.kwargs}"
+                        }
+                    }
+                    if has_code && !summary.kwargs.is_empty() { span { class: "item-meta", "{summary.kwargs}" } }
+                    if result.is_none() {
+                        span { class: "item-status running", role: "img", "aria-label": "Running" }
+                    } else if failed {
+                        span { class: "item-status failed", "failed" }
+                    }
+                },
             )
         }
-        EventType::ToolResult(result) => details(
+        EventType::ToolResult(result) => compact(
             DetailMode::Unmatched,
-            format!("Unmatched tool result · {}", result.call_id),
-            "tool",
+            "Tool result",
+            "event",
             blocks_are_large(&result.content),
+            rsx! { span { class: "item-text", "unmatched · {result.call_id}" } },
         ),
-        EventType::Compaction(_) => details(
+        EventType::Compaction(_) => compact(
             DetailMode::Compaction,
-            "Context compaction".into(),
-            "tool",
+            "Context compaction",
+            "event",
             true,
+            rsx! {},
         ),
-        EventType::ProviderItem(_) => details(
+        EventType::ProviderItem(_) => compact(
             DetailMode::Provider,
-            "Provider-native event".into(),
-            "tool",
+            "Provider-native event",
+            "event",
             true,
+            rsx! {},
         ),
         EventType::Thinking(thinking) => {
             if thinking.contents.summary.iter().all(String::is_empty) {
@@ -1154,12 +1380,17 @@ fn EventContent(
             }
             match preferences.reasoning_display {
                 ReasoningDisplay::Hidden => rsx! {},
-                ReasoningDisplay::Collapsed => details(
-                    DetailMode::Thinking,
-                    "Reasoning".into(),
-                    "tool reasoning",
-                    text_parts_are_large(&thinking.contents.summary),
-                ),
+                ReasoningDisplay::Collapsed => {
+                    let preview =
+                        build_line_preview(thinking.contents.summary.iter().map(String::as_str));
+                    compact(
+                        DetailMode::Thinking,
+                        "Reasoning",
+                        "reasoning",
+                        text_parts_are_large(&thinking.contents.summary),
+                        rsx! { span { class: "item-text item-preview", "{preview}" } },
+                    )
+                }
                 ReasoningDisplay::Shown => {
                     rsx! { article { class: "message reasoning", pre { "{thinking.contents.summary.join(\"\n\")}" } } }
                 }
@@ -1169,18 +1400,27 @@ fn EventContent(
             if preferences.hide_text_recorded_results && matches!(result, AgentResult::Text(_)) {
                 return rsx! {};
             }
-            let lazy = match result {
-                AgentResult::Text(text) => text.len() > LAZY_DETAIL_BYTES,
+            let (lazy, preview) = match result {
+                AgentResult::Text(text) => (
+                    text.len() > LAZY_DETAIL_BYTES,
+                    build_line_preview([text.as_str()]),
+                ),
                 AgentResult::Json(value) => {
                     let mut budget = LAZY_DETAIL_BYTES;
-                    json_is_large(value, &mut budget)
+                    (json_is_large(value, &mut budget), "JSON".to_owned())
                 }
             };
-            details(DetailMode::Result, "Recorded result".into(), "tool", lazy)
+            compact(
+                DetailMode::Result,
+                "Recorded result",
+                "event",
+                lazy,
+                rsx! { span { class: "item-text item-preview", "{preview}" } },
+            )
         }
         EventType::InferenceResultEnd(end) => match &end.outcome {
             llm_api::api::Outcome::Failed(error) => {
-                rsx! { article { class: "message error", role: "alert", div { class: "role", "Inference failed" } pre { "{error}" } EventDetails { kind: kind.clone(), result: None, mode: DetailMode::Error, title: "Error details".to_owned(), class: "".to_owned(), lazy: error_details_are_large(error) } } }
+                rsx! { article { class: "message error", role: "alert", div { class: "role", "Inference failed" } pre { "{error}" } EventDetails { kind: kind.clone(), result: None, mode: DetailMode::Error, class: "item".to_owned(), lazy: error_details_are_large(error), span { class: "item-label", "Error details" } } } }
             }
             llm_api::api::Outcome::Cancelled => {
                 rsx! { article { class: "message muted", div { class: "role", "Inference cancelled" } } }

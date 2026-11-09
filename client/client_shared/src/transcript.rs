@@ -1,4 +1,4 @@
-use psa_api::events::{EventType, ToolCall, ToolResult};
+use psa_api::events::{EventType, MessageType, ToolCall, ToolResult};
 use psa_api::{
     Agent, AgentId, AgentStatusSnapshot, ClientQueryId, ClientQueryRequest, EventEnvelope,
     EventsPage, PendingEvent, Session, SessionId, StreamMessage,
@@ -184,6 +184,7 @@ pub struct Transcript {
     retired_pending: Arc<HashSet<String>>,
     tool_results: Arc<HashMap<(AgentId, String), Arc<BTreeMap<RowId, RowPayload>>>>,
     display_index: [Arc<Vec<RowId>>; 4],
+    human_messages: Arc<Vec<RowId>>,
     fallback_status: Arc<OnceLock<AgentStatusSnapshot>>,
 }
 impl Transcript {
@@ -205,6 +206,7 @@ impl Transcript {
             retired_pending: Arc::default(),
             tool_results: Arc::default(),
             display_index: Default::default(),
+            human_messages: Arc::default(),
             fallback_status: Arc::default(),
         }
     }
@@ -231,6 +233,7 @@ impl Transcript {
             self.fallback_status = Arc::default();
             let payload = RowPayload::Committed(key, self.committed[&key].clone());
             self.index_display_row(&payload);
+            self.index_human_message(&payload);
             self.index_tool_result(payload);
         }
     }
@@ -303,6 +306,44 @@ impl Transcript {
                 Arc::make_mut(ids).remove(index);
                 break;
             }
+        }
+    }
+
+    fn is_human_message(kind: &EventType) -> bool {
+        matches!(kind, EventType::Message(message) if message.message_type == MessageType::Human)
+    }
+
+    fn index_human_message(&mut self, payload: &RowPayload) {
+        if !Self::is_human_message(payload.kind()) {
+            return;
+        }
+        let id = payload.id();
+        if let Err(index) = self.human_messages.binary_search(&id) {
+            Arc::make_mut(&mut self.human_messages).insert(index, id);
+        }
+    }
+
+    fn remove_human_message(&mut self, id: &RowId) {
+        if let Ok(index) = self.human_messages.binary_search(id) {
+            Arc::make_mut(&mut self.human_messages).remove(index);
+        }
+    }
+
+    /// Loaded human messages in transcript order, for navigation between turns.
+    pub fn human_message_ids(&self) -> &[RowId] {
+        &self.human_messages
+    }
+
+    pub fn row_payload(&self, id: &RowId) -> Option<RowPayload> {
+        match id {
+            RowId::Committed(id) => self
+                .committed
+                .get(id)
+                .map(|event| RowPayload::Committed(*id, event.clone())),
+            RowId::Pending(id) => self
+                .pending
+                .get(id)
+                .map(|event| RowPayload::Pending(event.clone())),
         }
     }
 
@@ -443,11 +484,15 @@ impl Transcript {
             self.remove_display_row(&RowId::Pending(id.clone()));
         }
         if let Some(previous) = previous {
+            if Self::is_human_message(&previous.kind) && !Self::is_human_message(&pending.kind) {
+                self.remove_human_message(&RowId::Pending(id.clone()));
+            }
             self.remove_tool_result(&RowPayload::Pending(previous));
         }
         self.pending.insert(id.clone(), pending);
         let payload = RowPayload::Pending(self.pending[&id].clone());
         self.index_display_row(&payload);
+        self.index_human_message(&payload);
         self.index_tool_result(payload);
     }
 
@@ -460,6 +505,7 @@ impl Transcript {
             .collect();
         for payload in previous {
             self.remove_display_row(&payload.id());
+            self.remove_human_message(&payload.id());
             self.remove_tool_result(&payload);
         }
         self.pending.clear();
@@ -467,6 +513,7 @@ impl Transcript {
 
     fn remove_pending(&mut self, id: &str) {
         self.remove_display_row(&RowId::Pending(id.to_owned()));
+        self.remove_human_message(&RowId::Pending(id.to_owned()));
         if let Some(previous) = self.pending.remove(id) {
             self.remove_tool_result(&RowPayload::Pending(previous));
         }
@@ -738,7 +785,7 @@ impl Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use psa_api::events::{Event, EventId, Message, MessageType};
+    use psa_api::events::{Event, EventId, Message};
     fn pending(revision: u64) -> PendingEvent {
         PendingEvent {
             id: "p".into(),
@@ -1042,6 +1089,82 @@ mod tests {
         assert_eq!(
             transcript.display_id_at(0, &preferences),
             Some(RowId::Committed(1))
+        );
+    }
+
+    #[test]
+    fn human_message_index_tracks_pending_revisions_commits_and_late_history() {
+        let human = |text: &str| EventType::Message(Message::text(MessageType::Human, text));
+        let mut transcript = Transcript::new(SessionId(1), Some(AgentId(2)));
+        let mut committed = event(5);
+        committed.event.kind = human("second");
+        transcript.apply(StreamMessage::Committed {
+            event: committed,
+            pending_id: None,
+        });
+        transcript.apply(StreamMessage::Committed {
+            event: event(6),
+            pending_id: None,
+        });
+        let mut provisional = pending(1);
+        provisional.kind = human("third");
+        transcript.apply(StreamMessage::Upsert {
+            pending: provisional.clone(),
+        });
+        assert_eq!(
+            transcript.human_message_ids(),
+            [RowId::Committed(5), RowId::Pending("p".into())]
+        );
+
+        // An unchanged role keeps the shared index; a changed role leaves it.
+        let snapshot = transcript.clone();
+        provisional.revision = 2;
+        provisional.kind = human("third, revised");
+        transcript.apply(StreamMessage::Upsert {
+            pending: provisional.clone(),
+        });
+        assert!(Arc::ptr_eq(
+            &snapshot.human_messages,
+            &transcript.human_messages
+        ));
+        provisional.revision = 3;
+        provisional.kind = pending(3).kind;
+        transcript.apply(StreamMessage::Upsert {
+            pending: provisional.clone(),
+        });
+        assert_eq!(transcript.human_message_ids(), [RowId::Committed(5)]);
+
+        provisional.revision = 4;
+        provisional.kind = human("third");
+        transcript.apply(StreamMessage::Upsert {
+            pending: provisional,
+        });
+        let mut committed = event(7);
+        committed.event.kind = human("third");
+        transcript.apply(StreamMessage::Committed {
+            event: committed,
+            pending_id: Some("p".into()),
+        });
+        let mut older = event(1);
+        older.event.kind = human("first");
+        transcript.merge_history(page(vec![older]));
+        // The history page's own provisional row is not part of a late merge.
+        assert_eq!(
+            transcript.human_message_ids(),
+            [
+                RowId::Committed(1),
+                RowId::Committed(5),
+                RowId::Committed(7)
+            ]
+        );
+        let first = transcript.row_payload(&RowId::Committed(1)).unwrap();
+        assert!(
+            matches!(first.kind(), EventType::Message(message) if message.message_type == MessageType::Human)
+        );
+        assert!(
+            transcript
+                .row_payload(&RowId::Pending("p".into()))
+                .is_none()
         );
     }
 

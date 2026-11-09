@@ -8,6 +8,7 @@
   --text:#e4e8f2;
   --accent:#9aaeff;
   --error:#ff9494;
+  --tool:#7fb4ff;
   font:14px/1.55 system-ui,sans-serif
 }
 * {
@@ -413,46 +414,208 @@ textarea {
 .markdown-link { color:var(--accent); overflow-wrap:anywhere }
 .markdown-image { color:var(--muted) }
 /* Source code is rendered as text nodes; these colors only mark token kinds. */
-.tool pre.syntax-code { white-space:pre; overflow-x:auto; overflow-wrap:normal; font:12px/1.5 ui-monospace,monospace }
 .syntax-keyword { color:#c792ea }
 .syntax-string { color:#c3e88d }
 .syntax-comment { color:#97a3b5; font-style:italic }
 .syntax-number { color:#f78c6c }
 .syntax-variable { color:#82aaff }
-.tool {
-  background:var(--panel);
-  border:1px solid var(--line);
-  border-radius:7px;
+/* Compact items (tool calls, prompts, reasoning) are one quiet line each and
+   expand in place. Consecutive items close up; a run sharing a label hangs
+   from that label on a rail. */
+.transcript > .row.tight { margin-top:0 }
+.item,.group-label {
+  font:.86em/1.5 ui-monospace,monospace;
+  color:var(--muted)
+}
+.item {
   margin:0;
-  padding:8px 12px;
+  min-width:0;
   overflow-wrap:anywhere
 }
-.tool summary {
-  cursor:pointer;
+.item > summary {
   display:flex;
-  align-items:center;
-  gap:6px;
+  align-items:baseline;
+  gap:10px;
+  margin:0 -8px;
+  padding:2px 8px;
+  border-radius:6px;
   list-style:none;
-  font:12px/1.4 ui-monospace,monospace
+  cursor:pointer
 }
-.tool summary::-webkit-details-marker { display:none }
-.tool summary::before {
-  content:"";
+.item > summary::-webkit-details-marker { display:none }
+.item > summary:hover { background:var(--panel) }
+.item > summary::after {
+  content:"›";
   flex:none;
-  border:4px solid transparent;
-  border-left-color:currentColor;
-  transform:translateX(2px)
+  margin-left:auto;
+  opacity:0;
+  transition:opacity .12s,transform .12s
 }
-.tool[open] > summary::before {
-  transform:rotate(90deg) translateX(2px)
+.item > summary:hover::after,.item > summary:focus-visible::after { opacity:.7 }
+.item[open] > summary::after { opacity:.7; transform:rotate(90deg) }
+.item-label,.group-label { color:#b7c0d6 }
+.item-label { flex:none }
+.group-label { padding:4px 0 2px }
+.item.tool .item-label,.group-label.tool { color:var(--tool) }
+.item.error .item-label { color:var(--error) }
+.item.grouped {
+  margin-left:3px;
+  padding-left:13px;
+  border-left:1px solid var(--line)
 }
-.system-prompt { color:var(--muted) }
-.tool pre,.fallback {
+.item.grouped:not([open]) > summary > .item-label { display:none }
+.item-text {
+  flex:1;
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap
+}
+.item-target { color:var(--text) }
+.item-preview { font-style:italic }
+.item-code {
+  display:flex;
+  align-items:baseline;
+  gap:1ch;
+  flex:1;
+  min-width:0
+}
+.item-prompt { flex:none; opacity:.6; user-select:none }
+.item-source { flex:1; min-width:0 }
+.item-code pre.syntax-code {
+  margin:0;
+  font:inherit;
+  color:var(--text);
+  white-space:pre;
+  overflow:hidden;
+  text-overflow:ellipsis
+}
+.item-more { display:block; font-size:.92em; opacity:.75 }
+.item-meta {
+  flex:none;
+  max-width:30%;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  opacity:.7
+}
+.item-status { flex:none }
+.item-status.failed { color:var(--error) }
+.item-status.running {
+  align-self:flex-start;
+  width:7px;
+  height:7px;
+  margin-top:.5em;
+  border-radius:50%;
+  background:var(--accent);
+  animation:item-pulse 1.4s ease-in-out infinite
+}
+@keyframes item-pulse {
+  50% { opacity:.25 }
+}
+@media (prefers-reduced-motion: reduce) {
+  .item-status.running { animation:none }
+}
+/* The full source and arguments replace their one-line preview when open. */
+.item[open] > summary { color:var(--text) }
+.item[open] > summary > .item-code,.item[open] > summary > .item-meta { display:none }
+.item-body {
+  margin:4px 0 10px 3px;
+  padding-left:13px;
+  border-left:1px solid var(--line)
+}
+/* Padding, not a collapsing margin, keeps a run's rail unbroken below. */
+.item.grouped > .item-body {
+  margin:4px 0 0;
+  padding:0 0 10px;
+  border-left:0
+}
+.item-body h4 {
+  margin:10px 0 4px;
+  font:600 .85em/1.4 system-ui,sans-serif;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  color:var(--muted)
+}
+.item-body > h4:first-child { margin-top:2px }
+.item-body h4.item-argument {
+  font:inherit;
+  letter-spacing:0;
+  text-transform:none
+}
+.item-body pre {
+  margin:0;
+  padding:8px 10px;
+  background:var(--panel);
+  border-radius:6px;
+  color:var(--text);
+  font:inherit;
   white-space:pre-wrap;
-  font:12px/1.5 ui-monospace,monospace;
   max-height:440px;
   overflow:auto
 }
+.item-body pre.syntax-code { white-space:pre; overflow-wrap:normal }
+.message > .item { margin-top:6px }
+/* The user's messages as ticks in the transcript's corner; hovering or
+   focusing them lists previews that jump to each message. */
+.transcript-frame {
+  position:relative;
+  display:flex;
+  flex:1;
+  flex-direction:column;
+  min-height:0
+}
+.message-nav {
+  position:absolute;
+  top:6px;
+  right:10px;
+  z-index:2;
+  padding:6px
+}
+.message-nav-ticks {
+  display:flex;
+  flex-direction:column;
+  align-items:flex-end;
+  gap:5px
+}
+.message-nav-ticks span {
+  width:8px;
+  height:2px;
+  border-radius:1px;
+  background:var(--muted);
+  opacity:.5
+}
+.message-nav-ticks span.medium { width:12px }
+.message-nav-ticks span.long { width:16px }
+.message-nav-ticks span[data-current] { background:var(--accent); opacity:1 }
+.message-nav-ticks span:nth-last-child(n+31) { display:none }
+.message-nav-list {
+  display:none;
+  position:absolute;
+  top:0;
+  right:0;
+  flex-direction:column;
+  width:min(300px,60vw);
+  max-height:min(420px,60vh);
+  overflow:auto;
+  padding:4px;
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:8px;
+  box-shadow:0 10px 30px #0006
+}
+.message-nav:hover .message-nav-list,.message-nav:focus-within .message-nav-list { display:flex }
+.message-nav-list button {
+  flex:none;
+  padding:4px 8px;
+  font-size:12px;
+  color:var(--muted);
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis
+}
+.message-nav-list button:hover { color:var(--text) }
+.message-nav-list button[data-current] { color:var(--text); box-shadow:inset 2px 0 var(--accent) }
 .composer {
   padding:12px max(16px,calc((100% - var(--conversation-max-width, 85rch))/2)) 18px;
   border-top:1px solid var(--line);

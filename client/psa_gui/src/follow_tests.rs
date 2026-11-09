@@ -104,8 +104,11 @@ async fn scrolling_to_top_reveals_cached_history_without_manual_buttons() {
             _ => None,
         })
         .unwrap();
+    // The message navigator previews every loaded turn; only rows are windowed.
+    let first_row = "<pre>history-item-000</pre>";
     let html = dioxus_ssr::render(&dom);
-    assert!(!html.contains("history-item-000"));
+    assert!(html.contains("<pre>history-item-150</pre>"));
+    assert!(!html.contains(first_row));
     assert!(!html.contains("Load older history"));
     assert!(!html.contains("earlier loaded items"));
     let data = SerializedScrollData {
@@ -129,7 +132,7 @@ async fn scrolling_to_top_reveals_cached_history_without_manual_buttons() {
             tokio::time::timeout(std::time::Duration::from_millis(10), dom.wait_for_work()).await;
         dom.render_immediate_to_vec();
     }
-    assert!(dioxus_ssr::render(&dom).contains("history-item-000"));
+    assert!(dioxus_ssr::render(&dom).contains(first_row));
 }
 
 #[component]
