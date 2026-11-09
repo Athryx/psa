@@ -1006,10 +1006,20 @@ fn DetailBody(kind: EventKind, result: Option<EventKind>, mode: DetailMode) -> E
         (DetailMode::System, EventType::Message(message)) => {
             rsx! { pre { "{blocks(&message.content)}" } }
         }
-        (DetailMode::Tool, EventType::ToolCall(call)) => rsx! {
-            h4 { "Arguments" } pre { "{call.arguments}" }
-            if let Some(EventType::ToolResult(result)) = result.as_ref().map(EventKind::kind) { h4 { "Result" } pre { "{blocks(&result.content)}" } }
-        },
+        (DetailMode::Tool, EventType::ToolCall(call)) => {
+            let arguments = crate::tool_format::format_arguments(&call.tool_name, &call.arguments);
+            rsx! {
+                if !arguments.kwargs.is_empty() { h4 { "Arguments" } pre { "{arguments.kwargs}" } }
+                if let Some((code, language)) = arguments.code {
+                    h4 { if language == "bash" { "Command" } else { "Code" } }
+                    crate::syntax_highlight::HighlightedCode {
+                        code,
+                        language: if language == "bash" { crate::syntax_highlight::CodeLanguage::Bash } else { crate::syntax_highlight::CodeLanguage::Python },
+                    }
+                }
+                if let Some(EventType::ToolResult(result)) = result.as_ref().map(EventKind::kind) { h4 { "Result" } pre { "{blocks(&result.content)}" } }
+            }
+        }
         (DetailMode::Unmatched, EventType::ToolResult(result)) => {
             rsx! { pre { "{blocks(&result.content)}" } }
         }
@@ -1089,10 +1099,28 @@ fn EventContent(
             let status = result
                 .map(|result| if result.error { "error" } else { "complete" })
                 .unwrap_or("running / awaiting result");
-            let preview: String = call.arguments.chars().take(100).collect();
+            // Avoid parsing potentially enormous arguments on the collapsed path.
+            let preview = if call.arguments.len() <= LAZY_DETAIL_BYTES {
+                let arguments =
+                    crate::tool_format::format_arguments(&call.tool_name, &call.arguments);
+                let mut preview = arguments.kwargs;
+                if arguments.code.is_some() {
+                    if !preview.is_empty() {
+                        preview.push_str(", ");
+                    }
+                    preview.push_str(if call.tool_name == "bash" {
+                        "command=…"
+                    } else {
+                        "code=…"
+                    });
+                }
+                preview.chars().take(100).collect::<String>()
+            } else {
+                "…".into()
+            };
             details(
                 DetailMode::Tool,
-                format!("{} · {status} · {preview}", call.tool_name),
+                format!("{}({preview}) · {status}", call.tool_name),
                 if result.is_some_and(|result| result.error) {
                     "tool error"
                 } else {

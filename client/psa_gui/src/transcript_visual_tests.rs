@@ -102,6 +102,25 @@ fn hidden_rows_do_not_add_spacing_elements() {
 }
 
 #[test]
+fn tool_calls_render_kwargs_and_separate_highlighted_code() {
+    let call = psa_api::events::ToolCall {
+        call_id: "call".into(),
+        tool_name: "bash".into(),
+        arguments: r#"{"command":"if true; then echo hi; fi", "yield_time_ms":10}"#.into(),
+        metadata: Default::default(),
+    };
+    let html = dioxus_ssr::render_element(rsx! {
+        EventRow { kind: psa_api::events::EventType::ToolCall(call), provisional: false, results: Rc::new(HashMap::new()) }
+    });
+    assert!(html.contains("yield_time_ms=10"), "{html}");
+    assert!(
+        html.contains("syntax-keyword") && html.contains("echo hi"),
+        "{html}"
+    );
+    assert!(!html.contains("&quot;command&quot;"), "{html}");
+}
+
+#[test]
 fn system_prompt_is_collapsed_and_shows_description() {
     let mut message =
         psa_api::events::Message::text(psa_api::events::MessageType::System, "system body");

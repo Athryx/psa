@@ -412,6 +412,13 @@ textarea {
 .markdown th { background:var(--panel) }
 .markdown-link { color:var(--accent); overflow-wrap:anywhere }
 .markdown-image { color:var(--muted) }
+/* Source code is rendered as text nodes; these colors only mark token kinds. */
+.tool pre.syntax-code { white-space:pre; overflow-x:auto; overflow-wrap:normal; font:12px/1.5 ui-monospace,monospace }
+.syntax-keyword { color:#c792ea }
+.syntax-string { color:#c3e88d }
+.syntax-comment { color:#97a3b5; font-style:italic }
+.syntax-number { color:#f78c6c }
+.syntax-variable { color:#82aaff }
 .tool {
   background:var(--panel);
   border:1px solid var(--line);

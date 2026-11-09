@@ -14,8 +14,10 @@ mod network;
 mod persistence;
 mod reactive;
 mod style;
+mod syntax_highlight;
 #[cfg(test)]
 mod tests;
+mod tool_format;
 mod transcript_view;
 mod views;
 
