@@ -699,6 +699,13 @@ async fn load_page(
         || ((query.recent || query.before.is_some())
             && (query.after != 0 || query.through.is_some()))
         || (query.recent && query.before.is_some())
+        || (query.from_context_start
+            && (agent.is_none()
+                || query.through.is_none()
+                || query.after != 0
+                || query.recent
+                || query.before.is_some()
+                || query.results_only))
     {
         return Err(HttpError::Invalid(
             "invalid event range or page limit".into(),
@@ -783,6 +790,15 @@ async fn load_page(
             has_more: false,
         });
     }
+    // A context query resolves its own lower bound: just before the marker
+    // that opened the context, so the page leads with that marker.
+    let after = match (agent, query.through) {
+        (Some(agent), Some(through)) if query.from_context_start => cursor
+            .find_context_start(session, agent, EventId(through))
+            .await?
+            .map_or(0, |marker| marker.0 - 1),
+        _ => query.after,
+    };
     let (head, events) = match agent {
         Some(agent) => {
             let head = cursor
@@ -792,7 +808,7 @@ async fn load_page(
                 .0
                 - 1;
             let range = EventRange {
-                after: EventId(query.after),
+                after: EventId(after),
                 through: query.through.map(EventId),
                 limit: query.limit,
             };
@@ -809,11 +825,11 @@ async fn load_page(
             let head = cursor.get_session(session).await?.next_position - 1;
             let events = if query.results_only {
                 cursor
-                    .load_session_result_events(session, query.after, query.through, query.limit)
+                    .load_session_result_events(session, after, query.through, query.limit)
                     .await?
             } else {
                 cursor
-                    .load_session_events(session, query.after, query.through, query.limit)
+                    .load_session_events(session, after, query.through, query.limit)
                     .await?
             };
             (head, events)
@@ -824,7 +840,7 @@ async fn load_page(
     let head = query.through.unwrap_or(head).min(head);
     let last_cursor = events
         .last()
-        .map_or(query.after, |event| event_cursor(event, agent));
+        .map_or(after, |event| event_cursor(event, agent));
     let has_more = events.len() == query.limit as usize && last_cursor < head;
 
     Ok(api::EventsPage {
@@ -834,7 +850,7 @@ async fn load_page(
         next_after: if has_more {
             last_cursor
         } else {
-            head.max(query.after)
+            head.max(after)
         },
         head,
         has_more,
@@ -865,7 +881,7 @@ async fn events_response(
                 .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
         });
 
-    if stream_events && (query.recent || query.before.is_some()) {
+    if stream_events && (query.recent || query.before.is_some() || query.from_context_start) {
         return Err(HttpError::Invalid(
             "SSE requires forward event pagination".into(),
         ));

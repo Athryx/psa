@@ -49,6 +49,25 @@ a bounded viewport independent of loaded history, while raw `EventType` preserve
 unsupported content for safe fallbacks. Tool correlation uses agent plus call ID,
 including incomplete/orphan history.
 
+The transcript also indexes user messages (`human_message_ids`), inference
+starts and ends, and `NewContext` markers. `turn_number` counts a model turn,
+by its inference start, from the user's preceding message; it is marked
+inexact while older history is unloaded and no user message bounds the count.
+Inference starts are display rows (the turn divider) only when
+`UiPreferences::turn_dividers` is not `Hidden`; `inference_end` finds the end
+a start opened. Successful ends are never display rows; failed ones always are.
+`context_turn` resolves a row to the first inference whose context contained
+it: input goes to the next inference to start, and a turn's own output to the
+turn after it, since a context is everything before its inference's start. An
+inference's start and end resolve to it; a row with no later started-and-ended
+inference, or cut off by a `NewContext`, resolves to `None`.
+
+`context.rs` reconstructs what one inference was sent from the events of its
+context (fetch them with `EventsQuery::from_context_start`). Providers report
+only a total, so each item is weighed by text length and scaled to the reported
+input tokens. `ContextMakeup::segments` arranges the diagram by order, size, or
+type, with a bounded number of blocks for any context length.
+
 Share one transcript/network subscription per scope across duplicate views.
 Keep `FollowState` and UI expansion state per `ViewId`. `Drafts` is keyed by
 `TranscriptTarget`; promote the editing view before changing a draft. Accepted
@@ -58,6 +77,9 @@ requests are not completed requests: `request_failures` is keyed by acceptance I
 
 `open` searches the entire split tree and focuses the most recently focused
 matching duplicate; it only replaces the focused group's preview when absent.
+A tab's `TabKind` says what it shows of its target: the transcript, or one
+turn's context. `open_context` reuses an agent's context tab, and `open` never
+treats a context tab as the agent's transcript.
 Use `promote` on double-click, draft edits, and submission. Independent `ViewId`s
 are stable across serialization and never reused after closing tabs.
 `open_duplicate` supports restored/future split views internally; ordinary

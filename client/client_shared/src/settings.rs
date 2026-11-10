@@ -71,6 +71,18 @@ pub enum ReasoningDisplay {
     Shown,
 }
 
+/// How the start of each model turn is marked in a transcript: the boundary
+/// between what the turn was sent and what it produced.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TurnDividerDisplay {
+    Hidden,
+    /// A plain hairline.
+    Line,
+    /// A hairline carrying the turn's number, usage and context link.
+    #[default]
+    Labeled,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiPreferences {
@@ -81,6 +93,7 @@ pub struct UiPreferences {
     pub double_click_session_opens_details: bool,
     pub hide_text_recorded_results: bool,
     pub hide_agent_statuses: bool,
+    pub turn_dividers: TurnDividerDisplay,
     pub reasoning_display: ReasoningDisplay,
 }
 impl Default for UiPreferences {
@@ -93,6 +106,7 @@ impl Default for UiPreferences {
             double_click_session_opens_details: true,
             hide_text_recorded_results: true,
             hide_agent_statuses: true,
+            turn_dividers: TurnDividerDisplay::default(),
             reasoning_display: ReasoningDisplay::default(),
         }
     }
@@ -351,10 +365,15 @@ mod tests {
             settings.preferences.reasoning_display,
             ReasoningDisplay::Collapsed
         );
+        assert_eq!(
+            settings.preferences.turn_dividers,
+            TurnDividerDisplay::Labeled
+        );
 
         settings.preferences.hide_text_recorded_results = false;
         settings.preferences.hide_agent_statuses = false;
         settings.preferences.reasoning_display = ReasoningDisplay::Shown;
+        settings.preferences.turn_dividers = TurnDividerDisplay::Line;
         let encoded = serde_json::to_string(&settings).unwrap();
         let restored: DesktopSettings = serde_json::from_str(&encoded).unwrap();
         assert!(!restored.preferences.hide_text_recorded_results);
@@ -363,6 +382,7 @@ mod tests {
             restored.preferences.reasoning_display,
             ReasoningDisplay::Shown
         );
+        assert_eq!(restored.preferences.turn_dividers, TurnDividerDisplay::Line);
     }
 
     #[test]

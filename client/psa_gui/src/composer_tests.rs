@@ -72,6 +72,7 @@ fn width_fixture() -> Element {
             session_id: SessionId(1),
             agent_id: psa_api::AgentId(agent_id),
         },
+        kind: TabKind::Transcript,
         preview: false,
         last_focused: 0,
     };
@@ -137,7 +138,7 @@ fn composer_fixture() -> Element {
         state
     });
     use_context_provider(|| ui);
-    rsx! { Composer { tab: Tab { id: ViewId(1), target, preview: false, last_focused: 0 } } }
+    rsx! { Composer { tab: Tab { id: ViewId(1), target, kind: TabKind::Transcript, preview: false, last_focused: 0 } } }
 }
 
 fn mount() -> (VirtualDom, ElementId) {
@@ -426,7 +427,7 @@ fn two_target_fixture() -> Element {
         for id in [2, 3] {
             Composer { key:"{id}", tab:Tab {
                 id:ViewId(id), target:TranscriptTarget { session_id:SessionId(1), agent_id:AgentId(id) },
-                preview:false, last_focused:0,
+                kind:TabKind::Transcript, preview:false, last_focused:0,
             } }
         }
     }
@@ -509,7 +510,7 @@ fn duplicate_target_fixture() -> Element {
         for view in [2, 3] {
             Composer { key:"{view}", tab:Tab {
                 id:ViewId(view), target:TranscriptTarget { session_id:SessionId(1), agent_id:AgentId(2) },
-                preview:false, last_focused:0,
+                kind:TabKind::Transcript, preview:false, last_focused:0,
             } }
         }
     }

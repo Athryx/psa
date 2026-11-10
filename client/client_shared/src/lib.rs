@@ -2,6 +2,7 @@
 pub mod agents;
 pub mod commands;
 pub mod connection;
+pub mod context;
 pub mod local;
 pub mod sessions;
 pub mod settings;
@@ -13,6 +14,7 @@ pub mod workspace;
 pub use agents::*;
 pub use commands::*;
 pub use connection::*;
+pub use context::*;
 pub use local::*;
 pub use sessions::*;
 pub use settings::*;

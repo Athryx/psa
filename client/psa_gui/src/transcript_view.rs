@@ -3,6 +3,7 @@
 use crate::{
     app::Ui,
     composer::{Composer, DraftComposer, Question},
+    context_view::format_tokens,
     network,
     reactive::{Shared, use_ui_selector},
     tool_format::{build_code_preview, summarize_call},
@@ -570,17 +571,27 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
         .into_iter()
         .zip(layouts)
         .map(|((offset, payload), layout)| {
-            let result = if let psa_api::events::EventType::ToolCall(call) = payload.kind() {
-                transcript.and_then(|t| t.tool_result(payload.agent_id(), &call.call_id))
-            } else {
-                None
+            // A tool call carries its result, and a turn's start its end.
+            let result = match payload.kind() {
+                psa_api::events::EventType::ToolCall(call) => {
+                    transcript.and_then(|t| t.tool_result(payload.agent_id(), &call.call_id))
+                }
+                psa_api::events::EventType::InferenceResultStart(_) => {
+                    transcript.and_then(|t| t.inference_end(&payload.id()))
+                }
+                _ => None,
             };
+            let turn = transcript
+                .filter(|_| row_preferences.turn_dividers == TurnDividerDisplay::Labeled)
+                .and_then(|t| t.turn_number(&payload.id()));
             (
                 current.start + offset,
+                payload.id(),
                 row_key(&payload.id()),
                 payload.clone(),
                 result,
                 layout,
+                turn,
             )
         })
         .collect();
@@ -596,6 +607,7 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
     let font_size = preferences.transcript_font_size;
     let max_width = preferences.conversation_max_width_ch;
     let (jump_revision, jump_row) = jump();
+    let mut row_menu = use_signal(|| None::<RowMenu>);
     rsx! {
         div { class: "transcript-frame",
         div {
@@ -718,10 +730,16 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
             if history_error() {
                 button { onclick: move |_| { history_auto_fill.set(false); history_error.set(false); history_busy.set(true); load_request += 1; }, "Retry loading history" }
             }
-            for (index, key, payload, result, layout) in rows {
+            for (index, id, key, payload, result, layout, turn) in rows {
                 div { key: "{key}", class: layout.class(), "data-transcript-row": key, "data-row-index": index,
-                    "data-row-gap": if layout.tight { "0" },
-                    CachedEventRow { payload, result, preferences: row_preferences.clone(), group: layout.group }
+                    "data-row-gap": layout.spacing.gap_attribute(),
+                    oncontextmenu: move |event: MouseEvent| {
+                        event.prevent_default();
+                        let point = event.client_coordinates();
+                        let turn = selection.peek().transcript.as_ref().and_then(|t| t.context_turn(&id));
+                        row_menu.set(Some(RowMenu { x: point.x, y: point.y, turn }));
+                    },
+                    CachedEventRow { payload, result, preferences: row_preferences.clone(), group: layout.group, turn }
                 }
             }
             div { "data-transcript-spacer": "bottom", style: "height:0px;margin:0;flex-shrink:0", "aria-hidden": "true" }
@@ -749,6 +767,9 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
                 jump.set((revision, row_key(&id)));
             },
         }
+        if let Some(menu) = row_menu() {
+            RowContextMenu { menu, target, onclose: move |_| row_menu.set(None) }
+        }
         }
         if target.agent_id == crate::app::DRAFT_ROOT { DraftComposer { tab } } else { Composer { tab } }
     }
@@ -774,10 +795,10 @@ fn row_is_visible(kind: &psa_api::events::EventType, preferences: &UiPreferences
         EventType::Result(result) => {
             !preferences.hide_text_recorded_results || !matches!(result, AgentResult::Text(_))
         }
-        EventType::InferenceResultEnd(end) => !matches!(
-            end.outcome,
-            llm_api::api::Outcome::Completed { .. } | llm_api::api::Outcome::InProgress
-        ),
+        EventType::InferenceResultStart(_) => {
+            preferences.turn_dividers != TurnDividerDisplay::Hidden
+        }
+        EventType::InferenceResultEnd(end) => !is_successful_inference(end),
         EventType::StatusChange(status) => {
             status.new_status == AgentState::Interrupted || !preferences.hide_agent_statuses
         }
@@ -790,6 +811,7 @@ struct RowPreferences {
     reasoning_display: ReasoningDisplay,
     hide_text_recorded_results: bool,
     hide_agent_statuses: bool,
+    turn_dividers: TurnDividerDisplay,
 }
 impl From<&UiPreferences> for RowPreferences {
     fn from(preferences: &UiPreferences) -> Self {
@@ -797,6 +819,7 @@ impl From<&UiPreferences> for RowPreferences {
             reasoning_display: preferences.reasoning_display,
             hide_text_recorded_results: preferences.hide_text_recorded_results,
             hide_agent_statuses: preferences.hide_agent_statuses,
+            turn_dividers: preferences.turn_dividers,
         }
     }
 }
@@ -854,20 +877,43 @@ fn is_compact_row(kind: &psa_api::events::EventType, preferences: &RowPreference
     }
 }
 
+/// The gap above a row. The viewport controller reads the same gap from
+/// `data-row-gap` when it estimates the height of recycled rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RowSpacing {
+    #[default]
+    Normal,
+    /// Beside a turn divider, which separates rows by itself.
+    Near,
+    /// A compact row following another, with no gap between the two.
+    Tight,
+}
+
+impl RowSpacing {
+    fn gap_attribute(self) -> Option<&'static str> {
+        match self {
+            Self::Normal => None,
+            Self::Near => Some("6"),
+            Self::Tight => Some("0"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct RowLayout {
     group: GroupPosition,
     compact: bool,
-    /// Follows another compact row, with no gap between the two.
-    tight: bool,
+    spacing: RowSpacing,
 }
 
 impl RowLayout {
     fn class(self) -> &'static str {
-        match (self.compact, self.tight) {
-            (true, true) => "row compact tight",
-            (true, false) => "row compact",
-            _ => "row",
+        match (self.compact, self.spacing) {
+            (true, RowSpacing::Tight) => "row compact tight",
+            (true, RowSpacing::Near) => "row compact near",
+            (true, RowSpacing::Normal) => "row compact",
+            (false, RowSpacing::Normal) => "row",
+            (false, _) => "row near",
         }
     }
 }
@@ -880,15 +926,16 @@ fn layout_rows<'a>(
     let rows: Vec<_> = rows
         .map(|(agent_id, kind)| {
             let key = group_key(kind, preferences).map(|key| (agent_id, key));
-            (key, is_compact_row(kind, preferences))
+            let divides = matches!(kind, psa_api::events::EventType::InferenceResultStart(_));
+            (key, is_compact_row(kind, preferences), divides)
         })
         .collect();
 
     (0..rows.len())
         .map(|index| {
-            let (key, compact) = &rows[index];
-            let joins = |other: Option<&(Option<(AgentId, GroupKey)>, bool)>| {
-                key.is_some() && other.is_some_and(|(other, _)| other == key)
+            let (key, compact, divides) = &rows[index];
+            let joins = |other: Option<&(Option<(AgentId, GroupKey)>, bool, bool)>| {
+                key.is_some() && other.is_some_and(|(other, ..)| other == key)
             };
             let previous = index.checked_sub(1).and_then(|index| rows.get(index));
             let group = match (joins(previous), joins(rows.get(index + 1))) {
@@ -897,10 +944,15 @@ fn layout_rows<'a>(
                 (true, true) => GroupPosition::Middle,
                 (true, false) => GroupPosition::Last,
             };
+            let spacing = match previous {
+                Some((_, true, _)) if *compact => RowSpacing::Tight,
+                Some((.., previous_divides)) if *divides || *previous_divides => RowSpacing::Near,
+                _ => RowSpacing::Normal,
+            };
             RowLayout {
                 group,
                 compact: *compact,
-                tight: *compact && previous.is_some_and(|(_, compact)| *compact),
+                spacing,
             }
         })
         .collect()
@@ -912,12 +964,13 @@ fn CachedEventRow(
     result: Option<RowPayload>,
     preferences: RowPreferences,
     #[props(default)] group: GroupPosition,
+    #[props(default)] turn: Option<TurnNumber>,
 ) -> Element {
     #[cfg(test)]
     if let Some(counters) = try_use_context::<tests::RenderCounters>() {
         counters.record_row(payload.id());
     }
-    rsx! { EventContent { kind: EventKind::Payload(payload), result: result.map(EventKind::Payload), preferences, group } }
+    rsx! { EventContent { kind: EventKind::Payload(payload), result: result.map(EventKind::Payload), preferences, group, turn } }
 }
 
 #[derive(Clone)]
@@ -953,6 +1006,19 @@ impl EventKind {
             Self::Payload(payload) => Some(payload.id()),
             #[cfg(test)]
             Self::Owned(_) => None,
+        }
+    }
+    /// The agent and event ID naming a committed inference to a context view.
+    fn context_turn(&self) -> Option<(TranscriptTarget, u64)> {
+        match self {
+            Self::Payload(RowPayload::Committed(_, envelope)) => Some((
+                TranscriptTarget {
+                    session_id: envelope.session_id,
+                    agent_id: envelope.agent_id,
+                },
+                envelope.event.id.0,
+            )),
+            _ => None,
         }
     }
 }
@@ -996,7 +1062,7 @@ pub(crate) fn EventRow(props: EventRowProps) -> Element {
     rsx! { EventContent { kind: EventKind::Owned(Shared::new(props.kind)), result, preferences: RowPreferences::from(&preferences()), provisional: props.provisional } }
 }
 
-fn blocks(content: &[ContentBlock]) -> String {
+pub(crate) fn blocks(content: &[ContentBlock]) -> String {
     content
         .iter()
         .map(|block| match block {
@@ -1169,17 +1235,8 @@ fn DetailBody(kind: EventKind, result: Option<EventKind>, mode: DetailMode) -> E
             rsx! { pre { "{blocks(&message.content)}" } }
         }
         (DetailMode::Tool, EventType::ToolCall(call)) => {
-            let arguments = crate::tool_format::format_arguments(&call.tool_name, &call.arguments);
             rsx! {
-                if let Some((code, language)) = arguments.code {
-                    h4 { if language == "bash" { "Command" } else { "Code" } }
-                    crate::syntax_highlight::HighlightedCode { code, language: code_language(language) }
-                }
-                if !arguments.kwargs.is_empty() { h4 { "Arguments" } pre { "{arguments.kwargs}" } }
-                for argument in arguments.text {
-                    h4 { class: "item-argument", "{argument.name}" }
-                    pre { "{argument.text}" }
-                }
+                ToolArguments { tool_name: call.tool_name.clone(), arguments: call.arguments.clone() }
                 if let Some(EventType::ToolResult(result)) = result.as_ref().map(EventKind::kind) {
                     h4 { if result.error { "Error" } else { "Result" } }
                     pre { "{blocks(&result.content)}" }
@@ -1211,6 +1268,23 @@ fn DetailBody(kind: EventKind, result: Option<EventKind>, mode: DetailMode) -> E
     }
 }
 
+/// A tool call's arguments, with any code among them highlighted.
+#[component]
+pub(crate) fn ToolArguments(tool_name: String, arguments: String) -> Element {
+    let arguments = crate::tool_format::format_arguments(&tool_name, &arguments);
+    rsx! {
+        if let Some((code, language)) = arguments.code {
+            h4 { if language == "bash" { "Command" } else { "Code" } }
+            crate::syntax_highlight::HighlightedCode { code, language: code_language(language) }
+        }
+        if !arguments.kwargs.is_empty() { h4 { "Arguments" } pre { "{arguments.kwargs}" } }
+        for argument in arguments.text {
+            h4 { class: "item-argument", "{argument.name}" }
+            pre { "{argument.text}" }
+        }
+    }
+}
+
 fn code_language(name: &str) -> crate::syntax_highlight::CodeLanguage {
     match name {
         "bash" => crate::syntax_highlight::CodeLanguage::Bash,
@@ -1233,6 +1307,114 @@ fn build_line_preview<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
     }
 }
 
+fn format_duration(duration: std::time::Duration) -> String {
+    let seconds = duration.as_secs_f64();
+    if seconds < 60.0 {
+        return format!("{seconds:.1}s");
+    }
+    format!(
+        "{}m {:02}s",
+        duration.as_secs() / 60,
+        duration.as_secs() % 60
+    )
+}
+
+/// A row's right-click menu, at viewport coordinates. `turn` is the inference
+/// the row belongs to, once that inference has ended.
+#[derive(Clone, Copy, PartialEq)]
+struct RowMenu {
+    x: f64,
+    y: f64,
+    turn: Option<u64>,
+}
+
+#[component]
+fn RowContextMenu(menu: RowMenu, target: TranscriptTarget, onclose: EventHandler<()>) -> Element {
+    let mut ui = use_context::<Signal<Ui>>();
+    let RowMenu { x, y, turn } = menu;
+    rsx! {
+        div {
+            class: "row-menu-backdrop",
+            onclick: move |_| onclose.call(()),
+            oncontextmenu: move |event| { event.prevent_default(); onclose.call(()); },
+        }
+        div {
+            class: "row-menu", role: "menu", tabindex: "-1",
+            style: "left:min({x}px,calc(100vw - 168px));top:min({y}px,calc(100vh - 48px))",
+            onmounted: move |event| { spawn(async move { let _ = event.data().set_focus(true).await; }); },
+            onkeydown: move |event| {
+                if event.key() == Key::Escape {
+                    event.prevent_default();
+                    event.stop_propagation();
+                    onclose.call(());
+                }
+            },
+            button {
+                r#type: "button", role: "menuitem", disabled: turn.is_none(),
+                title: if turn.is_some() { "Show the first context this was sent to the model in" } else { "Not yet in any finished model turn's context" },
+                onclick: move |_| {
+                    if let Some(turn) = turn {
+                        ui.write().open_context(target, turn);
+                    }
+                    onclose.call(());
+                },
+                "Show context"
+            }
+        }
+    }
+}
+
+/// The start of one model turn, between what it was sent (everything above)
+/// and what it produced (below): its number, figures from the turn's end, and
+/// a way to inspect what its context was made of. `end` is `None` while the
+/// turn is still running.
+#[component]
+fn TurnDivider(end: Option<EventKind>, turn: Option<TurnNumber>) -> Element {
+    let ui = try_use_context::<Signal<Ui>>();
+    let context_turn = end.as_ref().and_then(EventKind::context_turn);
+
+    let details = match end.as_ref().map(EventKind::kind) {
+        Some(psa_api::events::EventType::InferenceResultEnd(end)) => {
+            let mut details = Vec::new();
+            if let Some(tokens) = end.usage.input_tokens {
+                details.push(format!("{} context", format_tokens(tokens)));
+            }
+            if let Some(tokens) = end.usage.output_tokens {
+                details.push(format!("{} out", format_tokens(tokens)));
+            }
+            if !end.request_time.is_zero() {
+                details.push(format_duration(end.request_time));
+            }
+            details.join(" · ")
+        }
+        _ => "running…".to_owned(),
+    };
+    rsx! {
+        div { class: "turn-divider", role: "separator",
+            span { class: "turn-label",
+                if let Some(turn) = turn {
+                    span {
+                        class: "turn-number",
+                        title: if turn.exact { "Model calls since your last message" } else { "Model calls in the loaded history; earlier history is not loaded" },
+                        "turn {turn.number}" if !turn.exact { "+" }
+                    }
+                }
+                if turn.is_some() && !details.is_empty() { " · " }
+                "{details}"
+            }
+            span { class: "turn-rule" }
+            if let (Some(mut ui), Some((target, turn))) = (ui, context_turn) {
+                button {
+                    class: "turn-context", r#type: "button",
+                    title: "Show what this turn was sent: everything above this line",
+                    onclick: move |_| ui.write().open_context(target, turn),
+                    "context"
+                }
+            }
+        }
+    }
+}
+
 #[component]
 fn EventContent(
     kind: EventKind,
@@ -1240,6 +1422,7 @@ fn EventContent(
     preferences: RowPreferences,
     #[props(default)] provisional: bool,
     #[props(default)] group: GroupPosition,
+    #[props(default)] turn: Option<TurnNumber>,
 ) -> Element {
     use psa_api::events::EventType;
     let provisional = provisional || kind.is_provisional();
@@ -1418,26 +1601,38 @@ fn EventContent(
                 rsx! { span { class: "item-text item-preview", "{preview}" } },
             )
         }
-        EventType::InferenceResultEnd(end) => match &end.outcome {
-            llm_api::api::Outcome::Failed(error) => {
-                rsx! { article { class: "message error", role: "alert", div { class: "role", "Inference failed" } pre { "{error}" } EventDetails { kind: kind.clone(), result: None, mode: DetailMode::Error, class: "item".to_owned(), lazy: error_details_are_large(error), span { class: "item-label", "Error details" } } } }
+        EventType::InferenceResultEnd(end) => {
+            let report = match &end.outcome {
+                llm_api::api::Outcome::Failed(error) => {
+                    rsx! { article { class: "message error", role: "alert", div { class: "role", "Inference failed" } pre { "{error}" } EventDetails { kind: kind.clone(), result: None, mode: DetailMode::Error, class: "item".to_owned(), lazy: error_details_are_large(error), span { class: "item-label", "Error details" } } } }
+                }
+                llm_api::api::Outcome::Cancelled => {
+                    rsx! { article { class: "message muted", div { class: "role", "Inference cancelled" } } }
+                }
+                llm_api::api::Outcome::Incomplete { reason } => {
+                    use llm_api::api::StopReason;
+                    let reason = match reason {
+                        StopReason::EndTurn => "End of turn",
+                        StopReason::ToolCalls => "Tool calls",
+                        StopReason::StopSequence => "Stop sequence",
+                        StopReason::TokenLimit => "Token limit reached",
+                        StopReason::ContentFilter => "Content filtered",
+                        StopReason::Other(reason) => reason,
+                    };
+                    rsx! { article { class: "message", div { class: "role", "Inference incomplete" } pre { "{reason}" } } }
+                }
+                llm_api::api::Outcome::Completed { .. } | llm_api::api::Outcome::InProgress => {
+                    rsx! {}
+                }
+            };
+            report
+        }
+        EventType::InferenceResultStart(_) => match preferences.turn_dividers {
+            TurnDividerDisplay::Hidden => rsx! {},
+            TurnDividerDisplay::Line => {
+                rsx! { div { class: "turn-divider", role: "separator", span { class: "turn-rule" } } }
             }
-            llm_api::api::Outcome::Cancelled => {
-                rsx! { article { class: "message muted", div { class: "role", "Inference cancelled" } } }
-            }
-            llm_api::api::Outcome::Incomplete { reason } => {
-                use llm_api::api::StopReason;
-                let reason = match reason {
-                    StopReason::EndTurn => "End of turn",
-                    StopReason::ToolCalls => "Tool calls",
-                    StopReason::StopSequence => "Stop sequence",
-                    StopReason::TokenLimit => "Token limit reached",
-                    StopReason::ContentFilter => "Content filtered",
-                    StopReason::Other(reason) => reason,
-                };
-                rsx! { article { class: "message", div { class: "role", "Inference incomplete" } pre { "{reason}" } } }
-            }
-            llm_api::api::Outcome::Completed { .. } | llm_api::api::Outcome::InProgress => rsx! {},
+            TurnDividerDisplay::Labeled => rsx! { TurnDivider { end: result.clone(), turn } },
         },
         EventType::StatusChange(status) => {
             if status.new_status == AgentState::Interrupted {

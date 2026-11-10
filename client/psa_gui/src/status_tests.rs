@@ -57,7 +57,7 @@ fn agent_composer_fixture() -> Element {
         state
     });
     use_context_provider(|| ui);
-    rsx! { Composer { tab: Tab { id: ViewId(1), target, preview: false, last_focused: 0 } } }
+    rsx! { Composer { tab: Tab { id: ViewId(1), target, kind: TabKind::Transcript, preview: false, last_focused: 0 } } }
 }
 
 #[test]
@@ -153,7 +153,7 @@ fn draft_status_fixture() -> Element {
         state
     });
     use_context_provider(|| ui);
-    rsx! { DraftComposer { tab: Tab { id: ViewId(1), target, preview: false, last_focused: 0 } } }
+    rsx! { DraftComposer { tab: Tab { id: ViewId(1), target, kind: TabKind::Transcript, preview: false, last_focused: 0 } } }
 }
 
 #[test]

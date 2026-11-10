@@ -299,9 +299,13 @@ TODO: probe api
 Exact route templates/builders are in `src/routes.rs`; wire types are in
 `src/types.rs` and `src/events.rs`. `src/client.rs` provides the async `Client`,
 including typed JSON requests and SSE decoding. `EventsQuery` uses `after`,
-`through`, `recent`, `before`, `limit`, `include_pending`, and `results_only`; it has no `stream` field.
+`through`, `recent`, `before`, `limit`, `include_pending`, `results_only`, and
+`from_context_start`; it has no `stream` field.
 `results_only=true` filters durable Result events before the database limit and
-filters SSE durable events as well. Event endpoints
+filters SSE durable events as well. `from_context_start=true` (agent routes,
+JSON only, with `through` and no other lower bound) begins the page at the model
+context containing `through`: its opening `NewContext` event, or the agent's
+first event. Continue a partial page with `after = next_after`. Event endpoints
 select SSE with `Accept: text/event-stream`, or JSON with
 `Accept: application/json` (JSON is the default). `Client::events()` requests JSON;
 `Client::stream_events()` requests SSE. Only the streaming method accepts a

@@ -6,6 +6,7 @@ use std::{future::Future, pin::Pin, rc::Rc};
 
 mod app;
 mod composer;
+mod context_view;
 mod creation;
 mod input;
 mod interaction;

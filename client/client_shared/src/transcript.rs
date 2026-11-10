@@ -87,6 +87,21 @@ impl PartialEq for RowPayload {
 }
 impl Eq for RowPayload {}
 
+/// A successful inference has nothing to report; it only bounds a model turn.
+pub fn is_successful_inference(end: &psa_api::events::InferenceResultEnd) -> bool {
+    matches!(
+        end.outcome,
+        llm_api::api::Outcome::Completed { .. } | llm_api::api::Outcome::InProgress
+    )
+}
+
+fn committed_event_id(payload: &RowPayload) -> Option<u64> {
+    match payload {
+        RowPayload::Committed(_, envelope) => Some(envelope.event.id.0),
+        RowPayload::Pending(_) => None,
+    }
+}
+
 impl RowPayload {
     pub fn id(&self) -> RowId {
         match self {
@@ -145,6 +160,16 @@ impl FollowState {
     }
 }
 
+/// A model turn's ordinal, as far as loaded history can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnNumber {
+    pub number: usize,
+    /// False when unloaded older history may hold earlier turns.
+    pub exact: bool,
+}
+
+const DISPLAY_CATEGORIES: usize = 5;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RowId {
     Committed(u64),
@@ -183,8 +208,11 @@ pub struct Transcript {
     pub has_older: bool,
     retired_pending: Arc<HashSet<String>>,
     tool_results: Arc<HashMap<(AgentId, String), Arc<BTreeMap<RowId, RowPayload>>>>,
-    display_index: [Arc<Vec<RowId>>; 4],
+    display_index: [Arc<Vec<RowId>>; DISPLAY_CATEGORIES],
     human_messages: Arc<Vec<RowId>>,
+    inference_starts: Arc<Vec<RowId>>,
+    inference_ends: Arc<Vec<RowId>>,
+    context_resets: Arc<Vec<RowId>>,
     fallback_status: Arc<OnceLock<AgentStatusSnapshot>>,
 }
 impl Transcript {
@@ -207,6 +235,9 @@ impl Transcript {
             tool_results: Arc::default(),
             display_index: Default::default(),
             human_messages: Arc::default(),
+            inference_starts: Arc::default(),
+            inference_ends: Arc::default(),
+            context_resets: Arc::default(),
             fallback_status: Arc::default(),
         }
     }
@@ -234,6 +265,7 @@ impl Transcript {
             let payload = RowPayload::Committed(key, self.committed[&key].clone());
             self.index_display_row(&payload);
             self.index_human_message(&payload);
+            self.index_context_marker(&payload);
             self.index_tool_result(payload);
         }
     }
@@ -279,14 +311,11 @@ impl Transcript {
                 Some(0)
             }
             EventType::StatusChange(_) => Some(3),
-            EventType::InferenceResultEnd(end)
-                if !matches!(
-                    end.outcome,
-                    llm_api::api::Outcome::Completed { .. } | llm_api::api::Outcome::InProgress
-                ) =>
-            {
-                Some(0)
-            }
+            // Each turn opens with an optional divider at its start, between
+            // what it was sent and what it produced. A failed or cancelled
+            // end is always reported; a successful one has nothing to show.
+            EventType::InferenceResultStart(_) => Some(4),
+            EventType::InferenceResultEnd(end) if !is_successful_inference(end) => Some(0),
             _ => None,
         }
     }
@@ -329,6 +358,108 @@ impl Transcript {
         }
     }
 
+    /// Index the events that delimit model contexts: inference starts and
+    /// ends, and the markers that open a new context.
+    fn index_context_marker(&mut self, payload: &RowPayload) {
+        let markers = match payload.kind() {
+            EventType::InferenceResultStart(_) => &mut self.inference_starts,
+            EventType::InferenceResultEnd(_) => &mut self.inference_ends,
+            EventType::NewContext => &mut self.context_resets,
+            _ => return,
+        };
+        let id = payload.id();
+        if let Err(index) = markers.binary_search(&id) {
+            Arc::make_mut(markers).insert(index, id);
+        }
+    }
+
+    /// The first committed marker of an agent strictly after a row.
+    fn next_marker<'a>(
+        &'a self,
+        markers: &'a [RowId],
+        after: &RowId,
+        agent_id: AgentId,
+    ) -> Option<(&'a RowId, &'a EventEnvelope)> {
+        let first = markers.partition_point(|marker| marker <= after);
+        markers[first..].iter().find_map(|marker| {
+            let RowId::Committed(key) = marker else {
+                return None;
+            };
+            let envelope = self.committed.get(key)?;
+            (envelope.agent_id == agent_id).then_some((marker, &**envelope))
+        })
+    }
+
+    /// Number a model turn by its inference start, counting from the user's
+    /// preceding message. Without one, turns count from the start of history.
+    ///
+    /// Only loaded history is counted: while older history exists and no user
+    /// message precedes the turn, the number is a lower bound.
+    pub fn turn_number(&self, id: &RowId) -> Option<TurnNumber> {
+        let position = self.inference_starts.binary_search(id).ok()?;
+        let preceding_messages = self.human_messages.partition_point(|message| message < id);
+        let first_counted = match preceding_messages.checked_sub(1) {
+            Some(index) => {
+                let message = &self.human_messages[index];
+                self.inference_starts
+                    .partition_point(|start| start < message)
+            }
+            None => 0,
+        };
+        Some(TurnNumber {
+            number: position - first_counted + 1,
+            exact: preceding_messages > 0 || !self.has_older,
+        })
+    }
+
+    /// The most recent inference end in loaded history.
+    pub fn latest_turn(&self) -> Option<RowId> {
+        self.inference_ends.last().cloned()
+    }
+
+    /// The end of the inference a start row opened, once it has ended.
+    pub fn inference_end(&self, start: &RowId) -> Option<RowPayload> {
+        let RowId::Committed(key) = start else {
+            return None;
+        };
+        let envelope = self.committed.get(key)?;
+        let EventType::InferenceResultStart(start_marker) = &envelope.event.kind else {
+            return None;
+        };
+        let (end_row, end) = self.next_marker(&self.inference_ends, start, envelope.agent_id)?;
+        match &end.event.kind {
+            EventType::InferenceResultEnd(end_marker) if end_marker.id == start_marker.id => {
+                self.row_payload(end_row)
+            }
+            _ => None,
+        }
+    }
+
+    /// The inference end naming the first context a row was sent in, so its
+    /// context view always contains the row. A turn's context is everything
+    /// before its start, so a turn's own output belongs to the next turn. The
+    /// start and end of an inference stand for their own turn.
+    ///
+    /// `None` until a later inference of the row's agent has ended, or when a
+    /// new context opened before one started, as the row was never sent.
+    pub fn context_turn(&self, id: &RowId) -> Option<u64> {
+        let payload = self.row_payload(id)?;
+        let agent_id = payload.agent_id();
+        let start_row = match payload.kind() {
+            EventType::InferenceResultEnd(_) => return committed_event_id(&payload),
+            EventType::InferenceResultStart(_) => id,
+            _ => {
+                let (start_row, _) = self.next_marker(&self.inference_starts, id, agent_id)?;
+                let reset = self.next_marker(&self.context_resets, id, agent_id);
+                if reset.is_some_and(|(reset_row, _)| reset_row < start_row) {
+                    return None;
+                }
+                start_row
+            }
+        };
+        committed_event_id(&self.inference_end(start_row)?)
+    }
+
     /// Loaded human messages in transcript order, for navigation between turns.
     pub fn human_message_ids(&self) -> &[RowId] {
         &self.human_messages
@@ -347,12 +478,13 @@ impl Transcript {
         }
     }
 
-    fn enabled_categories(preferences: &crate::UiPreferences) -> [bool; 4] {
+    fn enabled_categories(preferences: &crate::UiPreferences) -> [bool; DISPLAY_CATEGORIES] {
         [
             true,
             preferences.reasoning_display != crate::ReasoningDisplay::Hidden,
             !preferences.hide_text_recorded_results,
             !preferences.hide_agent_statuses,
+            preferences.turn_dividers != crate::TurnDividerDisplay::Hidden,
         ]
     }
 
@@ -429,7 +561,7 @@ impl Transcript {
         let mut rows =
             Vec::with_capacity(limit.min(self.display_count(preferences).saturating_sub(start)));
         while rows.len() < limit {
-            let next = (0..4)
+            let next = (0..DISPLAY_CATEGORIES)
                 .filter(|category| enabled[*category])
                 .filter_map(|category| {
                     self.display_index[category]
@@ -1166,6 +1298,164 @@ mod tests {
                 .row_payload(&RowId::Pending("p".into()))
                 .is_none()
         );
+    }
+
+    fn inference_end(id: u64, outcome: llm_api::api::Outcome) -> EventEnvelope {
+        let mut next = event(id);
+        next.event.kind = EventType::InferenceResultEnd(psa_api::events::InferenceResultEnd {
+            id,
+            outcome,
+            usage: Default::default(),
+            request_time: std::time::Duration::ZERO,
+            response_id: None,
+            provider_metadata: Default::default(),
+        });
+        next
+    }
+
+    #[test]
+    fn turns_count_from_the_preceding_user_message_and_dividers_follow_the_preference() {
+        use llm_api::api::{Outcome, StopReason};
+        let completed = || Outcome::Completed {
+            reason: StopReason::ToolCalls,
+        };
+        let human = |id| {
+            let mut next = event(id);
+            next.event.kind = EventType::Message(Message::text(MessageType::Human, "question"));
+            next
+        };
+        let mut transcript = Transcript::new(SessionId(1), Some(AgentId(2)));
+        for next in [
+            inference_start(11),
+            paired_end(11, 12, completed()),
+            inference_start(13),
+            paired_end(13, 14, Outcome::Cancelled),
+            human(15),
+            inference_start(16),
+            paired_end(16, 17, completed()),
+        ] {
+            transcript.apply(StreamMessage::Committed {
+                event: next,
+                pending_id: None,
+            });
+        }
+        let turn = |transcript: &Transcript, id| {
+            let turn = transcript.turn_number(&RowId::Committed(id))?;
+            Some((turn.number, turn.exact))
+        };
+        assert_eq!(turn(&transcript, 11), Some((1, true)));
+        assert_eq!(turn(&transcript, 13), Some((2, true)));
+        assert_eq!(turn(&transcript, 12), None);
+        assert_eq!(turn(&transcript, 15), None);
+        assert_eq!(turn(&transcript, 16), Some((1, true)));
+
+        // Unloaded history may hold earlier turns, until a user message bounds them.
+        transcript.has_older = true;
+        assert_eq!(turn(&transcript, 13), Some((2, false)));
+        assert_eq!(turn(&transcript, 16), Some((1, true)));
+        transcript.merge_history(page(vec![inference_start(9)]));
+        assert_eq!(turn(&transcript, 13), Some((3, false)));
+        transcript.merge_history(page(vec![human(8)]));
+        assert_eq!(turn(&transcript, 13), Some((3, true)));
+
+        // A turn's divider is its start; only an unsuccessful end is a row.
+        let mut preferences = crate::UiPreferences::default();
+        assert_eq!(
+            preferences.turn_dividers,
+            crate::TurnDividerDisplay::Labeled
+        );
+        assert_eq!(transcript.display_count(&preferences), 7);
+        preferences.turn_dividers = crate::TurnDividerDisplay::Line;
+        assert_eq!(transcript.display_count(&preferences), 7);
+        preferences.turn_dividers = crate::TurnDividerDisplay::Hidden;
+        assert_eq!(transcript.display_count(&preferences), 3);
+        assert_eq!(
+            transcript.display_id_at(1, &preferences),
+            Some(RowId::Committed(14))
+        );
+
+        // A start finds its own end, once the inference has ended.
+        let end = |id| transcript.inference_end(&RowId::Committed(id));
+        assert_eq!(end(13).map(|end| end.id()), Some(RowId::Committed(14)));
+        assert!(end(9).is_none());
+        assert!(end(12).is_none());
+    }
+
+    fn inference_start(id: u64) -> EventEnvelope {
+        let mut next = event(id);
+        next.event.kind = EventType::InferenceResultStart(psa_api::events::InferenceResultStart {
+            id,
+            model_config: llm_api::providers::ModelConfig {
+                model: llm_api::providers::Model::new(
+                    llm_api::providers::ProviderType::Openrouter,
+                    "test",
+                )
+                .unwrap(),
+                effort: llm_api::providers::Effort::High,
+            },
+            request_config: Default::default(),
+        });
+        next
+    }
+
+    /// An inference end paired with the start of the same inference.
+    fn paired_end(start: u64, id: u64, outcome: llm_api::api::Outcome) -> EventEnvelope {
+        let mut next = inference_end(id, outcome);
+        if let EventType::InferenceResultEnd(end) = &mut next.event.kind {
+            end.id = start;
+        }
+        next
+    }
+
+    #[test]
+    fn rows_resolve_to_the_first_context_they_were_sent_in() {
+        use llm_api::api::Outcome;
+        let mut transcript = Transcript::new(SessionId(1), Some(AgentId(2)));
+        let mut reset = event(17);
+        reset.event.kind = EventType::NewContext;
+        for next in [
+            event(1),
+            inference_start(2),
+            event(3),
+            paired_end(2, 4, Outcome::Cancelled),
+            event(5),
+            inference_start(6),
+            event(7),
+            paired_end(6, 8, Outcome::Cancelled),
+            event(9),
+            inference_start(10),
+            paired_end(10, 11, Outcome::Cancelled),
+            event(12),
+            reset,
+            inference_start(18),
+            event(19),
+            paired_end(18, 20, Outcome::Cancelled),
+            event(21),
+        ] {
+            transcript.apply(StreamMessage::Committed {
+                event: next,
+                pending_id: None,
+            });
+        }
+        let turn = |id| transcript.context_turn(&RowId::Committed(id));
+        // Input is first sent to the inference that starts after it.
+        assert_eq!(turn(1), Some(4));
+        assert_eq!(turn(5), Some(8));
+        // A turn's output is first sent to the next turn.
+        assert_eq!(turn(3), Some(8));
+        assert_eq!(turn(7), Some(11));
+        // An inference's start and end stand for its own turn.
+        assert_eq!(turn(2), Some(4));
+        assert_eq!(turn(4), Some(4));
+        assert_eq!(turn(18), Some(20));
+        assert_eq!(turn(8), Some(8));
+        // A new context opened before the row was ever sent.
+        assert_eq!(turn(12), None);
+        // Nothing has been sent to the model after the last inference started.
+        assert_eq!(turn(19), None);
+        assert_eq!(turn(21), None);
+        assert_eq!(turn(99), None);
+        assert_eq!(transcript.latest_turn(), Some(RowId::Committed(20)));
     }
 
     #[test]

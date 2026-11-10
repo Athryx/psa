@@ -368,7 +368,7 @@ fn Pane(group: TabGroup) -> Element {
                     ondragover:move |e|e.prevent_default(),
                     ondrop:move |e|{e.prevent_default();e.stop_propagation();let dragging=ui.read().dragging;if let Some(view)=dragging{ui.write().workspace.move_tab(view,group.id,index);}ui.write().dragging=None;},
                     button{class:"title",onclick:move |_|{ui.write().workspace.focus(tab.id);if tab.target.agent_id != crate::app::DRAFT_ROOT { ui.write().last_agents.insert(tab.target.session_id,tab.target.agent_id); } crate::app::request_composer_focus(ui);},ondoubleclick:move |_|ui.write().workspace.promote(tab.id),
-                        "{tab_title(&state,tab.target)}"
+                        "{tab_title(&state,tab.target)}" if matches!(tab.kind, TabKind::Context { .. }) { " · context" }
                     }
                     if tab_is_running(&state, tab.target) { span { class:"tab-spinner", role:"img", "aria-label":"Agent running" } }
                     button{class:"close",title:"Close tab",onclick:move |_|{ui.write().workspace.close(tab.id);},"×"}
@@ -389,7 +389,12 @@ fn Pane(group: TabGroup) -> Element {
                 div{class:"drop-zone {edge}",ondragover:move |e|e.prevent_default(),ondrop:move |e|{e.prevent_default();e.stop_propagation();let dragging=ui.read().dragging;if let Some(view)=dragging{let mut state=ui.write();move_to_split(&mut state.workspace,view,group.id,axis,before);state.dragging=None;}},"{label}"}
             }
         }}
-        for tab in group.tabs.iter().cloned(){div{key:"{tab.id.0}","data-view-id":"{tab.id.0}","data-active":if Some(tab.id)==group.active{"true"}else{"false"},style:if Some(tab.id)==group.active{"display:flex;flex-direction:column;flex:1;min-height:0;"}else{"display:none;"},TranscriptView{key:"{tab.id.0}:{tab.target.session_id.0}:{tab.target.agent_id.0}",active:Some(tab.id)==group.active,tab:tab.clone()}}}
+        for tab in group.tabs.iter().cloned(){div{key:"{tab.id.0}","data-view-id":"{tab.id.0}","data-active":if Some(tab.id)==group.active{"true"}else{"false"},style:if Some(tab.id)==group.active{"display:flex;flex-direction:column;flex:1;min-height:0;"}else{"display:none;"},
+            match tab.kind {
+                TabKind::Transcript => rsx!{TranscriptView{key:"{tab.id.0}:{tab.target.session_id.0}:{tab.target.agent_id.0}",active:Some(tab.id)==group.active,tab:tab.clone()}},
+                TabKind::Context { turn } => rsx!{crate::context_view::ContextView{key:"{tab.id.0}:{tab.target.session_id.0}:{tab.target.agent_id.0}",target:tab.target,turn}},
+            }
+        }}
         if active.is_none(){div{class:"empty","Select an agent to open a preview here."}}
     }}
 }
@@ -534,6 +539,14 @@ pub fn Settings() -> Element {
                     _=>client_shared::ReasoningDisplay::Collapsed,
                 };
             },option{value:"Hidden","Hidden"}option{value:"Collapsed","Collapsed"}option{value:"Shown","Shown"}}
+            label{r#for:"turn-dividers","Dividers between model turns"}
+            select{id:"turn-dividers",value:format!("{:?}",state.settings.preferences.turn_dividers),onchange:move |e|{
+                ui.write().settings.preferences.turn_dividers=match e.value().as_str(){
+                    "Hidden"=>client_shared::TurnDividerDisplay::Hidden,
+                    "Line"=>client_shared::TurnDividerDisplay::Line,
+                    _=>client_shared::TurnDividerDisplay::Labeled,
+                };
+            },option{value:"Labeled","Divider with labels"}option{value:"Line","Divider without labels"}option{value:"Hidden","Hidden"}}
             label{input{r#type:"checkbox",checked:state.settings.preferences.hide_text_recorded_results,onchange:move |e|ui.write().settings.preferences.hide_text_recorded_results=e.checked()},"Hide text recorded results"}
             label{input{r#type:"checkbox",checked:state.settings.preferences.hide_agent_statuses,onchange:move |e|ui.write().settings.preferences.hide_agent_statuses=e.checked()},"Hide agent statuses (interrupted always shown)"}
             label{input{r#type:"checkbox",checked:state.settings.preferences.double_click_session_opens_details,onchange:move |e|ui.write().settings.preferences.double_click_session_opens_details=e.checked()},"Open current session details when double-clicking a session"}

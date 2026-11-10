@@ -153,6 +153,7 @@ fn RenderFixture(counters: RenderCounters) -> Element {
             session_id: SessionId(1),
             agent_id: AgentId(1),
         },
+        kind: TabKind::Transcript,
         preview: false,
         last_focused: 0,
     };

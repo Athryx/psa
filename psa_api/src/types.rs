@@ -568,6 +568,12 @@ pub struct EventsQuery {
     /// Cursors still refer to the full event sequence, not a separate result sequence.
     #[serde(default)]
     pub results_only: bool,
+    /// Begin at the model context containing `through`: the page starts with the
+    /// NewContext event that opened it, or else the agent's first event. Agent
+    /// routes only; JSON only; requires `through` and excludes every other lower
+    /// bound. Continue a partial page with `after = next_after` and this flag unset.
+    #[serde(default)]
+    pub from_context_start: bool,
 }
 
 impl Default for EventsQuery {
@@ -580,6 +586,7 @@ impl Default for EventsQuery {
             limit: 1000,
             include_pending: false,
             results_only: false,
+            from_context_start: false,
         }
     }
 }

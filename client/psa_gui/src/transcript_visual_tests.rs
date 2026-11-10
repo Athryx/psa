@@ -263,6 +263,7 @@ fn GroupedTranscriptFixture() -> Element {
             session_id: SessionId(1),
             agent_id: AgentId(1),
         },
+        kind: TabKind::Transcript,
         preview: false,
         last_focused: 0,
     };
@@ -341,4 +342,276 @@ fn transcript_groups_tool_runs_and_indexes_user_messages_beside_the_rows() {
     assert_eq!(navigator.matches("data-nav-index=7").count(), 2, "{html}");
     assert!(navigator.contains(">second question</button>"), "{html}");
     assert!(!navigator.contains("answer"), "{html}");
+}
+
+fn inference_end(
+    input_tokens: Option<u64>,
+    outcome: llm_api::api::Outcome,
+) -> psa_api::events::EventType {
+    psa_api::events::EventType::InferenceResultEnd(psa_api::events::InferenceResultEnd {
+        id: 1,
+        outcome,
+        usage: llm_api::api::Usage {
+            input_tokens,
+            output_tokens: Some(1_300),
+            ..Default::default()
+        },
+        request_time: std::time::Duration::from_millis(12_400),
+        response_id: None,
+        provider_metadata: Default::default(),
+    })
+}
+
+fn inference_start(id: u64) -> psa_api::events::EventType {
+    psa_api::events::EventType::InferenceResultStart(psa_api::events::InferenceResultStart {
+        id,
+        model_config: llm_api::providers::ModelConfig {
+            model: llm_api::providers::Model::new(
+                llm_api::providers::ProviderType::Openrouter,
+                "test",
+            )
+            .unwrap(),
+            effort: llm_api::providers::Effort::High,
+        },
+        request_config: Default::default(),
+    })
+}
+
+/// Give an inference end the ID of the inference it closes.
+fn paired_end(id: u64, mut end: psa_api::events::EventType) -> psa_api::events::EventType {
+    if let psa_api::events::EventType::InferenceResultEnd(end) = &mut end {
+        end.id = id;
+    }
+    end
+}
+
+fn completed() -> llm_api::api::Outcome {
+    llm_api::api::Outcome::Completed {
+        reason: llm_api::api::StopReason::ToolCalls,
+    }
+}
+
+/// One row as the transcript draws it: a turn's start carries its end.
+#[component]
+fn DividerPreferenceRoot(
+    display: TurnDividerDisplay,
+    kind: Shared<psa_api::events::EventType>,
+    end: Option<Shared<psa_api::events::EventType>>,
+) -> Element {
+    let mut preferences = UiPreferences::default();
+    preferences.turn_dividers = display;
+    rsx! {
+        EventContent {
+            kind: EventKind::Owned(kind),
+            result: end.map(EventKind::Owned),
+            preferences: RowPreferences::from(&preferences),
+        }
+    }
+}
+
+#[test]
+fn turn_dividers_report_usage_and_follow_the_preference() {
+    use TurnDividerDisplay::{Hidden, Labeled, Line};
+    let render = |display, kind, end: Option<psa_api::events::EventType>| {
+        dioxus_ssr::render_element(rsx! {
+            DividerPreferenceRoot { display, kind: Shared::new(kind), end: end.map(Shared::new) }
+        })
+    };
+    let divider = |display, end| render(display, inference_start(1), end);
+
+    let html = divider(Labeled, Some(inference_end(Some(48_230), completed())));
+    assert!(html.contains("role=\"separator\""), "{html}");
+    assert!(html.contains("48.2k context · 1.3k out · 12.4s"), "{html}");
+    // A standalone row has neither a loaded turn number nor a committed turn to open.
+    assert!(
+        !html.contains("turn-number") && !html.contains("turn-context"),
+        "{html}"
+    );
+
+    let html = divider(Labeled, Some(inference_end(None, completed())));
+    assert!(
+        html.contains("1.3k out · 12.4s") && !html.contains("context"),
+        "{html}"
+    );
+    // A turn still running has no figures yet.
+    let html = divider(Labeled, None);
+    assert!(html.contains("running…") && !html.contains("out"), "{html}");
+    assert_eq!(
+        divider(Hidden, Some(inference_end(Some(48_230), completed()))),
+        ""
+    );
+
+    // A plain divider is the rule alone.
+    let html = divider(Line, Some(inference_end(Some(48_230), completed())));
+    assert!(html.contains("turn-rule"), "{html}");
+    assert!(
+        !html.contains("context") && !html.contains("12.4s") && !html.contains("turn-label"),
+        "{html}"
+    );
+
+    // An end draws only its report, whatever the divider preference.
+    assert_eq!(
+        render(Labeled, inference_end(Some(900), completed()), None),
+        ""
+    );
+    for display in [Labeled, Hidden] {
+        let html = render(
+            display,
+            inference_end(Some(900), llm_api::api::Outcome::Cancelled),
+            None,
+        );
+        assert!(
+            html.contains("Inference cancelled") && !html.contains("turn-divider"),
+            "{html}"
+        );
+    }
+}
+
+#[test]
+fn rows_beside_a_turn_divider_sit_nearer_and_runs_stop_at_it() {
+    use psa_api::events::MessageType;
+    let read = |id: &str| tool_call(id, "read", serde_json::json!({ "path": id }));
+    let rows = [
+        (AgentId(1), read("1")),
+        (AgentId(1), inference_start(1)),
+        (AgentId(1), read("2")),
+        (AgentId(1), read("3")),
+        (
+            AgentId(1),
+            inference_end(Some(1), llm_api::api::Outcome::Cancelled),
+        ),
+        (AgentId(1), message(MessageType::Agent, "answer")),
+    ];
+    let preferences = RowPreferences::from(&UiPreferences::default());
+    let layouts = layout_rows(
+        rows.iter().map(|(agent, kind)| (*agent, kind)),
+        &preferences,
+    );
+    assert_eq!(
+        layouts
+            .iter()
+            .map(|layout| layout.class())
+            .collect::<Vec<_>>(),
+        [
+            "row compact",
+            "row near",
+            "row compact near",
+            "row compact tight",
+            "row",
+            "row"
+        ]
+    );
+    assert_eq!(
+        layouts
+            .iter()
+            .map(|layout| layout.spacing.gap_attribute())
+            .collect::<Vec<_>>(),
+        [None, Some("6"), Some("6"), Some("0"), None, None]
+    );
+    use GroupPosition::*;
+    assert_eq!(
+        layouts
+            .iter()
+            .map(|layout| layout.group)
+            .collect::<Vec<_>>(),
+        [Single, Single, First, Last, Single, Single]
+    );
+}
+
+fn committed(id: u64, kind: psa_api::events::EventType) -> EventEnvelope {
+    serde_json::from_value(serde_json::json!({
+        "session_id": 1, "agent_id": 1, "position": id,
+        "event": {
+            "id": id, "source_agent_id": 1, "timestamp": "2026-01-01T00:00:00Z",
+            "kind": serde_json::to_value(kind).unwrap(),
+        },
+    }))
+    .unwrap()
+}
+
+#[component]
+fn TurnTranscriptFixture() -> Element {
+    use psa_api::events::MessageType;
+    let tab = Tab {
+        id: ViewId(1),
+        target: TranscriptTarget {
+            session_id: SessionId(1),
+            agent_id: AgentId(1),
+        },
+        kind: TabKind::Transcript,
+        preview: false,
+        last_focused: 0,
+    };
+    let target = tab.target;
+    let ui = use_signal(move || {
+        let mut ui = Ui::new(DesktopSettings::default());
+        let mut transcript = Transcript::new(target.session_id, Some(target.agent_id));
+        let kinds = [
+            message(MessageType::Human, "question"),
+            inference_start(1),
+            tool_call("1", "read", serde_json::json!({ "path": "src/a.rs" })),
+            inference_end(Some(12_000), completed()),
+            tool_result("1", false),
+            inference_start(2),
+            message(MessageType::Agent, "answer"),
+            paired_end(2, inference_end(Some(15_500), completed())),
+        ];
+        for (index, kind) in kinds.into_iter().enumerate() {
+            transcript.apply(StreamMessage::Committed {
+                event: committed(index as u64 + 1, kind),
+                pending_id: None,
+            });
+        }
+        ui.transcripts.insert(target, transcript.into());
+        ui
+    });
+    use_context_provider(|| ui);
+    rsx! { TranscriptView { tab, active: true } }
+}
+
+#[component]
+fn RowMenuRoot(turn: Option<u64>) -> Element {
+    let ui = use_signal(|| Ui::new(DesktopSettings::default()));
+    use_context_provider(|| ui);
+    let target = TranscriptTarget {
+        session_id: SessionId(1),
+        agent_id: AgentId(1),
+    };
+    let menu = RowMenu {
+        x: 12.0,
+        y: 34.0,
+        turn,
+    };
+    rsx! { RowContextMenu { menu, target, onclose: |_| {} } }
+}
+
+#[test]
+fn row_menu_offers_context_only_once_the_turn_has_ended() {
+    let html = dioxus_ssr::render_element(rsx! { RowMenuRoot { turn: Some(8) } });
+    assert!(html.contains("Show context"), "{html}");
+    assert!(html.contains("left:min(12px"), "{html}");
+    assert!(!html.contains("disabled"), "{html}");
+
+    let html = dioxus_ssr::render_element(rsx! { RowMenuRoot { turn: None } });
+    assert!(html.contains("disabled"), "{html}");
+}
+
+#[test]
+fn committed_turns_are_numbered_and_offer_their_context() {
+    let mut dom = VirtualDom::new(TurnTranscriptFixture);
+    dom.rebuild_in_place();
+    let html = dioxus_ssr::render(&dom);
+    assert_eq!(html.matches("class=\"turn-divider\"").count(), 2, "{html}");
+    assert_eq!(html.matches("class=\"turn-context\"").count(), 2, "{html}");
+    // Each divider opens its turn: what it was sent above, its output below.
+    let question = html.find("<pre>question</pre>").unwrap();
+    let first = html.find("turn 1</span> · 12.0k context").expect(&html);
+    let call = html.find("src/a.rs").unwrap();
+    let second = html.find("turn 2</span> · 15.5k context").expect(&html);
+    let answer = html.find("<p>answer</p>").unwrap();
+    assert!(
+        [question, first, call, second, answer].is_sorted(),
+        "{html}"
+    );
+    assert_eq!(html.matches("data-row-gap=\"6\"").count(), 4, "{html}");
 }

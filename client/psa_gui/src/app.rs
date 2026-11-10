@@ -407,6 +407,10 @@ impl Ui {
     ) {
         self.open_session_target_with_focus(target, permanent, from_double_click, None);
     }
+    /// Show the makeup of the context sent for one of an agent's model turns.
+    pub fn open_context(&mut self, target: TranscriptTarget, turn: u64) {
+        self.workspace.open_context(target, turn);
+    }
     pub(crate) fn open_session_target_with_focus(
         &mut self,
         target: TranscriptTarget,
@@ -494,12 +498,20 @@ pub fn app() -> Element {
                 };
                 window.addEventListener('keydown', window.psaWorkspaceKeyForwarder, true);
             }
+            // Right-clicking selected text keeps the native menu and its Copy.
+            if (!window.psaKeepSelectionMenu) {
+                window.psaKeepSelectionMenu = event => {
+                    const selection = window.getSelection();
+                    if (selection && !selection.isCollapsed && selection.containsNode(event.target, true)) event.stopPropagation();
+                };
+                window.addEventListener('contextmenu', window.psaKeepSelectionMenu, true);
+            }
         "#,
         );
     });
     use_drop(|| {
         document::eval(
-            "window.removeEventListener('keydown', window.psaWorkspaceKeyForwarder, true); delete window.psaWorkspaceKeyForwarder; window.psaRemovePaneFocus?.(); window.psaRemoveHoveredWheel?.();",
+            "window.removeEventListener('keydown', window.psaWorkspaceKeyForwarder, true); delete window.psaWorkspaceKeyForwarder; window.removeEventListener('contextmenu', window.psaKeepSelectionMenu, true); delete window.psaKeepSelectionMenu; window.psaRemovePaneFocus?.(); window.psaRemoveHoveredWheel?.();",
         );
     });
     use_open_composer_focus(ui);

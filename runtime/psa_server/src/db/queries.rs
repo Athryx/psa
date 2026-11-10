@@ -93,7 +93,7 @@ impl DatabaseCursor {
         let metadata = self.require_agent_session(session, agent).await?;
         let mut markers = Vec::new();
         for kind in ["new_context", "model", "compaction", "inference_end"] {
-            if let Some(id) = self.find_last_marker(agent, kind).await? {
+            if let Some(id) = self.find_last_marker(agent, kind, None).await? {
                 markers.push(id);
             }
         }
@@ -124,7 +124,7 @@ impl DatabaseCursor {
     }
 
     pub async fn load_context_window(&mut self, agent: AgentId) -> Result<Vec<Event>, DbError> {
-        let first = self.find_last_marker(agent, "new_context").await?;
+        let first = self.find_last_marker(agent, "new_context", None).await?;
         self.load_event_window(agent, EventId(first.unwrap_or(1) - 1), None)
             .await
     }
@@ -133,7 +133,10 @@ impl DatabaseCursor {
         &mut self,
         agent: AgentId,
     ) -> Result<Option<Vec<Event>>, DbError> {
-        let Some(first) = self.find_last_marker(agent, "inference_start").await? else {
+        let Some(first) = self
+            .find_last_marker(agent, "inference_start", None)
+            .await?
+        else {
             return Ok(None);
         };
         Ok(Some(
@@ -206,12 +209,28 @@ impl DatabaseCursor {
         Ok(events)
     }
 
+    /// The NewContext event opening the model context that contains `through`.
+    /// `None` means that context begins with the agent's first event.
+    pub async fn find_context_start(
+        &mut self,
+        session: SessionId,
+        agent: AgentId,
+        through: EventId,
+    ) -> Result<Option<EventId>, DbError> {
+        self.require_agent_session(session, agent).await?;
+        let marker = self
+            .find_last_marker(agent, "new_context", Some(through))
+            .await?;
+        Ok(marker.map(EventId))
+    }
+
     async fn find_last_marker(
         &mut self,
         agent: AgentId,
         kind: &str,
+        through: Option<EventId>,
     ) -> Result<Option<u64>, DbError> {
-        for (owner, lower, upper) in load_segments(self.connection(), agent, EventId(0), None)
+        for (owner, lower, upper) in load_segments(self.connection(), agent, EventId(0), through)
             .await?
             .into_iter()
             .rev()

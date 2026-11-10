@@ -76,6 +76,29 @@ the mounted window only and the DOM stays a flat list of rows: a row marks a
 closed-up gap with `data-row-gap`, which the viewport controller reads when
 estimating recycled heights.
 
+`UiPreferences::turn_dividers` marks each inference start, the boundary
+between what a turn was sent (every row above) and what it produced (the rows
+below). `Labeled`, the default, is a hairline row carrying the turn's number,
+and, from the turn's end, its context size, output size and duration and a
+button opening that turn's context tab; a running turn reads "running…".
+`Line` is the hairline alone; `Hidden` draws nothing. A successful end draws
+nothing; a failed one draws its report. Dividers sit between the rows of
+separate model calls, so a run of like rows continues only within one turn.
+
+Right-clicking a row opens a menu whose "Show context" opens the context tab of
+the first turn the row was sent to (`Transcript::context_turn`), so the tab
+always contains the row, whichever divider mode is set. Right-clicking selected text keeps the native menu, for Copy.
+
+`context_view.rs` renders a `TabKind::Context` tab: a snapshot of what filled
+one turn's context, as a segmented bar arranged by order, size or type, with a
+totals table and the item list behind it. Clicking a block jumps to its first
+item, expanding it when the block is that one item; list items expand in place
+to the raw text the model was sent. The context's events are fetched once and
+retained for this, and the view does not follow the agent. Arrows step the tab
+to the agent's previous or next turn, found by paging its history, keeping the
+arrangement and expanded items. Fills come from a fixed, validated categorical
+palette in category order; text carries no series color.
+
 `transcript_nav.rs` overlays the user's messages as ticks in the transcript's
 top-right corner; hovering or focusing them lists previews. Choosing one moves
 the window and publishes `data-jump-revision`/`data-jump-row`; the viewport

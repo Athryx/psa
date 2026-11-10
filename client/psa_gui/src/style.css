@@ -423,6 +423,28 @@ textarea {
    expand in place. Consecutive items close up; a run sharing a label hangs
    from that label on a rail. */
 .transcript > .row.tight { margin-top:0 }
+.transcript > .row.near { margin-top:6px }
+/* The end of a model turn: a hairline carrying the turn's number and usage. */
+.turn-divider {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  font-size:.78em;
+  line-height:1.4;
+  color:var(--muted)
+}
+.row > .turn-divider:not(:first-child) { margin-top:6px }
+.turn-label { flex:none; font-variant-numeric:tabular-nums }
+.turn-number { color:#b7c0d6 }
+.turn-rule { flex:1; height:1px; background:var(--line) }
+.turn-context {
+  flex:none;
+  padding:0 6px;
+  font:inherit;
+  color:var(--muted);
+  border-radius:4px
+}
+.turn-context:hover { color:var(--text) }
 .item,.group-label {
   font:.86em/1.5 ui-monospace,monospace;
   color:var(--muted)
@@ -579,14 +601,14 @@ textarea {
   gap:5px
 }
 .message-nav-ticks span {
-  width:8px;
+  width:14px;
   height:2px;
   border-radius:1px;
   background:var(--muted);
   opacity:.5
 }
-.message-nav-ticks span.medium { width:12px }
-.message-nav-ticks span.long { width:16px }
+.message-nav-ticks span.medium { width:20px }
+.message-nav-ticks span.long { width:26px }
 .message-nav-ticks span[data-current] { background:var(--accent); opacity:1 }
 .message-nav-ticks span:nth-last-child(n+31) { display:none }
 .message-nav-list {
@@ -595,6 +617,7 @@ textarea {
   top:0;
   right:0;
   flex-direction:column;
+  gap:2px;
   width:min(300px,60vw);
   max-height:min(420px,60vh);
   overflow:auto;
@@ -615,7 +638,119 @@ textarea {
   text-overflow:ellipsis
 }
 .message-nav-list button:hover { color:var(--text) }
-.message-nav-list button[data-current] { color:var(--text); box-shadow:inset 2px 0 var(--accent) }
+/* The current message is marked like the active settings tab. */
+.message-nav-list button[data-current] { background:var(--raised); color:var(--accent) }
+/* Context makeup: one segmented bar, a legend table, and the items behind it.
+   Categorical fills are a validated palette in a fixed order; text never
+   wears them, a swatch beside it does. */
+.context-view {
+  --context-0:#3987e5;
+  --context-1:#d95926;
+  --context-2:#199e70;
+  --context-3:#c98500;
+  --context-4:#d55181;
+  --context-5:#008300;
+  --context-6:#9085e9;
+  --context-7:#e66767;
+  --context-rest:#5b6274;
+  flex:1;
+  min-height:0;
+  overflow:auto;
+  padding:24px max(16px,calc((100% - 85rch)/2))
+}
+.context-toolbar { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px }
+.context-turns { display:flex; gap:4px }
+.context-turns button { padding:2px 10px; font-size:12px; color:var(--muted); border-color:var(--line) }
+.context-turns button:hover:not(:disabled) { color:var(--text) }
+.context-view.stepping > :not(.context-diagram,.context-toolbar),
+.context-view.stepping .context-diagram > :not(.context-toolbar) { opacity:.6 }
+.context-header h2 { margin:0; font-size:16px }
+.context-summary { margin:4px 0 16px; color:var(--muted) }
+.context-summary strong { color:var(--text) }
+.context-sorts { display:flex; gap:4px }
+.context-sorts button {
+  padding:2px 10px;
+  font-size:12px;
+  color:var(--muted);
+  border-color:var(--line)
+}
+.context-sorts button.selected { color:var(--text); background:var(--raised); border-color:#4c567a }
+/* Stays in view while the list scrolls, so another block can be chosen. */
+.context-diagram { position:sticky; top:0; z-index:1; padding:8px 0; margin-bottom:12px; background:var(--bg) }
+.context-bar { display:flex; gap:2px; height:24px }
+.context-bar.dense { gap:1px }
+.context-segment { flex:1 1 0; min-width:1px; padding:0; border:0; border-radius:0 }
+.context-segment:focus-visible { outline:2px solid var(--text); outline-offset:1px; position:relative }
+.context-segment:first-child { border-radius:4px 0 0 4px }
+.context-segment:last-child { border-radius:0 4px 4px 0 }
+.context-segment:only-child { border-radius:4px }
+.context-segment:hover { filter:brightness(1.25) }
+.context-segment,.context-segment:hover,.context-swatch { background:var(--fill) }
+.context-fill-0 { --fill:var(--context-0) }
+.context-fill-1 { --fill:var(--context-1) }
+.context-fill-2 { --fill:var(--context-2) }
+.context-fill-3 { --fill:var(--context-3) }
+.context-fill-4 { --fill:var(--context-4) }
+.context-fill-5 { --fill:var(--context-5) }
+.context-fill-6 { --fill:var(--context-6) }
+.context-fill-7 { --fill:var(--context-7) }
+.context-fill-rest { --fill:var(--context-rest) }
+.context-swatch {
+  display:inline-block;
+  flex:none;
+  width:10px;
+  height:10px;
+  margin-right:8px;
+  border-radius:2px
+}
+.context-readout {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  min-height:1.55em;
+  margin:8px 0 0;
+  font-size:12px
+}
+.context-readout .context-swatch { margin-right:0 }
+.context-readout-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.context-figure { flex:none; font-variant-numeric:tabular-nums; color:var(--muted) }
+.context-table { width:100%; border-collapse:collapse; font-size:13px }
+.context-table th,.context-table td { padding:5px 8px; border-bottom:1px solid var(--line); font-weight:400 }
+.context-table thead th { font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted) }
+.context-table th { text-align:left }
+.context-table td,.context-table thead th:not(:first-child) { text-align:right; font-variant-numeric:tabular-nums }
+.context-items-heading { margin:24px 0 8px; font-size:13px }
+.context-items { margin:0; padding:0; list-style:none; font-size:12px }
+.context-items li { scroll-margin-top:80px }
+.context-item-row { display:flex; align-items:center; gap:10px; width:100%; padding:3px 6px; border:0; border-radius:4px }
+.context-item-row::after { content:"›"; flex:none; opacity:.5; transition:transform .12s }
+.context-item-row[aria-expanded="true"]::after { transform:rotate(90deg) }
+.context-items li[data-revealed] > .context-item-row { background:var(--panel); box-shadow:inset 2px 0 var(--accent) }
+.context-item-body { max-height:420px; overflow:auto; margin:2px 6px 8px 26px; font:12px/1.5 ui-monospace,monospace }
+.context-item-body pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere }
+.context-item-body h4 { margin:8px 0 2px; font-size:11px; color:var(--muted) }
+.context-item-body > h4:first-child { margin-top:0 }
+.context-more { margin-top:6px; border-color:var(--line); font-size:12px }
+.context-items .context-swatch { margin-right:0 }
+.context-item-label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.context-share { width:5ch; text-align:right }
+.context-note { margin-top:20px; font-size:12px }
+/* A transcript row's right-click menu. */
+.row-menu-backdrop { position:fixed; inset:0; z-index:20 }
+.row-menu {
+  position:fixed;
+  z-index:21;
+  width:160px;
+  padding:4px;
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:8px;
+  box-shadow:0 10px 30px #0006;
+  font-size:12px
+}
+.row-menu:focus { outline:none }
+.row-menu button { display:block; width:100% }
+.context-retry { border-color:var(--line) }
 .composer {
   padding:12px max(16px,calc((100% - var(--conversation-max-width, 85rch))/2)) 18px;
   border-top:1px solid var(--line);

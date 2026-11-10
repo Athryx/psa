@@ -270,6 +270,7 @@ fn fixture_pane(id: u64) -> TabGroup {
                 session_id: SessionId(id),
                 agent_id: psa_api::AgentId(id),
             },
+            kind: TabKind::Transcript,
             preview: false,
             last_focused: 0,
         }],

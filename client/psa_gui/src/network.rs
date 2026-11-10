@@ -1052,6 +1052,126 @@ fn history_page_makes_progress(has_older: bool, advancing: bool, has_older_event
     !has_older || (advancing && has_older_event)
 }
 
+/// Fetch the model context containing an inference: every event from the
+/// marker that opened the context through the inference's end.
+pub async fn load_context_events(
+    ui: Signal<Ui>,
+    target: TranscriptTarget,
+    turn: u64,
+) -> Result<Vec<psa_api::events::Event>, String> {
+    const PAGE_LIMIT: u32 = 10_000;
+    let generation = ui.peek().generation;
+    let api = client(ui).map_err(|_| "Not connected to a server".to_owned())?;
+
+    let mut events = Vec::new();
+    let mut query = EventsQuery {
+        through: Some(turn),
+        limit: PAGE_LIMIT,
+        from_context_start: true,
+        ..Default::default()
+    };
+    loop {
+        let page = api
+            .events(target.session_id, Some(target.agent_id), &query)
+            .await
+            .map_err(|error| format!("Unable to load this turn's context: {error}"))?;
+        if ui.peek().generation != generation {
+            return Err("The server connection changed".into());
+        }
+        if page.has_more && page.next_after <= query.after {
+            return Err("The server returned a non-progressing page".into());
+        }
+
+        events.extend(page.events.into_iter().map(|envelope| envelope.event));
+        if !page.has_more {
+            return Ok(events);
+        }
+        query = EventsQuery {
+            after: page.next_after,
+            through: Some(turn),
+            limit: PAGE_LIMIT,
+            ..Default::default()
+        };
+    }
+}
+
+/// The model turns on either side of one of an agent's turns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdjacentTurns {
+    pub turn: u64,
+    pub previous: Option<u64>,
+    pub next: Option<u64>,
+}
+
+fn turn_ends(page: &EventsPage) -> impl Iterator<Item = u64> + '_ {
+    page.events
+        .iter()
+        .filter(|envelope| {
+            matches!(
+                envelope.event.kind,
+                psa_api::events::EventType::InferenceResultEnd(_)
+            )
+        })
+        .map(|envelope| envelope.event.id.0)
+}
+
+/// Find a turn's neighbors by paging outward through the agent's history.
+pub async fn load_adjacent_turns(
+    ui: Signal<Ui>,
+    target: TranscriptTarget,
+    turn: u64,
+) -> Result<AdjacentTurns, String> {
+    const PAGE_LIMIT: u32 = 200;
+    let api = client(ui).map_err(|_| "Not connected to a server".to_owned())?;
+    let describe = |error| format!("Unable to find the adjacent turns: {error}");
+
+    let mut before = turn;
+    let previous = loop {
+        let query = EventsQuery {
+            before: Some(before),
+            limit: PAGE_LIMIT,
+            ..Default::default()
+        };
+        let page = api
+            .events(target.session_id, Some(target.agent_id), &query)
+            .await
+            .map_err(describe)?;
+        if let Some(found) = turn_ends(&page).max() {
+            break Some(found);
+        }
+        match page.next_before {
+            Some(next) if page.has_older && next < before => before = next,
+            _ => break None,
+        }
+    };
+
+    let mut after = turn;
+    let next = loop {
+        let query = EventsQuery {
+            after,
+            limit: PAGE_LIMIT,
+            ..Default::default()
+        };
+        let page = api
+            .events(target.session_id, Some(target.agent_id), &query)
+            .await
+            .map_err(describe)?;
+        if let Some(found) = turn_ends(&page).min() {
+            break Some(found);
+        }
+        if !page.has_more || page.next_after <= after {
+            break None;
+        }
+        after = page.next_after;
+    };
+
+    Ok(AdjacentTurns {
+        turn,
+        previous,
+        next,
+    })
+}
+
 pub async fn older(mut ui: Signal<Ui>, target: TranscriptTarget) -> bool {
     let generation = ui.read().generation;
     let cursor = ui
@@ -1540,6 +1660,117 @@ mod history_tests {
         assert!(history_page_makes_progress(true, true, true));
         assert!(!history_page_makes_progress(true, false, true));
         assert!(!history_page_makes_progress(true, true, false));
+    }
+}
+
+#[cfg(test)]
+mod adjacent_turn_tests {
+    use super::*;
+    use psa_api::events::{EventType, InferenceResultEnd, Message, MessageType};
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+    };
+
+    fn empty_root() -> Element {
+        rsx! { div {} }
+    }
+
+    fn envelope(id: u64, kind: EventType) -> serde_json::Value {
+        serde_json::json!({
+            "session_id": 1, "agent_id": 2, "position": id,
+            "event": { "id": id, "source_agent_id": 2, "timestamp": "2026-01-01T00:00:00Z", "kind": kind },
+        })
+    }
+
+    fn end(id: u64) -> serde_json::Value {
+        envelope(
+            id,
+            EventType::InferenceResultEnd(InferenceResultEnd {
+                id,
+                outcome: llm_api::api::Outcome::Cancelled,
+                usage: Default::default(),
+                request_time: std::time::Duration::ZERO,
+                response_id: None,
+                provider_metadata: Default::default(),
+            }),
+        )
+    }
+
+    fn other(id: u64) -> serde_json::Value {
+        envelope(
+            id,
+            EventType::Message(Message::text(MessageType::Agent, "text")),
+        )
+    }
+
+    fn page(
+        events: Vec<serde_json::Value>,
+        next_before: Option<u64>,
+        next_after: u64,
+        has_more: bool,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "events": events, "pending": [], "next_after": next_after, "head": 20,
+            "has_more": has_more, "next_before": next_before, "has_older": next_before.is_some(),
+        })
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn neighbors_are_found_across_pages_and_absent_at_the_ends() {
+        let responses = [
+            ("before=10", page(vec![other(9)], Some(9), 0, false)),
+            ("before=9", page(vec![end(5), end(7)], None, 0, false)),
+            ("after=10", page(vec![other(11)], None, 11, true)),
+            ("after=11", page(vec![end(12), end(14)], None, 14, false)),
+            ("before=5", page(vec![], None, 0, false)),
+            ("after=5", page(vec![end(7)], None, 7, false)),
+            ("before=14", page(vec![end(12)], None, 0, false)),
+            ("after=14", page(vec![other(15)], None, 15, false)),
+        ];
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for (expected, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut data = Vec::new();
+                let mut buffer = [0; 4096];
+                while !data.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).unwrap();
+                    assert!(read > 0);
+                    data.extend_from_slice(&buffer[..read]);
+                }
+                let request = String::from_utf8_lossy(&data);
+                let line = request.lines().next().unwrap();
+                assert!(line.contains(expected), "{line} lacks {expected}");
+                let body = body.to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+
+        let mut dom = VirtualDom::new(empty_root);
+        dom.rebuild_in_place();
+        let mut settings = DesktopSettings::default();
+        settings.active_profile_mut().connection.api_url = format!("http://{address}");
+        let ui = dom.in_scope(ScopeId::ROOT, || Signal::new(Ui::new(settings)));
+        let target = TranscriptTarget {
+            session_id: SessionId(1),
+            agent_id: AgentId(2),
+        };
+
+        let found = dom.in_runtime(|| {
+            Box::pin(async move {
+                let middle = load_adjacent_turns(ui, target, 10).await.unwrap();
+                let first = load_adjacent_turns(ui, target, 5).await.unwrap();
+                let last = load_adjacent_turns(ui, target, 14).await.unwrap();
+                (middle, first, last)
+            })
+        });
+        let (middle, first, last) = found.await;
+        assert_eq!((middle.previous, middle.next), (Some(7), Some(12)));
+        assert_eq!((first.previous, first.next), (None, Some(7)));
+        assert_eq!((last.previous, last.next), (Some(12), None));
+        server.join().unwrap();
     }
 }
 

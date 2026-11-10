@@ -207,7 +207,7 @@ fn submission_fixture() -> Element {
     if promoted || hidden() {
         rsx! { div { "hidden promoted={promoted} uncertain={uncertain} pending={pending}" } }
     } else {
-        rsx! { DraftComposer { tab: Tab { id: ViewId(1), target, preview: false, last_focused: 0 } } }
+        rsx! { DraftComposer { tab: Tab { id: ViewId(1), target, kind: TabKind::Transcript, preview: false, last_focused: 0 } } }
     }
 }
 
@@ -388,7 +388,7 @@ fn root_fixture() -> Element {
         session_id: SessionId(1),
         agent_id: crate::app::DRAFT_ROOT,
     };
-    rsx! { DraftComposer { tab:Tab { id:ViewId(1), target, preview:false, last_focused:0 } } }
+    rsx! { DraftComposer { tab:Tab { id:ViewId(1), target, kind: TabKind::Transcript, preview:false, last_focused:0 } } }
 }
 
 fn mount_root() -> (VirtualDom, ElementId) {

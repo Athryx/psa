@@ -32,10 +32,21 @@ struct GroupRect {
     right: f32,
     bottom: f32,
 }
+/// What a tab shows of its target agent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TabKind {
+    #[default]
+    Transcript,
+    /// The makeup of the context sent for one model turn, identified by the
+    /// agent event ID of its inference end.
+    Context { turn: u64 },
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tab {
     pub id: ViewId,
     pub target: TranscriptTarget,
+    #[serde(default)]
+    pub kind: TabKind,
     pub preview: bool,
     pub last_focused: u64,
 }
@@ -331,7 +342,7 @@ impl Workspace {
             .groups()
             .iter()
             .flat_map(|g| &g.tabs)
-            .filter(|t| t.target == target)
+            .filter(|t| t.target == target && t.kind == TabKind::Transcript)
             .max_by_key(|t| (t.last_focused, t.id.0))
             .map(|t| t.id);
         if let Some(id) = existing {
@@ -343,8 +354,34 @@ impl Workspace {
         }
         self.open_duplicate(target, permanent)
     }
+    /// Show one turn's context for an agent, reusing the agent's context tab.
+    pub fn open_context(&mut self, target: TranscriptTarget, turn: u64) -> ViewId {
+        let kind = TabKind::Context { turn };
+        let existing = self
+            .groups()
+            .iter()
+            .flat_map(|g| &g.tabs)
+            .filter(|t| t.target == target && matches!(t.kind, TabKind::Context { .. }))
+            .max_by_key(|t| (t.last_focused, t.id.0))
+            .map(|t| t.id);
+        let Some(id) = existing else {
+            return self.open_tab(target, kind, true);
+        };
+
+        for group in self.groups().iter().map(|g| g.id).collect::<Vec<_>>() {
+            let tabs = &mut self.root.group_mut(group).unwrap().tabs;
+            if let Some(tab) = tabs.iter_mut().find(|t| t.id == id) {
+                tab.kind = kind;
+            }
+        }
+        self.focus(id);
+        id
+    }
     /// Internal/future duplicate support; ordinary navigation must use `open`.
     pub fn open_duplicate(&mut self, target: TranscriptTarget, permanent: bool) -> ViewId {
+        self.open_tab(target, TabKind::Transcript, permanent)
+    }
+    fn open_tab(&mut self, target: TranscriptTarget, kind: TabKind, permanent: bool) -> ViewId {
         let id = ViewId(self.next_id());
         let clock = self.next_focus();
         if self.root.group_mut(self.focused_group).is_none() {
@@ -354,6 +391,7 @@ impl Workspace {
         let tab = Tab {
             id,
             target,
+            kind,
             preview: !permanent,
             last_focused: clock,
         };
@@ -527,6 +565,36 @@ mod tests {
             agent_id: AgentId(n),
         }
     }
+    #[test]
+    fn context_tabs_are_reused_per_agent_and_never_stand_in_for_a_transcript() {
+        let mut w = Workspace::default();
+        let preview = w.open(target(1), false);
+        let context = w.open_context(target(1), 8);
+        assert_ne!(context, preview, "a context tab must not replace a preview");
+        assert_eq!(w.open_context(target(1), 12), context);
+        let other = w.open_context(target(2), 12);
+        assert_ne!(other, context);
+
+        let tabs = &w.groups()[0].tabs;
+        let kinds: Vec<_> = tabs.iter().map(|tab| (tab.kind, tab.preview)).collect();
+        assert_eq!(
+            kinds,
+            [
+                (TabKind::Transcript, true),
+                (TabKind::Context { turn: 12 }, false),
+                (TabKind::Context { turn: 12 }, false),
+            ]
+        );
+        assert_eq!(w.open(target(1), false), preview);
+        assert_ne!(w.open(target(2), false), other);
+
+        // Tabs saved before kinds existed restore as transcripts.
+        let mut saved = serde_json::to_value(&w.groups()[0].tabs[1]).unwrap();
+        saved.as_object_mut().unwrap().remove("kind");
+        let restored: Tab = serde_json::from_value(saved).unwrap();
+        assert_eq!(restored.kind, TabKind::Transcript);
+    }
+
     #[test]
     fn focus_tab_index_is_local_and_out_of_bounds_is_noop() {
         let mut w = Workspace::default();

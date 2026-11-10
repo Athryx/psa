@@ -75,6 +75,122 @@ fn log(index: usize) -> NewEvent {
 }
 
 #[tokio::test]
+async fn context_pages_start_at_the_marker_opening_the_requested_context() {
+    let (_dir, state, _runtime, session, agent) = fixture().await;
+    let new_context = || NewEvent::new(EventType::NewContext);
+    let mut events: Vec<_> = (0..3).map(log).collect();
+    events.push(new_context());
+    events.extend((3..6).map(log));
+    events.push(new_context());
+    events.push(log(6));
+    let mut cursor = state.database.cursor().await.unwrap();
+    cursor.add_events(agent.id, &events).await.unwrap();
+    cursor.commit().await.unwrap();
+
+    let all = load_page(&state, session.id, Some(agent.id), &Default::default())
+        .await
+        .unwrap();
+    let ids: Vec<_> = all.events.iter().map(|event| event.event.id.0).collect();
+    let markers: Vec<_> = all
+        .events
+        .iter()
+        .filter(|event| matches!(event.event.kind, EventType::NewContext))
+        .map(|event| event.event.id.0)
+        .collect();
+    let [first_marker, second_marker] = markers[..] else {
+        panic!("expected two context markers");
+    };
+    let context = |through, limit| {
+        let state = &state;
+        async move {
+            load_page(
+                state,
+                session.id,
+                Some(agent.id),
+                &api::EventsQuery {
+                    through: Some(through),
+                    limit,
+                    from_context_start: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let page_ids =
+        |page: &api::EventsPage| -> Vec<_> { page.events.iter().map(|e| e.event.id.0).collect() };
+
+    // Before any marker the context begins with the agent's first event.
+    let page = context(first_marker - 1, 1000).await;
+    assert_eq!(page_ids(&page), ids[..ids.len() - 6]);
+    assert_eq!(page.events.first().unwrap().event.id.0, ids[0]);
+
+    // A later context leads with its own marker and stops at the bound.
+    let page = context(second_marker - 1, 1000).await;
+    assert_eq!(
+        page_ids(&page),
+        (first_marker..second_marker).collect::<Vec<_>>()
+    );
+    assert!(!page.has_more);
+    let page = context(second_marker, 1000).await;
+    assert_eq!(page_ids(&page), [second_marker]);
+
+    // A partial page continues with ordinary forward pagination.
+    let page = context(second_marker - 1, 2).await;
+    assert_eq!(page_ids(&page), [first_marker, first_marker + 1]);
+    assert!(page.has_more);
+    let rest = load_page(
+        &state,
+        session.id,
+        Some(agent.id),
+        &api::EventsQuery {
+            after: page.next_after,
+            through: Some(second_marker - 1),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        page_ids(&rest),
+        (first_marker + 2..second_marker).collect::<Vec<_>>()
+    );
+
+    let context_query = || api::EventsQuery {
+        through: Some(second_marker),
+        from_context_start: true,
+        ..Default::default()
+    };
+    for (scope, query) in [
+        (None, context_query()),
+        (
+            Some(agent.id),
+            api::EventsQuery {
+                through: None,
+                ..context_query()
+            },
+        ),
+        (
+            Some(agent.id),
+            api::EventsQuery {
+                after: 1,
+                ..context_query()
+            },
+        ),
+        (
+            Some(agent.id),
+            api::EventsQuery {
+                results_only: true,
+                ..context_query()
+            },
+        ),
+    ] {
+        assert!(load_page(&state, session.id, scope, &query).await.is_err());
+    }
+}
+
+#[tokio::test]
 async fn recent_backward_pages_and_forward_replay_cover_both_cursor_scopes() {
     let (_dir, state, runtime, session, agent) = fixture().await;
     let mut cursor = state.database.cursor().await.unwrap();
