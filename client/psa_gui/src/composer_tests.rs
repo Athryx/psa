@@ -627,3 +627,46 @@ fn agent_command_is_explained_and_literal_slashes_do_not_show_commands() {
     );
     assert!(!html.contains("aria-label=\"Slash commands\""), "{html}");
 }
+
+#[test]
+fn rename_command_opens_a_prefilled_prompt_above_the_composer() {
+    let (mut dom, textarea) = mount();
+    input(&mut dom, textarea, "/ren");
+    assert!(dioxus_ssr::render(&dom).contains("/rename"));
+    key(&mut dom, textarea, Key::Enter);
+    let html = dioxus_ssr::render(&dom);
+    assert!(html.contains("aria-label=\"Rename session\""), "{html}");
+    assert!(html.contains("value=\"test\""), "{html}");
+    assert!(composer_draft(&dom).is_empty(), "{html}");
+}
+
+#[test]
+fn rename_with_a_name_renames_without_opening_the_prompt() {
+    let (mut dom, textarea) = mount();
+    input(&mut dom, textarea, "/rename New name");
+    key(&mut dom, textarea, Key::Enter);
+    let html = dioxus_ssr::render(&dom);
+    assert!(!html.contains("aria-label=\"Rename session\""), "{html}");
+    assert!(composer_draft(&dom).is_empty(), "{html}");
+}
+
+#[test]
+fn compact_completes_with_room_for_instructions() {
+    let (mut dom, textarea) = mount();
+    input(&mut dom, textarea, "/comp");
+    assert!(dioxus_ssr::render(&dom).contains("/compact"));
+    key(&mut dom, textarea, Key::Tab);
+    assert_eq!(composer_draft(&dom), "/compact ");
+}
+
+#[test]
+fn refresh_is_a_command_for_existing_agents_and_is_not_sent_as_text() {
+    let (mut dom, textarea) = mount();
+    input(&mut dom, textarea, "/ref");
+    assert!(dioxus_ssr::render(&dom).contains("/refresh"));
+    input(&mut dom, textarea, "/refresh");
+    key(&mut dom, textarea, Key::Enter);
+    let html = dioxus_ssr::render(&dom);
+    assert!(!html.contains("only available before creating"), "{html}");
+    assert!(composer_draft(&dom).is_empty(), "{html}");
+}

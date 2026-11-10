@@ -13,7 +13,7 @@ use crate::{
         bundles::InstalledComponents,
         cancellation::wait_for_interrupt,
         codemode_functions::CodeModeFunctionKind,
-        hooks::run_hooks,
+        hooks::{CommandOutcome, run_command_hooks, run_hooks},
         tools::{self, ToolKind, failed_tool_result},
     },
     db::{AddEventResult, Database, EventBatchItem},
@@ -673,6 +673,41 @@ pub(crate) async fn run_worker(
                             status_event(AgentState::Running),
                         ])
                         .await?;
+                    manager
+                        .consumed(state.agent.id, generation, request.id)
+                        .await
+                        .map_err(|_| AgentError::SupervisorUnavailable)?;
+                    continue;
+                }
+                BoundaryReply::Command(request) => {
+                    // Recorded before execution, so its effects follow it in the transcript.
+                    state
+                        .persist_events(&[NewEvent::new(EventType::Command(
+                            request.command.clone(),
+                        ))])
+                        .await?;
+                    let probe = probes.handle(state.session.probe_id).await.ok();
+                    let mut context =
+                        AgentContext::with_optional_probe(&mut state, probe.as_ref(), &sessions);
+                    let (outcome, interrupted) = run_command_hooks(
+                        &mut hooks.command,
+                        &mut context,
+                        &mut controls,
+                        &request.command,
+                    )
+                    .await?;
+                    if outcome == CommandOutcome::Ignored {
+                        state
+                            .persist_events(&[NewEvent::new(EventType::Log(Log {
+                                error: true,
+                                message: "No installed hook handled this command.".into(),
+                            }))])
+                            .await?;
+                    }
+                    if interrupted {
+                        state.interrupt().await?;
+                    }
+                    // Consumed only after execution, so a failed worker reports it.
                     manager
                         .consumed(state.agent.id, generation, request.id)
                         .await

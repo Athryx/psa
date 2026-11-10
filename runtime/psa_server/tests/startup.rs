@@ -35,6 +35,25 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
     let config = options().resolve().await.unwrap();
     assert_eq!(config.database_path, dir.path().join("psa.sqlite3"));
     assert!(config.config_path.exists());
+    let agents = dir.path().join("agents");
+    for name in ["default.toml", "subagent.toml"] {
+        let text = tokio::fs::read_to_string(agents.join(name)).await.unwrap();
+        toml::from_str::<psa_server::config_registry::AgentDefinitionConfig>(&text).unwrap();
+    }
+    let default = tokio::fs::read_to_string(agents.join("default.toml"))
+        .await
+        .unwrap();
+    assert!(default.contains("subagents = [\"subagent\"]"), "{default}");
+    let subagent = tokio::fs::read_to_string(agents.join("subagent.toml"))
+        .await
+        .unwrap();
+    assert!(subagent.contains("models = [\"Parent\"]"), "{subagent}");
+    // Existing configurations never regenerate deleted agent files.
+    tokio::fs::remove_file(agents.join("subagent.toml"))
+        .await
+        .unwrap();
+    options().resolve().await.unwrap();
+    assert!(!agents.join("subagent.toml").exists());
     assert_eq!(
         config.session_defaults,
         psa_server::config::default_model_config()
@@ -69,6 +88,11 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
             psa_api::BundleConfig::Goal {
                 interactive_only: true,
             },
+            psa_api::BundleConfig::Compaction {
+                reserve_tokens: 16384,
+                keep_recent_tokens: 20000,
+                context_window: None,
+            },
         ]
     );
     assert_eq!(
@@ -79,15 +103,11 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
             psa_api::HookConfig::Skills,
         ]
     );
-    assert!(config.agent_defaults.hooks.session_update.is_empty());
     assert_eq!(
-        config.agent_defaults.hooks.before_request,
-        vec![psa_api::HookConfig::Compaction {
-            reserve_tokens: 16384,
-            keep_recent_tokens: 20000,
-            context_window: None,
-        }]
+        config.agent_defaults.hooks.session_update,
+        vec![psa_api::HookConfig::SessionModelUpdate]
     );
+    assert!(config.agent_defaults.hooks.before_request.is_empty());
     assert!(config.agent_defaults.hooks.after_request.is_empty());
     tokio::fs::write(&config.config_path, "broken TOML [")
         .await

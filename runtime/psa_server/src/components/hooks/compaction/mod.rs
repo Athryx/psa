@@ -4,9 +4,9 @@ mod prompts;
 #[cfg(test)]
 mod tests;
 
-use super::{Hook, HookError};
+use super::{CommandHook, CommandOutcome, Hook, HookError};
 use crate::{
-    agents::{AgentState, agent_context::AgentContext},
+    agents::{AgentState, agent_context::AgentContext, session_manager::RuntimeError},
     components::cancellation::Cancellation,
 };
 use llm_api::{
@@ -14,17 +14,30 @@ use llm_api::{
     providers::ModelConfig,
 };
 use psa_api::{
-    AgentDefinitionId, AgentResult, CreateAgent, CreateAgentDefinition, HookConfig, HookConfigs,
-    events::{Compaction, CompactionSummary, Event, EventRange, EventType, MessageType, NewEvent},
+    AgentCommand, AgentDefinitionId, AgentResult, CreateAgent, CreateAgentDefinition, HookConfig,
+    HookConfigs,
+    events::{
+        Compaction, CompactionSummary, Event, EventRange, EventType, Log, MessageType, NewEvent,
+    },
 };
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
+use tokio::sync::Mutex;
 
+/// Summarizer bookkeeping shared by the automatic and manual installations, so
+/// both reuse one definition and never pick the same summarizer agent name.
+#[derive(Default)]
+struct Summarizers {
+    counter: Option<u64>,
+    definition: Option<(ModelConfig, AgentDefinitionId)>,
+}
+
+/// Installed by the Compaction bundle both before requests and as a command hook.
+#[derive(Clone)]
 pub struct CompactionHook {
     reserve_tokens: u64,
     keep_recent_tokens: u64,
     context_window: Option<u64>,
-    counter: Option<u64>,
-    summarizer: Option<(ModelConfig, AgentDefinitionId)>,
+    summarizers: Arc<Mutex<Summarizers>>,
 }
 
 impl CompactionHook {
@@ -33,12 +46,12 @@ impl CompactionHook {
             reserve_tokens,
             keep_recent_tokens,
             context_window,
-            counter: None,
-            summarizer: None,
+            summarizers: Arc::default(),
         }
     }
 
-    async fn compact(
+    /// Compacts a running agent only once its context nears the model's window.
+    async fn compact_if_needed(
         &mut self,
         context: &mut AgentContext<'_>,
         cancellation: &mut Cancellation,
@@ -71,18 +84,66 @@ impl CompactionHook {
             return Ok(());
         };
 
+        self.replace_context(context, &events, &model, preparation, cancellation)
+            .await
+    }
+
+    /// Compacts on request in any agent state, reporting no-ops in the transcript.
+    /// The recent-context budget is ignored: everything before the latest entry is
+    /// summarized, so the request compacts whenever there is more than one entry.
+    async fn compact_now(
+        &mut self,
+        context: &mut AgentContext<'_>,
+        instructions: Option<&str>,
+        cancellation: &mut Cancellation,
+    ) -> Result<(), HookError> {
+        let Some(model) = context.projection().model_config().cloned() else {
+            return save_log(
+                context,
+                false,
+                "Nothing to compact: the agent has no model yet.",
+            )
+            .await;
+        };
+        let events = context.load_context_window().await?;
+        let Some(mut preparation) = prepare::prepare(&events, 0) else {
+            return save_log(
+                context,
+                false,
+                "Nothing to compact: there is no earlier conversation to summarize.",
+            )
+            .await;
+        };
+
+        if let Some(instructions) = instructions.map(str::trim).filter(|text| !text.is_empty()) {
+            for prompt in [
+                &mut preparation.history_prompt,
+                &mut preparation.turn_prefix_prompt,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                prompt.push_str(&prompts::additional_instructions(instructions));
+            }
+        }
+        self.replace_context(context, &events, &model, preparation, cancellation)
+            .await
+    }
+
+    async fn replace_context(
+        &mut self,
+        context: &mut AgentContext<'_>,
+        events: &[Event],
+        model: &ModelConfig,
+        preparation: prepare::Preparation,
+        cancellation: &mut Cancellation,
+    ) -> Result<(), HookError> {
         let history = match &preparation.history_prompt {
-            Some(prompt) => Some(
-                self.summarize(context, &model, prompt, cancellation)
-                    .await?,
-            ),
+            Some(prompt) => Some(self.summarize(context, model, prompt, cancellation).await?),
             None => None,
         };
         let prefix = match &preparation.turn_prefix_prompt {
-            Some(prompt) => Some(
-                self.summarize(context, &model, prompt, cancellation)
-                    .await?,
-            ),
+            Some(prompt) => Some(self.summarize(context, model, prompt, cancellation).await?),
             None => None,
         };
         if cancellation.is_cancelled() {
@@ -94,7 +155,7 @@ impl CompactionHook {
             tokens_before = preparation.tokens_before,
             "compacting context"
         );
-        let replacement = build_replacement(&events, &model, preparation, summary);
+        let replacement = build_replacement(events, model, preparation, summary);
         context.save_events(&replacement).await?;
         Ok(())
     }
@@ -107,17 +168,18 @@ impl CompactionHook {
         cancellation: &mut Cancellation,
     ) -> Result<String, HookError> {
         if cancellation.is_cancelled() {
-            return Err(crate::agents::session_manager::RuntimeError::Cancelled.into());
+            return Err(RuntimeError::Cancelled.into());
         }
         let sessions = context.sessions();
         let session = context.session().id;
-        let definition_id = match &self.summarizer {
+        let mut summarizers = self.summarizers.lock().await;
+        let definition_id = match &summarizers.definition {
             Some((configured, id)) if configured == model => *id,
             _ => {
                 let definition = sessions
                     .create_agent_definition(CreateAgentDefinition {
                         name: "_internal_compaction".into(),
-                        model_config: Some(model.clone()),
+                        model: model.clone().into(),
                         hooks: HookConfigs {
                             agent_create: vec![
                                 HookConfig::SessionModelUpdate,
@@ -131,13 +193,13 @@ impl CompactionHook {
                         ..Default::default()
                     })
                     .await?;
-                self.summarizer = Some((model.clone(), definition.id));
+                summarizers.definition = Some((model.clone(), definition.id));
                 definition.id
             }
         };
         let prefix = format!("_internal_{}_compaction", context.agent().name);
-        if self.counter.is_none() {
-            self.counter = Some(
+        if summarizers.counter.is_none() {
+            summarizers.counter = Some(
                 sessions
                     .list_agents(session)
                     .await?
@@ -147,12 +209,13 @@ impl CompactionHook {
                     .unwrap_or(0),
             );
         }
-        let count = self
+        let count = summarizers
             .counter
             .unwrap()
             .checked_add(1)
             .ok_or_else(|| HookError::Compaction("summarizer name counter exhausted".into()))?;
-        self.counter = Some(count);
+        summarizers.counter = Some(count);
+        drop(summarizers);
         let agent = sessions
             .create_agent_with_model(
                 session,
@@ -171,7 +234,7 @@ impl CompactionHook {
         // agent. Dropping a queued submission would not retract it from the manager.
         let result = async {
             if cancellation.is_cancelled() {
-                return Err(crate::agents::session_manager::RuntimeError::Cancelled.into());
+                return Err(RuntimeError::Cancelled.into());
             }
             sessions
                 .steer(session, agent.id, crate::prompts::text(prompt))
@@ -262,13 +325,58 @@ impl Hook for CompactionHook {
         context: &mut AgentContext<'_>,
         mut cancellation: Cancellation,
     ) -> Result<(), HookError> {
-        match self.compact(context, &mut cancellation).await {
-            Err(HookError::Sessions(crate::agents::session_manager::RuntimeError::Cancelled))
-                if cancellation.is_cancelled() =>
-            {
+        match self.compact_if_needed(context, &mut cancellation).await {
+            Err(HookError::Sessions(RuntimeError::Cancelled)) if cancellation.is_cancelled() => {
                 Ok(())
             }
             result => result,
         }
     }
+}
+
+impl CommandHook for CompactionHook {
+    fn cancellation_timeout(&self) -> Duration {
+        Duration::from_secs(3)
+    }
+
+    async fn handle_command(
+        &mut self,
+        context: &mut AgentContext<'_>,
+        command: &AgentCommand,
+        mut cancellation: Cancellation,
+    ) -> Result<CommandOutcome, HookError> {
+        // New command variants must decide here whether compaction ignores them.
+        let instructions = match command {
+            AgentCommand::Compact { instructions } => instructions.as_deref(),
+        };
+
+        // A manual request reports failures in the transcript rather than
+        // failing the worker; persistence failures still propagate.
+        match self
+            .compact_now(context, instructions, &mut cancellation)
+            .await
+        {
+            Ok(()) => {}
+            Err(HookError::Sessions(RuntimeError::Cancelled)) if cancellation.is_cancelled() => {}
+            Err(error @ (HookError::Database(_) | HookError::Agent(_))) => return Err(error),
+            Err(error) => {
+                save_log(context, true, &format!("Compaction failed: {error}")).await?;
+            }
+        }
+        Ok(CommandOutcome::Handled)
+    }
+}
+
+async fn save_log(
+    context: &mut AgentContext<'_>,
+    error: bool,
+    message: &str,
+) -> Result<(), HookError> {
+    context
+        .save_events(&[NewEvent::new(EventType::Log(Log {
+            error,
+            message: message.into(),
+        }))])
+        .await?;
+    Ok(())
 }

@@ -1,14 +1,26 @@
 use super::select_model;
 use llm_api::providers::{Effort, Model, ModelConfig, ProviderType};
 use psa_api::{
-    AgentConfig, ConfigGroup, ConfigId, EffortSelection, HookConfigs, IncludedItems, ModelSelection,
+    AgentConfig, AgentEffort, AgentModel, ConfigGroup, ConfigId, EffortSelection, HookConfigs,
+    IncludedItems, ModelSelection,
 };
 
-fn global() -> ModelConfig {
+fn session() -> ModelConfig {
     ModelConfig {
         model: Model::new(ProviderType::Openrouter, "test/global").unwrap(),
         effort: Effort::Medium,
     }
+}
+
+fn fixed_parent() -> AgentModel {
+    AgentModel::Fixed {
+        model: Model::new(ProviderType::OpenAiCodex, "parent-model").unwrap(),
+        effort: AgentEffort::Fixed(Effort::High),
+    }
+}
+
+fn vendor_model() -> Model {
+    Model::new(ProviderType::Openrouter, "vendor/model").unwrap()
 }
 
 fn config(models: Vec<ModelSelection>, default: bool) -> AgentConfig {
@@ -30,54 +42,46 @@ fn config(models: Vec<ModelSelection>, default: bool) -> AgentConfig {
 
 #[test]
 fn model_choices_enforce_allowed_list_and_default_policy() {
-    let global = global();
-    let parent = ModelConfig {
-        model: Model::new(ProviderType::OpenAiCodex, "parent-model").unwrap(),
-        effort: Effort::High,
-    };
+    let parent = fixed_parent();
     let mut config = config(vec![ModelSelection::Global, ModelSelection::Parent], false);
-    assert!(select_model(&config, None, &global, Some(&parent)).is_err());
+    assert!(select_model(&config, None, &parent).is_err());
     let unsupported = ModelSelection::Fixed {
         model: "openrouter/other".into(),
         effort: EffortSelection::Global,
     };
-    assert!(select_model(&config, Some(&unsupported), &global, Some(&parent)).is_err());
+    assert!(select_model(&config, Some(&unsupported), &parent).is_err());
     assert_eq!(
-        select_model(
-            &config,
-            Some(&ModelSelection::Parent),
-            &global,
-            Some(&parent)
-        )
-        .unwrap(),
+        select_model(&config, Some(&ModelSelection::Parent), &parent).unwrap(),
         parent
     );
     assert_eq!(
-        select_model(
-            &config,
-            Some(&ModelSelection::Global),
-            &global,
-            Some(&parent)
-        )
-        .unwrap(),
-        global
-    );
-    assert_eq!(
-        select_model(&config, Some(&ModelSelection::Parent), &global, None).unwrap(),
-        global
+        select_model(&config, Some(&ModelSelection::Global), &parent).unwrap(),
+        AgentModel::Global
     );
     config.default = true;
     assert_eq!(
-        select_model(&config, None, &global, Some(&parent)).unwrap(),
-        global
+        select_model(&config, None, &parent).unwrap(),
+        AgentModel::Global
     );
     config.models.clear();
-    assert!(select_model(&config, None, &global, None).is_err());
+    assert!(select_model(&config, None, &AgentModel::Global).is_err());
+}
+
+#[test]
+fn parent_choices_copy_the_parent_policy_so_global_parents_keep_children_following() {
+    let config = config(vec![ModelSelection::Parent], false);
+    assert_eq!(
+        select_model(&config, None, &AgentModel::Global).unwrap(),
+        AgentModel::Global
+    );
+    assert_eq!(
+        select_model(&config, None, &fixed_parent()).unwrap(),
+        fixed_parent()
+    );
 }
 
 #[test]
 fn a_single_allowed_model_is_implicitly_selected_even_without_default_permission() {
-    let global = global();
     for selection in [
         ModelSelection::Global,
         ModelSelection::Parent,
@@ -87,37 +91,32 @@ fn a_single_allowed_model_is_implicitly_selected_even_without_default_permission
         },
     ] {
         let config = config(vec![selection.clone()], false);
-        let selected = select_model(&config, Some(&selection), &global, None).unwrap();
-        assert_eq!(
-            select_model(&config, None, &global, None).unwrap(),
-            selected
-        );
+        let parent = AgentModel::Global;
+        let selected = select_model(&config, Some(&selection), &parent).unwrap();
+        assert_eq!(select_model(&config, None, &parent).unwrap(), selected);
     }
 }
 
 #[test]
 fn fixed_model_choices_require_exact_slug_and_effort_policy() {
-    let global = global();
-    let parent = ModelConfig {
-        effort: Effort::High,
-        ..global.clone()
-    };
     let allowed = ModelSelection::Fixed {
         model: "openrouter/vendor/model".into(),
         effort: EffortSelection::Parent,
     };
     let config = config(vec![allowed.clone()], false);
-    let selected = select_model(&config, Some(&allowed), &global, Some(&parent)).unwrap();
+    let parent = fixed_parent();
     assert_eq!(
-        selected.model,
-        Model::new(ProviderType::Openrouter, "vendor/model").unwrap()
+        select_model(&config, Some(&allowed), &parent).unwrap(),
+        AgentModel::Fixed {
+            model: vendor_model(),
+            effort: AgentEffort::Fixed(Effort::High),
+        }
     );
-    assert_eq!(selected.effort, Effort::High);
 
     for unsupported in [
         ModelSelection::Fixed {
             model: "openrouter/vendor/model".into(),
-            // Even a fixed effort equal to the parent's resolved effort is a different policy.
+            // Even a fixed effort equal to the parent's effort is a different policy.
             effort: EffortSelection::Fixed(Effort::High),
         },
         ModelSelection::Fixed {
@@ -135,43 +134,41 @@ fn fixed_model_choices_require_exact_slug_and_effort_policy() {
         ModelSelection::Global,
         ModelSelection::Parent,
     ] {
-        assert!(select_model(&config, Some(&unsupported), &global, Some(&parent)).is_err());
+        assert!(select_model(&config, Some(&unsupported), &parent).is_err());
     }
 }
 
 #[test]
-fn fixed_models_parse_provider_slug_and_resolve_effort_at_creation() {
-    let global = global();
-    let parent = ModelConfig {
-        effort: Effort::High,
-        ..global.clone()
-    };
-    for (effort, expected) in [
-        (EffortSelection::Parent, Effort::High),
-        (EffortSelection::Global, global.effort),
-        (EffortSelection::Fixed(Effort::Low), Effort::Low),
+fn fixed_models_parse_provider_slug_and_keep_effort_policy() {
+    for (effort, parent, expected) in [
+        (
+            EffortSelection::Parent,
+            fixed_parent(),
+            AgentEffort::Fixed(Effort::High),
+        ),
+        // Root agents and children of global parents follow the session effort.
+        (
+            EffortSelection::Parent,
+            AgentModel::Global,
+            AgentEffort::Global,
+        ),
+        (EffortSelection::Global, fixed_parent(), AgentEffort::Global),
+        (
+            EffortSelection::Fixed(Effort::Low),
+            AgentModel::Global,
+            AgentEffort::Fixed(Effort::Low),
+        ),
     ] {
         let selection = ModelSelection::Fixed {
             model: "openrouter/vendor/model".into(),
             effort,
         };
         let config = config(vec![selection.clone()], false);
-        let selected = select_model(&config, Some(&selection), &global, Some(&parent)).unwrap();
-        assert_eq!(selected.model.api_name, "vendor/model");
-        assert_eq!(selected.effort, expected);
-        let fallback = select_model(&config, Some(&selection), &global, None).unwrap();
         assert_eq!(
-            fallback.effort,
-            if matches!(
-                selection,
-                ModelSelection::Fixed {
-                    effort: EffortSelection::Fixed(_),
-                    ..
-                }
-            ) {
-                Effort::Low
-            } else {
-                global.effort
+            select_model(&config, Some(&selection), &parent).unwrap(),
+            AgentModel::Fixed {
+                model: vendor_model(),
+                effort: expected,
             }
         );
     }
@@ -180,5 +177,23 @@ fn fixed_models_parse_provider_slug_and_resolve_effort_at_creation() {
         effort: EffortSelection::Global,
     };
     let config = config(vec![invalid.clone()], false);
-    assert!(select_model(&config, Some(&invalid), &global, Some(&parent)).is_err());
+    assert!(select_model(&config, Some(&invalid), &AgentModel::Global).is_err());
+}
+
+#[test]
+fn global_policies_resolve_against_the_current_session() {
+    let session = session();
+    assert_eq!(AgentModel::Global.resolve(&session), session);
+    let fixed_model = AgentModel::Fixed {
+        model: vendor_model(),
+        effort: AgentEffort::Global,
+    };
+    assert_eq!(
+        fixed_model.resolve(&session),
+        ModelConfig {
+            model: vendor_model(),
+            effort: Effort::Medium,
+        }
+    );
+    assert_eq!(fixed_parent().resolve(&session).effort, Effort::High);
 }

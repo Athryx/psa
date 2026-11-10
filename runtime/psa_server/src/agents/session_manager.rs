@@ -20,7 +20,7 @@ use crate::{
 };
 use actors::Mailbox;
 use psa_api::{
-    AgentRequest, MessageDelivery, RequestAccepted, StreamMessage,
+    AgentCommand, AgentRequest, CommandDelivery, MessageDelivery, RequestAccepted, StreamMessage,
     events::{EventId, EventRange, EventType, Log, MessageType, NewEvent},
 };
 use std::{
@@ -167,6 +167,61 @@ pub(crate) struct QueuedRequest {
     pub allow_restart: bool,
 }
 
+#[derive(Clone)]
+pub(crate) struct QueuedCommand {
+    pub id: String,
+    pub delivery: CommandDelivery,
+    pub command: AgentCommand,
+}
+
+/// Messages and commands share one FIFO so their relative order is preserved.
+enum QueuedItem {
+    Message(QueuedRequest),
+    Command(QueuedCommand),
+}
+
+impl QueuedItem {
+    fn id(&self) -> &str {
+        match self {
+            Self::Message(request) => &request.id,
+            Self::Command(command) => &command.id,
+        }
+    }
+
+    /// Only messages are steering; a steered command must not wake `wait_message`.
+    fn is_steering_message(&self) -> bool {
+        matches!(self, Self::Message(request) if request.delivery == MessageDelivery::Steer)
+    }
+
+    fn is_eligible(&self, state: AgentState) -> bool {
+        match self {
+            Self::Message(request) => match request.delivery {
+                MessageDelivery::Queue => state != AgentState::Running,
+                MessageDelivery::Steer => true,
+                MessageDelivery::Resume => state == AgentState::Interrupted,
+            },
+            Self::Command(command) => match command.delivery {
+                CommandDelivery::Queue => state != AgentState::Running,
+                CommandDelivery::Steer => true,
+            },
+        }
+    }
+
+    /// Commands never start or resume runs, so only messages can become stale.
+    fn rejection(&self, state: AgentState) -> Option<&'static str> {
+        let Self::Message(request) = self else {
+            return None;
+        };
+        if !request.allow_restart && state == AgentState::Interrupted {
+            return Some("background message cannot restart an interrupted agent");
+        }
+        if request.delivery == MessageDelivery::Resume && state != AgentState::Interrupted {
+            return Some("resume requires an interrupted agent");
+        }
+        None
+    }
+}
+
 pub(crate) enum LifecycleHook {
     AgentCreate,
     SessionUpdate(Session),
@@ -175,6 +230,7 @@ pub(crate) enum LifecycleHook {
 pub(crate) enum BoundaryReply {
     Hook(LifecycleHook),
     Work(QueuedRequest),
+    Command(QueuedCommand),
     Continue,
     Stop,
 }
@@ -251,9 +307,9 @@ struct Worker {
     generation: u64,
     task_id: Id,
     controls: AgentClient,
-    queue: VecDeque<QueuedRequest>,
+    queue: VecDeque<QueuedItem>,
     lifecycle: VecDeque<LifecycleHook>,
-    in_flight: Option<QueuedRequest>,
+    in_flight: Option<String>,
     stopping: bool,
 }
 
@@ -459,12 +515,10 @@ impl SessionManager {
 
         // Queue inspection and subscription happen in one actor turn. Channels
         // outlive worker generations; dropping a waiter drops only its receiver.
-        let queued = self.workers.get(&agent).is_some_and(|worker| {
-            worker
-                .queue
-                .iter()
-                .any(|request| request.delivery == MessageDelivery::Steer)
-        });
+        let queued = self
+            .workers
+            .get(&agent)
+            .is_some_and(|worker| worker.queue.iter().any(QueuedItem::is_steering_message));
         let signal = self
             .steering
             .entry(agent)
@@ -481,12 +535,10 @@ impl SessionManager {
 
     fn refresh_steering(&self, agent: AgentId) {
         if let Some(signal) = self.steering.get(&agent) {
-            let queued = self.workers.get(&agent).is_some_and(|worker| {
-                worker
-                    .queue
-                    .iter()
-                    .any(|request| request.delivery == MessageDelivery::Steer)
-            });
+            let queued = self
+                .workers
+                .get(&agent)
+                .is_some_and(|worker| worker.queue.iter().any(QueuedItem::is_steering_message));
             let next = if self.shutting_down {
                 None
             } else {
@@ -683,10 +735,7 @@ impl SessionManager {
                     .workers
                     .get_mut(&agent)
                     .filter(|worker| worker.generation == generation)
-                    && worker
-                        .in_flight
-                        .as_ref()
-                        .is_some_and(|request| request.id == request_id)
+                    && worker.in_flight.as_deref() == Some(request_id.as_str())
                 {
                     worker.in_flight = None;
                 }
@@ -735,33 +784,19 @@ impl SessionManager {
         let worker = self.workers.get_mut(&agent).expect("worker exists");
 
         let mut rejected = Vec::new();
-        worker.queue.retain(|request| {
-            let is_valid = (request.delivery != MessageDelivery::Resume
-                || state == AgentState::Interrupted)
-                && (request.allow_restart || state != AgentState::Interrupted);
-            if !is_valid {
-                let reason = if !request.allow_restart && state == AgentState::Interrupted {
-                    "background message cannot restart an interrupted agent"
-                } else {
-                    "resume requires an interrupted agent"
-                };
-                rejected.push((request.id.clone(), reason));
-            }
-            is_valid
+        worker.queue.retain(|item| {
+            let Some(reason) = item.rejection(state) else {
+                return true;
+            };
+            rejected.push((item.id().to_owned(), reason));
+            false
         });
 
         let session = worker.session;
         let eligible = if self.shutting_down {
             None
         } else {
-            worker
-                .queue
-                .iter()
-                .position(|request| match request.delivery {
-                    MessageDelivery::Queue => state != AgentState::Running,
-                    MessageDelivery::Steer => true,
-                    MessageDelivery::Resume => state == AgentState::Interrupted,
-                })
+            worker.queue.iter().position(|item| item.is_eligible(state))
         };
         let lifecycle = if self.shutting_down {
             None
@@ -771,9 +806,12 @@ impl SessionManager {
         let response = if let Some(hook) = lifecycle {
             BoundaryReply::Hook(hook)
         } else if let Some(index) = eligible {
-            let request = worker.queue.remove(index).expect("queue index exists");
-            worker.in_flight = Some(request.clone());
-            BoundaryReply::Work(request)
+            let item = worker.queue.remove(index).expect("queue index exists");
+            worker.in_flight = Some(item.id().to_owned());
+            match item {
+                QueuedItem::Message(request) => BoundaryReply::Work(request),
+                QueuedItem::Command(command) => BoundaryReply::Command(command),
+            }
         } else if state == AgentState::Running {
             BoundaryReply::Continue
         } else {
@@ -840,6 +878,20 @@ impl SessionManager {
             AgentRequest::Message { delivery, content } => {
                 (delivery, content, MessageType::Human, None)
             }
+            AgentRequest::Command { delivery, command } => {
+                cursor.rollback().await?;
+                crate::components::bundles::require_command_support(&definition, &command)
+                    .map_err(RuntimeError::Invalid)?;
+                return self
+                    .enqueue(agent, session, |id| {
+                        QueuedItem::Command(QueuedCommand {
+                            id,
+                            delivery,
+                            command,
+                        })
+                    })
+                    .await;
+            }
             AgentRequest::SubagentMessage {
                 content,
                 mut source,
@@ -873,12 +925,6 @@ impl SessionManager {
         }
         cursor.rollback().await?;
 
-        let id = format!(
-            "{}-{}",
-            time::OffsetDateTime::now_utc().unix_timestamp_nanos(),
-            self.next_request_id
-        );
-        self.next_request_id += 1;
         if delivery == MessageDelivery::Resume && snapshot.state != AgentState::Interrupted {
             return Err(RuntimeError::InvalidResume);
         }
@@ -889,14 +935,33 @@ impl SessionManager {
             .iter()
             .rev()
             .find_map(|event| match &event.kind {
-                EventType::Model(model) => Some(model),
+                EventType::Model(model) => Some(model.clone()),
                 _ => None,
             })
-            .or(definition.model_config.as_ref())
-            .unwrap_or(&session_snapshot.model_config);
+            .unwrap_or_else(|| definition.model.resolve(&session_snapshot.model_config));
         if self.providers.provider(model.model.provider).is_none() {
             return Err(RuntimeError::MissingProvider);
         }
+
+        self.enqueue(agent, session, |id| {
+            QueuedItem::Message(QueuedRequest {
+                id,
+                delivery,
+                content,
+                message_type,
+                source,
+                allow_restart,
+            })
+        })
+        .await
+    }
+
+    async fn enqueue(
+        &mut self,
+        agent: AgentId,
+        session: SessionId,
+        build: impl FnOnce(String) -> QueuedItem,
+    ) -> Result<RequestAccepted, RuntimeError> {
         if self
             .workers
             .get(&agent)
@@ -904,20 +969,19 @@ impl SessionManager {
         {
             return Err(RuntimeError::Overloaded);
         }
+        let id = format!(
+            "{}-{}",
+            time::OffsetDateTime::now_utc().unix_timestamp_nanos(),
+            self.next_request_id
+        );
+        self.next_request_id += 1;
 
         self.ensure_worker(agent, session).await?;
         self.workers
             .get_mut(&agent)
             .expect("worker exists")
             .queue
-            .push_back(QueuedRequest {
-                id: id.clone(),
-                delivery,
-                content,
-                message_type,
-                source,
-                allow_restart,
-            });
+            .push_back(build(id.clone()));
 
         self.refresh_steering(agent);
         Ok(RequestAccepted { request_id: id })
@@ -1035,7 +1099,7 @@ impl SessionManager {
         &mut self,
         agent: AgentId,
         session: SessionId,
-        queue: VecDeque<QueuedRequest>,
+        queue: VecDeque<QueuedItem>,
         lifecycle: VecDeque<LifecycleHook>,
     ) -> Result<(), RuntimeError> {
         let mut state =
@@ -1146,14 +1210,14 @@ impl SessionManager {
         error: AgentError,
     ) -> Result<(), AgentError> {
         tracing::error!(agent = agent.0, %error, "agent worker failed");
-        if let Some(request) = &worker.in_flight {
+        if let Some(request_id) = &worker.in_flight {
             self.publication
                 .lock()
                 .await
                 .publish(StreamMessage::RequestFailed {
                     session_id: worker.session,
                     agent_id: agent,
-                    request_id: request.id.clone(),
+                    request_id: request_id.clone(),
                     message: "worker exited; request disposition is unknown".into(),
                 });
         }

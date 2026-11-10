@@ -8,6 +8,7 @@
 mod ask_question;
 pub mod bash;
 pub mod codemode;
+mod compaction;
 mod file_tools;
 pub mod goal;
 mod noop;
@@ -22,6 +23,7 @@ pub(crate) mod typed_result;
 pub use ask_question::AskQuestionBundle;
 pub use bash::BashBundle;
 pub use codemode::CodeModeBundle;
+pub use compaction::CompactionBundle;
 pub use file_tools::FileToolsBundle;
 pub use goal::GoalBundle;
 pub use noop::NoopBundle;
@@ -33,7 +35,7 @@ use crate::{
     agents::{Agent, AgentDefinition},
     components::{
         codemode_functions::{CodeModeFunction, CodeModeFunctionKind},
-        hooks::{HookKind, Hooks},
+        hooks::{CommandHookKind, HookKind, Hooks},
         tools::ToolKind,
     },
     sessions::Session,
@@ -71,6 +73,7 @@ pub enum BundleKind {
     AskQuestion(AskQuestionBundle),
     TypedResult(TypedResultBundle),
     Subagents(SubagentsBundle),
+    Compaction(CompactionBundle),
     #[cfg(test)]
     Probe(testing::ProbeBundle),
 }
@@ -103,6 +106,15 @@ impl BundleKind {
                 })?;
                 Self::Subagents(SubagentsBundle::with_session(resources))
             }
+            BundleConfig::Compaction {
+                reserve_tokens,
+                keep_recent_tokens,
+                context_window,
+            } => Self::Compaction(CompactionBundle::new(
+                *reserve_tokens,
+                *keep_recent_tokens,
+                *context_window,
+            )),
         };
         Ok(bundle)
     }
@@ -117,6 +129,7 @@ impl BundleKind {
             Self::AskQuestion(_) => "AskQuestion".into(),
             Self::TypedResult(_) => "TypedResult".into(),
             Self::Subagents(_) => "Subagents".into(),
+            Self::Compaction(_) => "Compaction".into(),
             #[cfg(test)]
             Self::Probe(bundle) => bundle.name.clone(),
         }
@@ -139,6 +152,7 @@ impl Bundle for BundleKind {
             Self::AskQuestion(bundle) => bundle.install(agent, session, installer),
             Self::TypedResult(bundle) => bundle.install(agent, session, installer),
             Self::Subagents(bundle) => bundle.install(agent, session, installer),
+            Self::Compaction(bundle) => bundle.install(agent, session, installer),
             #[cfg(test)]
             Self::Probe(bundle) => bundle.install(agent, session, installer),
         }
@@ -154,6 +168,7 @@ impl Bundle for BundleKind {
             Self::AskQuestion(bundle) => bundle.cleanup().await,
             Self::TypedResult(bundle) => bundle.cleanup().await,
             Self::Subagents(bundle) => bundle.cleanup().await,
+            Self::Compaction(bundle) => bundle.cleanup().await,
             #[cfg(test)]
             Self::Probe(bundle) => bundle.cleanup().await,
         }
@@ -169,6 +184,7 @@ impl Bundle for BundleKind {
             Self::AskQuestion(bundle) => bundle.cleanup_timeout(),
             Self::TypedResult(bundle) => bundle.cleanup_timeout(),
             Self::Subagents(bundle) => bundle.cleanup_timeout(),
+            Self::Compaction(bundle) => bundle.cleanup_timeout(),
             #[cfg(test)]
             Self::Probe(bundle) => bundle.cleanup_timeout(),
         }
@@ -252,6 +268,31 @@ impl Installer {
         };
         hooks.push(hook);
     }
+
+    pub fn add_command_hook(&mut self, hook: CommandHookKind) {
+        self.hooks.command.push(hook);
+    }
+}
+
+/// Rejects a command at submission unless the definition selects the bundle
+/// that installs its handler, instead of queueing work nobody would execute.
+pub fn require_command_support(
+    definition: &AgentDefinition,
+    command: &psa_api::AgentCommand,
+) -> Result<(), String> {
+    let (name, bundle) = match command {
+        psa_api::AgentCommand::Compact { .. } => ("Compact", psa_api::BundleId::Compaction),
+    };
+    if definition
+        .bundles
+        .iter()
+        .any(|config| config.id() == bundle)
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "the {name} command requires the agent's {bundle:?} bundle"
+    ))
 }
 
 #[derive(Default)]

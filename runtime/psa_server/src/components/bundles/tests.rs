@@ -54,7 +54,7 @@ fn definition() -> AgentDefinition {
         selectable: false,
         bundles: Vec::new(),
         hooks: HookConfigs::default(),
-        model_config: None,
+        model: Default::default(),
         skills: Vec::new(),
         permitted_subagents: Vec::new(),
     }

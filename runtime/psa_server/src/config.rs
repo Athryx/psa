@@ -26,14 +26,45 @@ effort = "Medium"
 # Fallbacks for omitted fields in agent files and API registrations.
 # Explicit empty arrays override these defaults; hook stages inherit separately.
 [agent_defaults]
-bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents", { Goal = { interactive_only = true } }]
+bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents", { Goal = { interactive_only = true } }, { Compaction = {} }]
 
 [agent_defaults.hooks]
 agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
-session_update = []
-before_request = [{ Compaction = {} }]
+session_update = ["SessionModelUpdate"]
+before_request = []
 after_request = []
 "#;
+
+/// Global agent files generated with a new configuration: a selectable default
+/// agent whose only permitted subagent is a leaf worker using its parent's model.
+const DEFAULT_AGENTS: [(&str, &str); 2] = [
+    (
+        "default.toml",
+        r#"name = "default"
+description = "General-purpose assistant"
+selectable = true
+models = ["Global"]
+default = true
+
+[subagents]
+global_defaults = false
+project_defaults = false
+subagents = ["subagent"]
+"#,
+    ),
+    (
+        "subagent.toml",
+        r#"name = "subagent"
+description = "Delegated worker using its parent's model and effort"
+models = ["Parent"]
+
+# A leaf worker: it cannot create subagents of its own.
+[subagents]
+global_defaults = false
+project_defaults = false
+"#,
+    ),
+];
 
 #[derive(Debug, Parser)]
 #[command(about = "PSA session and event server", version)]
@@ -144,7 +175,7 @@ impl StartOptions {
         let explicit = self.config.is_some();
         let config_path = self.config.unwrap_or_else(|| data_dir.join("config.toml"));
         if !explicit {
-            ensure_default_config(&config_path).await?;
+            ensure_default_config(&config_path, &data_dir).await?;
         }
 
         let contents = tokio::fs::read_to_string(&config_path)
@@ -216,7 +247,32 @@ where
 }
 
 // Existing configurations are never rewritten; a missing host marker stays false.
-async fn ensure_default_config(path: &Path) -> Result<(), ConfigError> {
+// Default agents are only written alongside a newly generated configuration.
+async fn ensure_default_config(path: &Path, data_dir: &Path) -> Result<(), ConfigError> {
+    if !write_new_file(path, DEFAULT_CONFIG).await? {
+        return Ok(());
+    }
+
+    let agents = data_dir.join("agents");
+    tokio::fs::create_dir_all(&agents)
+        .await
+        .map_err(|source| ConfigError::Io {
+            path: agents.clone(),
+            source,
+        })?;
+    for (name, contents) in DEFAULT_AGENTS {
+        write_new_file(&agents.join(name), contents).await?;
+    }
+    Ok(())
+}
+
+/// Writes and syncs `contents` only if `path` does not exist yet.
+/// Returns whether the file was created.
+async fn write_new_file(path: &Path, contents: &str) -> Result<bool, ConfigError> {
+    let io_error = |source| ConfigError::Io {
+        path: path.to_owned(),
+        source,
+    };
     let mut file = match tokio::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -224,25 +280,13 @@ async fn ensure_default_config(path: &Path) -> Result<(), ConfigError> {
         .await
     {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
-        Err(source) => {
-            return Err(ConfigError::Io {
-                path: path.to_owned(),
-                source,
-            });
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(source) => return Err(io_error(source)),
     };
 
-    file.write_all(DEFAULT_CONFIG.as_bytes())
+    file.write_all(contents.as_bytes())
         .await
-        .map_err(|source| ConfigError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
-    file.sync_all().await.map_err(|source| ConfigError::Io {
-        path: path.to_owned(),
-        source,
-    })?;
-
-    Ok(())
+        .map_err(io_error)?;
+    file.sync_all().await.map_err(io_error)?;
+    Ok(true)
 }

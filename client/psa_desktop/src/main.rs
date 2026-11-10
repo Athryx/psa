@@ -49,7 +49,10 @@ fn launch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         .with_window(window)
         // Keep the renderer and its async save worker alive until the close flush finishes.
         .with_close_behaviour(dioxus_desktop::WindowCloseBehaviour::WindowHides)
-        .with_disable_drag_drop_handler(true);
+        .with_disable_drag_drop_handler(true)
+        // No native menu bar or WebView context menu; the app provides its own row menu.
+        .with_menu(None)
+        .with_disable_context_menu(true);
     dioxus_desktop::launch::launch_virtual_dom(dom, config)
 }
 

@@ -1,6 +1,7 @@
 //! Target-scoped composer UI and browser-owned editing.
 use crate::{
     app::Ui,
+    command_prompt::CommandPrompt,
     input::{BrowserInput, DraftStore, InputKeyEvent, InputSnapshot},
     network,
     reactive::{use_ui_selector, use_ui_subscription},
@@ -90,6 +91,17 @@ fn select_draft_config(
     choosing_model
 }
 
+/// A new session's composer also reloads its root-agent choices; elsewhere
+/// `/refresh` only re-runs the server's configuration discovery.
+fn refresh_configs(mut ui: Signal<Ui>, target: TranscriptTarget) {
+    if target.agent_id == crate::app::DRAFT_ROOT {
+        refresh_draft_configs(ui, target.session_id, target);
+        return;
+    }
+    ui.write().drafts.remove(&target);
+    spawn(network::refresh_configs(ui, target.session_id));
+}
+
 fn refresh_draft_configs(mut ui: Signal<Ui>, session_id: SessionId, target: TranscriptTarget) {
     {
         let mut state = ui.write();
@@ -134,6 +146,25 @@ fn ComposerStatus(
                 span { class:"composer-status-usage", title:"Last inference token usage; not exact current context", "{usage}" }
             }
         }
+    }
+}
+
+/// Catalog display name for a model, falling back to its API model name.
+pub(crate) fn model_display_name(models: &[ModelInfo], model: &Model) -> String {
+    models
+        .iter()
+        .find(|info| info.model == *model)
+        .map(|info| info.name.clone())
+        .unwrap_or_else(|| model.model_name().to_owned())
+}
+
+/// Model name and color-coded effort on one line, as in the composer status.
+#[component]
+pub(crate) fn ModelEffort(model: String, effort: Effort) -> Element {
+    rsx! {
+        span { class:"composer-status-model", "{model}" }
+        " · "
+        span { class:"effort-{effort.as_str()}", "{effort.as_str()}" }
     }
 }
 
@@ -225,11 +256,7 @@ fn AgentInfo(
     mut open: Signal<bool>,
 ) -> Element {
     crate::app::register_modal(open);
-    let count = |value: Option<u64>| {
-        value
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "Unknown".into())
-    };
+    let count = |value: Option<u64>| value.map(group_digits).unwrap_or_else(|| "Unknown".into());
     let input = usage.as_ref().and_then(|u| u.input_tokens);
     let cached = usage.as_ref().and_then(|u| u.cached_input_tokens);
     let cache_write = usage.as_ref().and_then(|u| u.cache_write_tokens);
@@ -249,7 +276,7 @@ fn AgentInfo(
                 onclick:move |event| event.stop_propagation(),
                 onmounted:move |event| { spawn(async move { let _ = event.data().set_focus(true).await; }); },
                 onkeydown:move |event| { if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); open.set(false); } },
-                header { h2 { "Agent information" } button { "aria-label":"Close agent information", onclick:move |_| open.set(false), "×" } }
+                crate::modal::ModalHeader { title:"Agent information", close_label:"Close agent information", onclose:move |_| open.set(false) }
                 dl { class:"info-grid",
                     dt { "Name" } dd { "{name}" }
                     dt { "Template" } dd { if let Some(id) = definition_id { ResolvedTemplate { id } } else { "{template.as_deref().unwrap_or(\"Unknown\")}" } }
@@ -260,7 +287,7 @@ fn AgentInfo(
                     dt { class:"info-detail", "Cached" } dd { "{count(cached)}" }
                     dt { class:"info-detail", "Cache hit rate" } dd { "{hit}" }
                     dt { class:"info-detail", "Uncached" } dd { "{count(token_difference(input, cached))}" }
-                    if let Some(cache_write) = cache_write { dt { class:"info-detail", "Cache write" } dd { "{cache_write}" } }
+                    if let Some(cache_write) = cache_write { dt { class:"info-detail", "Cache write" } dd { "{group_digits(cache_write)}" } }
                     dt { "Output tokens" } dd { "{count(output)}" }
                     dt { class:"info-detail", "Thinking" } dd { "{count(thinking)}" }
                     dt { class:"info-detail", "Non-thinking" } dd { "{count(token_difference(output, thinking))}" }
@@ -269,6 +296,19 @@ fn AgentInfo(
             }
         }
     }
+}
+
+/// Formats a count with comma thousands separators, such as `1,234,567`.
+fn group_digits(value: u64) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
 }
 
 type MenuNodes = Signal<Vec<Option<std::rc::Rc<MountedData>>>>;
@@ -392,6 +432,53 @@ fn choose_effort(model: &ModelInfo, preferred: Effort) -> Effort {
             .unwrap_or(Effort::Off)
     }
 }
+async fn rename_session(mut ui: Signal<Ui>, session_id: SessionId, name: String) {
+    let generation = ui.peek().generation;
+    let Ok(api) = network::client(ui) else {
+        return;
+    };
+    let result = api
+        .update_session(
+            session_id,
+            &UpdateSession {
+                name: Some(name),
+                ..Default::default()
+            },
+        )
+        .await;
+    if generation != ui.peek().generation {
+        return;
+    }
+    match result {
+        Ok(_) => ui.write().notice = Some("Session renamed.".into()),
+        Err(_) => ui.write().error = Some("Unable to rename the session".into()),
+    }
+}
+
+/// A slash command waiting for a value in the prompt above the composer line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlashPrompt {
+    RenameSession,
+}
+
+fn open_slash_prompt(
+    mut ui: Signal<Ui>,
+    target: TranscriptTarget,
+    mut prompt: Signal<Option<SlashPrompt>>,
+    kind: SlashPrompt,
+) {
+    ui.write().drafts.remove(&target);
+    prompt.set(Some(kind));
+}
+
+fn focus_node(node: Signal<Option<std::rc::Rc<MountedData>>>) {
+    if let Some(node) = node.peek().clone() {
+        spawn(async move {
+            let _ = node.set_focus(true).await;
+        });
+    }
+}
+
 async fn change_model(mut ui: Signal<Ui>, session_id: SessionId, model_config: ModelConfig) {
     let generation = ui.peek().generation;
     let Ok(api) = network::client(ui) else {
@@ -451,14 +538,10 @@ fn command_stage(
     if !root && stage == DraftCommandStage::Configurations {
         return None;
     }
-    if !root
-        && stage == DraftCommandStage::Completion
-        && !complete_commands(text).iter().any(|command| {
-            matches!(
-                command.id,
-                CommandId::SessionModel | CommandId::SessionEffort | CommandId::Info
-            )
-        })
+    if stage == DraftCommandStage::Completion
+        && !complete_commands(text)
+            .iter()
+            .any(|command| command.id.is_available(root))
     {
         return None;
     }
@@ -493,12 +576,7 @@ fn build_command_menu(
         DraftCommandStage::Completion => {
             options = complete_commands(text)
                 .into_iter()
-                .filter(|command| {
-                    root || matches!(
-                        command.id,
-                        CommandId::SessionModel | CommandId::SessionEffort | CommandId::Info
-                    )
-                })
+                .filter(|command| command.id.is_available(root))
                 .map(|command| MenuOption {
                     title: format!("/{}", command.name),
                     description: command.description.into(),
@@ -621,14 +699,21 @@ fn select_menu_action(
     action: MenuAction,
     mut choosing_model: Signal<Option<u64>>,
     mut info_open: Signal<bool>,
+    prompt: Signal<Option<SlashPrompt>>,
 ) {
     match action {
         MenuAction::Command(command) => match command.id {
-            CommandId::Refresh => refresh_draft_configs(ui, target.session_id, target),
+            CommandId::Refresh => refresh_configs(ui, target),
             CommandId::Info => {
                 ui.write().drafts.remove(&target);
                 info_open.set(true);
             }
+            // Choosing from the menu compacts immediately; Tab completes
+            // `/compact ` so focus instructions can be typed first.
+            CommandId::Compact => {
+                spawn(network::submit_compact(ui, target, String::new()));
+            }
+            CommandId::Rename => open_slash_prompt(ui, target, prompt, SlashPrompt::RenameSession),
             _ => {
                 ui.write()
                     .drafts
@@ -763,6 +848,7 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
     let mut choosing_model = use_signal(|| None::<u64>);
     let all_models = use_signal(|| false);
     let mut info_open = use_signal(|| false);
+    let mut prompt = use_signal(|| None::<SlashPrompt>);
     let menu_popup = use_signal(|| None::<std::rc::Rc<MountedData>>);
     let menu_nodes = use_signal(Vec::new);
     let mut textarea_node = use_signal(|| None::<std::rc::Rc<MountedData>>);
@@ -786,12 +872,13 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
     });
     let session = use_ui_selector(move |state| {
         let (path, probe) = info_location(state, session_id);
-        let current = state
+        let session = state
             .sessions
             .iter()
-            .find(|session| session.id == session_id)
-            .map(|session| session.model_config.clone());
-        (path, probe, current)
+            .find(|session| session.id == session_id);
+        let current = session.map(|session| session.model_config.clone());
+        let name = session.map(|session| session.name.clone());
+        (path, probe, current, name)
     });
     let root_draft = use_ui_selector(move |state| {
         if root {
@@ -862,14 +949,9 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
                 projected.as_ref().and_then(|status| status.context_window),
             )
         };
-        let name = model.as_ref().map(|model| {
-            sources
-                .1
-                .iter()
-                .find(|info| info.model == *model)
-                .map(|info| info.name.clone())
-                .unwrap_or_else(|| model.model_name().to_owned())
-        });
+        let name = model
+            .as_ref()
+            .map(|model| model_display_name(&sources.1, model));
         (name, effort, tokens, window)
     });
     let info = use_ui_selector(move |state| {
@@ -931,17 +1013,15 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
     let (status_name, status_effort, status_tokens, status_window) = status();
 
     let onselect = EventHandler::new(move |action: MenuAction| {
-        let show_info =
-            matches!(&action, MenuAction::Command(command) if command.id == CommandId::Info);
-        select_menu_action(ui, target, action, choosing_model, info_open);
+        let keeps_focus = matches!(
+            &action,
+            MenuAction::Command(command) if matches!(command.id, CommandId::Info | CommandId::Rename)
+        );
+        select_menu_action(ui, target, action, choosing_model, info_open, prompt);
         selected.set(0);
         dismissed.set(None);
-        if !show_info {
-            if let Some(node) = textarea_node.peek().clone() {
-                spawn(async move {
-                    let _ = node.set_focus(true).await;
-                });
-            }
+        if !keeps_focus {
+            focus_node(textarea_node);
         }
     });
     let onkey = EventHandler::new(move |event: InputKeyEvent| {
@@ -1035,6 +1115,7 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
                             option.action.clone(),
                             choosing_model,
                             info_open,
+                            prompt,
                         );
                         selected.set(0);
                     }
@@ -1057,13 +1138,30 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
             ComposerInput::Command {
                 id: CommandId::Refresh,
                 ..
-            } if root => refresh_draft_configs(ui, target.session_id, target),
+            } => refresh_configs(ui, target),
             ComposerInput::Command {
                 id: CommandId::Info,
                 ..
             } => {
                 ui.write().drafts.remove(&target);
                 info_open.set(true);
+            }
+            ComposerInput::Command {
+                id: CommandId::Rename,
+                arguments,
+            } => {
+                if arguments.is_empty() {
+                    open_slash_prompt(ui, target, prompt, SlashPrompt::RenameSession);
+                } else {
+                    ui.write().drafts.remove(&target);
+                    spawn(rename_session(ui, session_id, arguments));
+                }
+            }
+            ComposerInput::Command {
+                id: CommandId::Compact,
+                arguments,
+            } if !root => {
+                spawn(network::submit_compact(ui, target, arguments));
             }
             _ if root => {
                 spawn_forever(network::submit_draft_root(ui, target.session_id));
@@ -1103,8 +1201,29 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
             if !root && matches!(parsed, ComposerInput::Command { id:CommandId::Agent, .. }) {
                 p { class:"command-hint", "The /agent command is only available before creating the root agent. Use //agent to send it as text." }
             }
-            if !root && matches!(parsed, ComposerInput::Command { id:CommandId::Refresh, .. }) {
-                p { class:"command-hint", "The /refresh command is only available before creating the root agent. Use //refresh to send it as text." }
+            if root && matches!(parsed, ComposerInput::Command { id:CommandId::Compact, .. }) {
+                p { class:"command-hint", "The /compact command needs an existing agent. Use //compact to send it as text." }
+            }
+            if let Some(kind) = prompt() {
+                match kind {
+                    SlashPrompt::RenameSession => rsx! {
+                        CommandPrompt {
+                            label: "Rename session",
+                            placeholder: "Session name",
+                            initial_value: session.read().3.clone().unwrap_or_default(),
+                            submit_label: "Rename",
+                            onsubmit: move |name: String| {
+                                prompt.set(None);
+                                spawn(rename_session(ui, session_id, name));
+                                focus_node(textarea_node);
+                            },
+                            oncancel: move |_| {
+                                prompt.set(None);
+                                focus_node(textarea_node);
+                            },
+                        }
+                    },
+                }
             }
             div { class:"composer-input",
                 BrowserInput {

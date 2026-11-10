@@ -755,26 +755,32 @@ impl CompletionsDecoder {
             return Err(protocol("streamed message role is not assistant"));
         }
 
-        for (key, refusal) in [("content", false), ("refusal", true)] {
-            if let Some(value) = delta.get(key).filter(|value| !value.is_null()) {
-                let text = value
-                    .as_str()
-                    .ok_or_else(|| unsupported(format!("non-string Chat Completions {key}")))?;
-                self.append_text(text, refusal, output, events);
-            }
-        }
-        if let Some(annotations) = delta.get("annotations").filter(|value| !value.is_null()) {
-            self.append_annotations(annotations, output, events)?;
-        }
-
+        // Reasoning precedes text in a delta, so a chunk carrying both records
+        // the thinking item first.
         self.decode_reasoning_text(delta, output, events)?;
-
         if let Some(details) = delta
             .get("reasoning_details")
             .filter(|value| !value.is_null())
         {
             self.merge_reasoning_details(details, output, events)?;
         }
+
+        for (key, refusal) in [("content", false), ("refusal", true)] {
+            if let Some(value) = delta.get(key).filter(|value| !value.is_null()) {
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| unsupported(format!("non-string Chat Completions {key}")))?;
+                // Empty placeholders (OpenRouter sends `content: ""` alongside
+                // reasoning) must not create an empty assistant message.
+                if !text.is_empty() {
+                    self.append_text(text, refusal, output, events);
+                }
+            }
+        }
+        if let Some(annotations) = delta.get("annotations").filter(|value| !value.is_null()) {
+            self.append_annotations(annotations, output, events)?;
+        }
+
         if let Some(calls) = delta.get("tool_calls").filter(|value| !value.is_null()) {
             self.decode_tool_calls(calls)?;
         }
@@ -1480,7 +1486,9 @@ mod tests {
                 )
                 .unwrap();
                 done(&mut decoder, &mut output, &mut events).unwrap();
-                let HistoryItemKind::Message(message) = &output.items[0].kind else {
+                // Reasoning in the same delta is recorded before the text.
+                let message_index = usize::from(enabled);
+                let HistoryItemKind::Message(message) = &output.items[message_index].kind else {
                     panic!()
                 };
                 let ContentBlock::Text(text) = &message.content[0] else {
@@ -1488,7 +1496,7 @@ mod tests {
                 };
                 assert_eq!(text.annotations[0].provider, provider);
                 if enabled {
-                    let HistoryItemKind::Reasoning(reasoning) = &output.items[1].kind else {
+                    let HistoryItemKind::Reasoning(reasoning) = &output.items[0].kind else {
                         panic!()
                     };
                     assert_eq!(reasoning.opaque_state.as_ref().unwrap().provider, provider);
@@ -2074,6 +2082,59 @@ mod tests {
         assert_eq!(body["messages"][1]["reasoning"], "thinking");
         assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "a");
         assert_eq!(body["messages"][2]["tool_call_id"], "a");
+    }
+
+    #[test]
+    fn reasoning_precedes_text_and_empty_content_creates_no_message() {
+        let mut decoder = CompletionsDecoder::new(true);
+        let mut output = ModelResponse::default_for_model(model());
+        let mut events = VecDeque::new();
+        decode(
+            &mut decoder,
+            &mut output,
+            &mut events,
+            chunk(
+                json!({"role":"assistant", "content":"", "reasoning":"plan"}),
+                Value::Null,
+            ),
+        )
+        .unwrap();
+        decode(&mut decoder, &mut output, &mut events, chunk(json!({"content":"", "tool_calls":[{"index":0,"id":"a","function":{"name":"test","arguments":"{}"}}]}), json!("tool_calls"))).unwrap();
+        done(&mut decoder, &mut output, &mut events).unwrap();
+        assert!(matches!(
+            output.items[0].kind,
+            HistoryItemKind::Reasoning(_)
+        ));
+        assert!(matches!(output.items[1].kind, HistoryItemKind::ToolCall(_)));
+        assert_eq!(output.items.len(), 2);
+    }
+
+    #[test]
+    fn replays_reasoning_recorded_after_its_text_across_user_turns() {
+        let reasoning = |text: &str| HistoryItem {
+            kind: HistoryItemKind::Reasoning(Reasoning {
+                summary: vec![text.into()],
+                opaque_state: Some(ProviderOpaqueData {
+                    provider: ProviderType::Openrouter,
+                    data: json!({ "reasoning": text }),
+                }),
+                ..Default::default()
+            }),
+            metadata: Default::default(),
+        };
+        let mut history = AgentHistory::new(model());
+        history.items.extend([
+            message(Role::User, "first"),
+            message(Role::Assistant, "first answer"),
+            reasoning("first thoughts"),
+            message(Role::User, "second"),
+        ]);
+        let body = request_body(&history, &RequestConfig::default()).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1]["content"], "first answer");
+        assert_eq!(messages[1]["reasoning"], "first thoughts");
+        assert_eq!(messages[2]["role"], "user");
     }
 
     #[test]

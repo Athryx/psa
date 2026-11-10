@@ -5,12 +5,14 @@ use dioxus::prelude::*;
 use std::{future::Future, pin::Pin, rc::Rc};
 
 mod app;
+mod command_prompt;
 mod composer;
 mod context_view;
 mod creation;
 mod input;
 mod interaction;
 mod markdown;
+mod modal;
 mod network;
 mod persistence;
 mod reactive;

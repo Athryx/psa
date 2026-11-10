@@ -780,6 +780,7 @@ fn row_is_visible(kind: &psa_api::events::EventType, preferences: &UiPreferences
     match kind {
         EventType::Message(_)
         | EventType::Log(_)
+        | EventType::Command(_)
         | EventType::ToolCall(_)
         | EventType::ToolResult(_)
         | EventType::Compaction(_)
@@ -1487,6 +1488,10 @@ fn EventContent(
         }
         EventType::Log(log) => {
             rsx! { article { class: if log.error { "message error" } else { "message muted" }, div { class: "role", "Harness log" } pre { "{log.message}" } } }
+        }
+        EventType::Command(command) => {
+            let text = client_shared::describe_agent_command(command);
+            rsx! { article { class: "message muted", div { class: "role", "Command" } pre { "{text}" } } }
         }
         EventType::ToolCall(call) => {
             let result = result.as_ref().and_then(|result| match result.kind() {

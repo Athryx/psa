@@ -2,7 +2,10 @@
 
 use crate::events::{Event, EventId, EventType};
 use crate::{BundleConfig, ClientQueryId, ClientQueryRequest, HookConfigs};
-use llm_api::{api::ContentBlock, providers::ModelConfig};
+use llm_api::{
+    api::ContentBlock,
+    providers::{Effort, Model, ModelConfig},
+};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use time::OffsetDateTime;
@@ -77,6 +80,65 @@ pub enum BundleId {
     Subagents,
     /// Installs schema-validated result recording and its completion policy.
     TypedResult,
+    /// Installs automatic context compaction and the `Compact` command.
+    Compaction,
+}
+
+/// Model policy of an agent definition version.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentModel {
+    /// Follow the session's current model and effort.
+    #[default]
+    Global,
+    /// Use a pinned model with its own effort policy.
+    Fixed {
+        /// Pinned provider model.
+        model: Model,
+        /// Reasoning effort policy for the pinned model.
+        effort: AgentEffort,
+    },
+}
+
+/// Reasoning effort policy of a pinned agent model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentEffort {
+    /// Follow the session's current effort.
+    Global,
+    /// Use the specified effort.
+    Fixed(Effort),
+}
+
+impl AgentModel {
+    /// The concrete configuration this policy selects under the session model.
+    pub fn resolve(&self, session: &ModelConfig) -> ModelConfig {
+        match self {
+            Self::Global => session.clone(),
+            Self::Fixed { model, effort } => ModelConfig {
+                model: model.clone(),
+                effort: match effort {
+                    AgentEffort::Global => session.effort,
+                    AgentEffort::Fixed(effort) => *effort,
+                },
+            },
+        }
+    }
+
+    /// The effort policy this model policy applies.
+    pub fn effort(&self) -> AgentEffort {
+        match self {
+            Self::Global => AgentEffort::Global,
+            Self::Fixed { effort, .. } => *effort,
+        }
+    }
+}
+
+impl From<ModelConfig> for AgentModel {
+    fn from(config: ModelConfig) -> Self {
+        Self::Fixed {
+            model: config.model,
+            effort: AgentEffort::Fixed(config.effort),
+        }
+    }
 }
 
 /// An immutable, versioned agent configuration.
@@ -99,8 +161,8 @@ pub struct AgentDefinition {
     pub bundles: Vec<BundleConfig>,
     /// Ordered hook construction configurations for each lifecycle stage.
     pub hooks: HookConfigs,
-    /// Pinned model configuration; absent to follow the session model.
-    pub model_config: Option<ModelConfig>,
+    /// Model policy, re-resolved against the session model whenever it changes.
+    pub model: AgentModel,
     /// Paths to skill files or directories.
     pub skills: Vec<PathBuf>,
     /// Definition versions this agent may use for subagents.
@@ -125,8 +187,9 @@ pub struct CreateAgentDefinition {
     /// Ordered lifecycle hook configurations; defaults to no hooks.
     #[serde(default)]
     pub hooks: HookConfigs,
-    /// Pinned model configuration; absent to follow the session model.
-    pub model_config: Option<ModelConfig>,
+    /// Model policy; defaults to following the session model.
+    #[serde(default)]
+    pub model: AgentModel,
     /// Paths to skill files or directories; defaults to empty.
     #[serde(default)]
     pub skills: Vec<PathBuf>,
@@ -434,6 +497,29 @@ pub enum MessageDelivery {
     Resume,
 }
 
+/// Scheduling policy for a submitted agent command. Commands never start,
+/// continue, or resume a run; delivery only chooses when they execute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CommandDelivery {
+    /// Waits until the agent is no longer running before executing.
+    Queue,
+    /// Executes at the next worker boundary, including between turns of a run.
+    Steer,
+}
+
+/// A typed command handled by hooks that installed bundles register.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum AgentCommand {
+    /// Summarizes older context now, regardless of the automatic threshold.
+    /// Requires the `Compaction` bundle.
+    Compact {
+        /// Extra summarization guidance, such as what to focus on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instructions: Option<String>,
+    },
+}
+
 /// An asynchronous control or message request for an agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -454,6 +540,13 @@ pub enum AgentRequest {
         delivery: MessageDelivery,
         /// Message content supplied to the agent.
         content: Vec<ContentBlock>,
+    },
+    /// A command for the agent's installed command hooks; recorded in its transcript.
+    Command {
+        /// Policy controlling when this command executes.
+        delivery: CommandDelivery,
+        /// Command to execute.
+        command: AgentCommand,
     },
 }
 

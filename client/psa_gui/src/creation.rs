@@ -227,7 +227,7 @@ pub fn CreateSessionPicker() -> Element {
                     onclick: move |event| event.stop_propagation(),
                     onmounted: move |event| { let node = event.data(); spawn(async move { let _ = node.set_focus(true).await; }); },
                     onkeydown: move |event| { if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); revision += 1; open.set(false); } },
-                    header { h2 { "Choose working directory" } button { onclick: move |_| { revision += 1; open.set(false); }, "Close ×" } }
+                    crate::modal::ModalHeader { title: "Choose working directory", close_label: "Close directory picker", onclose: move |_| { revision += 1; open.set(false); } }
                     form { onsubmit:move |event: FormEvent| {
                         event.prevent_default(); event.stop_propagation();
                         let Some(dioxus::html::FormValue::Text(requested)) = event.get_first("path") else { return; };

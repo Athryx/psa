@@ -3,7 +3,8 @@ use crate::{agents::agent_context::AgentContext, components::cancellation::Cance
 use psa_api::events::{EventType, NewEvent};
 use std::time::Duration;
 
-/// Follows session model changes unless the definition pins its own model.
+/// Re-resolves the definition's model policy against the updated session, so
+/// `Global` models and efforts follow session changes while fixed ones stay put.
 pub struct SessionModelUpdateHook;
 
 impl Hook for SessionModelUpdateHook {
@@ -16,16 +17,14 @@ impl Hook for SessionModelUpdateHook {
         context: &mut AgentContext<'_>,
         _cancellation: Cancellation,
     ) -> Result<(), HookError> {
-        let model = match &context.definition().model_config {
-            Some(model) if context.projection().model_config().is_none() => model,
-            Some(_) => return Ok(()),
-            None => &context.session().model_config,
-        };
-        if context.projection().model_config() == Some(model) {
+        let model = context
+            .definition()
+            .model
+            .resolve(&context.session().model_config);
+        if context.projection().model_config() == Some(&model) {
             return Ok(());
         }
 
-        let model = model.clone();
         context
             .save_events(&[NewEvent::new(EventType::Model(model))])
             .await?;

@@ -1265,6 +1265,60 @@ pub fn submit(
     submit_captured(ui, target, interrupt, draft)
 }
 
+/// `/refresh` outside a new session: re-runs global and session-project agent
+/// and skill discovery. The server's `config.toml` still requires a restart.
+pub async fn refresh_configs(mut ui: Signal<Ui>, session_id: SessionId) {
+    let generation = ui.peek().generation;
+    let result = match client(ui) {
+        Ok(api) => api.refresh_and_list_agent_configs(Some(session_id)).await,
+        Err(error) => Err(error),
+    };
+    if ui.peek().generation != generation {
+        return;
+    }
+    let mut state = ui.write();
+    match result {
+        Ok(items) => state.notice = Some(format!("Reloaded {} agent configurations.", items.len())),
+        Err(error) => state.error = Some(format!("Unable to refresh configurations: {error}")),
+    }
+}
+
+/// Steers `/compact` to an existing agent. The draft clears only if unchanged
+/// since the command was captured; rejected commands keep it for editing.
+pub fn submit_compact(
+    ui: Signal<Ui>,
+    target: TranscriptTarget,
+    instructions: String,
+) -> impl std::future::Future<Output = ()> {
+    let draft = capture_draft(ui, target);
+    async move {
+        let Ok(api) = client(ui) else {
+            return;
+        };
+        let instructions = Some(instructions).filter(|text| !text.is_empty());
+        let result = api
+            .send_command(
+                target.session_id,
+                target.agent_id,
+                CommandDelivery::Steer,
+                AgentCommand::Compact { instructions },
+            )
+            .await;
+        if ui.peek().generation != draft.generation {
+            return;
+        }
+        let mut ui = ui;
+        let mut state = ui.write();
+        match result {
+            Ok(_) => {
+                state.drafts.clear_if_revision(&target, draft.revision);
+                state.notice = Some("Compaction requested.".into());
+            }
+            Err(error) => state.error = Some(format!("Unable to compact: {error}")),
+        }
+    }
+}
+
 async fn submit_captured(
     mut ui: Signal<Ui>,
     target: TranscriptTarget,

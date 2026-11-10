@@ -105,6 +105,11 @@ pub(super) fn history_prompt(conversation: &str, previous_summary: Option<&str>)
     prompt
 }
 
+/// Appended after the standard instructions, so the requested format still applies.
+pub(super) fn additional_instructions(instructions: &str) -> String {
+    format!("\n\nAdditional instructions for this summary:\n{instructions}")
+}
+
 pub(super) fn turn_prefix_prompt(conversation: &str) -> String {
     format!("# Conversation\n{conversation}\n\n# Instructions\n{TURN_PREFIX_SUMMARIZATION_PROMPT}")
 }

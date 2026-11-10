@@ -498,20 +498,12 @@ pub fn app() -> Element {
                 };
                 window.addEventListener('keydown', window.psaWorkspaceKeyForwarder, true);
             }
-            // Right-clicking selected text keeps the native menu and its Copy.
-            if (!window.psaKeepSelectionMenu) {
-                window.psaKeepSelectionMenu = event => {
-                    const selection = window.getSelection();
-                    if (selection && !selection.isCollapsed && selection.containsNode(event.target, true)) event.stopPropagation();
-                };
-                window.addEventListener('contextmenu', window.psaKeepSelectionMenu, true);
-            }
         "#,
         );
     });
     use_drop(|| {
         document::eval(
-            "window.removeEventListener('keydown', window.psaWorkspaceKeyForwarder, true); delete window.psaWorkspaceKeyForwarder; window.removeEventListener('contextmenu', window.psaKeepSelectionMenu, true); delete window.psaKeepSelectionMenu; window.psaRemovePaneFocus?.(); window.psaRemoveHoveredWheel?.();",
+            "window.removeEventListener('keydown', window.psaWorkspaceKeyForwarder, true); delete window.psaWorkspaceKeyForwarder; window.psaRemovePaneFocus?.(); window.psaRemoveHoveredWheel?.();",
         );
     });
     use_open_composer_focus(ui);
@@ -717,6 +709,7 @@ pub fn app() -> Element {
             state.generation,
             state.workspace.clone(),
             state.sidebar.collapsed,
+            state.sidebar.width,
             state.settings_open,
         )
     });
@@ -725,7 +718,17 @@ pub fn app() -> Element {
         style { "{style::CSS}" }
         div { id:"psa-shell", class:"shell", onkeydown: move |event| handle_workspace_key(ui, &modals, event),
             views::Rail {}
-            if !state.sidebar.collapsed { views::Sidebar { key: "{state.generation}" } }
+            if !state.sidebar.collapsed {
+                views::Sidebar { key: "{state.generation}" }
+                crate::interaction::EdgeResizer {
+                    target_id: views::SIDEBAR_ID,
+                    width: f64::from(state.sidebar.width()),
+                    min: f64::from(SidebarState::MIN_WIDTH),
+                    max: f64::from(SidebarState::MAX_WIDTH),
+                    aria_label: "Resize sidebar",
+                    oncommit: move |width: f64| ui.write().sidebar.set_width(width),
+                }
+            }
             main { class:"workspace",
                 StatusBar { ui }
                 div { class:"layout", views::Layout {key:"{state.generation}",node:state.workspace.root.clone(),path:Vec::new()} }

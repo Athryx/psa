@@ -1,5 +1,5 @@
 use super::*;
-use wire::{EffortSelection, ModelSelection, NewConfiguredAgent};
+use wire::{AgentEffort, AgentModel, EffortSelection, ModelSelection, NewConfiguredAgent};
 
 #[tokio::test]
 async fn configured_creation_requires_an_exact_full_model_selection() {
@@ -92,13 +92,8 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        implicit_snapshot
-            .definition
-            .model_config
-            .as_ref()
-            .unwrap()
-            .effort,
-        Effort::High
+        implicit_snapshot.definition.model.effort(),
+        AgentEffort::Fixed(Effort::High)
     );
 
     let parent = harness
@@ -112,14 +107,14 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
         .await
         .unwrap()
         .unwrap();
-    let parent_model = ModelConfig {
+    let parent_model = AgentModel::from(ModelConfig {
         model: Model::new(ProviderType::Openrouter, "vendor/model").unwrap(),
         effort: Effort::High,
-    };
-    assert_eq!(snapshot.definition.model_config, Some(parent_model.clone()));
+    });
+    assert_eq!(snapshot.definition.model, parent_model);
     assert_eq!(snapshot.config.models, vec![allowed.clone()]);
 
-    // Policy variants resolve at creation, not while checking allow-list membership.
+    // Parent variants copy the parent's policy; Global variants keep following the session.
     let fixed_parent = ModelSelection::Fixed {
         model: "openrouter/vendor/child".into(),
         effort: EffortSelection::Parent,
@@ -158,20 +153,20 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
         Err(wire::ClientError::Api { status: 400, .. })
     ));
     for (index, (selection, expected)) in [
-        (ModelSelection::Global, model()),
+        (ModelSelection::Global, AgentModel::Global),
         (ModelSelection::Parent, parent_model),
         (
             fixed_parent,
-            ModelConfig {
+            AgentModel::Fixed {
                 model: Model::new(ProviderType::Openrouter, "vendor/child").unwrap(),
-                effort: Effort::High,
+                effort: AgentEffort::Fixed(Effort::High),
             },
         ),
         (
             fixed_global,
-            ModelConfig {
+            AgentModel::Fixed {
                 model: Model::new(ProviderType::Openrouter, "vendor/child-global").unwrap(),
-                effort: Effort::Medium,
+                effort: AgentEffort::Global,
             },
         ),
     ]
@@ -199,7 +194,7 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(snapshot.definition.model_config, Some(expected));
+        assert_eq!(snapshot.definition.model, expected);
     }
 
     // Multiple choices require explicit default permission before the first can be implicit.
@@ -217,6 +212,6 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(snapshot.definition.model_config, Some(model()));
+    assert_eq!(snapshot.definition.model, AgentModel::Global);
     harness.close().await;
 }

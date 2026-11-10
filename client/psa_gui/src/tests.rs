@@ -443,9 +443,9 @@ fn settings_backdrop_closes_but_dialog_and_controls_do_not() {
     let mut dom = VirtualDom::new(modal_settings_test_root).with_root_context(bootstrap);
     dom.rebuild_in_place();
     // The root, backdrop, dialog, and navigation buttons receive these IDs
-    // when mounted in this fixture.
+    // when mounted in this fixture; the header's close button mounts later.
     click(&dom, 4);
-    click(&dom, 7);
+    click(&dom, 6);
     dom.render_immediate_to_vec();
     let html = dioxus_ssr::render(&dom);
     assert!(html.contains("aria-label=\"Settings\""), "{html}");
@@ -469,7 +469,7 @@ fn settings_keybinds_navigation_renders_read_only_shortcuts() {
     };
     let mut dom = VirtualDom::new(modal_settings_test_root).with_root_context(bootstrap);
     dom.rebuild_in_place();
-    click(&dom, 10);
+    click(&dom, 9);
     dom.render_immediate_to_vec();
     let html = dioxus_ssr::render(&dom);
     for expected in [
@@ -500,7 +500,7 @@ fn settings_tab_switch_replaces_scroll_container() {
     };
     let mut dom = VirtualDom::new(modal_settings_test_root).with_root_context(bootstrap);
     dom.rebuild_in_place();
-    click(&dom, 10);
+    click(&dom, 9);
     let first = dom.render_immediate_to_vec();
     let scroll_container = first
         .edits
@@ -515,14 +515,14 @@ fn settings_tab_switch_replaces_scroll_container() {
             _ => None,
         })
         .expect("keybinds scroll container mounted");
-    click(&dom, 10);
+    click(&dom, 9);
     let same_tab = dom.render_immediate_to_vec();
     assert!(
         !same_tab.edits.iter().any(
             |edit| matches!(edit, Mutation::ReplaceWith { id, .. } if *id == scroll_container)
         )
     );
-    click(&dom, 9);
+    click(&dom, 8);
     let second = dom.render_immediate_to_vec();
     assert!(
         second.edits.iter().any(

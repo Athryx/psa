@@ -289,7 +289,7 @@ impl AgentProjection {
                     None
                 };
             }
-            EventType::Log(_) => {}
+            EventType::Log(_) | EventType::Command(_) => {}
             EventType::InferenceResultStart(start) => {
                 if self.open.is_some() {
                     return Err(invalid("overlapping inference result blocks"));

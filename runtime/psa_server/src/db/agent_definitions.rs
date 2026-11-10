@@ -45,11 +45,12 @@ impl TryFrom<DefinitionRow> for AgentDefinition {
                 before_request: serde_json::from_str(&row.before_request_hooks)?,
                 after_request: serde_json::from_str(&row.after_request_hooks)?,
             },
-            model_config: row
+            model: row
                 .model_config
                 .as_deref()
                 .map(serde_json::from_str)
-                .transpose()?,
+                .transpose()?
+                .unwrap_or_default(),
             skills: serde_json::from_str(&row.skills)?,
             permitted_subagents: serde_json::from_str(&row.permitted_subagents)?,
         })
@@ -114,11 +115,7 @@ impl DatabaseCursor {
         let session_update = serde_json::to_string(&request.hooks.session_update)?;
         let before_request = serde_json::to_string(&request.hooks.before_request)?;
         let after_request = serde_json::to_string(&request.hooks.after_request)?;
-        let model_config = request
-            .model_config
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()?;
+        let model_config = serde_json::to_string(&request.model)?;
         let skills = serde_json::to_string(&request.skills)?;
         let permitted_subagents = serde_json::to_string(&request.permitted_subagents)?;
         let result = sqlx::query!(

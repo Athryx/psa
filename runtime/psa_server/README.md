@@ -56,13 +56,20 @@ effort = "Medium"
 
 # Optional fallbacks for omitted API/TOML agent component fields.
 [agent_defaults]
-bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents", { Goal = { interactive_only = true } }]
+bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents", { Goal = { interactive_only = true } }, { Compaction = {} }]
 
 [agent_defaults.hooks]
 agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
-before_request = [{ Compaction = {} }]
+session_update = ["SessionModelUpdate"]
+before_request = []
 after_request = []
 ```
+
+A newly generated configuration also writes two global agent files to
+`<data_dir>/agents/`: a selectable `default` agent whose only permitted subagent is
+`subagent`, and `subagent` itself, which uses its parent's model and effort
+(`models = ["Parent"]`) and cannot create subagents. Existing data directories are
+never modified.
 
 `default_agent_name` is a client suggestion, not an agent registration or creation policy.
 It defaults to `"default"` when omitted, including in existing files. Authenticated

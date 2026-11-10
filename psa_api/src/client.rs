@@ -427,6 +427,19 @@ impl Client {
         .await
     }
 
+    /// Submit a command for the agent's installed command hooks. The server rejects
+    /// commands no installed bundle supports; execution failures are reported later.
+    pub async fn send_command(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        delivery: crate::CommandDelivery,
+        command: crate::AgentCommand,
+    ) -> Result<RequestAccepted, ClientError> {
+        self.submit_request(session, agent, &AgentRequest::Command { delivery, command })
+            .await
+    }
+
     /// Respond to an outstanding runtime query in the specified agent/session.
     /// The first valid response wins; invalid responses leave the query pending.
     /// Success has no response body.

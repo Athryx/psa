@@ -50,7 +50,7 @@ fn snapshots() -> (AgentDefinition, Agent, Session) {
         selectable: false,
         bundles: vec![],
         hooks: HookConfigs::default(),
-        model_config: None,
+        model: Default::default(),
         skills: vec![],
         permitted_subagents: vec![],
     };

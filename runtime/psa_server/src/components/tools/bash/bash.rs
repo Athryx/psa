@@ -91,8 +91,13 @@ impl Bash {
         let config = context
             .projection()
             .model_config()
-            .or(context.definition().model_config.as_ref())
-            .unwrap_or(&context.session().model_config);
+            .cloned()
+            .unwrap_or_else(|| {
+                context
+                    .definition()
+                    .model
+                    .resolve(&context.session().model_config)
+            });
         let provider = match config.model.provider {
             ProviderType::OpenAiCodex => "openai-codex",
             ProviderType::Openrouter => "openrouter",

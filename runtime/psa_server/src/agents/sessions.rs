@@ -747,7 +747,7 @@ mod tests {
                 name: "custom".into(),
                 description: "first version".into(),
                 selectable: true,
-                model_config: Some(crate::test_support::model_config()),
+                model: crate::test_support::model_config().into(),
                 hooks: api::HookConfigs {
                     agent_create: vec![api::HookConfig::ExtraSystemPrompt {
                         prompt: "original instructions".into(),
@@ -776,16 +776,13 @@ mod tests {
         assert_eq!(updated.name, "replacement");
         assert!(updated.description.is_empty());
         assert!(!updated.selectable);
-        assert!(updated.model_config.is_none());
+        assert_eq!(updated.model, api::AgentModel::Global);
         assert!(updated.hooks.agent_create.is_empty());
         let original = sessions.get_agent_definition(initial.id).await.unwrap();
         assert_eq!(original.name, "custom");
         assert_eq!(original.description, "first version");
         assert!(original.selectable);
-        assert_eq!(
-            original.model_config,
-            Some(crate::test_support::model_config())
-        );
+        assert_eq!(original.model, crate::test_support::model_config().into());
         assert_eq!(
             original.hooks.agent_create,
             vec![api::HookConfig::ExtraSystemPrompt {

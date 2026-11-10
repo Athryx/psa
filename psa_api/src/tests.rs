@@ -146,7 +146,7 @@ fn definitions_have_flat_versioned_wire_types_and_default_empty_hooks() {
     assert_eq!(request.name, "assistant");
     assert_eq!(request.hooks, HookConfigs::default());
     assert!(request.bundles.is_empty());
-    assert!(request.model_config.is_none());
+    assert_eq!(request.model, AgentModel::Global);
     assert!(request.skills.is_empty());
     assert!(request.permitted_subagents.is_empty());
     assert_eq!(
@@ -174,7 +174,7 @@ fn definitions_have_flat_versioned_wire_types_and_default_empty_hooks() {
         selectable: true,
         bundles: vec![BundleConfig::FileTools { read_only: false }],
         hooks: hooks.clone(),
-        model_config: Some(model_config()),
+        model: model_config().into(),
         skills: vec!["/skills/example".into()],
         permitted_subagents: vec![AgentDefinitionId(3)],
     };
@@ -207,7 +207,7 @@ fn definitions_have_flat_versioned_wire_types_and_default_empty_hooks() {
     let legacy: AgentDefinition = serde_json::from_value(legacy).unwrap();
     assert!(legacy.bundles.is_empty());
     assert_eq!(decoded.hooks, hooks);
-    assert_eq!(decoded.model_config, Some(model_config()));
+    assert_eq!(decoded.model, model_config().into());
     assert!(
         serde_json::from_value::<CreateAgentDefinition>(serde_json::json!({
             "name": "assistant", "extras": {}

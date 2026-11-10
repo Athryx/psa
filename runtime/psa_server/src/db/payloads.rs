@@ -25,6 +25,7 @@ pub(super) fn event_kind(event: &EventType) -> &'static str {
         EventType::ToolResult(_) => "tool_result",
         EventType::Compaction(_) => "compaction",
         EventType::Log(_) => "log",
+        EventType::Command(_) => "command",
         EventType::Result(_) => "result",
         // Stable on-disk tags from migration 0001; the payload tables were renamed.
         EventType::InferenceResultStart(_) => "inference_start",
@@ -303,6 +304,16 @@ pub(super) async fn insert_payload(
             .execute(&mut *conn)
             .await?;
         }
+        EventType::Command(value) => {
+            let value = serialize_json(value)?;
+            sqlx::query!(
+                "INSERT INTO event_command (event_pk,value) VALUES (?,?)",
+                pk,
+                value
+            )
+            .execute(&mut *conn)
+            .await?;
+        }
         EventType::Log(value) => {
             sqlx::query!(
                 "INSERT INTO event_log (event_pk,error,message) VALUES (?,?,?)",
@@ -537,6 +548,10 @@ pub(super) async fn load_payloads(
             },
             usage: usage!(r)
         })
+    );
+    load!(
+        "SELECT p.event_pk, p.value FROM event_command p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+        |r| EventType::Command(parse_json(&r.value)?)
     );
     load!(
         "SELECT p.event_pk, p.error, p.message FROM event_log p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",

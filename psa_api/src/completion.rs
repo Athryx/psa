@@ -12,9 +12,6 @@ pub enum CompletionConfigurationError {
     /// A terminal-response hook was assigned to a nonterminal lifecycle stage.
     #[error("StopWithoutTools must be configured in after_request")]
     InvalidStopperStage,
-    /// Context replacement must happen between completed tool batches and inference.
-    #[error("Compaction must be configured in before_request")]
-    InvalidCompactionStage,
     /// The configured typed-result schema cannot be compiled safely.
     #[error("invalid typed-result schema: {0}")]
     InvalidSchema(#[from] SchemaValidationError),
@@ -30,16 +27,6 @@ pub fn validate_completion_modes(
     bundles: &[BundleConfig],
     hooks: &HookConfigs,
 ) -> Result<(), CompletionConfigurationError> {
-    if hooks
-        .agent_create
-        .iter()
-        .chain(&hooks.session_update)
-        .chain(&hooks.after_request)
-        .any(|hook| matches!(hook, HookConfig::Compaction { .. }))
-    {
-        return Err(CompletionConfigurationError::InvalidCompactionStage);
-    }
-
     let is_stopper = |hook: &HookConfig| matches!(hook, HookConfig::StopWithoutTools);
     if hooks.agent_create.iter().any(is_stopper)
         || hooks.session_update.iter().any(is_stopper)
@@ -108,30 +95,13 @@ mod tests {
     }
 
     #[test]
-    fn compaction_only_runs_before_requests_and_is_not_a_completion_mode() {
-        let compact = HookConfig::Compaction {
+    fn compaction_is_not_a_completion_mode() {
+        let compact = BundleConfig::Compaction {
             reserve_tokens: 16384,
             keep_recent_tokens: 20000,
             context_window: None,
         };
-        for stage in 0..4 {
-            let mut hooks = HookConfigs::default();
-            match stage {
-                0 => hooks.agent_create.push(compact.clone()),
-                1 => hooks.session_update.push(compact.clone()),
-                2 => hooks.before_request.push(compact.clone()),
-                _ => hooks.after_request.push(compact.clone()),
-            }
-            let result = validate_completion_modes(&[typed()], &hooks);
-            if stage == 2 {
-                assert!(result.is_ok());
-            } else {
-                assert!(matches!(
-                    result,
-                    Err(CompletionConfigurationError::InvalidCompactionStage)
-                ));
-            }
-        }
+        assert!(validate_completion_modes(&[compact, typed()], &HookConfigs::default()).is_ok());
     }
 
     #[test]

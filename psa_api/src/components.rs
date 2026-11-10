@@ -27,18 +27,6 @@ pub enum HookConfig {
         /// System prompt text owned by this hook installation.
         prompt: String,
     },
-    /// Summarizes older context before the next inference using a hidden agent.
-    Compaction {
-        /// Space reserved for the next response; defaults to 16384 tokens.
-        #[serde(default = "default_compaction_reserve_tokens")]
-        reserve_tokens: u64,
-        /// Recent conversation budget to retain verbatim; defaults to 20000 tokens.
-        #[serde(default = "default_compaction_keep_recent_tokens")]
-        keep_recent_tokens: u64,
-        /// Override the model catalog's context window, including for unknown models.
-        #[serde(default)]
-        context_window: Option<u64>,
-    },
     /// Loads project instructions from the working directory hierarchy.
     ProjectContext,
     /// Publishes the installed tools' model-facing definitions.
@@ -59,7 +47,6 @@ impl HookConfig {
             Self::StopWithoutTools => HookId::StopWithoutTools,
             Self::DefaultStartup => HookId::DefaultStartup,
             Self::ExtraSystemPrompt { .. } => HookId::ExtraSystemPrompt,
-            Self::Compaction { .. } => HookId::Compaction,
             Self::ProjectContext => HookId::ProjectContext,
             Self::ToolDefinitions => HookId::ToolDefinitions,
             Self::Cwd => HookId::Cwd,
@@ -115,6 +102,19 @@ pub enum BundleConfig {
         #[serde(default = "default_result_retries")]
         max_retries: u32,
     },
+    /// Summarizes older context before inference once it nears the context window,
+    /// and handles the manual `Compact` command, using a hidden summarizer agent.
+    Compaction {
+        /// Space reserved for the next response; defaults to 16384 tokens.
+        #[serde(default = "default_compaction_reserve_tokens")]
+        reserve_tokens: u64,
+        /// Recent conversation budget to retain verbatim; defaults to 20000 tokens.
+        #[serde(default = "default_compaction_keep_recent_tokens")]
+        keep_recent_tokens: u64,
+        /// Override the model catalog's context window, including for unknown models.
+        #[serde(default)]
+        context_window: Option<u64>,
+    },
 }
 
 impl BundleConfig {
@@ -129,6 +129,7 @@ impl BundleConfig {
             Self::AskQuestion { .. } => BundleId::AskQuestion,
             Self::Subagents => BundleId::Subagents,
             Self::TypedResult { .. } => BundleId::TypedResult,
+            Self::Compaction { .. } => BundleId::Compaction,
         }
     }
 
@@ -272,19 +273,23 @@ mod tests {
 
     #[test]
     fn compaction_payload_defaults_and_rejects_invalid_settings() {
-        let config: HookConfig =
+        let config: BundleConfig =
             serde_json::from_value(serde_json::json!({"Compaction": {}})).unwrap();
         assert_eq!(
             config,
-            HookConfig::Compaction {
+            BundleConfig::Compaction {
                 reserve_tokens: 16384,
                 keep_recent_tokens: 20000,
                 context_window: None,
             }
         );
-        assert_eq!(config.id(), HookId::Compaction);
+        assert_eq!(config.id(), BundleId::Compaction);
         let wire = serde_json::to_value(&config).unwrap();
-        assert_eq!(serde_json::from_value::<HookConfig>(wire).unwrap(), config);
+        assert_eq!(
+            serde_json::from_value::<BundleConfig>(wire).unwrap(),
+            config
+        );
+        assert!(serde_json::from_value::<HookConfig>(json!({"Compaction": {}})).is_err());
         for invalid in [
             serde_json::json!("Compaction"),
             serde_json::json!({"Compaction": {"reserve_tokens": -1}}),
@@ -292,7 +297,7 @@ mod tests {
             serde_json::json!({"Compaction": {"context_window": "large"}}),
             serde_json::json!({"Compaction": {"unknown": true}}),
         ] {
-            assert!(serde_json::from_value::<HookConfig>(invalid).is_err());
+            assert!(serde_json::from_value::<BundleConfig>(invalid).is_err());
         }
     }
 

@@ -6,6 +6,23 @@ pub enum CommandId {
     Agent,
     Refresh,
     Info,
+    Compact,
+    Rename,
+}
+
+impl CommandId {
+    /// Root drafts have no agent yet; existing agents can no longer choose one.
+    pub fn is_available(self, root: bool) -> bool {
+        match self {
+            Self::Agent => root,
+            Self::Compact => !root,
+            Self::SessionModel
+            | Self::SessionEffort
+            | Self::Info
+            | Self::Rename
+            | Self::Refresh => true,
+        }
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandSpec {
@@ -27,7 +44,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: CommandId::Refresh,
         name: "refresh",
-        description: "Refresh root agent configurations",
+        description: "Reload agent and skill configurations from disk",
     },
     CommandSpec {
         id: CommandId::SessionEffort,
@@ -39,7 +56,29 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "info",
         description: "Show agent information and token usage",
     },
+    CommandSpec {
+        id: CommandId::Compact,
+        name: "compact",
+        description: "Summarize this agent's older context now; optional focus instructions",
+    },
+    CommandSpec {
+        id: CommandId::Rename,
+        name: "rename",
+        description: "Rename this session",
+    },
 ];
+
+/// Transcript label for a recorded agent command, in its slash-command form.
+pub fn describe_agent_command(command: &psa_api::AgentCommand) -> String {
+    match command {
+        psa_api::AgentCommand::Compact { instructions } => match instructions.as_deref() {
+            Some(instructions) if !instructions.trim().is_empty() => {
+                format!("/compact {instructions}")
+            }
+            _ => "/compact".into(),
+        },
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComposerInput {
     Text(String),
@@ -170,6 +209,34 @@ mod tests {
         assert_eq!(
             parse_composer_input("//effort high"),
             ComposerInput::Text("/effort high".into())
+        );
+    }
+    #[test]
+    fn compact_and_rename_parse_with_arguments_and_respect_availability() {
+        assert_eq!(
+            parse_composer_input("/compact focus on tests"),
+            ComposerInput::Command {
+                id: CommandId::Compact,
+                arguments: "focus on tests".into(),
+            }
+        );
+        assert_eq!(
+            parse_composer_input("/rename"),
+            ComposerInput::Command {
+                id: CommandId::Rename,
+                arguments: String::new(),
+            }
+        );
+        assert!(!CommandId::Compact.is_available(true));
+        assert!(CommandId::Compact.is_available(false));
+        assert!(CommandId::Rename.is_available(true) && CommandId::Rename.is_available(false));
+        assert!(!CommandId::Agent.is_available(false));
+        assert!(CommandId::Refresh.is_available(true) && CommandId::Refresh.is_available(false));
+        assert_eq!(
+            describe_agent_command(&psa_api::AgentCommand::Compact {
+                instructions: Some("tests".into())
+            }),
+            "/compact tests"
         );
     }
     #[test]

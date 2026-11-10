@@ -1,17 +1,36 @@
-# Automatic context compaction
+# Context compaction
 
-The `Compaction` hook runs in `before_request`, after the preceding tool batch has
-finished. Generated server configs enable it; existing configs are not rewritten.
+The `Compaction` bundle installs one compaction hook in two places, sharing its
+summarizer bookkeeping:
+
+- **Automatic:** in `before_request`, after the preceding tool batch has finished,
+  when the context nears the model's window.
+- **Manual:** as a command hook for `AgentCommand::Compact { instructions }`
+  (the GUI's `/compact [instructions]`). It runs in any agent state, ignores the
+  threshold and the recent-context budget (summarizing everything before the
+  latest entry), and never starts or resumes a run. Optional instructions are appended
+  to the summarization prompts. A no-op or failure is recorded as a transcript log.
 
 ```toml
-[hooks]
-before_request = [{ Compaction = { reserve_tokens = 16384, keep_recent_tokens = 20000 } }]
+bundles = [{ Compaction = { reserve_tokens = 16384, keep_recent_tokens = 20000 } }]
 ```
 
 JSON uses `{"Compaction":{}}` with the same defaults. `context_window` optionally
-overrides the model catalog's context limit; without a known limit the hook does
-nothing. An empty `before_request` list disables the default. Compaction is not
-a completion mode and works with Goal, StopWithoutTools, and TypedResult.
+overrides the model catalog's context limit; without a known limit automatic
+compaction does nothing. Generated server configs include the bundle in
+`agent_defaults.bundles`; omit it to disable compaction. Migration 0024 moved
+stored `before_request` Compaction hooks into bundles. Compaction is not a
+completion mode and works with Goal, StopWithoutTools, and TypedResult.
+
+## Commands
+
+Agent commands are submitted as `AgentRequest::Command { delivery, command }`
+(`Client::send_command`). `CommandDelivery::Steer` runs at the next worker
+boundary, including between turns of a run; `Queue` waits until the agent is not
+running. Commands share the request FIFO with messages but are not steering, so
+they never wake `wait_message`. Each command is recorded as an
+`EventType::Command` event before its hooks run. The server rejects a command at
+submission unless the agent's definition selects the bundle that handles it.
 
 ## Preparation
 

@@ -269,8 +269,7 @@ pub(crate) fn BrowserInput(
     let mounted = move |event: MountedEvent| {
         use client_shared::CommandId;
         let commands: Vec<_> = client_shared::COMMANDS.iter()
-            .filter(|command| root_commands || matches!(command.id,
-                CommandId::SessionModel | CommandId::SessionEffort | CommandId::Info))
+            .filter(|command| command.id.is_available(root_commands))
             .map(|command| serde_json::json!({
                 "name": command.name,
                 "picker": matches!(command.id, CommandId::SessionModel | CommandId::SessionEffort | CommandId::Agent),

@@ -290,6 +290,7 @@ impl Transcript {
         match kind {
             EventType::Message(_)
             | EventType::Log(_)
+            | EventType::Command(_)
             | EventType::ToolCall(_)
             | EventType::ToolResult(_)
             | EventType::Compaction(_)

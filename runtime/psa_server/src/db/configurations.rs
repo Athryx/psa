@@ -3,7 +3,6 @@ use super::{
     DatabaseCursor, DbError,
     schema::{decode_integer, encode_integer},
 };
-use llm_api::providers::ModelConfig;
 use psa_api::*;
 use serde::Serialize;
 use sqlx::Row;
@@ -12,7 +11,7 @@ use std::{
     path::PathBuf,
 };
 
-type Models = HashMap<ConfigId, Option<ModelConfig>>;
+type Models = HashMap<ConfigId, AgentModel>;
 
 fn key(value: &impl Serialize) -> Result<String, DbError> {
     Ok(serde_json::to_string(value)?)
@@ -136,7 +135,7 @@ struct SelectedNode {
     children: Vec<ConfigId>,
     skill_ids: Vec<SkillId>,
     skill_paths: Vec<PathBuf>,
-    model_config: Option<ModelConfig>,
+    model: AgentModel,
 }
 
 impl DatabaseCursor {
@@ -440,7 +439,7 @@ impl DatabaseCursor {
 
     /// All required copies must complete before calling this method. Missing path
     /// mappings are errors, not missing-component warnings. Omitted model entries
-    /// preserve runtime model policies by storing legacy `model_config = None`.
+    /// follow the session model.
     pub async fn resolve_agent_config(
         &mut self,
         root: &ConfigId,
@@ -484,7 +483,7 @@ impl DatabaseCursor {
                 );
             }
             let node = SelectedNode {
-                model_config: models.get(&config.config_id).cloned().flatten(),
+                model: models.get(&config.config_id).cloned().unwrap_or_default(),
                 config,
                 children,
                 skill_ids: ids,
@@ -595,7 +594,7 @@ impl DatabaseCursor {
     pub async fn resolve_pinned_agent_config(
         &mut self,
         id: AgentDefinitionId,
-        model_config: Option<ModelConfig>,
+        model: AgentModel,
         skill_paths: &HashMap<SkillId, PathBuf>,
     ) -> Result<ResolvedAgentConfig, DbError> {
         let mut pinned = self.get_resolved_agent_config(id).await?.ok_or_else(|| {
@@ -614,7 +613,7 @@ impl DatabaseCursor {
             retained.push(*skill);
             paths.push(path.clone());
         }
-        if pinned.definition.model_config == model_config
+        if pinned.definition.model == model
             && pinned.definition.skills == paths
             && pinned.references.skills == retained
         {
@@ -622,14 +621,14 @@ impl DatabaseCursor {
         }
         pinned.references.skills = retained;
         pinned.definition.skills = paths;
-        pinned.definition.model_config = model_config;
+        pinned.definition.model = model;
         let input = CreateAgentDefinition {
             name: pinned.definition.name.clone(),
             description: pinned.definition.description.clone(),
             selectable: pinned.definition.selectable,
             bundles: pinned.definition.bundles.clone(),
             hooks: pinned.definition.hooks.clone(),
-            model_config: pinned.definition.model_config.clone(),
+            model: pinned.definition.model.clone(),
             skills: pinned.definition.skills.clone(),
             permitted_subagents: pinned.definition.permitted_subagents.clone(),
         };
@@ -735,7 +734,7 @@ fn snapshot_input(node: &SelectedNode, children: Vec<AgentDefinitionId>) -> Crea
         selectable: node.config.selectable,
         bundles: node.config.bundles.clone(),
         hooks: node.config.hooks.clone(),
-        model_config: node.model_config.clone(),
+        model: node.model.clone(),
         skills: node.skill_paths.clone(),
         permitted_subagents: children,
     }

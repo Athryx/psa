@@ -271,7 +271,7 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
             psa_api::AgentDefinitionId(1),
             psa_api::CreateAgentDefinition {
                 name: "explicit".into(),
-                model_config: Some(explicit_model.clone()),
+                model: explicit_model.clone().into(),
                 bundles: vec![psa_api::BundleConfig::Noop],
                 hooks: psa_api::HookConfigs {
                     agent_create: vec![

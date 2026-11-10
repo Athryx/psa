@@ -1,8 +1,19 @@
 use super::*;
 
-async fn create_compacting_agent(harness: &Harness) -> (wire::Session, wire::Agent) {
+/// A tiny `context_window` compacts before every request; a large one only on command.
+async fn create_compacting_agent(
+    harness: &Harness,
+    context_window: u64,
+) -> (wire::Session, wire::Agent) {
     let mut config = agent_config("compacting");
-    config.bundles = vec![wire::BundleConfig::Noop];
+    config.bundles = vec![
+        wire::BundleConfig::Noop,
+        wire::BundleConfig::Compaction {
+            reserve_tokens: 0,
+            keep_recent_tokens: 2,
+            context_window: Some(context_window),
+        },
+    ];
     config.hooks = wire::HookConfigs {
         agent_create: vec![
             wire::HookConfig::DefaultStartup,
@@ -11,11 +22,6 @@ async fn create_compacting_agent(harness: &Harness) -> (wire::Session, wire::Age
                 prompt: "Keep this system instruction.".into(),
             },
         ],
-        before_request: vec![wire::HookConfig::Compaction {
-            reserve_tokens: 0,
-            keep_recent_tokens: 2,
-            context_window: Some(8),
-        }],
         after_request: vec![wire::HookConfig::StopWithoutTools],
         ..Default::default()
     };
@@ -72,7 +78,7 @@ async fn submit_recent(harness: &Harness, session: wire::SessionId, agent: wire:
 #[tokio::test]
 async fn compaction_runs_hidden_summarizers_preserves_snapshots_and_updates_prior_summary() {
     let mut harness = Harness::start(vec![Script::Text; 5]).await;
-    let (session, agent) = create_compacting_agent(&harness).await;
+    let (session, agent) = create_compacting_agent(&harness, 8).await;
     harness.requests.recv().await.unwrap();
     for count in 1..=2 {
         submit_recent(&harness, session.id, agent.id).await;
@@ -120,7 +126,7 @@ async fn compaction_runs_hidden_summarizers_preserves_snapshots_and_updates_prio
 #[tokio::test]
 async fn cancelled_compaction_stops_its_summarizer_without_replacing_context() {
     let mut harness = Harness::start(vec![Script::Text, Script::Wait]).await;
-    let (session, agent) = create_compacting_agent(&harness).await;
+    let (session, agent) = create_compacting_agent(&harness, 8).await;
     harness.requests.recv().await.unwrap();
     submit_recent(&harness, session.id, agent.id).await;
     let summary_request = tokio::time::timeout(Duration::from_secs(10), harness.requests.recv())
@@ -158,7 +164,7 @@ async fn cancelled_compaction_stops_its_summarizer_without_replacing_context() {
 #[tokio::test]
 async fn incomplete_summary_never_replaces_parent_context() {
     let mut harness = Harness::start(vec![Script::Text, Script::TokenLimit]).await;
-    let (session, agent) = create_compacting_agent(&harness).await;
+    let (session, agent) = create_compacting_agent(&harness, 8).await;
     harness.requests.recv().await.unwrap();
     submit_recent(&harness, session.id, agent.id).await;
     harness.wait_stopped(session.id).await;
@@ -176,5 +182,89 @@ async fn incomplete_summary_never_replaces_parent_context() {
             .any(|event| matches!(event.kind, EventType::Compaction(_)))
     );
     cursor.rollback().await.unwrap();
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn compact_command_summarizes_idle_agent_without_starting_a_run() {
+    let mut harness = Harness::start(vec![Script::Text; 3]).await;
+    let (session, agent) = create_compacting_agent(&harness, 1_000_000).await;
+    harness.requests.recv().await.unwrap();
+
+    let root = harness
+        .client
+        .list_agents(session.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id != agent.id && !candidate.hidden)
+        .unwrap();
+    let compact = wire::AgentCommand::Compact {
+        instructions: Some("Focus on the old work.".into()),
+    };
+    assert!(
+        harness
+            .client
+            .send_command(
+                session.id,
+                root.id,
+                wire::CommandDelivery::Steer,
+                compact.clone()
+            )
+            .await
+            .is_err(),
+        "agents without the Compaction bundle reject the command"
+    );
+
+    harness
+        .client
+        .send_command(
+            session.id,
+            agent.id,
+            wire::CommandDelivery::Steer,
+            compact.clone(),
+        )
+        .await
+        .unwrap();
+    let summary_request = harness.requests.recv().await.unwrap().to_string();
+    assert!(summary_request.contains("context summarization assistant"));
+    assert!(summary_request.contains("Additional instructions for this summary:"));
+    assert!(summary_request.contains("Focus on the old work."));
+    harness.wait_stopped(session.id).await;
+    let worker = harness
+        .client
+        .get_agent(session.id, agent.id)
+        .await
+        .unwrap();
+    assert_eq!(worker.state, AgentState::Idle);
+
+    let mut cursor = harness.db.cursor().await.unwrap();
+    let events = cursor
+        .load_events(agent.id, EventRange::default())
+        .await
+        .unwrap();
+    let command = events
+        .iter()
+        .position(
+            |event| matches!(&event.kind, EventType::Command(recorded) if *recorded == compact),
+        )
+        .unwrap();
+    let compaction = events
+        .iter()
+        .position(|event| matches!(event.kind, EventType::Compaction(_)))
+        .unwrap();
+    assert!(command < compaction);
+    assert!(!events[command..].iter().any(|event| matches!(
+        &event.kind,
+        EventType::StatusChange(change) if change.new_status == AgentState::Running
+    )));
+    cursor.rollback().await.unwrap();
+
+    submit_recent(&harness, session.id, agent.id).await;
+    let next_request = harness.requests.recv().await.unwrap().to_string();
+    assert!(next_request.contains("Previous context summary:"));
+    assert!(next_request.contains("next task"));
+    assert!(!next_request.contains("old work"));
+    harness.wait_stopped(session.id).await;
     harness.close().await;
 }

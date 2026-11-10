@@ -44,16 +44,35 @@ pub enum SidebarMode {
 pub struct SidebarState {
     pub collapsed: bool,
     pub expanded_mode: SidebarMode,
+    /// Width in CSS pixels, shared by the browser and details modes.
+    pub width: u16,
 }
 impl Default for SidebarState {
     fn default() -> Self {
         Self {
             collapsed: false,
             expanded_mode: SidebarMode::Browser,
+            width: Self::DEFAULT_WIDTH,
         }
     }
 }
 impl SidebarState {
+    pub const DEFAULT_WIDTH: u16 = 286;
+    pub const MIN_WIDTH: u16 = 180;
+    pub const MAX_WIDTH: u16 = 720;
+
+    /// Clamps the saved width too, so an out-of-range value from an older or
+    /// hand-edited settings file still renders usably.
+    pub fn width(&self) -> u16 {
+        self.width.clamp(Self::MIN_WIDTH, Self::MAX_WIDTH)
+    }
+
+    pub fn set_width(&mut self, width: f64) {
+        if width.is_finite() {
+            self.width = (width.round() as u16).clamp(Self::MIN_WIDTH, Self::MAX_WIDTH);
+        }
+    }
+
     pub fn toggle_mode(&mut self, mode: SidebarMode) {
         if !self.collapsed && self.expanded_mode == mode {
             self.collapsed = true;
@@ -287,6 +306,21 @@ impl DesktopSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sidebar_width_defaults_clamps_and_persists() {
+        let mut sidebar: SidebarState = serde_json::from_str(r#"{"collapsed":false}"#).unwrap();
+        assert_eq!(sidebar.width(), SidebarState::DEFAULT_WIDTH);
+        sidebar.set_width(10_000.0);
+        assert_eq!(sidebar.width(), SidebarState::MAX_WIDTH);
+        sidebar.set_width(f64::NAN);
+        assert_eq!(sidebar.width(), SidebarState::MAX_WIDTH);
+        sidebar.set_width(321.4);
+        let restored: SidebarState =
+            serde_json::from_str(&serde_json::to_string(&sidebar).unwrap()).unwrap();
+        assert_eq!(restored.width(), 321);
+        sidebar.width = 5;
+        assert_eq!(sidebar.width(), SidebarState::MIN_WIDTH);
+    }
     #[test]
     fn sidebar_mode_buttons_toggle_and_switch() {
         let mut sidebar = SidebarState::default();

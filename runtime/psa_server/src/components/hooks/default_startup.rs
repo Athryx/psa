@@ -23,10 +23,8 @@ impl Hook for DefaultStartupHook {
 
         let model = context
             .definition()
-            .model_config
-            .as_ref()
-            .unwrap_or(&context.session().model_config)
-            .clone();
+            .model
+            .resolve(&context.session().model_config);
         let events = [
             NewEvent::new(EventType::NewContext),
             NewEvent::new(EventType::Model(model)),

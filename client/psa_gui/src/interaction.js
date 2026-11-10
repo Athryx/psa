@@ -80,6 +80,11 @@
                 // acknowledged external update may write its live value.
                 if (element.value !== String(value)) element.value = String(value);
                 if (previewValue) showPreview();
+            } else if (kind === 'edge') {
+                const target = document.getElementById(config.target_id);
+                if (!target) return;
+                target.style.width = `${value}px`;
+                element.setAttribute('aria-valuenow', String(Math.round(value)));
             } else {
                 branches = findBranches();
                 if (!branches) return;
@@ -113,7 +118,7 @@
         }
 
         function move(event) {
-            if (!pointer || event.pointerId !== pointer.id || kind !== 'divider') return;
+            if (!pointer || event.pointerId !== pointer.id || kind === 'range') return;
             const coordinate = config.axis === 'vertical' ? event.clientY : event.clientX;
             if (!Number.isFinite(coordinate)) return;
             event.preventDefault();
@@ -151,6 +156,14 @@
                 element.focus({ preventScroll: true });
                 pointer = { id: event.pointerId, coordinate, size, value };
                 listen(window, 'pointermove', move, true);
+            } else if (kind === 'edge') {
+                // Pixel widths follow the pointer one-to-one along the x axis.
+                if (!document.getElementById(config.target_id) || !Number.isFinite(event.clientX)) return;
+                event.preventDefault();
+                stop(event);
+                element.focus({ preventScroll: true });
+                pointer = { id: event.pointerId, coordinate: event.clientX, size: 1, value };
+                listen(window, 'pointermove', move, true);
             } else {
                 // Do not prevent the range's native thumb/track behavior.
                 pointer = { id: event.pointerId };
@@ -172,7 +185,7 @@
                 return;
             }
             const vertical = config.axis === 'vertical';
-            const delta = event.shiftKey ? 0.1 : 0.02;
+            const delta = kind === 'edge' ? (event.shiftKey ? 32 : 8) : (event.shiftKey ? 0.1 : 0.02);
             let next;
             if (event.key === 'Home') next = Number(config.min);
             else if (event.key === 'End') next = Number(config.max);
@@ -211,7 +224,8 @@
         controls.set(token, {
             element,
             update(next, acknowledgedRevision) {
-                const changedIdentity = config.split_id !== next.split_id || config.axis !== next.axis || config.path !== next.path;
+                const changedIdentity = config.split_id !== next.split_id || config.axis !== next.axis
+                    || config.path !== next.path || config.target_id !== next.target_id;
                 if (changedIdentity) {
                     finish(null, false);
                     clearTimer();
@@ -264,6 +278,7 @@
     window.psaInteractions = {
         range: (token, options, publish, done) => mount(token, options, publish, done, 'range'),
         divider: (token, options, publish, done) => mount(token, options, publish, done, 'divider'),
+        edge: (token, options, publish, done) => mount(token, options, publish, done, 'edge'),
         update: (token, options, revision) => controls.get(token)?.update(options, revision),
         remove,
     };

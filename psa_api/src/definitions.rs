@@ -52,7 +52,8 @@ pub struct IncludedItems {
     pub items: Vec<ConfigId>,
 }
 
-/// Allowed model policy, resolved once when an agent is created.
+/// Allowed model policy. `Global` parts keep following the session model after
+/// creation; `Parent` is fixed to the parent's policy when the agent is created.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub enum ModelSelection {
@@ -63,20 +64,20 @@ pub enum ModelSelection {
         /// Reasoning effort policy for this model.
         effort: EffortSelection,
     },
-    /// Copy the session's current model configuration.
+    /// Follow the session's model configuration.
     Global,
-    /// Copy the parent's model configuration, falling back to the session's.
+    /// Use the parent's model policy; root agents follow the session.
     Parent,
 }
 
-/// Reasoning effort policy resolved at agent creation.
+/// Reasoning effort policy for a fixed model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum EffortSelection {
     /// Use the specified effort.
     Fixed(#[doc = "Configured reasoning effort."] Effort),
-    /// Copy the parent's effort, falling back to the session's.
+    /// Use the parent's effort policy; root agents follow the session.
     Parent,
-    /// Copy the session's current effort.
+    /// Follow the session's effort.
     Global,
 }
 

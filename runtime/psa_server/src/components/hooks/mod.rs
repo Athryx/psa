@@ -38,7 +38,7 @@ use crate::{
     db::DbError,
 };
 use actors::UnboundedMailbox;
-pub use psa_api::{HookConfig, HookConfigs};
+pub use psa_api::{AgentCommand, HookConfig, HookConfigs};
 use psa_shared::probe_transport::ProbeError;
 use std::time::Duration;
 
@@ -57,6 +57,49 @@ pub enum HookError {
     Compaction(String),
     #[error(transparent)]
     ClientQuery(#[from] crate::agents::client_queries::ClientQueryError),
+}
+
+/// Whether a command hook executed a command or left it to later hooks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandOutcome {
+    Handled,
+    Ignored,
+}
+
+/// Receives typed agent commands. Hooks ignore variants they do not handle;
+/// the first hook to handle a command stops dispatch.
+pub trait CommandHook: Send {
+    fn cancellation_timeout(&self) -> Duration;
+    fn handle_command(
+        &mut self,
+        context: &mut AgentContext<'_>,
+        command: &AgentCommand,
+        cancellation: Cancellation,
+    ) -> impl std::future::Future<Output = Result<CommandOutcome, HookError>> + Send;
+}
+
+/// Static dispatch for bundle-installed command hooks.
+pub enum CommandHookKind {
+    Compaction(compaction::CompactionHook),
+}
+
+impl CommandHook for CommandHookKind {
+    fn cancellation_timeout(&self) -> Duration {
+        match self {
+            Self::Compaction(hook) => CommandHook::cancellation_timeout(hook),
+        }
+    }
+
+    async fn handle_command(
+        &mut self,
+        context: &mut AgentContext<'_>,
+        command: &AgentCommand,
+        cancellation: Cancellation,
+    ) -> Result<CommandOutcome, HookError> {
+        match self {
+            Self::Compaction(hook) => hook.handle_command(context, command, cancellation).await,
+        }
+    }
 }
 
 pub trait Hook: Send {
@@ -98,15 +141,6 @@ impl HookKind {
             HookConfig::ExtraSystemPrompt { prompt } => {
                 Self::ExtraSystemPrompt(ExtraSystemPromptHook::new(prompt.clone()))
             }
-            HookConfig::Compaction {
-                reserve_tokens,
-                keep_recent_tokens,
-                context_window,
-            } => Self::Compaction(compaction::CompactionHook::new(
-                *reserve_tokens,
-                *keep_recent_tokens,
-                *context_window,
-            )),
             HookConfig::ProjectContext => Self::ProjectContext(ProjectContextHook),
             HookConfig::ToolDefinitions => Self::ToolDefinitions(ToolDefinitionsHook),
             HookConfig::Cwd => Self::Cwd(CwdHook),
@@ -129,7 +163,7 @@ impl Hook for HookKind {
             Self::Skills(hook) => hook.cancellation_timeout(),
             Self::SessionModelUpdate(hook) => hook.cancellation_timeout(),
             Self::Goal(hook) => hook.cancellation_timeout(),
-            Self::Compaction(hook) => hook.cancellation_timeout(),
+            Self::Compaction(hook) => Hook::cancellation_timeout(hook),
             Self::RequireResult(hook) => hook.cancellation_timeout(),
             Self::SubagentIdentity(hook) => hook.cancellation_timeout(),
             #[cfg(test)]
@@ -217,6 +251,41 @@ pub(crate) async fn run_hook(
     Ok(interrupted)
 }
 
+/// Offers a command to each hook in order until one handles it. Returns the
+/// outcome and whether an interrupt arrived while a hook was running.
+pub(crate) async fn run_command_hooks(
+    hooks: &mut [CommandHookKind],
+    context: &mut AgentContext<'_>,
+    controls: &mut UnboundedMailbox<AgentManagerMessage>,
+    command: &AgentCommand,
+) -> Result<(CommandOutcome, bool), AgentError> {
+    for hook in hooks {
+        let (sender, cancellation) = Cancellation::channel();
+        let grace = hook.cancellation_timeout();
+        let mut session = context.session().clone();
+        let (result, interrupted) = run_cancellable(
+            hook.handle_command(context, command, cancellation),
+            sender,
+            grace,
+            &mut session,
+            controls,
+        )
+        .await;
+
+        context.update_session(session);
+        context.finish_persistence().await?;
+
+        let outcome = result
+            .ok_or(AgentError::HookTimeout)?
+            .map_err(|error| AgentError::Hook(Box::new(error)))?;
+        if interrupted || outcome == CommandOutcome::Handled {
+            return Ok((outcome, interrupted));
+        }
+    }
+
+    Ok((CommandOutcome::Ignored, false))
+}
+
 #[derive(Default)]
 pub struct Hooks {
     /// Runs only for a newly created agent, never when loading a worker.
@@ -225,6 +294,8 @@ pub struct Hooks {
     pub session_update: Vec<HookKind>,
     pub before_request: Vec<HookKind>,
     pub after_request: Vec<HookKind>,
+    /// Bundle-installed handlers for submitted agent commands.
+    pub command: Vec<CommandHookKind>,
 }
 
 impl Hooks {
@@ -236,6 +307,7 @@ impl Hooks {
             session_update: build(&configs.session_update),
             before_request: build(&configs.before_request),
             after_request: build(&configs.after_request),
+            command: Vec::new(),
         }
     }
 }

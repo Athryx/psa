@@ -187,7 +187,7 @@ async fn missing_prunes_restoration_and_mutable_skill_identity() {
         registered.id
     );
     let pinned_pruned = cursor
-        .resolve_pinned_agent_config(full.definition.id, None, &HashMap::new())
+        .resolve_pinned_agent_config(full.definition.id, AgentModel::Global, &HashMap::new())
         .await
         .unwrap();
     assert!(pinned_pruned.references.skills.is_empty());
@@ -537,7 +537,7 @@ async fn unchanged_leaf_reused_and_pinned_creation_does_not_advance_edges() {
         .unwrap();
     assert_ne!(first.definition.id, second.definition.id);
     assert_eq!(first.references.subagents, second.references.subagents);
-    let selected = Some(ModelConfig {
+    let selected = AgentModel::from(llm_api::providers::ModelConfig {
         model: llm_api::providers::Model::new(llm_api::providers::ProviderType::Openrouter, "test")
             .unwrap(),
         effort: llm_api::providers::Effort::Low,
@@ -548,7 +548,7 @@ async fn unchanged_leaf_reused_and_pinned_creation_does_not_advance_edges() {
         .unwrap();
     assert_eq!(pinned.definition.description, "a");
     assert_eq!(pinned.references.subagents, first.references.subagents);
-    assert_eq!(pinned.definition.model_config, selected);
+    assert_eq!(pinned.definition.model, selected);
     assert_eq!(
         pinned.definition.id,
         cursor

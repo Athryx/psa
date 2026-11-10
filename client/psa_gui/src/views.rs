@@ -12,6 +12,9 @@ use psa_api::*;
 #[path = "tab_spinner_tests.rs"]
 mod tab_spinner_tests;
 
+/// DOM id the sidebar's edge resizer sizes in the browser during a drag.
+pub(crate) const SIDEBAR_ID: &str = "psa-sidebar";
+
 #[component]
 pub fn Rail() -> Element {
     let mut ui = use_context::<Signal<Ui>>();
@@ -45,7 +48,7 @@ pub fn Sidebar() -> Element {
     });
     let state = ui.peek();
     if state.sidebar.expanded_mode == SidebarMode::Details {
-        return rsx! {aside{class:"sidebar",Details{}}};
+        return rsx! {aside{id:SIDEBAR_ID,class:"sidebar",style:"width:{state.sidebar.width()}px",Details{}}};
     }
     let probe = state.selected_probe;
     let mut index = SessionIndex::default();
@@ -102,7 +105,7 @@ pub fn Sidebar() -> Element {
             )
         })
         .collect();
-    rsx! {aside{class:"sidebar",
+    rsx! {aside{id:SIDEBAR_ID,class:"sidebar",style:"width:{state.sidebar.width()}px",
         onmouseenter: move |_| frozen_order.set(Some(displayed_order.clone())),
         onmouseleave: move |_| frozen_order.set(None),
         div{class:"sessions-heading",
@@ -203,7 +206,7 @@ pub(crate) fn ProbeName(id: ProbeId) -> Element {
                     onclick: move |event| event.stop_propagation(),
                     onmounted: move |event| { spawn(async move { let _ = event.data().set_focus(true).await; }); },
                     onkeydown: move |event| { if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); open.set(false); if let Some(node) = trigger() { spawn(async move { let _ = node.set_focus(true).await; }); } } },
-                    header { h2 { "Probe information" } button { "aria-label": "Close probe information", onclick: move |_| { open.set(false); if let Some(node) = trigger() { spawn(async move { let _ = node.set_focus(true).await; }); } }, "×" } }
+                    crate::modal::ModalHeader { title: "Probe information", close_label: "Close probe information", onclose: move |_| { open.set(false); if let Some(node) = trigger() { spawn(async move { let _ = node.set_focus(true).await; }); } } }
                     dl { class: "info-grid",
                         dt { "Name" } dd { "{name}" }
                         dt { "UUID" } dd { "{id}" }
@@ -234,6 +237,7 @@ fn Details() -> Element {
             state.sessions.clone(),
             state.agents.clone(),
             state.settings.preferences.show_hidden_agents,
+            state.models.clone(),
         )
     });
     let state = ui.peek();
@@ -256,8 +260,13 @@ fn Details() -> Element {
         dl{class:"details-grid",
             dt{"Working directory"}dd{"{session.working_directory.display()}"}
             dt{"Probe"}dd{ProbeName{id:session.probe_id}}
-            dt{"Session default model"}dd{"{session.model_config.model.provider.as_str()}/{session.model_config.model.api_name}"}
-            dt{"Default effort"}dd{"{session.model_config.effort.as_str()}"}
+            dt{"Default model"}
+            dd{title:"{session.model_config.model.provider.as_str()}/{session.model_config.model.api_name}",
+                crate::composer::ModelEffort{
+                    model:crate::composer::model_display_name(&state.models,&session.model_config.model),
+                    effort:session.model_config.effort,
+                }
+            }
         }
         section{class:"details-agents",
             div{class:"details-agents-heading",
@@ -499,7 +508,7 @@ pub fn Settings() -> Element {
     rsx! {div{class:"modal-backdrop",onclick:move |event|{event.stop_propagation();ui.write().settings_open=false;},section{class:"settings settings-dialog",role:"dialog","aria-modal":"true","aria-label":"Settings",tabindex:"-1",onclick:move |event|event.stop_propagation(),
         onmounted:move |event| { spawn(async move { let _ = event.data().set_focus(true).await; }); },
         onkeydown:move |event| { if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); ui.write().settings_open=false; } },
-        header{h2{"Settings"}button{onclick:move |_|ui.write().settings_open=false,"Close ×"}}
+        crate::modal::ModalHeader{title:"Settings",close_label:"Close settings",onclose:move |_|ui.write().settings_open=false}
         if let Some(error) = &state.error {
             div { class:"settings-error error", role:"alert", "{error}" button { onclick:move |_|ui.write().error=None, "Dismiss" } }
         }

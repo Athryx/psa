@@ -239,6 +239,77 @@ async fn steering_is_level_triggered_notify_only_and_excludes_queue() {
 }
 
 #[tokio::test]
+async fn commands_are_not_steering_and_run_without_starting_runs() {
+    let mut fixture = Fixture::with_bundles(vec![psa_api::BundleConfig::Compaction {
+        reserve_tokens: 0,
+        keep_recent_tokens: 0,
+        context_window: None,
+    }])
+    .await;
+    fixture.add_worker();
+    let mut signal = fixture
+        .manager
+        .subscribe_steering(fixture.session, fixture.agent)
+        .await
+        .unwrap();
+    assert_eq!(*signal.borrow_and_update(), Some(false));
+    for delivery in [CommandDelivery::Queue, CommandDelivery::Steer] {
+        fixture
+            .manager
+            .submit(
+                fixture.session,
+                fixture.agent,
+                AgentRequest::Command {
+                    delivery,
+                    command: AgentCommand::Compact { instructions: None },
+                },
+            )
+            .await
+            .unwrap();
+    }
+    assert!(!signal.has_changed().unwrap());
+
+    // A running agent only takes the steered command; the queued one waits.
+    let BoundaryReply::Command(command) = fixture.boundary(AgentState::Running).await else {
+        panic!("expected the steered command")
+    };
+    assert_eq!(command.delivery, CommandDelivery::Steer);
+    assert!(fixture.manager.runs.is_empty());
+    let BoundaryReply::Command(command) = fixture.boundary(AgentState::Idle).await else {
+        panic!("expected the queued command")
+    };
+    assert_eq!(command.delivery, CommandDelivery::Queue);
+    assert!(fixture.manager.runs.is_empty());
+    assert!(matches!(
+        fixture.boundary(AgentState::Idle).await,
+        BoundaryReply::Stop
+    ));
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn commands_require_their_bundle() {
+    let mut fixture = Fixture::new().await;
+    fixture.add_worker();
+    let result = fixture
+        .manager
+        .submit(
+            fixture.session,
+            fixture.agent,
+            AgentRequest::Command {
+                delivery: CommandDelivery::Steer,
+                command: AgentCommand::Compact { instructions: None },
+            },
+        )
+        .await;
+    assert!(
+        matches!(result, Err(RuntimeError::Invalid(message)) if message.contains("Compaction"))
+    );
+    assert!(fixture.manager.workers[&fixture.agent].queue.is_empty());
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn steering_subscriptions_survive_worker_retirement_and_shutdown() {
     let mut fixture = Fixture::new().await;
     let signal = fixture

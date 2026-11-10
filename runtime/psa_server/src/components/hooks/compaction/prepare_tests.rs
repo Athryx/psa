@@ -109,6 +109,28 @@ fn does_nothing_without_discardable_conversation() {
 }
 
 #[test]
+fn zero_budget_summarizes_short_conversations_but_keeps_the_latest_entry() {
+    let transcript = events(vec![
+        message(MessageType::Human, "request"),
+        start(1),
+        message(MessageType::Agent, "answer"),
+        end(1, 10),
+    ]);
+    assert!(prepare(&transcript, u64::MAX).is_none());
+    let preparation = prepare(&transcript, 0).unwrap();
+    assert!(
+        preparation
+            .turn_prefix_prompt
+            .unwrap()
+            .contains("[User]: request")
+    );
+    assert!(preparation.retained_events.iter().any(|event| matches!(
+        &event.kind,
+        EventType::Message(message) if message.message_type == MessageType::Agent
+    )));
+}
+
+#[test]
 fn image_only_discarded_messages_still_produce_a_summary_request() {
     let image = EventType::Message(Message {
         message_type: MessageType::Human,

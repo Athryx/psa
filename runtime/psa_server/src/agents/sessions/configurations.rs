@@ -1,7 +1,9 @@
 //! Named configuration refresh, materialization, and creation-time snapshots.
 use super::*;
-use llm_api::providers::{Model, ModelConfig};
-use psa_api::{AgentConfig, ConfigGroup, ConfigId, EffortSelection, ModelSelection};
+use llm_api::providers::Model;
+use psa_api::{
+    AgentConfig, AgentEffort, AgentModel, ConfigGroup, ConfigId, EffortSelection, ModelSelection,
+};
 use std::{collections::HashMap, path::Path};
 
 #[cfg(test)]
@@ -210,26 +212,25 @@ impl Sessions {
             .map_err(invalid)
     }
 
+    /// Root agents have no parent, so `Parent` choices resolve to the session policy.
     async fn creation_model(
         &self,
         session: &sessions::Session,
         parent: Option<AgentId>,
         config: &AgentConfig,
         choice: Option<&ModelSelection>,
-    ) -> Result<ModelConfig, RuntimeError> {
-        let parent_model = if let Some(id) = parent {
-            let mut cursor = self.database.cursor().await?;
-            let agent = cursor.require_agent_session(session.id, id).await?;
-            let definition = cursor.get_agent_definition(agent.definition_id).await?;
-            let model = definition
-                .model_config
-                .unwrap_or_else(|| session.model_config.clone());
-            cursor.rollback().await?;
-            Some(model)
-        } else {
-            None
+    ) -> Result<AgentModel, RuntimeError> {
+        let parent_model = match parent {
+            Some(id) => {
+                let mut cursor = self.database.cursor().await?;
+                let agent = cursor.require_agent_session(session.id, id).await?;
+                let definition = cursor.get_agent_definition(agent.definition_id).await?;
+                cursor.rollback().await?;
+                definition.model
+            }
+            None => AgentModel::Global,
         };
-        select_model(config, choice, &session.model_config, parent_model.as_ref())
+        select_model(config, choice, &parent_model)
     }
 
     pub async fn create_configured_agent(
@@ -257,7 +258,7 @@ impl Sessions {
             )
             .await?;
         let paths = self.materialize_skills(&session, &graph.skills).await?;
-        let models = HashMap::from([(request.config_id.clone(), Some(model))]);
+        let models = HashMap::from([(request.config_id.clone(), model)]);
         let mut cursor = self.database.cursor().await?;
         let snapshot = cursor
             .resolve_agent_config(&request.config_id, &paths, &models)
@@ -308,7 +309,7 @@ impl Sessions {
             let paths = self.materialize_skills(&session, &skills).await?;
             let mut cursor = self.database.cursor().await?;
             let resolved = cursor
-                .resolve_pinned_agent_config(request.definition_id, Some(model), &paths)
+                .resolve_pinned_agent_config(request.definition_id, model, &paths)
                 .await?;
             cursor.commit().await?;
             request.definition_id = resolved.definition.id;
@@ -328,12 +329,13 @@ impl Sessions {
     }
 }
 
+/// Parent choices copy the parent's policy, so a child of a `Global` parent keeps
+/// following the session model.
 fn select_model(
     config: &AgentConfig,
     choice: Option<&ModelSelection>,
-    global: &ModelConfig,
-    parent: Option<&ModelConfig>,
-) -> Result<ModelConfig, RuntimeError> {
+    parent: &AgentModel,
+) -> Result<AgentModel, RuntimeError> {
     let selection = match choice {
         Some(choice) => config
             .models
@@ -350,18 +352,17 @@ fn select_model(
             ));
         }
     };
-    let parent = parent.unwrap_or(global);
     match selection {
-        ModelSelection::Global => Ok(global.clone()),
+        ModelSelection::Global => Ok(AgentModel::Global),
         ModelSelection::Parent => Ok(parent.clone()),
         ModelSelection::Fixed { model, effort } => {
             let model = Model::parse_slug(model).map_err(invalid)?;
             let effort = match effort {
-                EffortSelection::Fixed(effort) => *effort,
-                EffortSelection::Parent => parent.effort,
-                EffortSelection::Global => global.effort,
+                EffortSelection::Fixed(effort) => AgentEffort::Fixed(*effort),
+                EffortSelection::Parent => parent.effort(),
+                EffortSelection::Global => AgentEffort::Global,
             };
-            Ok(ModelConfig { model, effort })
+            Ok(AgentModel::Fixed { model, effort })
         }
     }
 }

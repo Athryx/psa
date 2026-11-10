@@ -192,6 +192,58 @@ pub(crate) fn SplitDivider(
     }
 }
 
+/// A handle on the right edge of the element whose DOM id is `target_id`. Dragging
+/// resizes that element's pixel width in the browser; Rust receives the final width.
+#[component]
+pub(crate) fn EdgeResizer(
+    target_id: String,
+    width: f64,
+    min: f64,
+    max: f64,
+    aria_label: String,
+    oncommit: EventHandler<f64>,
+) -> Element {
+    let (token, revision) = use_control();
+    let options = json!({
+        "id": token, "target_id": target_id, "value": width, "min": min, "max": max,
+    })
+    .to_string();
+    use_control_updates(&token, &options, revision.clone());
+    let element_id = token.clone();
+
+    rsx! {
+        div {
+            id: element_id,
+            class: "edge-resizer",
+            role: "separator",
+            tabindex: 0,
+            title: "Drag to resize; arrow keys also resize",
+            "aria-label": aria_label,
+            "aria-orientation": "vertical",
+            "aria-valuemin": min.to_string(),
+            "aria-valuemax": max.to_string(),
+            "aria-valuenow": width.round().to_string(),
+            onmounted: move |_| mount_control("edge", &token, &options, revision.clone(), oncommit),
+            onkeydown: move |event| {
+                if event.modifiers().intersects(Modifiers::ALT | Modifiers::CONTROL | Modifiers::META) {
+                    return;
+                }
+                let step = if event.modifiers().contains(Modifiers::SHIFT) { 32.0 } else { 8.0 };
+                let next = match event.key() {
+                    Key::Home => min,
+                    Key::End => max,
+                    Key::ArrowLeft => width - step,
+                    Key::ArrowRight => width + step,
+                    _ => return,
+                };
+                event.prevent_default();
+                event.stop_propagation();
+                oncommit.call(next.clamp(min, max));
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +342,57 @@ mod tests {
         let html = dioxus_ssr::render(&dom);
         assert!(html.contains("aria-valuenow=\"90\""), "{html}");
         assert!(html.contains("<output>0.9</output>"), "{html}");
+    }
+
+    fn edge_fixture() -> Element {
+        let mut width = use_signal(|| 286.0);
+        rsx! {
+            aside { id: "test-sidebar", style: "width:{width}px" }
+            EdgeResizer {
+                target_id: "test-sidebar", width: width(), min: 180.0, max: 720.0,
+                aria_label: "Resize sidebar",
+                oncommit: move |next| width.set(next),
+            }
+            output { "{width}" }
+        }
+    }
+
+    #[test]
+    fn edge_resizer_keyboard_fallback_steps_and_clamps_pixel_widths() {
+        let (mut dom, id) = mount(edge_fixture, "keydown");
+        for (key, shift, expected) in [
+            (Key::ArrowRight, false, "294"),
+            (Key::ArrowLeft, true, "262"),
+            (Key::Home, false, "180"),
+            (Key::ArrowLeft, false, "180"),
+        ] {
+            let modifiers = if shift {
+                Modifiers::SHIFT
+            } else {
+                Modifiers::empty()
+            };
+            let data = SerializedKeyboardData::new(
+                key,
+                Code::Unidentified,
+                Location::Standard,
+                false,
+                modifiers,
+                false,
+            );
+            let event = Event::new(
+                Rc::new(PlatformEventData::new(Box::new(data))) as Rc<dyn Any>,
+                true,
+            );
+            dom.runtime().handle_event("keydown", event, id);
+            dom.render_immediate_to_vec();
+            let html = dioxus_ssr::render(&dom);
+            assert!(
+                html.contains(&format!("<output>{expected}</output>")),
+                "{html}"
+            );
+        }
+        let html = dioxus_ssr::render(&dom);
+        assert!(html.contains("role=\"separator\""), "{html}");
+        assert!(html.contains("aria-valuenow=\"180\""), "{html}");
     }
 }

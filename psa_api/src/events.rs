@@ -133,6 +133,11 @@ pub enum EventType {
         /// Diagnostic text and error flag.
         Log,
     ),
+    /// Records a command when its worker begins executing it.
+    Command(
+        /// Command that was requested.
+        crate::AgentCommand,
+    ),
     /// Begins the recorded result of an inference, not the request itself.
     InferenceResultStart(
         /// Result identifier and configuration attribution.

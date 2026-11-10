@@ -81,6 +81,7 @@ textarea {
 }
 .sidebar {
   width:286px;
+  min-width:0;
   flex:none;
   background:var(--panel);
   border-right:1px solid var(--line);
@@ -249,6 +250,21 @@ textarea {
 }
 .divider:hover,.divider:focus-visible {
   background:var(--accent)
+}
+/* Overlaps the sidebar's border so the handle adds no layout width. */
+.edge-resizer {
+  flex:none;
+  position:relative;
+  z-index:2;
+  width:5px;
+  margin-left:-4px;
+  cursor:col-resize;
+  touch-action:none;
+  user-select:none
+}
+.edge-resizer:hover,.edge-resizer:focus-visible {
+  background:var(--accent);
+  outline:none
 }
 .vertical>.divider {
   width:auto;
@@ -855,11 +871,13 @@ textarea {
   font-size:12px;
   overflow-wrap:anywhere
 }
-.details-grid dt {
+/* Child combinators: modals rendered inside a value (such as probe
+   information) must not inherit these list offsets. */
+.details-grid > dt {
   color:var(--muted);
   margin-top:14px
 }
-.details-grid dd {
+.details-grid > dd {
   margin:2px 0
 }
 .details-agents {
@@ -889,6 +907,8 @@ textarea {
 .modal-backdrop {
   position:fixed;
   inset:0;
+  /* Modals may be mounted inside smaller text, such as the details panel. */
+  font-size:14px;
   background:#0009;
   display:grid;
   place-items:center;
@@ -920,10 +940,41 @@ textarea {
   margin:0;
   accent-color:var(--accent)
 }
-.settings header {
+/* Shared dialog title row. Explicit heading styles also override sidebar
+   headings, since some modals are mounted inside the sidebar. */
+.modal-header {
   display:flex;
   align-items:center;
-  justify-content:space-between
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:16px;
+  padding-bottom:12px;
+  border-bottom:1px solid var(--line)
+}
+.modal-header h2 {
+  margin:0;
+  font-size:17px;
+  font-weight:600;
+  letter-spacing:normal;
+  text-transform:none;
+  color:var(--text)
+}
+.modal-close {
+  flex:none;
+  width:28px;
+  height:28px;
+  padding:0;
+  border:0;
+  border-radius:6px;
+  background:transparent;
+  color:var(--muted);
+  font-size:18px;
+  line-height:1;
+  text-align:center
+}
+.modal-close:hover,.modal-close:focus-visible {
+  background:var(--raised);
+  color:var(--text)
 }
 .settings-dialog {
   width:min(820px,100%);
@@ -932,10 +983,8 @@ textarea {
   flex-direction:column;
   overflow:hidden
 }
-.settings-dialog>header {
-  flex:none;
-  border-bottom:1px solid var(--line);
-  margin-bottom:16px
+.settings-dialog>.modal-header {
+  flex:none
 }
 .settings-layout {
   display:flex;
@@ -1126,6 +1175,26 @@ textarea {
   font-size:12px
 }
 .command-hint,.command-empty { margin:6px 10px }
+.command-prompt {
+  margin-bottom:8px;
+  padding:8px 10px;
+  background:var(--panel);
+  border:1px solid #485777;
+  border-radius:6px
+}
+.command-prompt-label {
+  display:block;
+  margin-bottom:6px;
+  color:var(--muted);
+  font-size:12px
+}
+.command-prompt-row {
+  display:flex;
+  align-items:center;
+  gap:8px
+}
+.command-prompt-row input { flex:1; min-width:0 }
+.command-prompt .command-hint { margin:6px 0 0 }
 .draft-model-choice { margin-bottom:8px; font-size:12px }
 .question {
   border:1px solid #8b7946;
