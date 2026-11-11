@@ -583,6 +583,7 @@ mod tests {
         assert!(html.contains("fix &#60;b&#62;this"), "{html}");
 
         let html = render_expanded_item(EventType::ToolResult(ToolResult {
+            delivery: None,
             call_id: "c".into(),
             error: false,
             metadata: Default::default(),

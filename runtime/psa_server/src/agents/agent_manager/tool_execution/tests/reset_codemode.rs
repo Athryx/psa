@@ -12,7 +12,8 @@ use crate::{
 use llm_api::api::ContentBlock;
 use serde_json::{Value, json};
 
-const RESET_MESSAGE: &str = "CodeMode state reset. Previous checkpoints and results are preserved.";
+const RESET_MESSAGE: &str =
+    "Python REPL reset. Earlier codemode outputs remain available through PRIOR_RESULTS.";
 
 fn tools(engine: &Arc<MontyEngine>) -> Vec<ToolKind> {
     vec![
@@ -113,7 +114,9 @@ async fn load_snapshot(
         .unwrap()
         .expect("private checkpoint persisted");
     cursor.rollback().await.unwrap();
-    let PrivateEvent::CodeModeSnapshot(bytes) = event;
+    let PrivateEvent::CodeModeSnapshot(bytes) = event else {
+        panic!("expected a codemode snapshot");
+    };
     bytes
 }
 
@@ -122,6 +125,7 @@ async fn inject_snapshot(state: &mut AgentManagerState, id: &str, bytes: &[u8]) 
     state
         .persist_event_batch(vec![
             EventBatchItem::Public(NewEvent::new(EventType::ToolResult(ToolResult {
+                delivery: None,
                 call_id: id.into(),
                 content: prompts::text("synthetic checkpoint anchor"),
                 error: false,

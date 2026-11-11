@@ -38,9 +38,13 @@ impl ToolSchema {
             .for_deserialize()
             .into_generator()
             .into_root_schema_for::<T>();
-        Self {
-            schema: serde_json::to_value(schema).expect("JSON Schema serializes as JSON"),
+        let mut schema = serde_json::to_value(schema).expect("JSON Schema serializes as JSON");
+        if let Some(root) = schema.as_object_mut() {
+            root.remove("$schema");
+            root.remove("title");
         }
+        remove_generated_noise(&mut schema);
+        Self { schema }
     }
 
     pub fn as_value(&self) -> &Value {
@@ -74,6 +78,44 @@ impl ToolSchema {
 impl From<Value> for ToolSchema {
     fn from(schema: Value) -> Self {
         Self { schema }
+    }
+}
+
+/// Drop generator annotations that add tokens without guiding the model: Rust
+/// numeric storage formats and `default: null` on omittable fields.
+fn remove_generated_noise(schema: &mut Value) {
+    match schema {
+        Value::Object(object) => {
+            let is_numeric_format =
+                object
+                    .get("format")
+                    .and_then(Value::as_str)
+                    .is_some_and(|format| {
+                        matches!(
+                            format,
+                            "double"
+                                | "float"
+                                | "int8"
+                                | "int16"
+                                | "int32"
+                                | "int64"
+                                | "uint"
+                                | "uint8"
+                                | "uint16"
+                                | "uint32"
+                                | "uint64"
+                        )
+                    });
+            if is_numeric_format {
+                object.remove("format");
+            }
+            if object.get("default") == Some(&Value::Null) {
+                object.remove("default");
+            }
+            object.values_mut().for_each(remove_generated_noise);
+        }
+        Value::Array(items) => items.iter_mut().for_each(remove_generated_noise),
+        _ => {}
     }
 }
 

@@ -283,14 +283,25 @@ pub(super) async fn insert_payload(
         EventType::ToolResult(value) => {
             let metadata = serialize_json(&value.metadata)?;
             let content = serialize_json(&value.content)?;
+            let delivery_agent_id = value
+                .delivery
+                .as_ref()
+                .map(|delivery| encode_integer(delivery.agent_id.0))
+                .transpose()?;
+            let delivery_request_id = value
+                .delivery
+                .as_ref()
+                .map(|delivery| delivery.request_id.as_str());
 
             sqlx::query!(
-                "INSERT INTO event_tool_result (event_pk,call_id,content,error,metadata) VALUES (?,?,?,?,?)",
+                "INSERT INTO event_tool_result (event_pk,call_id,content,error,metadata,delivery_agent_id,delivery_request_id) VALUES (?,?,?,?,?,?,?)",
                 pk,
                 value.call_id,
                 content,
                 value.error,
-                metadata
+                metadata,
+                delivery_agent_id,
+                delivery_request_id
             )
             .execute(&mut *conn)
             .await?;
@@ -555,12 +566,20 @@ pub(super) async fn load_payloads(
         })
     );
     load!(
-        "SELECT p.event_pk, p.call_id, p.content, p.error, p.metadata FROM event_tool_result p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+        "SELECT p.event_pk, p.call_id, p.content, p.error, p.metadata, p.delivery_agent_id, p.delivery_request_id FROM event_tool_result p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
         |r| EventType::ToolResult(ToolResult {
             call_id: r.call_id,
             content: parse_json(&r.content)?,
             error: r.error != 0,
-            metadata: parse_json(&r.metadata)?
+            metadata: parse_json(&r.metadata)?,
+            delivery: match (r.delivery_agent_id, r.delivery_request_id) {
+                (Some(agent_id), Some(request_id)) => Some(MessageDelivery {
+                    agent_id: psa_api::AgentId(decode_integer(agent_id)?),
+                    request_id,
+                }),
+                (None, None) => None,
+                _ => return Err(DbError::Corrupt("incomplete tool result delivery".into())),
+            }
         })
     );
     load!(

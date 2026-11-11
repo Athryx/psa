@@ -91,15 +91,7 @@ not a user login-shell environment and not the server's environment. The default
 shell selection tries remote `/bin/bash`, then `bash` on PATH, then `sh`.
 There is no per-session shell-path or command-prefix setting in this port.
 
-The tool clears inherited `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`,
-`PI_MODEL`, and `PI_REASONING_LEVEL`, then sets current invocation values:
-
-- `PI_SESSION_ID`: PSA's session ID as a decimal string.
-- `PI_PROVIDER`: `openai-codex` or `openrouter`.
-- `PI_MODEL`: the active model API name.
-- `PI_REASONING_LEVEL`: the active effort level.
-
-`PI_SESSION_FILE` remains unset because PSA has no Pi session-file counterpart.
+The tool does not add harness-specific environment variables.
 
 ## Intentional runtime differences
 

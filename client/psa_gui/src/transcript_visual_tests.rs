@@ -152,6 +152,7 @@ fn tool_call(id: &str, tool: &str, arguments: serde_json::Value) -> psa_api::eve
 
 fn tool_result(id: &str, error: bool) -> psa_api::events::EventType {
     psa_api::events::EventType::ToolResult(psa_api::events::ToolResult {
+        delivery: None,
         call_id: id.into(),
         error,
         metadata: Default::default(),

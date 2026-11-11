@@ -83,8 +83,8 @@ fn codemode_history_guidance_is_published_in_the_rules_system_message() {
     let rules = system_text(&events[2]);
     assert!(rules.starts_with("<rules>"));
     assert!(rules.contains(&rule));
-    assert!(rules.contains("PRIOR_RESULTS(-1)[2000:4000]"));
-    assert!(rules.contains("cannot recover truncated-away content"));
+    assert!(rules.contains("PRIOR_RESULTS(-1)[6000:18000]"));
+    assert!(rules.contains("instead of rerunning"));
 }
 
 #[test]

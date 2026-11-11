@@ -125,10 +125,11 @@ fn exception_remains_visible_after_print_truncation() {
             script_started: true,
             host_call_started: AtomicBool::new(true),
         },
+        MAX_OUTPUT_CHARS,
     );
     assert!(text.contains("[output truncated]"));
     assert!(text.contains("ValueError:"));
-    assert!(text.contains("REPL changes were not saved; previous checkpoint is unchanged"));
+    assert!(text.contains("REPL state is unchanged (changes from this call were discarded)"));
     assert!(text.contains("external tool effects may have occurred"));
     assert!(text.chars().count() <= MAX_OUTPUT_CHARS);
 
@@ -138,6 +139,7 @@ fn exception_remains_visible_after_print_truncation() {
         "ValueError: failure",
         false,
         &ExecutionProgress::default(),
+        MAX_OUTPUT_CHARS,
     );
     assert_eq!(text, "ValueError: failure");
 }
@@ -155,8 +157,9 @@ fn unresolved_calls_keep_exception_and_warn_about_unsaved_state() {
             script_started: true,
             host_call_started: AtomicBool::new(true),
         },
+        MAX_OUTPUT_CHARS,
     );
-    assert!(text.contains("REPL changes were not saved"));
+    assert!(text.contains("changes from this call were discarded"));
     assert!(text.contains("external tool effects may have occurred"));
     assert!(text.contains("asyncio.sleep() (call 1), noop() (call 2)"));
     assert!(text.contains("not awaited"));
@@ -171,9 +174,10 @@ fn failure_warnings_distinguish_preflight_and_script_without_host_calls() {
         "Cannot initialize interpreter",
         true,
         &ExecutionProgress::default(),
+        MAX_OUTPUT_CHARS,
     );
-    assert!(text.contains("Script did not run"));
-    assert!(text.contains("previous checkpoint is unchanged"));
+    assert!(text.contains("Code did not run"));
+    assert!(text.contains("REPL state is unchanged"));
     assert!(!text.contains("external tool effects"));
 
     let mut text = String::new();
@@ -185,9 +189,10 @@ fn failure_warnings_distinguish_preflight_and_script_without_host_calls() {
             script_started: true,
             host_call_started: AtomicBool::new(false),
         },
+        MAX_OUTPUT_CHARS,
     );
-    assert!(text.contains("REPL changes were not saved"));
-    assert!(text.contains("previous checkpoint is unchanged"));
+    assert!(text.contains("changes from this call were discarded"));
+    assert!(text.contains("REPL state is unchanged"));
     assert!(!text.contains("external tool effects"));
 }
 
@@ -368,4 +373,19 @@ fn json_round_trip_and_integer_overflow() {
         value
     );
     assert!(json_to_monty(json!(u64::MAX)).is_err());
+}
+
+#[test]
+fn model_view_is_bounded_while_saved_output_keeps_everything() {
+    let full: String = (0..5_000).map(|line| format!("line {line}\n")).collect();
+    let view = bound_output(&full, MAX_PRINT_CHARS);
+    assert!(view.contains("[output truncated]"));
+    assert!(view.chars().count() <= MAX_PRINT_CHARS);
+    assert!(view.starts_with("line 0\n"));
+    assert!(view.ends_with("line 4999\n"));
+    assert!(!view.contains("line 2500\n"));
+
+    let mut saved = BoundedOutput::new(MAX_SAVED_OUTPUT_CHARS);
+    saved.push_str(&full);
+    assert_eq!(saved.finish(), full);
 }

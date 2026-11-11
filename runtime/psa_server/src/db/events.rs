@@ -15,6 +15,8 @@ use std::collections::HashSet;
 
 /// Maximum private codemode snapshot size accepted for one tool result.
 pub const MAX_CODEMODE_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum saved full codemode output accepted for one tool result.
+pub const MAX_CODEMODE_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 
 /// An internal event batch item. Private events attach to the preceding public
 /// event in this batch and never consume a public event ID.
@@ -27,6 +29,8 @@ pub enum EventBatchItem {
 #[derive(Clone, PartialEq, Eq)]
 pub enum PrivateEvent {
     CodeModeSnapshot(Vec<u8>),
+    /// Full codemode output when the model-facing result was truncated.
+    CodeModeOutput(String),
 }
 
 impl std::fmt::Debug for PrivateEvent {
@@ -36,6 +40,10 @@ impl std::fmt::Debug for PrivateEvent {
                 .debug_struct("CodeModeSnapshot")
                 .field("len", &bytes.len())
                 .finish(),
+            Self::CodeModeOutput(text) => f
+                .debug_struct("CodeModeOutput")
+                .field("len", &text.len())
+                .finish(),
         }
     }
 }
@@ -43,6 +51,55 @@ impl std::fmt::Debug for PrivateEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrivateEventKind {
     CodeModeSnapshot,
+    CodeModeOutput,
+}
+
+impl PrivateEvent {
+    fn kind(&self) -> PrivateEventKind {
+        match self {
+            Self::CodeModeSnapshot(_) => PrivateEventKind::CodeModeSnapshot,
+            Self::CodeModeOutput(_) => PrivateEventKind::CodeModeOutput,
+        }
+    }
+}
+
+/// The newest private event of `kind` on `owner`'s events in `lower..=upper`.
+async fn query_private_event(
+    conn: &mut SqliteConnection,
+    kind: PrivateEventKind,
+    owner: i64,
+    lower: i64,
+    upper: i64,
+) -> Result<Option<PrivateEvent>, DbError> {
+    let event = match kind {
+        PrivateEventKind::CodeModeSnapshot => sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT s.snapshot
+             FROM codemode_snapshots s
+             JOIN events e ON e.event_pk = s.event_pk
+             WHERE e.agent_id = ? AND e.event_seq BETWEEN ? AND ?
+             ORDER BY e.event_seq DESC LIMIT 1",
+        )
+        .bind(owner)
+        .bind(lower)
+        .bind(upper)
+        .fetch_optional(&mut *conn)
+        .await?
+        .map(PrivateEvent::CodeModeSnapshot),
+        PrivateEventKind::CodeModeOutput => sqlx::query_scalar::<_, String>(
+            "SELECT o.output
+             FROM codemode_outputs o
+             JOIN events e ON e.event_pk = o.event_pk
+             WHERE e.agent_id = ? AND e.event_seq BETWEEN ? AND ?
+             ORDER BY e.event_seq DESC LIMIT 1",
+        )
+        .bind(owner)
+        .bind(lower)
+        .bind(upper)
+        .fetch_optional(&mut *conn)
+        .await?
+        .map(PrivateEvent::CodeModeOutput),
+    };
+    Ok(event)
 }
 
 /// Changes staged by an append; commit the cursor to persist them.
@@ -87,27 +144,34 @@ impl DatabaseCursor {
                     let attached = private_events
                         .last_mut()
                         .expect("public event has an attachment list");
-                    match private_event {
+                    if !matches!(event.kind, EventType::ToolResult(_)) {
+                        return Err(DbError::InvalidInput(
+                            "codemode private events require a tool result".into(),
+                        ));
+                    }
+                    let (size, limit) = match private_event {
                         PrivateEvent::CodeModeSnapshot(snapshot) => {
-                            if !matches!(event.kind, EventType::ToolResult(_)) {
-                                return Err(DbError::InvalidInput(
-                                    "snapshot requires a tool result".into(),
-                                ));
-                            }
-                            if snapshot.len() > MAX_CODEMODE_SNAPSHOT_BYTES {
-                                return Err(DbError::InvalidInput(
-                                    "codemode snapshot exceeds 16 MiB".into(),
-                                ));
-                            }
-                            if attached
-                                .iter()
-                                .any(|item| matches!(item, PrivateEvent::CodeModeSnapshot(_)))
-                            {
-                                return Err(DbError::InvalidInput(
-                                    "duplicate codemode snapshot for event".into(),
-                                ));
-                            }
+                            (snapshot.len(), MAX_CODEMODE_SNAPSHOT_BYTES)
                         }
+                        PrivateEvent::CodeModeOutput(text) => {
+                            (text.len(), MAX_CODEMODE_OUTPUT_BYTES)
+                        }
+                    };
+                    if size > limit {
+                        return Err(DbError::InvalidInput(format!(
+                            "{:?} exceeds {} MiB",
+                            private_event.kind(),
+                            limit / (1024 * 1024)
+                        )));
+                    }
+                    if attached
+                        .iter()
+                        .any(|item| item.kind() == private_event.kind())
+                    {
+                        return Err(DbError::InvalidInput(format!(
+                            "duplicate {:?} for event",
+                            private_event.kind()
+                        )));
                     }
                     attached.push(private_event);
                 }
@@ -185,6 +249,15 @@ impl DatabaseCursor {
                         .execute(&mut *savepoint)
                         .await?;
                     }
+                    PrivateEvent::CodeModeOutput(text) => {
+                        sqlx::query(
+                            "INSERT INTO codemode_outputs (event_pk, output) VALUES (?, ?)",
+                        )
+                        .bind(result.last_insert_rowid())
+                        .bind(text.as_str())
+                        .execute(&mut *savepoint)
+                        .await?;
+                    }
                 }
             }
             saved.push(Event {
@@ -257,26 +330,29 @@ impl DatabaseCursor {
         let conn = self.connection();
         let segments = load_segments(conn, agent, EventId(0), through).await?;
         for (owner, lower, upper) in segments.into_iter().rev() {
-            let snapshot = match kind {
-                PrivateEventKind::CodeModeSnapshot => sqlx::query_scalar::<_, Vec<u8>>(
-                    "SELECT s.snapshot
-                 FROM codemode_snapshots s
-                 JOIN events e ON e.event_pk = s.event_pk
-                 WHERE e.agent_id = ? AND e.event_seq BETWEEN ? AND ?
-                 ORDER BY e.event_seq DESC LIMIT 1",
-                )
-                .bind(owner)
-                .bind(lower)
-                .bind(upper)
-                .fetch_optional(&mut *conn)
-                .await?
-                .map(PrivateEvent::CodeModeSnapshot),
-            };
-            if snapshot.is_some() {
-                return Ok(snapshot);
+            let event = query_private_event(conn, kind, owner, lower, upper).await?;
+            if event.is_some() {
+                return Ok(event);
             }
         }
         Ok(None)
+    }
+
+    /// Load the private event of this kind attached to exactly `event`,
+    /// resolving the owning agent through the fork lineage.
+    pub async fn load_private_event_at(
+        &mut self,
+        agent: AgentId,
+        event: EventId,
+        kind: PrivateEventKind,
+    ) -> Result<Option<PrivateEvent>, DbError> {
+        let conn = self.connection();
+        let after = EventId(event.0.saturating_sub(1));
+        let segments = load_segments(conn, agent, after, Some(event)).await?;
+        let Some((owner, lower, upper)) = segments.into_iter().next() else {
+            return Ok(None);
+        };
+        query_private_event(conn, kind, owner, lower, upper).await
     }
 
     pub async fn load_events(

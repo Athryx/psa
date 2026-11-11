@@ -1,3 +1,4 @@
+pub mod codemode_functions;
 pub mod compaction;
 pub mod cwd;
 pub mod default_startup;
@@ -16,6 +17,7 @@ pub mod tool_definitions;
 #[cfg(test)]
 mod tests;
 
+pub use codemode_functions::CodeModeFunctionsHook;
 pub use cwd::CwdHook;
 pub use default_startup::DefaultStartupHook;
 pub use extra_system_prompt::ExtraSystemPromptHook;
@@ -125,6 +127,7 @@ pub enum HookKind {
     Compaction(compaction::CompactionHook),
     RequireResult(RequireResult),
     SubagentIdentity(SubagentIdentity),
+    CodeModeFunctions(CodeModeFunctionsHook),
     #[cfg(test)]
     RecordLifecycle(crate::agents::session_manager::lifecycle_tests::RecordLifecycle),
     #[cfg(test)]
@@ -166,6 +169,7 @@ impl Hook for HookKind {
             Self::Compaction(hook) => Hook::cancellation_timeout(hook),
             Self::RequireResult(hook) => hook.cancellation_timeout(),
             Self::SubagentIdentity(hook) => hook.cancellation_timeout(),
+            Self::CodeModeFunctions(hook) => hook.cancellation_timeout(),
             #[cfg(test)]
             Self::RecordLifecycle(hook) => hook.cancellation_timeout(),
             #[cfg(test)]
@@ -192,6 +196,7 @@ impl Hook for HookKind {
             Self::Compaction(hook) => hook.run(context, cancellation).await,
             Self::RequireResult(hook) => hook.run(context, cancellation).await,
             Self::SubagentIdentity(hook) => hook.run(context, cancellation).await,
+            Self::CodeModeFunctions(hook) => hook.run(context, cancellation).await,
             #[cfg(test)]
             Self::RecordLifecycle(hook) => hook.run(context, cancellation).await,
             #[cfg(test)]

@@ -1031,6 +1031,7 @@ mod tests {
         let mut next = event(id);
         next.agent_id = agent_id;
         next.event.kind = EventType::ToolResult(ToolResult {
+            delivery: None,
             call_id: "same-call".into(),
             error: false,
             metadata: Default::default(),

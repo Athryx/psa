@@ -22,7 +22,7 @@ struct InteractBashArgs {
     stdin: Option<String>,
     /// Wait up to this many milliseconds (default 1000 when sending stdin, 10000 when polling, max 300000)
     #[serde(default, deserialize_with = "optional_value")]
-    #[schemars(with = "f64")]
+    #[schemars(with = "u64")]
     yield_time_ms: Option<f64>,
     #[serde(default, deserialize_with = "optional_value")]
     #[schemars(skip)]
@@ -111,7 +111,7 @@ mod tests {
         assert_eq!(schema["required"], json!(["session_name"]));
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["properties"]["stdin"]["type"], "string");
-        assert_eq!(schema["properties"]["yield_time_ms"]["type"], "number");
+        assert_eq!(schema["properties"]["yield_time_ms"]["type"], "integer");
         assert!(schema["properties"].get("yield_timeout_ms").is_none());
         for value in [
             json!({"session_name":"bash1"}),

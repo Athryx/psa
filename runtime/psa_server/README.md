@@ -41,7 +41,7 @@ configuration fails startup without overwriting it.
 
 ```toml
 host = true # Marks this config directory as sharing the server's filesystem.
-default_agent_name = "default" # Suggested agent configuration name for clients.
+default_agent_name = "root" # Suggested agent configuration name for clients.
 
 [server]
 listen = "127.0.0.1:8080"

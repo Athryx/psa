@@ -1,47 +1,58 @@
 //! Identity is emitted at creation; forks preserve their inherited prompt.
 use super::{Hook, HookError};
+use crate::components::bundles::subagents::ChildTemplate;
 use crate::{
     agents::{agent_context::AgentContext, session_manager::RuntimeError},
     components::cancellation::Cancellation,
 };
 use psa_api::events::{EventType, Message, NewEvent};
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-pub struct SubagentIdentity;
+pub struct SubagentIdentity {
+    templates: Arc<[ChildTemplate]>,
+}
 impl SubagentIdentity {
-    async fn build_identity(context: &AgentContext<'_>) -> Result<String, String> {
+    pub fn new(templates: Arc<[ChildTemplate]>) -> Self {
+        Self { templates }
+    }
+
+    async fn build_identity(&self, context: &AgentContext<'_>) -> Result<String, String> {
         let agent = context.agent();
-        let mut permitted = Vec::new();
-        for id in &context.definition().permitted_subagents {
-            let definition = context
-                .sessions()
-                .get_agent_definition(*id)
-                .await
-                .map_err(|error| error.to_string())?;
-            let snapshot = context
-                .sessions()
-                .get_resolved_agent_config(*id)
-                .await
-                .map_err(|error| error.to_string())?;
-            let (models, default) = match snapshot {
-                Some(snapshot) => (snapshot.config.models, snapshot.config.default),
-                None => (Vec::new(), true),
-            };
-            permitted.push(
-                serde_json::json!({"name": definition.name, "models": models, "default": default}),
-            );
-        }
-        Ok(format!(
-            "<agent_identity>\nName: {}. Agent ID: {}. Session ID: {}. Subagent parent ID: {:?}. Template: {}.\nPermitted child templates (explicit agent_template required): {}\nAgents communicate within this session. Children run asynchronously; their final answers/errors are sent to their parent. send_message steers an existing agent. wait_message waits for steering, which the runtime injects into context.\n</agent_identity>",
-            agent.name,
-            agent.id.0,
-            context.session().id.0,
-            agent.subagent_parent_id.map(|id| id.0),
-            context.definition().name,
-            serde_json::to_string(&permitted).unwrap()
+        let parent = match agent.subagent_parent_id {
+            Some(id) => Some(
+                context
+                    .sessions()
+                    .get_agent(context.session().id, id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .name,
+            ),
+            None => None,
+        };
+        Ok(format_identity(
+            &agent.name,
+            parent.as_deref(),
+            &self.templates,
         ))
     }
 }
+
+fn format_identity(name: &str, parent: Option<&str>, templates: &[ChildTemplate]) -> String {
+    let mut lines = vec![match parent {
+        Some(parent) => format!(
+            "You are agent \"{name}\", started by \"{parent}\" to complete its task. Your final answer is sent to \"{parent}\" automatically."
+        ),
+        None => format!("You are agent \"{name}\"."),
+    }];
+    if !templates.is_empty() {
+        lines.push("Child agents you can start with create_agent:".into());
+        lines.extend(templates.iter().map(ChildTemplate::describe));
+        lines.push("Children run asynchronously and do not see your conversation, so give each a self-contained task. Their final answers arrive as messages from them.".into());
+    }
+    lines.push("Use send_message to message another agent in this session and wait_message to wait for incoming messages.".into());
+    format!("<agent_identity>\n{}\n</agent_identity>", lines.join("\n"))
+}
+
 impl Hook for SubagentIdentity {
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(2)
@@ -58,7 +69,7 @@ impl Hook for SubagentIdentity {
         let identity = tokio::select! {
             biased;
             _ = cancellation.cancelled() => return Ok(()),
-            result = Self::build_identity(context) => result.map_err(RuntimeError::Invalid)?,
+            result = self.build_identity(context) => result.map_err(RuntimeError::Invalid)?,
         };
 
         let events = [NewEvent::new(EventType::Message(Message::system(
@@ -72,5 +83,49 @@ impl Hook for SubagentIdentity {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::bundles::subagents::templates::ModelChoice;
+    use psa_api::{AgentDefinitionId, ModelSelection};
+
+    #[test]
+    fn identity_uses_names_and_plain_template_descriptions() {
+        let templates = [ChildTemplate {
+            definition_id: AgentDefinitionId(7),
+            name: "subagent".into(),
+            description: "Delegated worker".into(),
+            models: vec![ModelChoice {
+                label: "parent".into(),
+                selection: ModelSelection::Parent,
+            }],
+            default: true,
+        }];
+        let text = format_identity("default", None, &templates);
+        assert_eq!(
+            text,
+            concat!(
+                "<agent_identity>\n",
+                "You are agent \"default\".\n",
+                "Child agents you can start with create_agent:\n",
+                "- subagent: Delegated worker. Model: same as yours.\n",
+                "Children run asynchronously and do not see your conversation, so give each a self-contained task. Their final answers arrive as messages from them.\n",
+                "Use send_message to message another agent in this session and wait_message to wait for incoming messages.\n",
+                "</agent_identity>"
+            )
+        );
+        assert!(!text.contains('7'));
+        assert!(!text.contains('{'));
+    }
+
+    #[test]
+    fn child_identity_names_its_parent_and_omits_empty_templates() {
+        let text = format_identity("worker", Some("default"), &[]);
+        assert!(text.contains("started by \"default\""));
+        assert!(!text.contains("create_agent"));
+        assert!(!text.contains("Agent ID"));
     }
 }

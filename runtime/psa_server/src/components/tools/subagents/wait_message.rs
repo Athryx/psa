@@ -33,7 +33,7 @@ impl WaitMessage {
     pub(crate) fn definition() -> ToolDefinition {
         ToolDefinition::for_type::<WaitMessageArgs>(
             "wait_message",
-            "Wait for steering in this session; timeout is seconds, default 120, maximum 600. Refuses when nobody else in the session can make progress.",
+            "Wait for a message from another agent or the user, such as a child's final answer. timeout is in seconds (default 120, maximum 600). Fails immediately when no other agent is running, since no message could arrive.",
             Some(false),
         )
     }

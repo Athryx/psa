@@ -5,6 +5,7 @@
 //! typed argument bridge and preserves its cancellation behavior.
 
 pub(crate) mod prior_results;
+pub(crate) mod python_stub;
 
 use prior_results::PriorResults;
 use std::time::Duration;

@@ -65,14 +65,14 @@ fn remote_shell_resolution_preserves_protocol_environment_and_stdin() {
     use psa_api::probes::{Command, Stdio};
     let command = Command::new("bash", "/work dir")
         .args(["-c", "printf '%s' '$injection'"])
-        .env("PI_SESSION_ID", "id")
-        .env_remove("PI_MODEL");
+        .env("EXAMPLE_SET", "id")
+        .env_remove("EXAMPLE_REMOVED");
     let command = log::resolve_shell(command);
     assert_eq!(command.program, "sh");
     assert_eq!(command.cwd, PathBuf::from("/work dir"));
     assert_eq!(command.args.last().unwrap(), "printf '%s' '$injection'");
-    assert_eq!(command.env.get("PI_SESSION_ID"), Some(&Some("id".into())));
-    assert_eq!(command.env.get("PI_MODEL"), Some(&None));
+    assert_eq!(command.env.get("EXAMPLE_SET"), Some(&Some("id".into())));
+    assert_eq!(command.env.get("EXAMPLE_REMOVED"), Some(&None));
     assert!(!command.env_clear);
     assert!(matches!(command.stdin, Stdio::Piped));
 }

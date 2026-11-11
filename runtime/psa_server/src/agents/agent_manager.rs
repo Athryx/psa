@@ -307,6 +307,7 @@ impl AgentManagerState {
         output: tools::ToolOutput,
     ) -> Result<(), AgentError> {
         let result = ToolResult {
+            delivery: None,
             call_id,
             content: output.content,
             error: output.error,
@@ -495,6 +496,7 @@ pub(crate) fn build_recovery_events(
             // not the artifact or any later calls that never ran.
             let output = crate::components::tools::RecordResult::recorded_output();
             ToolResult {
+                delivery: None,
                 call_id: call.call_id.clone(),
                 content: output.content,
                 error: output.error,

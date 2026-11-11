@@ -188,7 +188,7 @@ async fn subagent_messages_persist_source_and_replay_as_attributed_user_messages
     };
     assert_eq!(projected.role, api::Role::User);
     assert!(
-        matches!(&projected.content[0], api::ContentBlock::Text(text) if text.text.contains(&format!("researcher (agent {})", root.id.0)))
+        matches!(&projected.content[0], api::ContentBlock::Text(text) if text.text == "Message from agent \"researcher\":\n")
     );
     assert!(
         matches!(&projected.content[1], api::ContentBlock::Text(text) if text.text == "findings")

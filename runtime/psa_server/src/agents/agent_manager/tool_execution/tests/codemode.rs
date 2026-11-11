@@ -93,6 +93,7 @@ async fn nested_contexts_have_independent_snapshots_and_shared_registry() {
 
 fn result_event(id: &str) -> NewEvent {
     NewEvent::new(EventType::ToolResult(ToolResult {
+        delivery: None,
         call_id: id.into(),
         content: prompts::text("ok"),
         error: false,

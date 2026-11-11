@@ -28,6 +28,10 @@ use crate::{
 
 const MAX_OUTPUT_CHARS: usize = 16_000;
 const MAX_PRINT_CHARS: usize = 12_000;
+/// Output kept on disk for PRIOR_RESULTS; only the model's view is truncated
+/// to the limits above. Four bytes per character stays within the DB limit.
+pub(crate) const MAX_SAVED_OUTPUT_CHARS: usize = 2 * 1024 * 1024;
+const MAX_SAVED_ERROR_CHARS: usize = 64 * 1024;
 const MAX_SOURCE_BYTES: usize = 256 * 1024;
 const MAX_HOST_CALLS: usize = 128;
 const MAX_PENDING_CALLS: usize = 32;
@@ -48,7 +52,10 @@ struct ExecutionProgress {
 }
 
 pub(crate) struct EngineOutput {
+    /// Model-facing output, middle-truncated to the context limits.
     pub text: String,
+    /// Full output when `text` was truncated, kept for PRIOR_RESULTS.
+    pub saved_text: Option<String>,
     pub error: bool,
     pub snapshot: Option<Vec<u8>>,
 }
@@ -86,17 +93,17 @@ impl MontyEngine {
     pub async fn reset(&self, cancellation: &mut Cancellation) -> Result<Vec<u8>, String> {
         let mut shutdown = self.shutdown.subscribe();
         if *shutdown.borrow() {
-            return Err("Code mode has shut down".into());
+            return Err("codemode has shut down".into());
         }
 
         tokio::select! {
             biased;
-            _ = shutdown.changed() => Err("Code mode has shut down".into()),
-            _ = cancellation.cancelled() => Err("CodeMode reset cancelled".into()),
+            _ = shutdown.changed() => Err("codemode has shut down".into()),
+            _ = cancellation.cancelled() => Err("codemode reset cancelled".into()),
             result = tokio::time::timeout(
                 FEED_TIMEOUT + Duration::from_secs(2),
                 self.build_fresh_snapshot(),
-            ) => result.map_err(|_| "CodeMode reset timed out".to_owned())?,
+            ) => result.map_err(|_| "codemode reset timed out".to_owned())?,
         }
     }
 
@@ -150,13 +157,14 @@ impl MontyEngine {
         let mut shutdown = self.shutdown.subscribe();
         if *shutdown.borrow() {
             return EngineOutput {
-                text: "Code mode has shut down".into(),
+                text: "codemode has shut down".into(),
+                saved_text: None,
                 error: true,
                 snapshot: None,
             };
         }
 
-        let mut output = BoundedOutput::new(MAX_PRINT_CHARS);
+        let mut output = BoundedOutput::new(MAX_SAVED_OUTPUT_CHARS);
         let (stop, stopped) = watch::channel(false);
         let mut progress = ExecutionProgress::default();
         let mut execution =
@@ -166,7 +174,7 @@ impl MontyEngine {
             _ = shutdown.changed() => {
                 let _ = stop.send(true);
                 let _ = tokio::time::timeout(OUTER_CLEANUP_TIMEOUT, &mut execution).await;
-                Err("Code mode has shut down".to_owned())
+                Err("codemode has shut down".to_owned())
             },
             _ = cancellation.cancelled() => {
                 let _ = stop.send(true);
@@ -190,11 +198,16 @@ impl MontyEngine {
         };
 
         let error = error_message.is_some();
-        let mut text = output.finish();
+        let mut saved = output.finish();
+        let mut text = bound_output(&saved, MAX_PRINT_CHARS);
         if let Some(message) = error_message {
-            append_error_output(&mut text, &message, snapshot.is_none(), &progress);
+            let not_saved = snapshot.is_none();
+            append_error_output(&mut text, &message, not_saved, &progress, MAX_OUTPUT_CHARS);
+            let limit = saved.chars().count() + MAX_SAVED_ERROR_CHARS;
+            append_error_output(&mut saved, &message, not_saved, &progress, limit);
         }
         EngineOutput {
+            saved_text: (saved != text).then_some(saved),
             text,
             error,
             snapshot,
@@ -218,8 +231,9 @@ impl MontyEngine {
             .load_latest_private_event(PrivateEventKind::CodeModeSnapshot)
             .await
             .map_err(|e| format!("Cannot load checkpoint: {e}"))?
-            .map(|event| match event {
-                PrivateEvent::CodeModeSnapshot(bytes) => bytes,
+            .and_then(|event| match event {
+                PrivateEvent::CodeModeSnapshot(bytes) => Some(bytes),
+                _ => None,
             });
         if let Some(snapshot) = &snapshot {
             validate_checkpoint_size(snapshot.len())
@@ -425,9 +439,9 @@ impl MontyEngine {
         drop(print);
         let snapshot = session.dump().await.map_err(|e| {
             format!(
-                "Cannot serialize checkpoint: {e}. Checkpoints have a 16 MiB serialized limit, \
-                     separate from the 64 MiB interpreter memory limit; serialization also needs \
-                     memory. Reduce retained REPL data or save it through write() if available."
+                "Cannot save REPL state: {e}. The saved-state limit is 16 MiB, separate from \
+                     the 64 MiB execution memory limit, and saving also needs memory. Keep \
+                     less data in variables, or save it to a file with write() if available."
             )
         })?;
         validate_checkpoint_size(snapshot.len())?;
@@ -439,7 +453,7 @@ impl MontyEngine {
         if let Some(message) = &exception
             && let Err(reason) = validate_idle_snapshot(pool, &repl, &snapshot).await
         {
-            return Err(format!("Checkpoint discarded: {reason}\n{message}"));
+            return Err(format!("REPL changes discarded: {reason}\n{message}"));
         }
         Ok((snapshot, exception))
     }
@@ -536,9 +550,9 @@ fn validate_checkpoint_size(size: usize) -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "Serialized checkpoint is {size} bytes; limit is 16 MiB ({MAX_CODEMODE_SNAPSHOT_BYTES} bytes). \
-         The separate 64 MiB interpreter memory limit does not guarantee persistent state capacity. \
-         Reduce retained REPL data or save it through write() if available."
+        "Saved REPL state is {size} bytes; the limit is 16 MiB ({MAX_CODEMODE_SNAPSHOT_BYTES} bytes), \
+         separate from the 64 MiB execution memory limit. Keep less data in variables, or save it \
+         to a file with write() if available."
     ))
 }
 
@@ -742,22 +756,23 @@ fn append_error_output(
     message: &str,
     not_saved: bool,
     progress: &ExecutionProgress,
+    max_chars: usize,
 ) {
     if !text.is_empty() {
         text.push('\n');
     }
     if not_saved {
         if progress.script_started {
-            text.push_str("REPL changes were not saved; previous checkpoint is unchanged");
+            text.push_str("REPL state is unchanged (changes from this call were discarded)");
         } else {
-            text.push_str("Script did not run; previous checkpoint is unchanged");
+            text.push_str("Code did not run; REPL state is unchanged");
         }
         if progress.host_call_started.load(Ordering::Relaxed) {
             text.push_str("; external tool effects may have occurred");
         }
         text.push_str(".\n");
     }
-    let room = MAX_OUTPUT_CHARS.saturating_sub(text.chars().count());
+    let room = max_chars.saturating_sub(text.chars().count());
     let mut bounded_error = BoundedOutput::new(room);
     bounded_error.push_str(message);
     text.push_str(&bounded_error.finish());
@@ -765,6 +780,13 @@ fn append_error_output(
 
 #[cfg(test)]
 mod tests;
+
+/// Middle-truncate already captured output to `max` characters.
+fn bound_output(text: &str, max: usize) -> String {
+    let mut bounded = BoundedOutput::new(max);
+    bounded.push_str(text);
+    bounded.finish()
+}
 
 // The shared middle truncation helper counts bytes; this streaming buffer bounds
 // retained output and applies the code-mode limits in Unicode characters instead.

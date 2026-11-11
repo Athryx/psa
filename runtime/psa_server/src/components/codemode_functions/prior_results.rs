@@ -10,7 +10,11 @@ use super::{
     CodeModeError, CodeModeFunction, CodeModeFunctionDefinition, CodeModeFunctionResult,
     typed_codemode_execute,
 };
-use crate::{agents::agent_context::AgentContext, components::cancellation::Cancellation};
+use crate::{
+    agents::agent_context::AgentContext,
+    components::cancellation::Cancellation,
+    db::{PrivateEvent, PrivateEventKind},
+};
 
 const EVENT_PAGE_SIZE: u32 = 128;
 
@@ -82,7 +86,20 @@ impl PriorResults {
                 "Selected prior CodeMode event is not a tool result",
             ));
         };
-        result_text(result).map(Value::String)
+
+        // Truncated results keep their full output privately; prefer it.
+        let saved = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(CodeModeError::runtime("Execution cancelled")),
+            saved = context.load_private_event_at(event_id, PrivateEventKind::CodeModeOutput) => saved,
+        }
+        .map_err(|error| {
+            CodeModeError::runtime(format!("Could not load prior codemode output: {error}"))
+        })?;
+        match saved {
+            Some(PrivateEvent::CodeModeOutput(text)) => Ok(Value::String(text)),
+            _ => result_text(result).map(Value::String),
+        }
     }
 }
 
@@ -90,7 +107,7 @@ impl CodeModeFunction for PriorResults {
     fn definition(&self) -> CodeModeFunctionDefinition {
         CodeModeFunctionDefinition {
             name: "PRIOR_RESULTS".into(),
-            description: "Return prior codemode text synchronously, including errors (-1 latest, 0 oldest). History stays outside checkpoints; fetched strings you retain are checkpointed.".into(),
+            description: "Return the full text output of an earlier codemode call, including errors and any part truncated from what you were shown (saved up to 2M characters). -1 is the latest, 0 the oldest. Not async; do not await.".into(),
             parameters: ToolSchema::for_type::<PriorResultsArgs>(),
         }
     }
@@ -249,6 +266,7 @@ mod tests {
 
     fn result(content: Vec<ContentBlock>, error: bool) -> ToolResult {
         ToolResult {
+            delivery: None,
             call_id: "codemode-call".into(),
             content,
             error,

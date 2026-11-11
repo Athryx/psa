@@ -60,7 +60,7 @@ pub(super) async fn fixture() -> (
         accepting: Arc::new(AtomicBool::new(true)),
         client_key: "test-client-key".into(),
         client_config: psa_api::ClientConfig {
-            default_agent_name: "default".into(),
+            default_agent_name: "root".into(),
         },
         probes,
     };

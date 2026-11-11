@@ -46,6 +46,7 @@ fn completed_call_events(
 ) -> Vec<NewEvent> {
     let mut events = call_events(inference_id, id, name, json!({"code": "pass"}));
     events.push(NewEvent::new(EventType::ToolResult(ToolResult {
+        delivery: None,
         call_id: id.into(),
         content: prompts::text(text),
         error,
@@ -142,7 +143,7 @@ async fn prior_results_pages_mixed_history_with_positive_negative_and_frozen_ind
     let mut expected = Vec::new();
     for index in 0..140 {
         let text = if index == 139 {
-            "last output\n[output truncated]\nREPL changes were not saved; previous checkpoint is unchanged; external tool effects may have occurred.\nValueError: archived failure".to_owned()
+            "last output\n[output truncated]\nREPL state is unchanged (changes from this call were discarded); external tool effects may have occurred.\nValueError: archived failure".to_owned()
         } else {
             format!("prior output {index}")
         };
@@ -188,6 +189,7 @@ async fn prior_results_pages_mixed_history_with_positive_negative_and_frozen_ind
     // and the final content lookup must stay within the original boundary.
     state
         .persist_events(&[NewEvent::new(EventType::ToolResult(ToolResult {
+            delivery: None,
             call_id: "current-call".into(),
             content: prompts::text("late current result must remain invisible"),
             error: false,
@@ -511,7 +513,9 @@ async fn real_worker_prior_results_is_synchronous_archived_and_restart_safe() {
         .await
         .unwrap()
         .unwrap();
-    let crate::db::PrivateEvent::CodeModeSnapshot(bytes) = snapshot;
+    let crate::db::PrivateEvent::CodeModeSnapshot(bytes) = snapshot else {
+        panic!("expected a codemode snapshot");
+    };
     assert!(
         bytes.len() < 8 * 1024,
         "240k of archived results must not enter the checkpoint: {} bytes",
@@ -556,7 +560,7 @@ async fn real_worker_prior_results_is_synchronous_archived_and_restart_safe() {
     assert!(!error, "{text}");
     assert_eq!(text.trim(), "archive-00:\nTrue");
 
-    let exact = "first line\n[output truncated]\nREPL changes were not saved; previous checkpoint is unchanged; external tool effects may have occurred.\nValueError: preserved failure";
+    let exact = "first line\n[output truncated]\nREPL state is unchanged (changes from this call were discarded); external tool effects may have occurred.\nValueError: preserved failure";
     append_result(&mut state, "synthetic-warning", "codemode", exact, true).await;
     state = invoke(
         &fixture,
@@ -584,5 +588,60 @@ async fn real_worker_prior_results_is_synchronous_archived_and_restart_safe() {
 
     drop(state);
     restarted.close().await;
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn prior_results_returns_saved_full_output_of_truncated_results() {
+    let fixture = Fixture::new().await;
+    let mut state = fixture.state(vec![], &[]).await;
+    let full: String = (0..4_000).map(|line| format!("line {line}\n")).collect();
+
+    append_result(&mut state, "short", "codemode", "short output", false).await;
+    let call = call_events(
+        state.agent.next_event_id.0,
+        "long",
+        "codemode",
+        json!({"code": "pass"}),
+    );
+    state.persist_events(&call).await.unwrap();
+    state
+        .persist_event_batch(vec![
+            EventBatchItem::Public(NewEvent::new(EventType::ToolResult(ToolResult {
+                delivery: None,
+                call_id: "long".into(),
+                content: prompts::text("line 0\n[output truncated]\nline 3999\n"),
+                error: false,
+                metadata: Default::default(),
+            }))),
+            EventBatchItem::Private(crate::db::PrivateEvent::CodeModeOutput(full.clone())),
+        ])
+        .await
+        .unwrap();
+    append_result(&mut state, "after", "codemode", "after output", false).await;
+
+    let probe = fixture.probes.handle(state.session.probe_id).await.unwrap();
+    let mut context =
+        AgentContext::invocation(state.invocation_snapshot(), &probe, &fixture.runtime.handle);
+    assert_eq!(
+        retrieve(&mut context, json!({"index": 1})).await.unwrap(),
+        Value::String(full.clone())
+    );
+    assert_eq!(
+        retrieve(&mut context, json!({"index": -2})).await.unwrap(),
+        Value::String(full)
+    );
+    // Untruncated neighbours are unaffected by the saved output.
+    assert_eq!(
+        retrieve(&mut context, json!({"index": 0})).await.unwrap(),
+        Value::String("short output".into())
+    );
+    assert_eq!(
+        retrieve(&mut context, json!({})).await.unwrap(),
+        Value::String("after output".into())
+    );
+
+    drop(context);
+    drop(state);
     fixture.close().await;
 }

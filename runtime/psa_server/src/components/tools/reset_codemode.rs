@@ -26,7 +26,7 @@ impl ResetCodeMode {
     pub(super) fn definition() -> ToolDefinition {
         ToolDefinition::for_type::<ResetCodeModeArgs>(
             "reset_codemode",
-            "Start a fresh CodeMode Python context if it becomes unusable. Preserves history and external resources. Call this tool directly, not inside Python.",
+            "Start a fresh codemode Python REPL when the current one is unusable. Conversation history and external effects are unaffected.",
             Some(false),
         )
     }
@@ -40,8 +40,7 @@ impl ResetCodeMode {
         let snapshot = match self.engine.reset(&mut cancellation).await {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                let message =
-                    format!("CodeMode reset failed; previous checkpoint is unchanged. {error}");
+                let message = format!("Reset failed; REPL state is unchanged. {error}");
                 return ToolOutput::error(prompts::text(prompts::truncate_middle(
                     &message, 16_000,
                 )));
@@ -49,7 +48,7 @@ impl ResetCodeMode {
         };
 
         let mut output = ToolOutput::success(prompts::text(
-            "CodeMode state reset. Previous checkpoints and results are preserved.",
+            "Python REPL reset. Earlier codemode outputs remain available through PRIOR_RESULTS.",
         ));
         output
             .private_events

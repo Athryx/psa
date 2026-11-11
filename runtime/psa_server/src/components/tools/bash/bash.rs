@@ -10,7 +10,7 @@ use crate::{
     },
     prompts,
 };
-use llm_api::{api::ToolDefinition, providers::ProviderType};
+use llm_api::api::ToolDefinition;
 use psa_api::probes::Command;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -23,7 +23,7 @@ struct BashArgs {
     command: String,
     /// Wait up to this many milliseconds (default 60000, max 300000); return a session if still running
     #[serde(default, deserialize_with = "optional_value")]
-    #[schemars(with = "f64")]
+    #[schemars(with = "u64")]
     yield_time_ms: Option<f64>,
     /// Optional unique name for a background bash session
     #[serde(default, deserialize_with = "optional_value")]
@@ -88,33 +88,9 @@ impl Bash {
             Ok(probe) => probe.clone(),
             Err(error) => return ToolOutput::error(prompts::text(error.to_string())),
         };
-        let config = context
-            .projection()
-            .model_config()
-            .cloned()
-            .unwrap_or_else(|| {
-                context
-                    .definition()
-                    .model
-                    .resolve(&context.session().model_config)
-            });
-        let provider = match config.model.provider {
-            ProviderType::OpenAiCodex => "openai-codex",
-            ProviderType::Openrouter => "openrouter",
-        };
         // Inherit the remote probe environment, never the server's process environment.
-        // PSA has no session-file equivalent; explicitly remove stale inherited values.
         let command = Command::new("bash", context.session().working_directory.clone())
-            .args(["-c".to_owned(), arguments.command])
-            .env_remove("PI_SESSION_ID")
-            .env_remove("PI_SESSION_FILE")
-            .env_remove("PI_PROVIDER")
-            .env_remove("PI_MODEL")
-            .env_remove("PI_REASONING_LEVEL")
-            .env("PI_SESSION_ID", context.session().id.0.to_string())
-            .env("PI_PROVIDER", provider)
-            .env("PI_MODEL", config.model.api_name.clone())
-            .env("PI_REASONING_LEVEL", config.effort.as_str());
+            .args(["-c".to_owned(), arguments.command]);
         match handle
             .execute(probe, command, arguments.session_name, wait, cancellation)
             .await
@@ -133,7 +109,7 @@ impl Tool for Bash {
     fn system_prompt(&self) -> ToolSystemPrompt {
         ToolSystemPrompt {
             tools: Some("Execute bash commands; long-running commands yield a session for interact_bash/close_bash".into()),
-            rules: vec!["You can inspect PI_* environment variables for current model and session details.".into()],
+            rules: Vec::new(),
         }
     }
 
@@ -303,7 +279,7 @@ mod tests {
         let schema = serde_json::to_value(definition.parameters).unwrap();
         assert_eq!(schema["required"], json!(["command"]));
         assert_eq!(schema["additionalProperties"], false);
-        assert_eq!(schema["properties"]["yield_time_ms"]["type"], "number");
+        assert_eq!(schema["properties"]["yield_time_ms"]["type"], "integer");
         assert!(schema["properties"].get("yield_timeout_ms").is_none());
         for value in [
             json!({"command":"x"}),
@@ -338,16 +314,16 @@ mod tests {
     }
 
     #[test]
-    fn decimal_and_environment_prompt_match_source() {
+    fn decimal_formatting_and_empty_rules() {
         for (value, expected) in [(0.25, "0.3"), (0.75, "0.8"), (1.15, "1.1"), (12.4, "12.4")] {
             assert_eq!(one_decimal(value), expected);
         }
         assert_eq!(format_size(1280), "1.3KB");
-        assert_eq!(
+        assert!(
             Bash::with_handle(crate::components::bundles::bash::BashBundle::new().handle())
                 .system_prompt()
-                .rules,
-            ["You can inspect PI_* environment variables for current model and session details."]
+                .rules
+                .is_empty()
         );
         let output = backend_error(BashError::Interrupted);
         assert!(output.error);

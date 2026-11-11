@@ -36,11 +36,11 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
     assert_eq!(config.database_path, dir.path().join("psa.sqlite3"));
     assert!(config.config_path.exists());
     let agents = dir.path().join("agents");
-    for name in ["default.toml", "subagent.toml"] {
+    for name in ["root.toml", "subagent.toml"] {
         let text = tokio::fs::read_to_string(agents.join(name)).await.unwrap();
         toml::from_str::<psa_server::config_registry::AgentDefinitionConfig>(&text).unwrap();
     }
-    let default = tokio::fs::read_to_string(agents.join("default.toml"))
+    let default = tokio::fs::read_to_string(agents.join("root.toml"))
         .await
         .unwrap();
     assert!(default.contains("subagents = [\"subagent\"]"), "{default}");
@@ -71,7 +71,7 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
         .await
         .unwrap();
     assert!(config.host);
-    assert_eq!(config.default_agent_name, "default");
+    assert_eq!(config.default_agent_name, "root");
     assert_eq!(
         toml::from_str::<toml::Value>(&generated).unwrap()["host"].as_bool(),
         Some(true)
@@ -151,7 +151,7 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
     assert_eq!(resolved.listen.port(), 2222);
     assert_eq!(resolved.database_path, dir.path().join("custom.sqlite3"));
     assert!(!resolved.host);
-    assert_eq!(resolved.default_agent_name, "default");
+    assert_eq!(resolved.default_agent_name, "root");
     // Existing files without a defaults section keep their original behavior.
     assert_eq!(resolved.agent_defaults, psa_api::AgentDefaults::default());
     assert_eq!(

@@ -1,7 +1,9 @@
 //! Named, asynchronous children sharing a session-owned resource coordinator.
 mod coordinator;
+pub(crate) mod templates;
 pub(crate) use coordinator::CoordinatorRuntime;
 pub use coordinator::SubagentCoordinator;
+pub(crate) use templates::ChildTemplate;
 
 use super::{
     Bundle, CleanupError, HookStage, InstallError, Installer, session::SessionBundleHandle,
@@ -18,21 +20,23 @@ use crate::{
     },
     sessions::Session,
 };
+use std::sync::Arc;
 
 pub struct SubagentsBundle {
     handle: SubagentCoordinator,
-    allow_create: bool,
+    templates: Arc<[ChildTemplate]>,
 }
 impl SubagentsBundle {
     pub fn with_session(session: &SessionBundleHandle) -> Self {
         Self {
             handle: session.subagents(),
-            allow_create: false,
+            templates: Arc::default(),
         }
     }
-    /// Installation is synchronous: the pinned definition supplies this policy.
-    pub fn set_allow_create(&mut self, allow: bool) {
-        self.allow_create = allow;
+    /// Installation is synchronous, so the caller loads the pinned definition's
+    /// permitted templates beforehand. An empty list disables create_agent.
+    pub fn set_child_templates(&mut self, templates: Vec<ChildTemplate>) {
+        self.templates = templates.into();
     }
 }
 impl Bundle for SubagentsBundle {
@@ -43,12 +47,13 @@ impl Bundle for SubagentsBundle {
         installer: &mut Installer,
     ) -> Result<(), InstallError> {
         let handle = self.handle.clone();
-        if self.allow_create {
-            installer.add_tool(ToolKind::CreateAgent(CreateAgent::with_handle(
+        if !self.templates.is_empty() {
+            installer.add_tool(ToolKind::CreateAgent(CreateAgent::new(
                 handle.clone(),
+                self.templates.clone(),
             )))?;
             installer.add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::CreateAgent(
-                CreateAgent::with_handle(handle.clone()),
+                CreateAgent::new(handle.clone(), self.templates.clone()),
             )))?;
         }
         installer.add_tool(ToolKind::SendMessage(SendMessage::with_handle(
@@ -71,7 +76,7 @@ impl Bundle for SubagentsBundle {
         )))?;
         installer.add_hook(
             HookStage::AgentCreate,
-            HookKind::SubagentIdentity(SubagentIdentity),
+            HookKind::SubagentIdentity(SubagentIdentity::new(self.templates.clone())),
         );
         Ok(())
     }

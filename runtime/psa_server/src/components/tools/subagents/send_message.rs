@@ -1,4 +1,4 @@
-use super::{format_tool_output, require_coordinator};
+use super::{format_delivery_output, require_coordinator};
 use crate::{
     agents::agent_context::AgentContext,
     components::{
@@ -9,14 +9,14 @@ use crate::{
     prompts,
 };
 use llm_api::api::ToolDefinition;
-use psa_api::AgentMessageSource;
+use psa_api::{AgentMessageSource, events::MessageDelivery};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::json;
 use std::time::Duration;
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SendMessageArgs {
+    /// Name of the receiving agent, as shown by list_agents.
     agent_name: String,
     message: String,
 }
@@ -30,7 +30,7 @@ impl SendMessage {
     pub(crate) fn definition() -> ToolDefinition {
         ToolDefinition::for_type::<SendMessageArgs>(
             "send_message",
-            "Send attributed steering context to another agent in this session. Resumes idle agents.",
+            "Send a message to another agent in this session, such as a child you started or your parent. The message is attributed to you, and an idle agent resumes work to handle it.",
             Some(false),
         )
     }
@@ -61,14 +61,27 @@ impl SendMessage {
                 .await
                 .map_err(|error| error.to_string())?;
             let mut matches = agents.iter().filter(|agent| agent.name == name);
-            let target = matches
-                .next()
-                .ok_or_else(|| format!("Unknown agent in session: {name}"))?;
+            let target = matches.next().ok_or_else(|| {
+                let names: Vec<_> = agents
+                    .iter()
+                    .filter(|agent| agent.id != caller)
+                    .map(|agent| agent.name.as_str())
+                    .collect();
+                match names.as_slice() {
+                    [] => format!(
+                        "Unknown agent \"{name}\"; there are no other agents in this session"
+                    ),
+                    names => format!(
+                        "Unknown agent \"{name}\". Agents in this session: {}",
+                        names.join(", ")
+                    ),
+                }
+            })?;
             if matches.next().is_some() {
                 return Err(format!("Ambiguous agent name in session: {name}"));
             }
             if target.id == caller {
-                return Err("Self-messaging is not supported".into());
+                return Err("You cannot send a message to yourself".into());
             }
 
             let accepted = context
@@ -84,16 +97,21 @@ impl SendMessage {
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-            Ok(
-                json!({"status": "queued", "agent_id": target.id, "request_id": accepted.request_id}),
-            )
+            handle.note_delivery(target.id);
+            Ok((
+                format!("Message sent to \"{}\".", target.name),
+                MessageDelivery {
+                    agent_id: target.id,
+                    request_id: accepted.request_id,
+                },
+            ))
         };
         let result = tokio::select! {
             biased;
             _ = cancellation.cancelled() => Err("Message send cancelled".into()),
             result = operation => result,
         };
-        format_tool_output(result)
+        format_delivery_output(result)
     }
 }
 impl Tool for SendMessage {

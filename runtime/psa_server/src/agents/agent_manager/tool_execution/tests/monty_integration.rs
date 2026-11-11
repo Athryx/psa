@@ -4,6 +4,7 @@ use super::*;
 use crate::components::{
     bundles::codemode::MontyEngine,
     codemode_functions::CodeModeFunctionKind,
+    codemode_functions::prior_results::PriorResults,
     tools::{CodeMode, Noop},
 };
 use llm_api::api::ContentBlock;
@@ -95,7 +96,11 @@ async fn real_worker_persists_snapshots_errors_output_and_registered_functions()
     let mut state = fixture
         .state(vec![ToolKind::CodeMode(CodeMode::new(engine.clone()))], &[])
         .await;
-    state.codemode_functions = vec![CodeModeFunctionKind::Tool(ToolKind::Noop(Noop))].into();
+    state.codemode_functions = vec![
+        CodeModeFunctionKind::Tool(ToolKind::Noop(Noop)),
+        CodeModeFunctionKind::PriorResults(PriorResults),
+    ]
+    .into();
 
     state = invoke_codemode(&fixture, state, "first", "x = 41\nprint('first')").await;
     let (error, text) = load_tool_result(&fixture, &state, "first").await;
@@ -192,6 +197,18 @@ async fn real_worker_persists_snapshots_errors_output_and_registered_functions()
     assert!(text.contains("[output truncated]"));
     assert!(text.chars().count() <= 12_000);
 
+    // The model sees a truncated view, but the full output stays retrievable.
+    state = invoke_codemode(
+        &fixture,
+        state,
+        "recover",
+        "full = PRIOR_RESULTS(-1)\nprint(len(full), full.count('a'))",
+    )
+    .await;
+    let (error, text) = load_tool_result(&fixture, &state, "recover").await;
+    assert!(!error, "{text}");
+    assert_eq!(text.trim(), "13001 13000");
+
     drop(state);
     engine.close().await;
     fixture.close().await;
@@ -250,7 +267,10 @@ async fn real_worker_unknown_calls_raise_name_error_without_awaiting() {
         "{text}"
     );
     assert!(!text.contains("must not execute"), "{text}");
-    assert!(!text.contains("REPL changes were not saved"), "{text}");
+    assert!(
+        !text.contains("changes from this call were discarded"),
+        "{text}"
+    );
 
     state = invoke_codemode(
         &fixture,
@@ -275,7 +295,7 @@ async fn real_worker_unknown_calls_raise_name_error_without_awaiting() {
     assert!(text.contains("noop") && text.contains("await"), "{text}");
     assert!(text.contains("before dangling call"), "{text}");
     assert!(text.contains("after dangling call"), "{text}");
-    assert!(text.contains("previous checkpoint is unchanged"), "{text}");
+    assert!(text.contains("REPL state is unchanged"), "{text}");
     assert!(
         !text.contains("external tool effects may have occurred"),
         "an unawaited host function was never started: {text}"
@@ -369,7 +389,7 @@ async fn real_worker_sleeps_inline_and_concurrently_with_registered_functions() 
         assert!(text.contains("before unawaited sleep"), "{text}");
         assert!(text.contains("after unawaited sleep"), "{text}");
         assert!(text.contains("await"), "{text}");
-        assert!(text.contains("previous checkpoint is unchanged"), "{text}");
+        assert!(text.contains("REPL state is unchanged"), "{text}");
         for name in names {
             assert!(text.contains(name), "missing {name}: {text}");
         }
@@ -429,7 +449,7 @@ async fn real_worker_sleep_cancellation_and_close_are_prompt_without_host_effect
             assert!(output.text.contains("sleep started"), "{}", output.text);
             assert!(!output.text.contains("sleep finished"), "{}", output.text);
             assert!(
-                output.text.contains("previous checkpoint is unchanged"),
+                output.text.contains("REPL state is unchanged"),
                 "{}",
                 output.text
             );
@@ -532,9 +552,9 @@ async fn real_worker_checkpoint_budget_failure_preserves_output_and_previous_sta
     let (error, text) = load_tool_result(&fixture, &state, "oversized-checkpoint").await;
     assert!(error, "{text}");
     assert!(text.contains("before checkpoint failure"), "{text}");
-    assert!(text.contains("previous checkpoint is unchanged"), "{text}");
+    assert!(text.contains("REPL state is unchanged"), "{text}");
     assert!(text.contains("64 MiB"), "{text}");
-    if text.contains("Serialized checkpoint is") {
+    if text.contains("Saved REPL state is") {
         assert!(text.contains("16 MiB"), "{text}");
         assert!(
             text.contains("bytes"),
@@ -553,7 +573,7 @@ async fn real_worker_checkpoint_budget_failure_preserves_output_and_previous_sta
         // Worker versions may hit their interpreter/dump memory limit before
         // returning the oversized serialized checkpoint to the host.
         assert!(
-            text.contains("MemoryError") || text.contains("Cannot serialize checkpoint"),
+            text.contains("MemoryError") || text.contains("Cannot save REPL state"),
             "expected a detailed checkpoint-size or dump-memory error: {text}"
         );
     }
@@ -625,10 +645,7 @@ async fn preflight_missing_worker_and_oversized_source_do_not_claim_host_effects
         assert!(error, "{text}");
         assert!(text.contains(reason), "{text}");
         assert!(text.contains("did not run"), "{text}");
-        assert!(
-            text.contains("previous checkpoint") && text.contains("unchanged"),
-            "{text}"
-        );
+        assert!(text.contains("REPL state is unchanged"), "{text}");
         assert!(!text.contains("must not execute"), "{text}");
         assert!(
             !text.contains("external tool effects may have occurred"),
@@ -670,7 +687,7 @@ async fn real_worker_shares_bash_sessions_in_both_directions() {
         accepting: Arc::new(AtomicBool::new(true)),
         client_key: "test-client-key".into(),
         client_config: psa_api::ClientConfig {
-            default_agent_name: "default".into(),
+            default_agent_name: "root".into(),
         },
         probes: fixture.probes.clone(),
     });

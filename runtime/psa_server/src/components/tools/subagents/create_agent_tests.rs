@@ -99,6 +99,15 @@ impl Fixture {
         }
     }
 
+    async fn create_agent_tool(&self) -> CreateAgent {
+        let handle = self.resources.handle().subagents();
+        let templates = handle
+            .load_child_templates(&self.state.definition().permitted_subagents)
+            .await
+            .unwrap();
+        CreateAgent::new(handle, templates.into())
+    }
+
     async fn close(mut self) {
         self.resources.cleanup().await.unwrap();
         self.queries.shutdown().await.unwrap();
@@ -144,7 +153,7 @@ async fn cancelled_creation(cancel_at: CancelAt, fail_submission: bool, fail_int
     let mut fixture = Fixture::new().await;
     let caller = fixture.state.agent().id;
     let session = fixture.state.session().id;
-    let tool = CreateAgent::with_handle(fixture.resources.handle().subagents());
+    let tool = fixture.create_agent_tool().await;
     {
         let mut context =
             AgentContext::with_optional_probe(&mut fixture.state, None, &fixture.sessions);
@@ -229,10 +238,6 @@ async fn cancelled_creation(cancel_at: CancelAt, fail_submission: bool, fail_int
         let output = tokio::time::timeout(WAIT, run.as_mut()).await.unwrap();
         assert!(output.error);
         let text = output_text(&output);
-        assert!(
-            text.contains(&child.0.to_string()),
-            "child ID missing: {text}"
-        );
         assert!(text.contains("worker-one"), "child name missing: {text}");
         if fail_interrupt {
             assert!(
@@ -241,7 +246,7 @@ async fn cancelled_creation(cancel_at: CancelAt, fail_submission: bool, fail_int
             );
         } else {
             assert!(
-                text.contains("requested"),
+                text.contains("has been interrupted"),
                 "interruption outcome missing: {text}"
             );
         }
@@ -281,7 +286,7 @@ async fn cancelled_creation_still_interrupts_when_initial_submission_fails() {
 async fn uncancelled_creation_reports_submission_result_without_interrupting() {
     for fail_submission in [false, true] {
         let mut fixture = Fixture::new().await;
-        let tool = CreateAgent::with_handle(fixture.resources.handle().subagents());
+        let tool = fixture.create_agent_tool().await;
         {
             let mut context =
                 AgentContext::with_optional_probe(&mut fixture.state, None, &fixture.sessions);
@@ -317,13 +322,12 @@ async fn uncancelled_creation_reports_submission_result_without_interrupting() {
             assert_eq!(output.error, fail_submission);
             let text = output_text(&output);
             if fail_submission {
-                assert!(text.contains(&child.0.to_string()));
+                assert!(text.contains("worker-one"));
                 assert!(text.contains("initial task rejected"));
             } else {
-                let value: serde_json::Value = serde_json::from_str(&text).unwrap();
                 assert_eq!(
-                    value,
-                    json!({"agent_id":child,"name":"worker-one","status":"started","request_id":"initial-task"})
+                    text,
+                    "Started agent \"worker-one\". Its final answer will arrive as a message."
                 );
             }
             assert!(matches!(
@@ -339,7 +343,7 @@ async fn uncancelled_creation_reports_submission_result_without_interrupting() {
 async fn pre_cancelled_creation_has_no_child_or_manager_side_effects() {
     let mut fixture = Fixture::new().await;
     let session = fixture.state.session().id;
-    let tool = CreateAgent::with_handle(fixture.resources.handle().subagents());
+    let tool = fixture.create_agent_tool().await;
     let (cancel, cancellation) = Cancellation::channel();
     cancel.send(()).unwrap();
     let output = {

@@ -65,6 +65,7 @@ fn call(id: &str, name: &str, args: &str) -> EventType {
 
 fn result(id: &str, text: &str) -> EventType {
     EventType::ToolResult(ToolResult {
+        delivery: None,
         call_id: id.into(),
         content: crate::prompts::text(text),
         error: false,
@@ -531,11 +532,11 @@ fn subagent_attribution_is_preserved_in_the_transcript_and_estimate() {
     let transcript = events(vec![message(MessageType::Subagent, "report")]);
     assert_eq!(
         serialize_conversation(&transcript),
-        "[User]: Message from unknown agent:\nreport"
+        "[User]: Message from another agent:\nreport"
     );
     assert_eq!(
         estimate_context_tokens(&transcript),
-        char_count("Message from unknown agent:\nreport").div_ceil(4)
+        char_count("Message from another agent:\nreport").div_ceil(4)
     );
 }
 

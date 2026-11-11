@@ -258,6 +258,19 @@ impl<'a> AgentContext<'a> {
         Ok(event)
     }
 
+    pub async fn load_private_event_at(
+        &self,
+        event: EventId,
+        kind: crate::db::PrivateEventKind,
+    ) -> Result<Option<crate::db::PrivateEvent>, DbError> {
+        let mut cursor = self.database().cursor().await?;
+        let private = cursor
+            .load_private_event_at(self.agent().id, event, kind)
+            .await?;
+        cursor.rollback().await?;
+        Ok(private)
+    }
+
     pub async fn load_all_events(&self) -> Result<Vec<Event>, DbError> {
         let mut cursor = self.database().cursor().await?;
         let events = cursor.load_all_events(self.agent().id).await?;

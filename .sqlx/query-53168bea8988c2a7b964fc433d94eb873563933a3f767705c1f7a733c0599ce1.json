@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT p.event_pk, p.call_id, p.content, p.error, p.metadata FROM event_tool_result p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+  "query": "SELECT p.event_pk, p.call_id, p.content, p.error, p.metadata, p.delivery_agent_id, p.delivery_request_id FROM event_tool_result p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,28 @@
             "name": "metadata"
           }
         }
+      },
+      {
+        "name": "delivery_agent_id",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_tool_result",
+            "name": "delivery_agent_id"
+          }
+        }
+      },
+      {
+        "name": "delivery_request_id",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_tool_result",
+            "name": "delivery_request_id"
+          }
+        }
       }
     ],
     "parameters": {
@@ -67,8 +89,10 @@
       false,
       false,
       false,
-      false
+      false,
+      true,
+      true
     ]
   },
-  "hash": "468282ab83abc60d31a469334b3ea2f2052dba42a352005ddbb4298d30a96441"
+  "hash": "53168bea8988c2a7b964fc433d94eb873563933a3f767705c1f7a733c0599ce1"
 }

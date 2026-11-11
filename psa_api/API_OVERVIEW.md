@@ -18,7 +18,7 @@ transport. Use TLS or a trusted encrypted tunnel for remote connections.
 
 ## Client-safe configuration
 
-Authenticated `GET /config` returns `{"default_agent_name":"default"}` (or the
+Authenticated `GET /config` returns `{"default_agent_name":"root"}` (or the
 server-configured name). `Client::get_config()` fetches this suggestion; it does
 not guarantee a matching agent configuration exists.
 

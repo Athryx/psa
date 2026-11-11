@@ -1,15 +1,11 @@
 //! Locating one agent-to-agent message on the other side of the conversation.
 //!
 //! The server assigns each delivered message a request ID. It is recorded in the
-//! received message's source, and `send_message` and `create_agent` return it in
-//! their results, so both sides are linked by ID rather than by content.
+//! received message's source and in the sending `send_message` or `create_agent`
+//! result's client-only delivery field, so both sides are linked by ID rather
+//! than by content.
 use crate::{RowId, Transcript};
-use llm_api::api::ContentBlock;
-use psa_api::{
-    AgentId,
-    events::{EventType, MessageType},
-};
-use serde::Deserialize;
+use psa_api::events::{EventType, MessageType};
 
 /// Where to reveal a message in another agent's transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,23 +15,6 @@ pub enum MessageLink {
     Sent { request_id: String },
     /// In the recipient: the attributed message delivered by `request_id`.
     Received { request_id: String },
-}
-
-/// Delivery recorded in a `send_message` or `create_agent` result.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct SentMessage {
-    pub agent_id: AgentId,
-    pub request_id: String,
-}
-
-impl SentMessage {
-    /// Reads the delivery from a successful tool result's JSON text.
-    pub fn parse(content: &[ContentBlock]) -> Option<Self> {
-        content.iter().find_map(|block| match block {
-            ContentBlock::Text(text) => serde_json::from_str(&text.text).ok(),
-            _ => None,
-        })
-    }
 }
 
 /// Tools whose results report a message delivery.
@@ -50,8 +29,10 @@ impl MessageLink {
         match self {
             Self::Sent { request_id } => {
                 let call_id = find_row(transcript, |kind| match kind {
-                    EventType::ToolResult(result) => SentMessage::parse(&result.content)
-                        .filter(|sent| sent.request_id == *request_id)
+                    EventType::ToolResult(result) => result
+                        .delivery
+                        .as_ref()
+                        .filter(|delivery| delivery.request_id == *request_id)
                         .map(|_| result.call_id.clone()),
                     _ => None,
                 })?
@@ -93,8 +74,8 @@ fn find_row<T>(
 mod tests {
     use super::*;
     use psa_api::{
-        PendingEvent, SessionId, StreamMessage,
-        events::{Message, MessageSender, ToolCall, ToolResult},
+        AgentId, PendingEvent, SessionId, StreamMessage,
+        events::{Message, MessageDelivery, MessageSender, ToolCall, ToolResult},
     };
 
     fn transcript(kinds: Vec<EventType>) -> Transcript {
@@ -123,10 +104,13 @@ mod tests {
     }
 
     fn result(id: &str, request: &str) -> EventType {
-        let text = serde_json::json!({"status":"queued","agent_id":2,"request_id":request});
         EventType::ToolResult(ToolResult {
+            delivery: Some(MessageDelivery {
+                agent_id: AgentId(2),
+                request_id: request.into(),
+            }),
             call_id: id.into(),
-            content: Message::text(MessageType::Agent, &text.to_string()).content,
+            content: Message::text(MessageType::Agent, "Message sent to \"worker\".").content,
             error: false,
             metadata: Default::default(),
         })
@@ -159,17 +143,6 @@ mod tests {
             request_id: "r3".into(),
         };
         assert_eq!(missing.find(&sender), None);
-        let ToolResult { content, .. } = match result("a", "r1") {
-            EventType::ToolResult(result) => result,
-            _ => unreachable!(),
-        };
-        assert_eq!(
-            SentMessage::parse(&content),
-            Some(SentMessage {
-                agent_id: AgentId(2),
-                request_id: "r1".into()
-            })
-        );
     }
 
     #[test]

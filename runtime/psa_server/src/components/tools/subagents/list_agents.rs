@@ -9,9 +9,9 @@ use crate::{
     prompts,
 };
 use llm_api::api::ToolDefinition;
+use psa_api::AgentState;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{Value, json};
 use std::time::Duration;
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -33,7 +33,7 @@ impl ListAgents {
     pub(crate) fn definition() -> ToolDefinition {
         ToolDefinition::for_type::<ListAgentsArgs>(
             "list_agents",
-            "List direct children (including idle children). all=true lists every agent in this session with parent relationships.",
+            "List your child agents and their status (running, idle, or interrupted). all=true lists every agent in this session with its parent.",
             Some(false),
         )
     }
@@ -55,40 +55,61 @@ impl ListAgents {
         format_tool_output(result)
     }
 
-    async fn list_agents(context: &AgentContext<'_>, all: bool) -> Result<Value, String> {
+    async fn list_agents(context: &AgentContext<'_>, all: bool) -> Result<String, String> {
         let agents = context
             .sessions()
             .list_agents(context.session().id)
             .await
             .map_err(|error| error.to_string())?;
-        let mut members = Vec::new();
+        let caller = context.agent().id;
+        let mut lines = Vec::new();
         for agent in agents
             .iter()
-            .filter(|agent| all || agent.subagent_parent_id == Some(context.agent().id))
+            .filter(|agent| all || agent.subagent_parent_id == Some(caller))
         {
             let definition = context
                 .sessions()
                 .get_agent_definition(agent.definition_id)
                 .await
                 .map_err(|error| error.to_string())?;
-            let parent = agent
-                .subagent_parent_id
-                .and_then(|id| agents.iter().find(|agent| agent.id == id));
-            members.push(json!({
-                "agent_id": agent.id,
-                "name": agent.name,
-                "parent_id": agent.subagent_parent_id,
-                "parent": parent.map(|agent| &agent.name),
-                "template": definition.name,
-                "interactive": agent.interactive,
-                "hidden": agent.hidden,
-                "status": agent.state,
-            }));
+            let status = match agent.state {
+                AgentState::Idle => "idle",
+                AgentState::Interrupted => "interrupted",
+                AgentState::Running => "running",
+            };
+            let mut details = vec![format!("template {}", definition.name)];
+            if all {
+                let parent = agent
+                    .subagent_parent_id
+                    .and_then(|id| agents.iter().find(|agent| agent.id == id));
+                match parent {
+                    Some(parent) if parent.id == caller => details.push("your child".into()),
+                    Some(parent) => details.push(format!("child of {}", parent.name)),
+                    None => details.push("top-level".into()),
+                }
+            }
+            let you = if agent.id == caller { " (you)" } else { "" };
+            lines.push((
+                agent.name.clone(),
+                format!("- {}{you}: {status}; {}", agent.name, details.join(", ")),
+            ));
         }
-        members.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
-        Ok(Value::Array(members))
+        if lines.is_empty() {
+            return Ok(if all {
+                "No agents in this session.".into()
+            } else {
+                "You have no child agents.".into()
+            });
+        }
+        lines.sort();
+        Ok(lines
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 }
+
 impl Tool for ListAgents {
     fn tool_definition(&self) -> ToolDefinition {
         Self::definition()

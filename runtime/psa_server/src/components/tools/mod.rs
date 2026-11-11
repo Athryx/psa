@@ -94,6 +94,8 @@ pub struct ToolOutput {
     pub error: bool,
     /// Private events committed atomically with this tool result.
     pub(crate) private_events: Vec<crate::db::PrivateEvent>,
+    /// Agent message this call delivered; client-facing only.
+    pub(crate) delivery: Option<psa_api::events::MessageDelivery>,
 }
 
 impl ToolOutput {
@@ -102,6 +104,7 @@ impl ToolOutput {
             content,
             error: false,
             private_events: Vec::new(),
+            delivery: None,
         }
     }
 
@@ -110,6 +113,7 @@ impl ToolOutput {
             content,
             error: true,
             private_events: Vec::new(),
+            delivery: None,
         }
     }
 }
@@ -222,6 +226,7 @@ fn is_incomplete_call(context: &AgentProjection, call_id: &str) -> bool {
 
 pub(crate) fn failed_tool_result(call_id: String, content: ToolResult) -> ToolResultEvent {
     ToolResultEvent {
+        delivery: None,
         call_id,
         content,
         error: true,

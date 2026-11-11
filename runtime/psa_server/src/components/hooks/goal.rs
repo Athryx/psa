@@ -77,8 +77,7 @@ fn format_reminder(state: &GoalState) -> String {
     let goal = serde_json::to_string(state.goal.as_deref().unwrap_or_default())
         .expect("goal string is serializable");
     format!(
-        "Current goal: {goal}. Check whether it is completed or blocked. If there is strong evidence for either, call set_goal_status with that status and explain the evidence in reason. Otherwise keep working on the goal; do not just finish with a final answer.\nGoal generation: {}.",
-        state.generation
+        "Current goal: {goal}. Check whether it is completed or blocked. If there is strong evidence for either, call set_goal_status with that status and explain the evidence in reason. Otherwise keep working on the goal; do not just finish with a final answer."
     )
 }
 
@@ -434,6 +433,6 @@ mod tests {
         let reminder = format_reminder(&state);
         assert!(reminder.starts_with("Current goal: \"a \\\"quoted\\\"\\n雪 goal\"."));
         assert!(reminder.contains("strong evidence"));
-        assert!(reminder.ends_with("Goal generation: 7."));
+        assert!(!reminder.contains("generation"));
     }
 }

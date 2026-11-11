@@ -297,6 +297,7 @@ async fn recovery_of_a_structured_result_fork_acknowledges_only_its_producer_and
         let mut cursor = db.cursor().await.unwrap();
         let ack = |call_id: &str| {
             NewEvent::new(EventType::ToolResult(ToolResult {
+                delivery: None,
                 call_id: call_id.into(),
                 content: crate::prompts::text("Result recorded."),
                 error: false,

@@ -59,8 +59,8 @@ impl SubagentCompletion {
             AgentRunOutcome::Completed => final_text
                 .filter(|text| !text.is_empty())
                 .unwrap_or_else(|| "Completed without a text answer.".into()),
-            AgentRunOutcome::Interrupted => "Agent interrupted".into(),
-            AgentRunOutcome::Failed { message } => format!("Agent failed: {message}"),
+            AgentRunOutcome::Interrupted => "Interrupted before finishing.".into(),
+            AgentRunOutcome::Failed { message } => format!("Failed: {message}"),
         };
 
         sessions

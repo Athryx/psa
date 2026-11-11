@@ -29,16 +29,17 @@ const MAX_BYTES: usize = 50 * 1024;
 const SNIFF_BYTES: usize = 4100;
 
 #[derive(Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct ReadArgs {
     /// Path to the file to read (relative or absolute)
     path: String,
     /// Line number to start reading from (1-indexed)
     #[serde(default, deserialize_with = "deserialize_number")]
-    #[schemars(with = "f64")]
+    #[schemars(with = "u64")]
     offset: Option<f64>,
     /// Maximum number of lines to read
     #[serde(default, deserialize_with = "deserialize_number")]
-    #[schemars(with = "f64")]
+    #[schemars(with = "u64")]
     limit: Option<f64>,
 }
 
@@ -643,8 +644,8 @@ mod tests {
             schema["properties"]["path"]["description"],
             "Path to the file to read (relative or absolute)"
         );
-        assert_eq!(schema["properties"]["offset"]["type"], "number");
-        assert_eq!(schema["properties"]["limit"]["type"], "number");
+        assert_eq!(schema["properties"]["offset"]["type"], "integer");
+        assert_eq!(schema["properties"]["limit"]["type"], "integer");
         for value in [
             json!({"path":"x"}),
             json!({"path":"x", "offset":1.5, "limit":-2.25}),

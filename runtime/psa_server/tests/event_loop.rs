@@ -1915,7 +1915,7 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
         .unwrap()
         .unwrap();
     let rendered = serde_json::to_string(&request["messages"]).unwrap();
-    assert!(rendered.contains("Message from agent (agent "));
+    assert!(rendered.contains("Message from agent \\\"agent\\\":"));
     assert!(rendered.contains("inspect this"));
     assert!(!rendered.contains("untrusted display name"));
     tokio::time::timeout(Duration::from_secs(5), async {

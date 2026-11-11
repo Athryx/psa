@@ -34,8 +34,10 @@ fn text(result: &wire::ToolResult) -> String {
 
 fn assert_steering_wait(result: &wire::events::ToolResult) {
     assert!(!result.error, "{}", text(&result.content));
-    let value: Value = serde_json::from_str(&text(&result.content)).unwrap();
-    assert_eq!(value["status"], "steering_available");
+    assert_eq!(
+        text(&result.content),
+        "A message arrived; it follows this result."
+    );
 }
 
 #[tokio::test]
@@ -474,8 +476,7 @@ async fn subagent_tools_list_and_message_unrelated_roots_in_the_same_session() {
         })
         .unwrap();
     assert!(!list.error, "{}", text(&list.content));
-    let members: Value = serde_json::from_str(&text(&list.content)).unwrap();
-    assert_eq!(members.as_array().unwrap().len(), 2);
+    assert_eq!(text(&list.content).lines().count(), 2);
     let page = harness
         .client
         .events(session.id, Some(peer.id), &Default::default())

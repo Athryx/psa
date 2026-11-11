@@ -236,7 +236,7 @@ pub async fn serve_with_configuration(
         configuration,
         default_model_config,
         psa_api::ClientConfig {
-            default_agent_name: "default".into(),
+            default_agent_name: "root".into(),
         },
         client_key,
         shutdown,

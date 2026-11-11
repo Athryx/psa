@@ -13,6 +13,7 @@ use crate::{
     components::{bundles::subagents::SubagentCoordinator, tools::ToolOutput},
     prompts,
 };
+use psa_api::events::MessageDelivery;
 
 /// Optional fields can be absent, but explicitly supplied null is invalid.
 fn deserialize_present<'de, T: serde::Deserialize<'de>, D: serde::Deserializer<'de>>(
@@ -29,11 +30,23 @@ fn require_coordinator(
     Ok(handle.clone())
 }
 
-fn format_tool_output(result: Result<serde_json::Value, String>) -> ToolOutput {
+/// Like [`format_tool_output`], recording the delivered message for clients
+/// without showing its IDs to the model.
+fn format_delivery_output(result: Result<(String, MessageDelivery), String>) -> ToolOutput {
     match result {
-        Ok(value) => ToolOutput::success(prompts::text(
-            prompts::truncate_middle(&serde_json::to_string_pretty(&value).unwrap(), 50 * 1024)
-                .into_owned(),
+        Ok((text, delivery)) => {
+            let mut output = format_tool_output(Ok(text));
+            output.delivery = Some(delivery);
+            output
+        }
+        Err(error) => format_tool_output(Err(error)),
+    }
+}
+
+fn format_tool_output(result: Result<String, String>) -> ToolOutput {
+    match result {
+        Ok(text) => ToolOutput::success(prompts::text(
+            prompts::truncate_middle(&text, 50 * 1024).into_owned(),
         )),
         Err(error) => ToolOutput::error(prompts::text(
             prompts::truncate_middle(&error, 50 * 1024).into_owned(),

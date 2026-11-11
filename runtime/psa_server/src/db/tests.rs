@@ -137,6 +137,7 @@ async fn round_trips_all_payloads_and_reopens_database() {
             },
         }),
         EventType::ToolResult(ToolResult {
+            delivery: None,
             call_id: "call".into(),
             content: vec![
                 api::ContentBlock::Text(api::TextBlock {
@@ -152,6 +153,7 @@ async fn round_trips_all_payloads_and_reopens_database() {
             metadata: Default::default(),
         }),
         EventType::ToolResult(ToolResult {
+            delivery: None,
             call_id: "empty".into(),
             content: vec![],
             error: false,

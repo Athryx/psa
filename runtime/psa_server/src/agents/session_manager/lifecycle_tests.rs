@@ -501,10 +501,8 @@ async fn subagent_identity_is_created_once_and_preserved_on_reload_restart_and_f
         .unwrap();
     fixture.wait_idle(&runtime.handle, session.id).await;
     let identity = fixture.identity_prompt(agent.id).await;
-    assert!(identity.contains(&format!(
-        "Agent ID: {}. Session ID: {}.",
-        agent.id.0, session.id.0
-    )));
+    assert!(identity.contains(&format!("You are agent \"{}\"", agent.name)));
+    assert!(!identity.contains("Agent ID"));
 
     // Configured startup initializes context before the bundle's create hook.
     let mut resources = crate::components::bundles::session::SessionBundleResources::start(

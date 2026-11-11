@@ -537,6 +537,7 @@ mod tests {
 
     fn result(id: &str, text: &str) -> EventType {
         EventType::ToolResult(ToolResult {
+            delivery: None,
             call_id: id.into(),
             error: false,
             metadata: Default::default(),

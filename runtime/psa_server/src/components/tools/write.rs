@@ -13,6 +13,7 @@ use std::{path::Path, time::Duration};
 pub struct Write;
 
 #[derive(Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct WriteArgs {
     /// Path to the file to write (relative or absolute)
     path: String,
@@ -130,7 +131,7 @@ mod tests {
         );
         assert_eq!(definition.strict, Some(false));
         assert_eq!(parameters["type"], "object");
-        assert!(parameters.get("additionalProperties").is_none());
+        assert_eq!(parameters["additionalProperties"], false);
         assert_eq!(parameters["required"], json!(["path", "content"]));
         assert_eq!(parameters["properties"]["path"]["type"], "string");
         assert_eq!(parameters["properties"]["content"]["type"], "string");

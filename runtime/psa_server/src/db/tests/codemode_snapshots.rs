@@ -27,6 +27,7 @@ impl DatabaseCursor {
 
 fn tool_result(id: &str) -> NewEvent {
     NewEvent::new(EventType::ToolResult(ToolResult {
+        delivery: None,
         call_id: id.into(),
         content: vec![],
         error: false,

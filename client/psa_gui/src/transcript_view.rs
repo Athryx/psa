@@ -1611,7 +1611,7 @@ fn EventContent(
             // Message tools link to the delivery in the recipient's transcript.
             let recipient = is_message_tool(&call.tool_name)
                 .then(|| {
-                    let sent = SentMessage::parse(&result?.content)?;
+                    let sent = result?.delivery.clone()?;
                     let session_id = kind.context_turn()?.0.session_id;
                     let label = serde_json::from_str::<serde_json::Value>(&call.arguments)
                         .ok()

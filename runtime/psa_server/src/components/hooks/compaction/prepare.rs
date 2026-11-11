@@ -396,16 +396,11 @@ fn subagent_prefix(message: &psa_api::events::Message) -> String {
     if message.message_type != MessageType::Subagent {
         return String::new();
     }
-    let sender = match message.source.as_ref() {
-        Some(source) => match (&source.name, source.agent_id) {
-            (Some(name), Some(id)) => format!("{name} (agent {})", id.0),
-            (Some(name), None) => name.clone(),
-            (None, Some(id)) => format!("agent {}", id.0),
-            (None, None) => "unknown agent".into(),
-        },
-        None => "unknown agent".into(),
-    };
-    format!("Message from {sender}:\n")
+    let sender = message
+        .source
+        .as_ref()
+        .and_then(|source| source.name.as_deref());
+    crate::prompts::agent_message_header(sender)
 }
 
 fn serialize_conversation(events: &[Event]) -> String {

@@ -13,7 +13,7 @@ use crate::{
 use actors::{Reply, UnboundedMailbox, UnboundedMailboxHandle};
 use futures_util::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use psa_api::{AgentId, SessionId, probes::Uuid};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     time::Duration,
@@ -21,6 +21,9 @@ use std::{
 use tokio::task::JoinHandle;
 
 type ResultValue = Result<Value, String>;
+
+/// How long a message recipient counts as about to run before it starts.
+const STARTING_GRACE: Duration = Duration::from_secs(2);
 
 #[cfg(test)]
 mod tests;
@@ -96,6 +99,8 @@ enum Command {
     Lifecycle(AgentLifecycleEvent),
     BeginOperation(Uuid),
     EndOperation(Uuid),
+    /// A message was submitted to this agent; it may not have started yet.
+    Delivered(AgentId),
     Wait {
         agent: AgentId,
         token: Uuid,
@@ -117,6 +122,9 @@ struct State {
     session: SessionId,
     sessions: Sessions,
     active: HashMap<AgentId, String>,
+    /// Recipients of delivered messages that have not reported a run start.
+    /// A recipient already running never starts again, so entries expire.
+    starting: HashMap<AgentId, tokio::time::Instant>,
     pending: HashSet<Uuid>,
     waiters: HashMap<AgentId, Waiter>,
     jobs: FuturesUnordered<BoxFuture<'static, ()>>,
@@ -129,6 +137,7 @@ impl State {
             session,
             sessions,
             active: HashMap::new(),
+            starting: HashMap::new(),
             pending: HashSet::new(),
             waiters: HashMap::new(),
             jobs: FuturesUnordered::new(),
@@ -168,6 +177,10 @@ impl State {
             Command::EndOperation(token) => {
                 self.pending.remove(&token);
             }
+            Command::Delivered(agent) => {
+                let expires = tokio::time::Instant::now() + STARTING_GRACE;
+                self.starting.insert(agent, expires);
+            }
             Command::Wait {
                 agent,
                 token,
@@ -199,6 +212,7 @@ impl State {
                 agent_id,
                 run_id,
             } if *session_id == self.session => {
+                self.starting.remove(agent_id);
                 self.active.insert(*agent_id, run_id.clone());
             }
             AgentLifecycleEvent::Finished {
@@ -220,7 +234,10 @@ impl State {
 
     fn check_deadlock(&mut self) {
         self.waiters.retain(|_, waiter| !waiter.reply.is_closed());
+        let now = tokio::time::Instant::now();
+        self.starting.retain(|_, expires| now < *expires);
         if !self.pending.is_empty()
+            || !self.starting.is_empty()
             || !self.jobs.is_empty()
             || tokio::time::Instant::now() < self.deadlock_after
             || self
@@ -232,7 +249,8 @@ impl State {
         }
         for (_, waiter) in self.waiters.drain() {
             let _ = waiter.reply.send(Err(
-                "Cannot wait: nobody else in this session can make progress".into(),
+                "Cannot wait: no other agent in this session is running, so no message can arrive"
+                    .into(),
             ));
         }
     }
@@ -274,6 +292,19 @@ impl SubagentCoordinator {
         })
     }
 
+    pub(crate) async fn load_child_templates(
+        &self,
+        ids: &[psa_api::AgentDefinitionId],
+    ) -> Result<Vec<super::ChildTemplate>, String> {
+        super::templates::load_child_templates(&self.sessions, ids).await
+    }
+
+    /// Record that `agent` was sent a message, so waits do not report a
+    /// deadlock before it starts running. Call while the operation guard is held.
+    pub(crate) fn note_delivery(&self, agent: AgentId) {
+        let _ = self.sender.send(Command::Delivered(agent));
+    }
+
     pub(crate) fn require_session(&self, session: SessionId) -> Result<(), String> {
         if session != self.session {
             return Err("Subagents session mismatch".into());
@@ -286,7 +317,7 @@ impl SubagentCoordinator {
         context: &AgentContext<'_>,
         seconds: f64,
         mut cancellation: Cancellation,
-    ) -> ResultValue {
+    ) -> Result<String, String> {
         if !seconds.is_finite() || seconds <= 0.0 || seconds > 600.0 {
             return Err("timeout must be >0 and <=600 seconds".into());
         }
@@ -312,7 +343,7 @@ impl SubagentCoordinator {
             _ = cancellation.cancelled() => Err("Message wait cancelled".into()),
             result = &mut steering => {
                 result.map_err(|error| error.to_string())?;
-                Ok(json!({"status": "steering_available"}))
+                Ok("A message arrived; it follows this result.".to_owned())
             }
             result = wait => {
                 // Steering queued concurrently with a deadlock check wins.
@@ -320,12 +351,17 @@ impl SubagentCoordinator {
                     biased;
                     result = &mut steering => {
                         result.map_err(|error| error.to_string())?;
-                        Ok(json!({"status":"steering_available"}))
+                        Ok("A message arrived; it follows this result.".to_owned())
                     }
-                    _ = std::future::ready(()) => result.map_err(|error| error.to_string())?,
+                    // Waiters are only ever released with an error.
+                    _ = std::future::ready(()) => result
+                        .map_err(|error| error.to_string())?
+                        .map(|value| value.to_string()),
                 }
             }
-            _ = tokio::time::sleep(Duration::from_secs_f64(seconds)) => Ok(json!({"status":"timeout"})),
+            _ = tokio::time::sleep(Duration::from_secs_f64(seconds)) => {
+                Ok(format!("No message arrived within {seconds}s."))
+            }
         }
     }
 }

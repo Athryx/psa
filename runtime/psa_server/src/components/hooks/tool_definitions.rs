@@ -32,22 +32,12 @@ impl Hook for ToolDefinitionsHook {
             return Ok(());
         }
 
-        let events = build_tool_events(context.tools().iter().map(|tool| {
-            let mut prompt = tool.system_prompt();
-            if tool.id() == ToolId::CodeMode {
-                let functions = crate::components::tools::codemode::format_codemode_functions(
-                    context.codemode_functions(),
-                );
-                match &mut prompt.tools {
-                    Some(directions) => {
-                        directions.push_str("\n\n");
-                        directions.push_str(&functions);
-                    }
-                    None => prompt.tools = Some(functions),
-                }
-            }
-            (tool.id(), tool.tool_definition(), prompt)
-        }));
+        let events = build_tool_events(
+            context
+                .tools()
+                .iter()
+                .map(|tool| (tool.id(), tool.tool_definition(), tool.system_prompt())),
+        );
         context.save_events(&events).await?;
         Ok(())
     }

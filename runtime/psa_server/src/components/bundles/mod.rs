@@ -320,6 +320,7 @@ impl InstalledComponents {
     ) -> Result<Self, InstallError> {
         psa_api::completion::validate_completion_modes(&definition.bundles, &definition.hooks)
             .map_err(|error| InstallError::new(error.to_string()))?;
+        let child_templates = Self::load_child_templates(definition, resources).await?;
         let mut installer = Installer::default();
         let mut bundles = Vec::new();
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -332,7 +333,7 @@ impl InstalledComponents {
                 // Retain even the failing owner, before it can register anything.
                 bundles.push(BundleKind::from_config(config, resources)?);
                 if let BundleKind::Subagents(bundle) = bundles.last_mut().unwrap() {
-                    bundle.set_allow_create(!definition.permitted_subagents.is_empty());
+                    bundle.set_child_templates(child_templates.clone());
                 }
                 bundles
                     .last_mut()
@@ -364,6 +365,28 @@ impl InstalledComponents {
         });
 
         Self::finish_install(installer, bundles, result).await
+    }
+
+    /// Permitted child templates for the Subagents bundle, which installs synchronously.
+    async fn load_child_templates(
+        definition: &AgentDefinition,
+        resources: Option<&session::SessionBundleHandle>,
+    ) -> Result<Vec<subagents::ChildTemplate>, InstallError> {
+        let uses_subagents = definition
+            .bundles
+            .iter()
+            .any(|config| matches!(config, BundleConfig::Subagents));
+        let Some(resources) = resources.filter(|_| uses_subagents) else {
+            return Ok(Vec::new());
+        };
+        if definition.permitted_subagents.is_empty() {
+            return Ok(Vec::new());
+        }
+        resources
+            .subagents()
+            .load_child_templates(&definition.permitted_subagents)
+            .await
+            .map_err(InstallError::new)
     }
 
     async fn finish_install(

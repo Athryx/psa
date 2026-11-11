@@ -107,6 +107,7 @@ impl AgentManagerState {
                 }
                 if let Some((call_id, output)) = completed.pop_front() {
                     let result = ToolResult {
+                        delivery: output.delivery,
                         call_id,
                         content: output.content,
                         error: output.error,

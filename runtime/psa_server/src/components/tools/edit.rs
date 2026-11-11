@@ -9,6 +9,7 @@ use unicode_normalization::UnicodeNormalization;
 pub struct Edit;
 
 #[derive(JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct EditArgs {
     /// Path to the file to edit (relative or absolute)
     path: String,
@@ -17,6 +18,7 @@ struct EditArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct Replacement {
     /// Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call.
     #[serde(rename = "oldText")]
@@ -167,11 +169,9 @@ impl Tool for Edit {
     fn system_prompt(&self) -> ToolSystemPrompt {
         ToolSystemPrompt {
             tools: Some("Make precise file edits with exact text replacement, including multiple disjoint edits in one call".into()),
+            // The tool description already covers matching and overlap rules.
             rules: vec![
-                "Use edit for precise changes (edits[].oldText must match exactly)".into(),
-                "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls".into(),
-                "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.".into(),
-                "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.".into(),
+                "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls.".into(),
             ],
         }
     }
@@ -539,7 +539,7 @@ mod tests {
                 .to_openai_parameters(definition.strict)
                 .is_ok()
         );
-        assert_eq!(Edit.system_prompt().rules.len(), 4);
+        assert_eq!(Edit.system_prompt().rules.len(), 1);
     }
 
     #[test]

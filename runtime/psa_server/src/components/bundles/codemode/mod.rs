@@ -4,11 +4,12 @@ pub(crate) mod engine;
 
 use std::sync::Arc;
 
-use super::{Bundle, CleanupError, InstallError, Installer};
+use super::{Bundle, CleanupError, HookStage, InstallError, Installer};
 use crate::{
     agents::Agent,
     components::{
         codemode_functions::{CodeModeFunctionKind, prior_results::PriorResults},
+        hooks::{CodeModeFunctionsHook, HookKind},
         tools::{CodeMode, ResetCodeMode, ToolKind},
     },
     sessions::Session,
@@ -51,7 +52,13 @@ impl Bundle for CodeModeBundle {
         installer.add_tool(ToolKind::CodeMode(CodeMode::new(self.engine.clone())))?;
         installer.add_tool(ToolKind::ResetCodeMode(ResetCodeMode::new(
             self.engine.clone(),
-        )))
+        )))?;
+        // Runs after every bundle has registered its functions.
+        installer.add_hook(
+            HookStage::AgentCreate,
+            HookKind::CodeModeFunctions(CodeModeFunctionsHook),
+        );
+        Ok(())
     }
 
     async fn cleanup(&mut self) -> Result<(), CleanupError> {

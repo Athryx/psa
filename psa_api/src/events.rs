@@ -174,8 +174,9 @@ pub struct MessageSender {
     pub agent_id: Option<AgentId>,
     /// Sending agent name captured at submission, if known.
     pub name: Option<String>,
-    /// Server-assigned request that delivered this message. `send_message` and
-    /// `create_agent` return the same ID, linking the message to its sending call.
+    /// Server-assigned request that delivered this message. The sending
+    /// `send_message` or `create_agent` result records the same ID in its
+    /// [`ToolResult::delivery`].
     pub request_id: String,
 }
 
@@ -283,6 +284,21 @@ pub struct ToolResult {
     pub error: bool,
     /// Provider replay metadata associated with the result.
     pub metadata: HistoryItemMetadata,
+    /// Agent message this call delivered, for clients linking a sent message
+    /// to its receipt. Never sent to the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<MessageDelivery>,
+}
+
+/// An agent message delivered by a tool call, such as `send_message`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageDelivery {
+    /// Receiving agent.
+    pub agent_id: AgentId,
+    /// Request that delivered the message; matches the receipt's
+    /// [`MessageSender::request_id`].
+    pub request_id: String,
 }
 
 /// Portable text or a provider-native summary of compacted context.

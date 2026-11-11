@@ -9,7 +9,7 @@ use std::{
 use tokio::io::AsyncWriteExt;
 
 const DEFAULT_CONFIG: &str = r#"host = true
-default_agent_name = "default"
+default_agent_name = "root"
 
 [server]
 listen = "127.0.0.1:8080"
@@ -39,8 +39,8 @@ after_request = []
 /// agent whose only permitted subagent is a leaf worker using its parent's model.
 const DEFAULT_AGENTS: [(&str, &str); 2] = [
     (
-        "default.toml",
-        r#"name = "default"
+        "root.toml",
+        r#"name = "root"
 description = "General-purpose assistant"
 selectable = true
 models = ["Global"]
@@ -213,7 +213,7 @@ impl StartOptions {
 }
 
 fn default_agent_name() -> String {
-    "default".into()
+    "root".into()
 }
 
 /// Built-in session fallback, also used when `[session_defaults]` is absent.

@@ -773,12 +773,15 @@ async fn completion_hook_reports_children_without_bundle_and_preserves_outcomes(
     cursor.commit().await.unwrap();
     for (outcome, expected) in [
         (AgentRunOutcome::Completed, "answer"),
-        (AgentRunOutcome::Interrupted, "Agent interrupted"),
+        (
+            AgentRunOutcome::Interrupted,
+            "Interrupted before finishing.",
+        ),
         (
             AgentRunOutcome::Failed {
                 message: "failure".into(),
             },
-            "Agent failed: failure",
+            "Failed: failure",
         ),
     ] {
         let sessions = fixture.manager.sessions.clone();

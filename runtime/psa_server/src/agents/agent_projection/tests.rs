@@ -39,6 +39,7 @@ fn interrupted_incomplete_calls_replay_as_context_only_after_an_error_result() {
             source_agent_id: AgentId(1),
             timestamp: time::OffsetDateTime::UNIX_EPOCH,
             kind: EventType::ToolResult(ToolResult {
+                delivery: None,
                 call_id: "partial".into(),
                 content: crate::prompts::tool_interrupted(),
                 error: true,
@@ -170,6 +171,7 @@ fn renders_flat_context_and_tracks_the_latest_response_separately() {
         }),
         end(1, StopReason::ToolCalls),
         EventType::ToolResult(ToolResult {
+            delivery: None,
             call_id: "call-1".into(),
             content: vec![build_text_block("invalid arguments")],
             error: true,
@@ -398,12 +400,14 @@ fn preserves_tool_result_content_blocks() {
     };
     let transcript = events(vec![
         EventType::ToolResult(ToolResult {
+            delivery: None,
             call_id: "call-1".into(),
             content: content.clone(),
             error: true,
             metadata: metadata.clone(),
         }),
         EventType::ToolResult(ToolResult {
+            delivery: None,
             call_id: "call-2".into(),
             content: vec![],
             error: false,
@@ -440,6 +444,7 @@ fn result_blocks_reject_prompt_items_and_mismatched_model_snapshots() {
         message(MessageType::Harness, "injected"),
         message(MessageType::System, "instructions"),
         EventType::ToolResult(ToolResult {
+            delivery: None,
             call_id: "call".into(),
             content: vec![build_text_block("result")],
             error: false,
