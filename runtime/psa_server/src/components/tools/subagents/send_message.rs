@@ -84,7 +84,9 @@ impl SendMessage {
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-            Ok(json!({"status": "queued", "request_id": accepted.request_id}))
+            Ok(
+                json!({"status": "queued", "agent_id": target.id, "request_id": accepted.request_id}),
+            )
         };
         let result = tokio::select! {
             biased;

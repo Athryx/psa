@@ -121,13 +121,18 @@ impl CreateAgent {
                 ));
             }
 
-            submitted.map_err(|error| {
+            let submitted = submitted.map_err(|error| {
                 format!(
                     "Agent {} created but task submission failed: {error}",
                     agent.id.0
                 )
             })?;
-            Ok(json!({"agent_id": agent.id, "name": agent.name, "status": "started"}))
+            Ok(json!({
+                "agent_id": agent.id,
+                "name": agent.name,
+                "status": "started",
+                "request_id": submitted.request_id,
+            }))
         }
         .await;
         format_tool_output(result)

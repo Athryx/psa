@@ -714,6 +714,10 @@ fn select_menu_action(
                 spawn(network::submit_compact(ui, target, String::new()));
             }
             CommandId::Rename => open_slash_prompt(ui, target, prompt, SlashPrompt::RenameSession),
+            CommandId::Fork => {
+                ui.write().drafts.remove(&target);
+                spawn(network::fork_session(ui, target, String::new()));
+            }
             _ => {
                 ui.write()
                     .drafts
@@ -1158,6 +1162,13 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
                 }
             }
             ComposerInput::Command {
+                id: CommandId::Fork,
+                arguments,
+            } if !root => {
+                ui.write().drafts.remove(&target);
+                spawn(network::fork_session(ui, target, arguments));
+            }
+            ComposerInput::Command {
                 id: CommandId::Compact,
                 arguments,
             } if !root => {
@@ -1201,8 +1212,8 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
             if !root && matches!(parsed, ComposerInput::Command { id:CommandId::Agent, .. }) {
                 p { class:"command-hint", "The /agent command is only available before creating the root agent. Use //agent to send it as text." }
             }
-            if root && matches!(parsed, ComposerInput::Command { id:CommandId::Compact, .. }) {
-                p { class:"command-hint", "The /compact command needs an existing agent. Use //compact to send it as text." }
+            if root && matches!(parsed, ComposerInput::Command { id:CommandId::Compact | CommandId::Fork, .. }) {
+                p { class:"command-hint", "This command needs an existing agent. Start with // to send it as text." }
             }
             if let Some(kind) = prompt() {
                 match kind {

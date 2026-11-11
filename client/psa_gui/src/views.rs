@@ -122,7 +122,7 @@ pub fn Sidebar() -> Element {
         for group in groups{
             div{key:"{group.probe_id}:{group.working_directory.display()}",class:"folder",
                 details{key: if creation_target.as_ref().is_some_and(|target| target.probe == group.probe_id && group.working_directory.as_os_str() == std::ffi::OsStr::new(&target.directory)) { state.creation_revision.to_string() } else { "0".to_string() },open:true,
-                    summary{"{group.working_directory.display()}" if group.busy{span{class:"busy"," ●"}}}
+                    summary{"{group.working_directory.display()}" if group.busy{span{class:"tab-spinner inline-spinner",role:"img","aria-label":"Session running"}}}
                     if probe.is_none() { div { class: "folder-probe", ProbeName { id: group.probe_id } } }
                     for session in group.sessions{
                         button{key:"{session.id.0}",class:"session",title:"{session.name}",
@@ -130,7 +130,7 @@ pub fn Sidebar() -> Element {
                             ondoubleclick:move |_|{spawn(network::double_click_session(ui,session.id));},
                             if session.parent_id.is_some(){"⑂ "}
                             "{session.name}"
-                            if session.busy{span{class:"busy"," ●"}}else if state.connection!="Connected"{span{class:"muted"," ?"}}
+                            if session.busy{span{class:"tab-spinner inline-spinner",role:"img","aria-label":"Session running"}}else if state.connection!="Connected"{span{class:"muted"," ?"}}
                         }
                     }
                     if let Some(target) = creation_target.as_ref().filter(|target| target.probe == group.probe_id && group.working_directory.as_os_str() == std::ffi::OsStr::new(&target.directory)) {
@@ -254,10 +254,29 @@ fn Details() -> Element {
         .cloned()
         .unwrap_or_default();
     let tree = agent_tree(&agents, state.settings.preferences.show_hidden_agents);
+    // A fork's parent may be outside the loaded session list.
+    let parent = session.parent_id.map(|id| {
+        let name = state
+            .sessions
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .map(|candidate| candidate.name.clone())
+            .unwrap_or_else(|| format!("Session {}", id.0));
+        (id, name)
+    });
     rsx! {
         div{class:"sessions-heading", h2{"Current session"}}
         strong{class:"details-session-name","{session.name}"}
         dl{class:"details-grid",
+            if let Some((parent, parent_name)) = parent {
+                dt{"Forked from"}
+                dd{
+                    button{class:"text-link",title:"Open parent session",
+                        onclick:move |_|{spawn(network::open_session_by_id(ui,parent));},
+                        "{parent_name}"
+                    }
+                }
+            }
             dt{"Working directory"}dd{"{session.working_directory.display()}"}
             dt{"Probe"}dd{ProbeName{id:session.probe_id}}
             dt{"Default model"}
@@ -350,7 +369,6 @@ fn Pane(group: TabGroup) -> Element {
     use_ui_subscription(|state| {
         (
             state.workspace.focused_group,
-            state.dragging,
             state.sessions.clone(),
             state.agents.clone(),
             state.connection.clone(),
@@ -367,15 +385,10 @@ fn Pane(group: TabGroup) -> Element {
     rsx! {section{class:if focused{"pane focused"}else{"pane"}, "data-pane-id":"{group.id.0}",
         onmousedown:move |_|{if ui.peek().workspace.focused_group != group.id { ui.write().workspace.focused_group=group.id; }},
         onfocusin:move |_|{if ui.peek().workspace.focused_group != group.id { ui.write().workspace.focused_group=group.id; }},
-        ondragover:move |event|event.prevent_default(),
-        ondrop:move |event|{event.prevent_default();let dragging=ui.read().dragging;if let Some(view)=dragging{ui.write().workspace.move_tab(view,group.id,usize::MAX);}ui.write().dragging=None;},
         div{class:"tabs",
-            for (index,tab) in group.tabs.iter().cloned().enumerate(){
-                div{key:"{tab.id.0}",class:format!("tab {} {}",if Some(tab.id)==group.active{"active"}else{""},if tab.preview{"preview"}else{""}),draggable:"true",
-                    ondragstart:move |_|{ui.write().dragging=Some(tab.id);},
-                    ondragend:move |_|ui.write().dragging=None,
-                    ondragover:move |e|e.prevent_default(),
-                    ondrop:move |e|{e.prevent_default();e.stop_propagation();let dragging=ui.read().dragging;if let Some(view)=dragging{ui.write().workspace.move_tab(view,group.id,index);}ui.write().dragging=None;},
+            for tab in group.tabs.iter().cloned(){
+                // Dragging is handled in the browser by tab_drag.js.
+                div{key:"{tab.id.0}",class:format!("tab {} {}",if Some(tab.id)==group.active{"active"}else{""},if tab.preview{"preview"}else{""}),"data-tab-id":"{tab.id.0}",
                     button{class:"title",onclick:move |_|{ui.write().workspace.focus(tab.id);if tab.target.agent_id != crate::app::DRAFT_ROOT { ui.write().last_agents.insert(tab.target.session_id,tab.target.agent_id); } crate::app::request_composer_focus(ui);},ondoubleclick:move |_|ui.write().workspace.promote(tab.id),
                         "{tab_title(&state,tab.target)}" if matches!(tab.kind, TabKind::Context { .. }) { " · context" }
                     }
@@ -388,16 +401,6 @@ fn Pane(group: TabGroup) -> Element {
                 button{title:"Split vertically","aria-label":"Split vertically",onclick:move |_|{ui.write().workspace.split(group.id,SplitAxis::Vertical);},span{class:"split-icon split-icon-vertical","aria-hidden":"true"}}
             }
         }
-        if state.dragging.is_some(){div{class:"drop-edges",
-            for (edge,label,axis,before) in [
-                ("left","Split left",SplitAxis::Horizontal,true),
-                ("right","Split right",SplitAxis::Horizontal,false),
-                ("top","Split above",SplitAxis::Vertical,true),
-                ("bottom","Split below",SplitAxis::Vertical,false),
-            ]{
-                div{class:"drop-zone {edge}",ondragover:move |e|e.prevent_default(),ondrop:move |e|{e.prevent_default();e.stop_propagation();let dragging=ui.read().dragging;if let Some(view)=dragging{let mut state=ui.write();move_to_split(&mut state.workspace,view,group.id,axis,before);state.dragging=None;}},"{label}"}
-            }
-        }}
         for tab in group.tabs.iter().cloned(){div{key:"{tab.id.0}","data-view-id":"{tab.id.0}","data-active":if Some(tab.id)==group.active{"true"}else{"false"},style:if Some(tab.id)==group.active{"display:flex;flex-direction:column;flex:1;min-height:0;"}else{"display:none;"},
             match tab.kind {
                 TabKind::Transcript => rsx!{TranscriptView{key:"{tab.id.0}:{tab.target.session_id.0}:{tab.target.agent_id.0}",active:Some(tab.id)==group.active,tab:tab.clone()}},
@@ -407,6 +410,52 @@ fn Pane(group: TabGroup) -> Element {
         if active.is_none(){div{class:"empty","Select an agent to open a preview here."}}
     }}
 }
+/// Edge of a pane that a dropped tab splits off into a new pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DropEdge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// A completed tab drag reported by tab_drag.js.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum TabDrop {
+    /// Dropped on a tab bar, between existing tabs.
+    Insert { view: u64, pane: u64, slot: usize },
+    /// Dropped on another pane's body: appended to its tab bar.
+    Join { view: u64, pane: u64 },
+    /// Dropped near a pane's edge: split into a new pane on that side.
+    Split {
+        view: u64,
+        pane: u64,
+        edge: DropEdge,
+    },
+}
+
+pub(crate) fn apply_tab_drop(workspace: &mut Workspace, drop: TabDrop) {
+    match drop {
+        TabDrop::Insert { view, pane, slot } => {
+            workspace.move_tab_to_slot(ViewId(view), GroupId(pane), slot);
+        }
+        TabDrop::Join { view, pane } => {
+            workspace.move_tab(ViewId(view), GroupId(pane), usize::MAX);
+        }
+        TabDrop::Split { view, pane, edge } => {
+            let (axis, before) = match edge {
+                DropEdge::Left => (SplitAxis::Horizontal, true),
+                DropEdge::Right => (SplitAxis::Horizontal, false),
+                DropEdge::Top => (SplitAxis::Vertical, true),
+                DropEdge::Bottom => (SplitAxis::Vertical, false),
+            };
+            move_to_split(workspace, ViewId(view), GroupId(pane), axis, before);
+        }
+    }
+}
+
 pub(crate) fn move_to_split(
     workspace: &mut Workspace,
     view: ViewId,

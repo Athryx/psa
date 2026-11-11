@@ -292,6 +292,7 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
     });
     // The browser controller scrolls to the requested row once it is mounted.
     let mut jump = use_signal(|| (0_u64, String::new()));
+    let reveal = use_ui_selector(move |state| state.pending_reveals.get(&target).cloned());
     let mut element = use_signal(|| None::<Rc<MountedData>>);
     let mut controller = use_signal(|| None::<document::Eval>);
     let mut top_latched = use_signal(|| false);
@@ -606,6 +607,55 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
     let has_older = transcript.is_some_and(|t| t.has_older);
     let font_size = preferences.transcript_font_size;
     let max_width = preferences.conversation_max_width_ch;
+    let mut jump_to_row = move |id: RowId| {
+        let selected = selection.peek();
+        let Some(transcript) = selected.transcript.as_ref() else {
+            return;
+        };
+        let Some(position) = transcript.display_position(&id, &selected.preferences) else {
+            return;
+        };
+
+        // An explicit revision makes leaving follow authoritative over
+        // any wheel acknowledgement still in flight from the browser.
+        window.set(ViewWindow::select(
+            transcript,
+            &selected.preferences,
+            position.saturating_sub(WINDOW_ROWS / 2),
+        ));
+        history_auto_fill.set(false);
+        follow_revision += 1;
+        following.set(false);
+        let revision = jump.peek().0 + 1;
+        jump.set((revision, row_key(&id)));
+    };
+    // A linked message is revealed once this transcript's first page arrives.
+    use_effect(move || {
+        let Some(link) = reveal() else {
+            return;
+        };
+        let selected = selection.read();
+        let Some(transcript) = selected.transcript.as_ref().filter(|t| t.row_count() > 0) else {
+            return;
+        };
+        let found = link.find(transcript);
+        drop(selected);
+        ui.write().pending_reveals.remove(&target);
+        match (found, &link) {
+            (Some(id), _) => jump_to_row(id),
+            // Completion reports have no sending call: show the latest activity.
+            (None, MessageLink::Sent { .. }) => {
+                follow_revision += 1;
+                following.set(true);
+            }
+            (None, _) => {
+                ui.write().notice = Some(
+                    "That message is outside the loaded history; scroll up to load older events."
+                        .into(),
+                )
+            }
+        }
+    });
     let (jump_revision, jump_row) = jump();
     let mut row_menu = use_signal(|| None::<RowMenu>);
     rsx! {
@@ -750,23 +800,7 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
                 if controller.peek().is_none() { scroll_transcript_to_bottom(element); }
             }, "Follow new activity ↓" } }
         }
-        MessageNavigator {
-            entries: nav_entries,
-            onjump: move |id: RowId| {
-                let selected = selection.peek();
-                let Some(transcript) = selected.transcript.as_ref() else { return; };
-                let Some(position) = transcript.display_position(&id, &selected.preferences) else { return; };
-
-                // An explicit revision makes leaving follow authoritative over
-                // any wheel acknowledgement still in flight from the browser.
-                window.set(ViewWindow::select(transcript, &selected.preferences, position.saturating_sub(WINDOW_ROWS / 2)));
-                history_auto_fill.set(false);
-                follow_revision += 1;
-                following.set(false);
-                let revision = jump.peek().0 + 1;
-                jump.set((revision, row_key(&id)));
-            },
-        }
+        MessageNavigator { entries: nav_entries, onjump: move |id: RowId| jump_to_row(id) }
         if let Some(menu) = row_menu() {
             RowContextMenu { menu, target, onclose: move |_| row_menu.set(None) }
         }
@@ -874,6 +908,11 @@ fn is_compact_row(kind: &psa_api::events::EventType, preferences: &RowPreference
         | EventType::Compaction(_)
         | EventType::ProviderItem(_)
         | EventType::Result(_) => true,
+        EventType::Message(message)
+            if message.message_type == psa_api::events::MessageType::Subagent =>
+        {
+            true
+        }
         _ => group_key(kind, preferences).is_some(),
     }
 }
@@ -1171,6 +1210,44 @@ enum DetailMode {
     Thinking,
     Result,
     Error,
+    Received,
+}
+
+/// An agent's name that opens its transcript at a linked message. Rows have no
+/// Ui subscription; the context is only read when clicked.
+#[component]
+fn AgentLink(
+    session_id: SessionId,
+    agent_id: AgentId,
+    label: String,
+    link: MessageLink,
+) -> Element {
+    let ui = try_use_context::<Signal<Ui>>();
+    rsx! {
+        button { r#type: "button", class: "text-link agent-link", title: "Open {label} at this message",
+            onclick: move |event| {
+                // Inside a row summary: never toggle the row itself.
+                event.prevent_default();
+                event.stop_propagation();
+                if let Some(mut ui) = ui {
+                    ui.write().reveal_message(TranscriptTarget { session_id, agent_id }, link.clone());
+                }
+            },
+            "{label}"
+        }
+    }
+}
+
+/// Text blocks rendered as Markdown, as in agent messages.
+fn message_markdown(content: &[ContentBlock]) -> Element {
+    rsx! {
+        for block in content {
+            match block {
+                ContentBlock::Text(text) => rsx! { crate::markdown::Markdown { text: text.text.clone() } },
+                _ => rsx! { pre { "{blocks(std::slice::from_ref(block))}" } },
+            }
+        }
+    }
 }
 
 /// An expandable line. Its children form the always-visible summary.
@@ -1235,6 +1312,7 @@ fn DetailBody(kind: EventKind, result: Option<EventKind>, mode: DetailMode) -> E
         (DetailMode::System, EventType::Message(message)) => {
             rsx! { pre { "{blocks(&message.content)}" } }
         }
+        (DetailMode::Received, EventType::Message(message)) => message_markdown(&message.content),
         (DetailMode::Tool, EventType::ToolCall(call)) => {
             rsx! {
                 ToolArguments { tool_name: call.tool_name.clone(), arguments: call.arguments.clone() }
@@ -1468,10 +1546,40 @@ fn EventContent(
                     rsx! { span { class: "item-text", "{description}" } },
                 );
             }
-            let is_agent = matches!(
-                message.message_type,
-                psa_api::events::MessageType::Agent | psa_api::events::MessageType::Subagent
-            );
+            if let Some(source) = message
+                .source
+                .clone()
+                .filter(|_| message.message_type == psa_api::events::MessageType::Subagent)
+            {
+                let sender = source
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| match source.agent_id {
+                        Some(id) => format!("agent {}", id.0),
+                        None => "unknown agent".into(),
+                    });
+                let preview =
+                    build_line_preview(message.content.iter().filter_map(|block| match block {
+                        ContentBlock::Text(text) => Some(text.text.as_str()),
+                        _ => None,
+                    }));
+                let session_id = kind.context_turn().map(|(target, _)| target.session_id);
+                return compact(
+                    DetailMode::Received,
+                    "Message from",
+                    "received",
+                    blocks_are_large(&message.content),
+                    rsx! {
+                        if let (Some(session_id), Some(agent_id)) = (session_id, source.agent_id) {
+                            AgentLink { session_id, agent_id, label: sender, link: MessageLink::Sent { request_id: source.request_id.clone() } }
+                        } else {
+                            span { class: "item-target", "{sender}" }
+                        }
+                        span { class: "item-text item-preview", "{preview}" }
+                    },
+                );
+            }
+            let is_agent = matches!(message.message_type, psa_api::events::MessageType::Agent);
             let is_human = matches!(message.message_type, psa_api::events::MessageType::Human);
             rsx! { article { class: if is_human { "message human-message" } else if is_agent { "message agent-message" } else { "message" },
                 if !is_human && !is_agent { div { class: "role", "{message.message_type:?}" } }
@@ -1491,7 +1599,7 @@ fn EventContent(
         }
         EventType::Command(command) => {
             let text = client_shared::describe_agent_command(command);
-            rsx! { article { class: "message muted", div { class: "role", "Command" } pre { "{text}" } } }
+            rsx! { article { class: "message command-message", title: "Command", pre { "{text}" } } }
         }
         EventType::ToolCall(call) => {
             let result = result.as_ref().and_then(|result| match result.kind() {
@@ -1500,6 +1608,24 @@ fn EventContent(
             });
             let failed = result.is_some_and(|result| result.error);
             let summary = summarize_call(&call.tool_name, &call.arguments);
+            // Message tools link to the delivery in the recipient's transcript.
+            let recipient = is_message_tool(&call.tool_name)
+                .then(|| {
+                    let sent = SentMessage::parse(&result?.content)?;
+                    let session_id = kind.context_turn()?.0.session_id;
+                    let label = serde_json::from_str::<serde_json::Value>(&call.arguments)
+                        .ok()
+                        .and_then(|arguments| {
+                            arguments
+                                .get("agent_name")
+                                .or_else(|| arguments.get("name"))?
+                                .as_str()
+                                .map(str::to_owned)
+                        })
+                        .unwrap_or_else(|| format!("agent {}", sent.agent_id.0));
+                    Some((session_id, sent, label))
+                })
+                .flatten();
             let code = summary
                 .code
                 .as_ref()
@@ -1527,6 +1653,11 @@ fn EventContent(
                         }
                     } else {
                         span { class: "item-text",
+                            if let Some((session_id, sent, label)) = recipient {
+                                "→ "
+                                AgentLink { session_id, agent_id: sent.agent_id, label, link: MessageLink::Received { request_id: sent.request_id } }
+                                " "
+                            }
                             if let Some(target) = &summary.target { span { class: "item-target", "{target}" } " " }
                             if summary.target.is_none() && summary.kwargs.is_empty() { "(no arguments)" }
                             "{summary.kwargs}"

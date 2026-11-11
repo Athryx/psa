@@ -1265,6 +1265,66 @@ pub fn submit(
     submit_captured(ui, target, interrupt, draft)
 }
 
+/// `/fork [name]`: copies the session through its current head, then opens the
+/// fork at the copy of the agent the command was typed in.
+pub async fn fork_session(mut ui: Signal<Ui>, target: TranscriptTarget, name: String) {
+    let generation = ui.peek().generation;
+    let Ok(api) = client(ui) else {
+        return;
+    };
+    let request = ForkSession {
+        point: ForkPoint::Head,
+        metadata: UpdateSession {
+            name: Some(name).filter(|name| !name.is_empty()),
+            ..Default::default()
+        },
+    };
+    let result = api.fork_session(target.session_id, &request).await;
+    if ui.peek().generation != generation {
+        return;
+    }
+    let fork = match result {
+        Ok(fork) => fork,
+        Err(error) => {
+            ui.write().error = Some(format!("Unable to fork the session: {error}"));
+            return;
+        }
+    };
+
+    let id = fork.session.id;
+    {
+        let mut state = ui.write();
+        if let Some(agent) = fork
+            .agents
+            .iter()
+            .find(|agent| agent.parent_id == Some(target.agent_id))
+        {
+            state.last_agents.insert(id, agent.id);
+        }
+        state.upsert_session(fork.session);
+        state.notice = Some("Session forked.".into());
+    }
+    open_session(ui, id, true).await;
+}
+
+/// Opens a session that may not be in the loaded list, such as a fork's parent,
+/// loading its metadata first so its details render immediately.
+pub async fn open_session_by_id(mut ui: Signal<Ui>, id: SessionId) {
+    let generation = ui.peek().generation;
+    let Ok(api) = client(ui) else {
+        return;
+    };
+    match api.get_session(id).await {
+        Ok(session) if ui.peek().generation == generation => ui.write().upsert_session(session),
+        Ok(_) => return,
+        Err(error) => {
+            ui.write().error = Some(format!("Unable to open session {}: {error}", id.0));
+            return;
+        }
+    }
+    open_session(ui, id, true).await;
+}
+
 /// `/refresh` outside a new session: re-runs global and session-project agent
 /// and skill discovery. The server's `config.toml` still requires a restart.
 pub async fn refresh_configs(mut ui: Signal<Ui>, session_id: SessionId) {

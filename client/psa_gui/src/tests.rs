@@ -987,3 +987,63 @@ fn closing_the_last_view_releases_history_but_retains_unsent_drafts() {
     assert!(!ui.history_requests.contains_key(&closed));
     assert_eq!(ui.drafts.get(&closed).unwrap(), "unsent draft");
 }
+
+#[test]
+fn tab_drops_parse_from_the_browser_and_apply_to_the_workspace() {
+    use crate::views::{DropEdge, TabDrop, apply_tab_drop};
+    let parse = |value: serde_json::Value| serde_json::from_value::<TabDrop>(value).unwrap();
+    assert_eq!(
+        parse(serde_json::json!({"kind":"split","view":3,"pane":1,"edge":"top","slot":null})),
+        TabDrop::Split {
+            view: 3,
+            pane: 1,
+            edge: DropEdge::Top
+        }
+    );
+
+    let mut workspace = Workspace::default();
+    let targets: Vec<_> = (1..=3)
+        .map(|agent| TranscriptTarget {
+            session_id: SessionId(1),
+            agent_id: AgentId(agent),
+        })
+        .collect();
+    let views: Vec<_> = targets.iter().map(|t| workspace.open(*t, true)).collect();
+    let first = workspace.focused_group;
+    let tabs = |workspace: &Workspace, index: usize| -> Vec<AgentId> {
+        workspace.groups()[index]
+            .tabs
+            .iter()
+            .map(|t| t.target.agent_id)
+            .collect()
+    };
+
+    // Reorder within the pane: the first tab moves to the end.
+    apply_tab_drop(
+        &mut workspace,
+        parse(serde_json::json!({"kind":"insert","view":views[0].0,"pane":first.0,"slot":3})),
+    );
+    assert_eq!(tabs(&workspace, 0), [AgentId(2), AgentId(3), AgentId(1)]);
+
+    // Split below, then join the new pane from the original one.
+    apply_tab_drop(
+        &mut workspace,
+        TabDrop::Split {
+            view: views[1].0,
+            pane: first.0,
+            edge: DropEdge::Bottom,
+        },
+    );
+    assert_eq!(workspace.groups().len(), 2);
+    assert_eq!(tabs(&workspace, 1), [AgentId(2)]);
+    let second = workspace.groups()[1].id;
+    apply_tab_drop(
+        &mut workspace,
+        TabDrop::Join {
+            view: views[2].0,
+            pane: second.0,
+        },
+    );
+    assert_eq!(tabs(&workspace, 1), [AgentId(2), AgentId(3)]);
+    assert_eq!(tabs(&workspace, 0), [AgentId(1)]);
+}

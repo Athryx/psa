@@ -143,13 +143,29 @@ async fn concurrent_child_creation_reserves_names_in_the_creation_transaction() 
 #[tokio::test]
 async fn subagent_messages_persist_source_and_replay_as_attributed_user_messages() {
     let (directory, db, _session, root) = fixture().await;
-    let source = psa_api::AgentMessageSource {
-        agent_id: Some(AgentId(42)),
+    let source = psa_api::events::MessageSender {
+        agent_id: Some(root.id),
         name: Some("researcher".into()),
+        request_id: "request-1".into(),
     };
     let mut message = Message::text(MessageType::Subagent, "findings");
     message.source = Some(source.clone());
     let mut cursor = db.cursor().await.unwrap();
+    // Subagent messages, and only they, record a sender.
+    for invalid in [
+        Message::text(MessageType::Subagent, "unattributed"),
+        Message {
+            source: Some(source.clone()),
+            ..Message::text(MessageType::Human, "forged")
+        },
+    ] {
+        assert!(
+            cursor
+                .add_events(root.id, &[NewEvent::new(EventType::Message(invalid))])
+                .await
+                .is_err()
+        );
+    }
     cursor
         .add_events(root.id, &[NewEvent::new(EventType::Message(message))])
         .await
@@ -172,7 +188,7 @@ async fn subagent_messages_persist_source_and_replay_as_attributed_user_messages
     };
     assert_eq!(projected.role, api::Role::User);
     assert!(
-        matches!(&projected.content[0], api::ContentBlock::Text(text) if text.text.contains("researcher (agent 42)"))
+        matches!(&projected.content[0], api::ContentBlock::Text(text) if text.text.contains(&format!("researcher (agent {})", root.id.0)))
     );
     assert!(
         matches!(&projected.content[1], api::ContentBlock::Text(text) if text.text == "findings")

@@ -502,6 +502,20 @@ impl Workspace {
         }
         true
     }
+    /// Moves a tab to an insertion `slot` between the destination's current tabs,
+    /// counting the moved tab itself when reordering within its own pane.
+    pub fn move_tab_to_slot(&mut self, view: ViewId, destination: GroupId, slot: usize) -> bool {
+        let current = self
+            .groups()
+            .into_iter()
+            .find(|g| g.id == destination)
+            .and_then(|g| g.tabs.iter().position(|t| t.id == view));
+        let index = match current {
+            Some(position) if position < slot => slot - 1,
+            _ => slot,
+        };
+        self.move_tab(view, destination, index)
+    }
     /// Repairs malformed layout references without dropping unavailable remote targets.
     pub fn restore(&mut self) {
         let mut used = std::collections::HashSet::new();
@@ -737,5 +751,35 @@ mod tests {
         assert!(w.move_tab(a, g, 0));
         assert_eq!(w.groups().len(), 1);
         assert_eq!(w.active_tab().unwrap().id, a);
+    }
+    #[test]
+    fn slots_reorder_within_a_pane_and_insert_into_others() {
+        let mut w = Workspace::default();
+        let a = w.open(target(1), true);
+        let b = w.open(target(2), true);
+        let c = w.open(target(3), true);
+        let first = w.focused_group;
+        let order = |w: &Workspace, group: GroupId| -> Vec<ViewId> {
+            w.groups()
+                .iter()
+                .find(|g| g.id == group)
+                .unwrap()
+                .tabs
+                .iter()
+                .map(|t| t.id)
+                .collect()
+        };
+        assert!(w.move_tab_to_slot(a, first, 3));
+        assert_eq!(order(&w, first), [b, c, a]);
+        assert!(w.move_tab_to_slot(a, first, 0));
+        assert_eq!(order(&w, first), [a, b, c]);
+        assert!(w.move_tab_to_slot(c, first, 1));
+        assert_eq!(order(&w, first), [a, c, b]);
+        let second = w.split(first, SplitAxis::Horizontal).unwrap();
+        assert!(w.move_tab_to_slot(b, second, 0));
+        assert_eq!(order(&w, second), [b]);
+        assert!(w.move_tab_to_slot(a, second, 1));
+        assert_eq!(order(&w, second), [b, a]);
+        assert_eq!(order(&w, first), [c]);
     }
 }

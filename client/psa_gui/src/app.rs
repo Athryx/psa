@@ -292,8 +292,9 @@ pub struct Ui {
     pub settings_open: bool,
     pub error: Option<String>,
     pub notice: Option<String>,
-    pub dragging: Option<ViewId>,
     pub follow_request: (u64, Option<ViewId>),
+    /// A linked message to scroll to once the target transcript has loaded.
+    pub pending_reveals: HashMap<TranscriptTarget, MessageLink>,
     composer_focus_request: Option<ComposerFocusRequest>,
 }
 impl Ui {
@@ -339,8 +340,8 @@ impl Ui {
             settings_open: false,
             error: None,
             notice: None,
-            dragging: None,
             follow_request: (0, None),
+            pending_reveals: HashMap::new(),
             composer_focus_request: None,
         }
     }
@@ -406,6 +407,11 @@ impl Ui {
         from_double_click: bool,
     ) {
         self.open_session_target_with_focus(target, permanent, from_double_click, None);
+    }
+    /// Opens another agent's transcript, scrolled to a linked message.
+    pub fn reveal_message(&mut self, target: TranscriptTarget, link: MessageLink) {
+        self.pending_reveals.insert(target, link);
+        self.open(target, true);
     }
     /// Show the makeup of the context sent for one of an agent's model turns.
     pub fn open_context(&mut self, target: TranscriptTarget, turn: u64) {
@@ -712,6 +718,16 @@ pub fn app() -> Element {
             state.sidebar.width,
             state.settings_open,
         )
+    });
+    // One browser controller drives tab dragging for every pane.
+    use_hook(move || {
+        let mut ui = ui;
+        spawn(async move {
+            let mut eval = document::eval(include_str!("tab_drag.js"));
+            while let Ok(drop) = eval.recv::<views::TabDrop>().await {
+                views::apply_tab_drop(&mut ui.write().workspace, drop);
+            }
+        });
     });
     let state = ui.peek();
     rsx! {

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT p.event_pk, p.message_type, p.delivery, p.content, p.metadata, p.source, p.description FROM event_message p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+  "query": "SELECT p.event_pk, p.message_type, p.delivery, p.content, p.metadata, p.description, p.source_agent_id, p.source_name, p.request_id FROM event_message p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
   "describe": {
     "columns": [
       {
@@ -59,24 +59,46 @@
         }
       },
       {
-        "name": "source",
+        "name": "description",
         "ordinal": 5,
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "event_message",
-            "name": "source"
+            "name": "description"
           }
         }
       },
       {
-        "name": "description",
+        "name": "source_agent_id",
         "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "source_agent_id"
+          }
+        }
+      },
+      {
+        "name": "source_name",
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "event_message",
-            "name": "description"
+            "name": "source_name"
+          }
+        }
+      },
+      {
+        "name": "request_id",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "request_id"
           }
         }
       }
@@ -91,8 +113,10 @@
       false,
       false,
       true,
+      true,
+      true,
       true
     ]
   },
-  "hash": "eb2735753d23640e6e0f941ee200d4fadc24644db25bc308b3afe1400d03b8ab"
+  "hash": "d901477abe43fbda83986e169a0034321586397c78e5df584ee58d021875dff0"
 }

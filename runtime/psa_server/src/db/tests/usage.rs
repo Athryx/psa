@@ -287,3 +287,56 @@ async fn status_projects_fork_bounded_markers_and_context_resets() {
     cursor.commit().await.unwrap();
     db.close().await;
 }
+
+fn unreported_compaction() -> NewEvent {
+    NewEvent::new(EventType::Compaction(Compaction {
+        summary: CompactionSummary::Text("summary".into()),
+        usage: Default::default(),
+    }))
+}
+
+#[tokio::test]
+async fn unreported_compaction_usage_keeps_totals_known_and_poisoned_totals_are_repaired() {
+    let (_dir, db, _session, agent) = fixture().await;
+    let mut cursor = db.cursor().await.unwrap();
+    cursor
+        .add_events(
+            agent.id,
+            &[
+                result(reported(3)),
+                NewEvent::new(EventType::NewContext),
+                unreported_compaction(),
+                result(reported(5)),
+            ],
+        )
+        .await
+        .unwrap();
+    let usage = cursor.get_agent(agent.id).await.unwrap().usage;
+    assert_eq!(usage.input_tokens, Some(8));
+    assert_eq!(usage.total_tokens, Some(8));
+    assert_eq!(
+        super::super::queries::usage_at(cursor.connection(), agent.id, psa_api::events::EventId(4))
+            .await
+            .unwrap(),
+        usage
+    );
+
+    // Totals stored before the fix lost every count after a compaction.
+    let poisoned = crate::agents::AgentUsage {
+        input_tokens: None,
+        output_tokens: None,
+        total_tokens: None,
+        ..usage.clone()
+    };
+    sqlx::query("UPDATE agents SET usage = ? WHERE id = ?")
+        .bind(serde_json::to_string(&poisoned).unwrap())
+        .bind(agent.id.0 as i64)
+        .execute(cursor.connection())
+        .await
+        .unwrap();
+    assert_eq!(cursor.repair_unknown_usage().await.unwrap(), 1);
+    assert_eq!(cursor.get_agent(agent.id).await.unwrap().usage, usage);
+    assert_eq!(cursor.repair_unknown_usage().await.unwrap(), 0);
+    cursor.rollback().await.unwrap();
+    db.close().await;
+}

@@ -179,20 +179,33 @@ pub(super) async fn insert_payload(
                 MessageType::Harness => "harness",
                 MessageType::System => "system",
             };
+            if (value.message_type == MessageType::Subagent) != value.source.is_some() {
+                return Err(DbError::InvalidInput(
+                    "subagent messages, and only they, record a sender".into(),
+                ));
+            }
             let delivery: Option<&str> = None;
             let metadata = serialize_json(&value.metadata)?;
             let content = serialize_json(&value.content)?;
-            let source = value.source.as_ref().map(serialize_json).transpose()?;
+            let sender = value.source.as_ref();
+            let source_agent_id = sender
+                .and_then(|sender| sender.agent_id)
+                .map(|id| encode_integer(id.0))
+                .transpose()?;
+            let source_name = sender.and_then(|sender| sender.name.as_deref());
+            let request_id = sender.map(|sender| sender.request_id.as_str());
 
             sqlx::query!(
-                "INSERT INTO event_message (event_pk,message_type,delivery,content,metadata,source,description) VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO event_message (event_pk,message_type,delivery,content,metadata,description,source_agent_id,source_name,request_id) VALUES (?,?,?,?,?,?,?,?,?)",
                 pk,
                 message_type,
                 delivery,
                 content,
                 metadata,
-                source,
-                value.description
+                value.description,
+                source_agent_id,
+                source_name,
+                request_id
             )
             .execute(&mut *conn)
             .await?;
@@ -462,9 +475,21 @@ pub(super) async fn load_payloads(
         |r| EventType::NewContext
     );
     load!(
-        "SELECT p.event_pk, p.message_type, p.delivery, p.content, p.metadata, p.source, p.description FROM event_message p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+        "SELECT p.event_pk, p.message_type, p.delivery, p.content, p.metadata, p.description, p.source_agent_id, p.source_name, p.request_id FROM event_message p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
         |r| EventType::Message(Message {
-            source: r.source.as_deref().map(parse_json).transpose()?,
+            source: r
+                .request_id
+                .map(|request_id| {
+                    Ok::<_, DbError>(MessageSender {
+                        agent_id: r
+                            .source_agent_id
+                            .map(|id| decode_integer(id).map(psa_api::AgentId))
+                            .transpose()?,
+                        name: r.source_name,
+                        request_id,
+                    })
+                })
+                .transpose()?,
             description: r.description,
             message_type: match r.message_type.as_str() {
                 "subagent" => MessageType::Subagent,

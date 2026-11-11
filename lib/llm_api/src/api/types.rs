@@ -250,6 +250,17 @@ pub struct Usage {
 }
 
 impl Usage {
+    /// True when no count or provider detail was reported at all, such as a
+    /// record whose tokens are billed elsewhere. Distinct from reported zeros.
+    pub fn is_unreported(&self) -> bool {
+        self.input_tokens.is_none()
+            && self.output_tokens.is_none()
+            && self.total_tokens.is_none()
+            && self.cached_input_tokens.is_none()
+            && self.reasoning_output_tokens.is_none()
+            && self.provider_details.is_empty()
+    }
+
     /// Replace reported counts (including zero), retaining fields absent from the snapshot.
     pub(super) fn merge_reported(&mut self, latest: Self) {
         self.input_tokens = latest.input_tokens.or(self.input_tokens);

@@ -420,6 +420,38 @@ impl DatabaseCursor {
         Ok(events)
     }
 
+    /// Recomputes stored totals left unknown by compactions that reported no
+    /// usage before such records were skipped. Fully known totals are untouched.
+    /// Returns how many agents were repaired.
+    pub async fn repair_unknown_usage(&mut self) -> Result<usize, DbError> {
+        let mut repaired = 0;
+        for agent in self.list_all_agents().await? {
+            let usage = &agent.usage;
+            if usage.input_tokens.is_some()
+                && usage.output_tokens.is_some()
+                && usage.total_tokens.is_some()
+            {
+                continue;
+            }
+            let Some(through) = agent.next_event_id.0.checked_sub(1).filter(|id| *id > 0) else {
+                continue;
+            };
+
+            let recomputed = usage_at(self.connection(), agent.id, EventId(through)).await?;
+            if recomputed == agent.usage {
+                continue;
+            }
+            let id = encode_integer(agent.id.0)?;
+            sqlx::query("UPDATE agents SET usage = ? WHERE id = ?")
+                .bind(serde_json::to_string(&recomputed)?)
+                .bind(id)
+                .execute(self.connection())
+                .await?;
+            repaired += 1;
+        }
+        Ok(repaired)
+    }
+
     pub async fn list_all_agents(&mut self) -> Result<Vec<crate::agents::Agent>, DbError> {
         let rows = sqlx::query!("SELECT id FROM agents ORDER BY id")
             .fetch_all(self.connection())
@@ -500,7 +532,7 @@ pub(super) async fn usage_at(
     let mut total = AgentUsage::default();
     for (owner, lower, upper) in load_segments(conn, agent, EventId(0), Some(through)).await? {
         let rows = sqlx::query(
-            "SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens, p.usage_details FROM event_inference_result_end p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ? UNION ALL SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens, p.usage_details FROM event_compaction p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+            "SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens, p.usage_details FROM event_inference_result_end p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ? UNION ALL SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens, p.usage_details FROM event_compaction p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ? AND (p.input_tokens IS NOT NULL OR p.output_tokens IS NOT NULL OR p.total_tokens IS NOT NULL OR p.cached_tokens IS NOT NULL OR p.reasoning_tokens IS NOT NULL OR p.usage_details <> '{}')",
         ).bind(owner).bind(lower).bind(upper).bind(owner).bind(lower).bind(upper).fetch_all(&mut *conn).await?;
         for row in rows {
             add_usage(

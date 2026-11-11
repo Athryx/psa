@@ -174,3 +174,38 @@ fn details_show_running_spinner_without_activity_or_status_text() {
     assert!(!html.contains(" · Running"), "{html}");
     assert!(!html.contains(" · Idle"), "{html}");
 }
+
+fn forked_details_root() -> Element {
+    let ui = use_signal(|| {
+        let mut state = fixture();
+        for (id, parent, name) in [(1, None, "original"), (2, Some(1), "fork")] {
+            state.sessions.push(serde_json::from_value(serde_json::json!({
+                "id":id,"parent_id":parent,"name":name,"working_directory":"/work",
+                "probe_id":"00000000-0000-0000-0000-000000000001",
+                "model_config":{"model":{"provider":"Openrouter","api_name":"test/model"},"effort":"High"},
+                "busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"
+            })).unwrap());
+        }
+        state.workspace.open(target(2, 1), false);
+        state
+    });
+    use_context_provider(|| ui);
+    rsx! { Details {} }
+}
+
+#[test]
+fn details_link_a_fork_to_its_parent_and_show_the_model_inline() {
+    let mut dom = VirtualDom::new(forked_details_root);
+    dom.rebuild_to_vec();
+    let html = dioxus_ssr::render(&dom);
+    assert!(html.contains("<dt>Forked from</dt>"), "{html}");
+    assert!(
+        html.contains("class=\"text-link\" title=\"Open parent session\">original</button>"),
+        "{html}"
+    );
+    assert!(html.contains("class=\"effort-high\""), "{html}");
+
+    let mut dom = VirtualDom::new(details_root);
+    dom.rebuild_to_vec();
+    assert!(!dioxus_ssr::render(&dom).contains("Forked from"));
+}

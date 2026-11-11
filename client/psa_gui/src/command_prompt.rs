@@ -1,5 +1,5 @@
 //! Inline value prompts that slash commands open above the composer line.
-use crate::input::{BrowserInput, DraftStore, InputKeyEvent, InputSnapshot};
+use crate::input::{BrowserInput, InputKeyEvent, InputSnapshot};
 use dioxus::prelude::*;
 
 /// Edits a single value for a slash command. Enter or Save submits the trimmed
@@ -13,19 +13,12 @@ pub(crate) fn CommandPrompt(
     onsubmit: EventHandler<String>,
     oncancel: EventHandler<()>,
 ) -> Element {
-    let initial = use_signal(|| initial_value.clone());
-    let mut value = use_signal(DraftStore::<()>::default);
-    let current = move || {
-        value
-            .peek()
-            .get(&())
-            .cloned()
-            .unwrap_or_else(|| initial.peek().clone())
-    };
-    let submit = move || {
-        let text = current().trim().to_owned();
+    // The browser owns the live text; this mirrors its latest packet for Save.
+    let mut value = use_signal(|| initial_value.clone());
+    let submit = move |text: &str| {
+        let text = text.trim();
         if !text.is_empty() {
-            onsubmit.call(text);
+            onsubmit.call(text.to_owned());
         }
     };
 
@@ -35,25 +28,27 @@ pub(crate) fn CommandPrompt(
             div { class: "command-prompt-row",
                 BrowserInput {
                     initial_value: initial_value.clone(),
-                    mutation: value.read().mutation(&()),
                     aria_label: label.clone(),
                     placeholder,
                     autofocus: true,
                     capture_enter: true,
                     capture_escape: true,
-                    onedit: move |snapshot: InputSnapshot| { value.write().apply_snapshot((), snapshot); },
+                    onedit: move |snapshot: InputSnapshot| value.set(snapshot.text),
                     onkey: move |event: InputKeyEvent| {
-                        if event.snapshot.composing || !value.write().apply_snapshot((), event.snapshot.clone()) {
+                        if event.snapshot.composing {
                             return;
                         }
+                        value.set(event.snapshot.text.clone());
                         match event.key() {
-                            Key::Enter => { event.prevent_default(); submit(); }
+                            // Cancelling needs no text, so it never waits on a packet.
                             Key::Escape => { event.prevent_default(); event.stop_propagation(); oncancel.call(()); }
+                            // Submit the text as it was when the key was pressed.
+                            Key::Enter => { event.prevent_default(); submit(&event.snapshot.text); }
                             _ => {}
                         }
                     },
                 }
-                button { class: "primary", onmousedown: move |event| event.prevent_default(), onclick: move |_| submit(), "{submit_label}" }
+                button { class: "primary", onmousedown: move |event| event.prevent_default(), onclick: move |_| submit(&value.peek()), "{submit_label}" }
                 button { onmousedown: move |event| event.prevent_default(), onclick: move |_| oncancel.call(()), "Cancel" }
             }
             div { class: "command-hint", "Enter to {submit_label.to_lowercase()} · Esc to cancel" }

@@ -21,7 +21,7 @@ use crate::{
 use actors::Mailbox;
 use psa_api::{
     AgentCommand, AgentRequest, CommandDelivery, MessageDelivery, RequestAccepted, StreamMessage,
-    events::{EventId, EventRange, EventType, Log, MessageType, NewEvent},
+    events::{EventId, EventRange, EventType, Log, MessageSender, MessageType, NewEvent},
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -109,6 +109,12 @@ impl Runtime {
             db.drain_commits(agent.id).await;
             recover_agent(&db, &publication, agent.id).await?;
         }
+        let mut cursor = db.cursor().await?;
+        let repaired = cursor.repair_unknown_usage().await?;
+        cursor.commit().await?;
+        if repaired > 0 {
+            tracing::info!(repaired, "recomputed agent usage totals");
+        }
 
         let (commands, received) = actors::channel(256);
         let commands = ManagerClient::new(commands);
@@ -163,7 +169,7 @@ pub(crate) struct QueuedRequest {
     pub delivery: MessageDelivery,
     pub content: Vec<llm_api::api::ContentBlock>,
     pub message_type: MessageType,
-    pub source: Option<psa_api::AgentMessageSource>,
+    pub source: Option<psa_api::events::MessageSender>,
     pub allow_restart: bool,
 }
 
@@ -944,6 +950,12 @@ impl SessionManager {
         }
 
         self.enqueue(agent, session, |id| {
+            // Every subagent message records the request that delivered it.
+            let source = (message_type == MessageType::Subagent).then(|| MessageSender {
+                agent_id: source.as_ref().and_then(|source| source.agent_id),
+                name: source.and_then(|source| source.name),
+                request_id: id.clone(),
+            });
             QueuedItem::Message(QueuedRequest {
                 id,
                 delivery,

@@ -8,6 +8,7 @@ pub enum CommandId {
     Info,
     Compact,
     Rename,
+    Fork,
 }
 
 impl CommandId {
@@ -15,7 +16,7 @@ impl CommandId {
     pub fn is_available(self, root: bool) -> bool {
         match self {
             Self::Agent => root,
-            Self::Compact => !root,
+            Self::Compact | Self::Fork => !root,
             Self::SessionModel
             | Self::SessionEffort
             | Self::Info
@@ -65,6 +66,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         id: CommandId::Rename,
         name: "rename",
         description: "Rename this session",
+    },
+    CommandSpec {
+        id: CommandId::Fork,
+        name: "fork",
+        description: "Fork this session at its current point; optional new name",
     },
 ];
 
@@ -232,6 +238,14 @@ mod tests {
         assert!(CommandId::Rename.is_available(true) && CommandId::Rename.is_available(false));
         assert!(!CommandId::Agent.is_available(false));
         assert!(CommandId::Refresh.is_available(true) && CommandId::Refresh.is_available(false));
+        assert!(!CommandId::Fork.is_available(true) && CommandId::Fork.is_available(false));
+        assert_eq!(
+            parse_composer_input("/fork try another approach"),
+            ComposerInput::Command {
+                id: CommandId::Fork,
+                arguments: "try another approach".into(),
+            }
+        );
         assert_eq!(
             describe_agent_command(&psa_api::AgentCommand::Compact {
                 instructions: Some("tests".into())

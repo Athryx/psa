@@ -22,6 +22,7 @@
         let pointer = null;
         let disposed = false;
         let preview = null;
+        let previewFrame = null;
         let branches = null;
         const heldKeys = new Set();
         const listeners = [];
@@ -38,6 +39,8 @@
         }
 
         function clearPreview() {
+            if (previewFrame !== null) cancelAnimationFrame(previewFrame);
+            previewFrame = null;
             if (!preview) return;
             const { shell, property, previous, priority, current } = preview;
             if (shell.style.getPropertyValue(property) === current) {
@@ -58,8 +61,15 @@
                 previous: shell.style.getPropertyValue(property),
                 priority: shell.style.getPropertyPriority(property),
             };
-            preview.current = `${value}${config.preview_unit || ''}`;
-            shell.style.setProperty(property, preview.current);
+            // Each preview re-lays out the whole shell (font size, widths), so
+            // apply at most one per frame instead of one per input event.
+            if (previewFrame !== null) return;
+            previewFrame = requestAnimationFrame(() => {
+                previewFrame = null;
+                if (!preview) return;
+                preview.current = `${value}${config.preview_unit || ''}`;
+                shell.style.setProperty(property, preview.current);
+            });
         }
 
         function findBranches() {
@@ -172,7 +182,11 @@
             listen(window, 'pointerup', finish, true);
             listen(window, 'pointercancel', finish, true);
             listen(window, 'blur', event => { if (event.target === window) finish(null); }, true);
-            try { element.setPointerCapture(event.pointerId); } catch (_) { /* Window listeners remain a fallback. */ }
+            // A native range already tracks its own thumb drag; capturing the
+            // pointer on the input can stop WebKit from moving the thumb.
+            if (kind !== 'range') {
+                try { element.setPointerCapture(event.pointerId); } catch (_) { /* Window listeners remain a fallback. */ }
+            }
         }
 
         function keydown(event) {

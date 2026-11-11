@@ -323,7 +323,7 @@ async fn uncancelled_creation_reports_submission_result_without_interrupting() {
                 let value: serde_json::Value = serde_json::from_str(&text).unwrap();
                 assert_eq!(
                     value,
-                    json!({"agent_id":child,"name":"worker-one","status":"started"})
+                    json!({"agent_id":child,"name":"worker-one","status":"started","request_id":"initial-task"})
                 );
             }
             assert!(matches!(

@@ -95,9 +95,10 @@ fn configured_width_styles_transcripts_and_both_composers() {
         "{html}"
     );
     let css = crate::style::CSS;
+    // The composer padding, plus the slash menu and command prompt edges.
     assert_eq!(
         css.matches("var(--conversation-max-width, 85rch)").count(),
-        4
+        6
     );
     assert!(css.contains("max(16px,calc((100% - var(--conversation-max-width, 85rch))/2))"));
 }
@@ -669,4 +670,54 @@ fn refresh_is_a_command_for_existing_agents_and_is_not_sent_as_text() {
     let html = dioxus_ssr::render(&dom);
     assert!(!html.contains("only available before creating"), "{html}");
     assert!(composer_draft(&dom).is_empty(), "{html}");
+}
+
+#[test]
+fn fork_is_a_command_and_clears_the_draft() {
+    let (mut dom, textarea) = mount();
+    input(&mut dom, textarea, "/fo");
+    assert!(dioxus_ssr::render(&dom).contains("/fork"));
+    input(&mut dom, textarea, "/fork other approach");
+    key(&mut dom, textarea, Key::Enter);
+    assert!(composer_draft(&dom).is_empty());
+}
+
+#[test]
+fn escape_closes_the_rename_prompt_without_renaming() {
+    let (mut dom, textarea) = mount();
+    input(&mut dom, textarea, "/rename");
+    // Press Enter by hand to keep the mutations that mount the prompt input.
+    let data = SerializedKeyboardData::new(
+        Key::Enter,
+        Code::Unidentified,
+        Location::Standard,
+        false,
+        Modifiers::empty(),
+        false,
+    );
+    let event = Event::new(
+        Rc::new(PlatformEventData::new(Box::new(data))) as Rc<dyn Any>,
+        true,
+    );
+    dom.runtime().handle_event("keydown", event, textarea);
+    let mut prompt_input = None;
+    for _ in 0..4 {
+        for edit in dom.render_immediate_to_vec().edits {
+            if let Mutation::NewEventListener { name, id } = edit
+                && name == "keydown"
+                && id != textarea
+            {
+                prompt_input = Some(id);
+            }
+        }
+    }
+    assert!(dioxus_ssr::render(&dom).contains("aria-label=\"Rename session\""));
+
+    key(
+        &mut dom,
+        prompt_input.expect("prompt input key listener"),
+        Key::Escape,
+    );
+    let html = dioxus_ssr::render(&dom);
+    assert!(!html.contains("aria-label=\"Rename session\""), "{html}");
 }

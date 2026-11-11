@@ -1897,7 +1897,7 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
         stream.next().await.unwrap().unwrap().message,
         StreamMessage::Snapshot { .. }
     ) {}
-    harness
+    let accepted = harness
         .client
         .send_subagent_message(
             session.id,
@@ -1931,9 +1931,10 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
             if message.message_type == MessageType::Subagent {
                 assert_eq!(
                     message.source.unwrap(),
-                    wire::AgentMessageSource {
+                    MessageSender {
                         agent_id: Some(parent.id),
                         name: Some(parent.name.clone()),
+                        request_id: accepted.request_id.clone(),
                     }
                 );
                 break;

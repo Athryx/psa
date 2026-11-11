@@ -165,12 +165,26 @@ pub enum MessageType {
     System,
 }
 
+/// Delivery of a message from another agent. Present on, and only on,
+/// [`MessageType::Subagent`] messages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageSender {
+    /// Sending agent; absent when the submission carried no attribution.
+    pub agent_id: Option<AgentId>,
+    /// Sending agent name captured at submission, if known.
+    pub name: Option<String>,
+    /// Server-assigned request that delivered this message. `send_message` and
+    /// `create_agent` return the same ID, linking the message to its sending call.
+    pub request_id: String,
+}
+
 /// Conversation content with its origin and replay metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    /// Optional sender attribution for a subagent message.
+    /// Delivery of a subagent message; `None` for every other message type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<crate::AgentMessageSource>,
+    pub source: Option<MessageSender>,
     /// Short display description, primarily for system instructions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

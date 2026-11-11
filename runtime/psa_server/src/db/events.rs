@@ -207,7 +207,11 @@ impl DatabaseCursor {
         for event in events {
             match &event.kind {
                 EventType::InferenceResultEnd(end) => add_usage(&mut usage, &end.usage)?,
-                EventType::Compaction(compaction) => add_usage(&mut usage, &compaction.usage)?,
+                // A summary billed on its own agent reports nothing here; adding
+                // it would turn every known total into "unknown".
+                EventType::Compaction(compaction) if !compaction.usage.is_unreported() => {
+                    add_usage(&mut usage, &compaction.usage)?
+                }
                 _ => {}
             }
         }
