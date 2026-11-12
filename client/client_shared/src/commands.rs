@@ -9,6 +9,7 @@ pub enum CommandId {
     Compact,
     Rename,
     Fork,
+    Sandbox,
 }
 
 impl CommandId {
@@ -21,7 +22,8 @@ impl CommandId {
             | Self::SessionEffort
             | Self::Info
             | Self::Rename
-            | Self::Refresh => true,
+            | Self::Refresh
+            | Self::Sandbox => true,
         }
     }
 }
@@ -30,49 +32,124 @@ pub struct CommandSpec {
     pub id: CommandId,
     pub name: &'static str,
     pub description: &'static str,
+    /// Arguments are chosen from a menu: `/name ` opens it, with arrow keys,
+    /// Tab completion, and Enter to select.
+    pub picker: bool,
 }
 pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: CommandId::SessionModel,
         name: "model",
         description: "Change this session's default model and effort",
+        picker: true,
     },
     CommandSpec {
         id: CommandId::Agent,
         name: "agent",
         description: "Choose the root agent and its model policy",
+        picker: true,
     },
     CommandSpec {
         id: CommandId::Refresh,
         name: "refresh",
         description: "Reload agent and skill configurations from disk",
+        picker: false,
     },
     CommandSpec {
         id: CommandId::SessionEffort,
         name: "effort",
         description: "Change this session's default reasoning effort",
+        picker: true,
     },
     CommandSpec {
         id: CommandId::Info,
         name: "info",
         description: "Show agent information and token usage",
+        picker: false,
     },
     CommandSpec {
         id: CommandId::Compact,
         name: "compact",
         description: "Summarize this agent's older context now; optional focus instructions",
+        picker: false,
     },
     CommandSpec {
         id: CommandId::Rename,
         name: "rename",
         description: "Rename this session",
+        picker: false,
     },
     CommandSpec {
         id: CommandId::Fork,
         name: "fork",
         description: "Fork this session at its current point; optional new name",
+        picker: false,
+    },
+    CommandSpec {
+        id: CommandId::Sandbox,
+        name: "sandbox",
+        description: "Start or stop this session's sandbox",
+        picker: true,
     },
 ];
+
+/// Lifecycle change to a sandbox from the probes pane or a slash command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxChange {
+    Start,
+    Stop,
+    Delete,
+}
+
+impl SandboxChange {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Delete => "delete",
+        }
+    }
+
+    pub fn past_tense(self) -> &'static str {
+        match self {
+            Self::Start => "started",
+            Self::Stop => "stopped",
+            Self::Delete => "deleted",
+        }
+    }
+}
+
+/// Lifecycle action for the current session's sandbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxAction {
+    Start,
+    Stop,
+}
+
+impl SandboxAction {
+    pub const ALL: [Self; 2] = [Self::Start, Self::Stop];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Start => "Start this session's sandbox container",
+            Self::Stop => "Stop this session's sandbox container",
+        }
+    }
+
+    /// Parse `/sandbox` arguments; `None` for empty or unrecognized actions.
+    pub fn parse(arguments: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|action| arguments.trim().eq_ignore_ascii_case(action.as_str()))
+    }
+}
 
 /// Transcript label for a recorded agent command, in its slash-command form.
 pub fn describe_agent_command(command: &psa_api::AgentCommand) -> String {
@@ -155,6 +232,26 @@ impl CommandSelection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sandbox_command_parses_actions() {
+        assert_eq!(
+            parse_composer_input("/sandbox stop"),
+            ComposerInput::Command {
+                id: CommandId::Sandbox,
+                arguments: "stop".into()
+            }
+        );
+        assert_eq!(SandboxAction::parse("stop"), Some(SandboxAction::Stop));
+        assert_eq!(SandboxAction::parse(" Start "), Some(SandboxAction::Start));
+        assert_eq!(SandboxAction::parse(""), None);
+        assert_eq!(SandboxAction::parse("restart"), None);
+        assert!(CommandId::Sandbox.is_available(true));
+        assert!(
+            complete_commands("/sand")
+                .iter()
+                .any(|c| c.id == CommandId::Sandbox)
+        );
+    }
     #[test]
     fn commands_are_not_model_prompts_and_literals_are_preserved() {
         assert_eq!(

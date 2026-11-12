@@ -357,7 +357,7 @@ async fn mixed_batches_validate_and_commit_public_events_without_gaps() {
 async fn mixed_batch_failure_rolls_back_all_preceding_items() {
     let (_dir, db, _session, agent) = fixture().await;
     let mut cursor = db.cursor().await.unwrap();
-    sqlx::query("CREATE TEMP TRIGGER reject_second_snapshot BEFORE INSERT ON codemode_snapshots WHEN NEW.snapshot = X'626164' BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+    sqlx::query("CREATE TEMP TRIGGER reject_second_snapshot BEFORE INSERT ON codemode_snapshots WHEN (SELECT count(*) FROM codemode_snapshots) >= 1 BEGIN SELECT RAISE(ABORT, 'test failure'); END")
         .execute(cursor.connection()).await.unwrap();
     let batch = [
         EventBatchItem::Public(tool_result("first")),
@@ -385,6 +385,34 @@ async fn mixed_batch_failure_rolls_back_all_preceding_items() {
         .await
         .unwrap();
     assert_eq!(saved.events[0].id, EventId(1));
+    cursor.commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn snapshots_are_compressed_at_rest() {
+    let (_dir, db, _session, agent) = fixture().await;
+    let mut cursor = db.cursor().await.unwrap();
+    let mut snapshot = b"MONTY\0".to_vec();
+    snapshot.extend(std::iter::repeat_n(b'y', 1024 * 1024));
+    let event = cursor
+        .add_snapshot(agent.id, &tool_result("big"), &snapshot)
+        .await
+        .unwrap()
+        .events[0]
+        .id;
+
+    let stored_len: i64 = sqlx::query_scalar("SELECT length(snapshot) FROM codemode_snapshots")
+        .fetch_one(cursor.connection())
+        .await
+        .unwrap();
+    assert!(stored_len < 4096, "stored {stored_len} bytes");
+    assert_eq!(
+        cursor
+            .load_private_event_at(agent.id, event, PrivateEventKind::CodeModeSnapshot)
+            .await
+            .unwrap(),
+        Some(PrivateEvent::CodeModeSnapshot(snapshot))
+    );
     cursor.commit().await.unwrap();
 }
 

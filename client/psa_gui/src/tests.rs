@@ -1047,3 +1047,56 @@ fn tab_drops_parse_from_the_browser_and_apply_to_the_workspace() {
     assert_eq!(tabs(&workspace, 1), [AgentId(2), AgentId(3)]);
     assert_eq!(tabs(&workspace, 0), [AgentId(1)]);
 }
+
+fn stacked_modal_test_root() -> Element {
+    use_context_provider(crate::app::ModalRegistry::default);
+    let mut outer = use_signal(|| true);
+    let mut inner = use_signal(|| true);
+    rsx! {
+        if outer() {
+            crate::modal::Modal { title: "Outer", close_label: "Close outer", onclose: move |_| outer.set(false),
+                if inner() {
+                    crate::modal::Modal { title: "Inner", close_label: "Close inner", onclose: move |_| inner.set(false), "inner body" }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn only_the_top_modal_closes_on_escape() {
+    use dioxus::core::Mutation;
+    dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+    let mut dom = VirtualDom::new(stacked_modal_test_root);
+    let mutations = dom.rebuild_to_vec();
+    let keydowns: Vec<_> = mutations
+        .edits
+        .iter()
+        .filter_map(|edit| match edit {
+            Mutation::NewEventListener { name, id } if name == "keydown" => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let html = dioxus_ssr::render(&dom);
+    assert!(
+        html.contains("z-index:10") && html.contains("z-index:11"),
+        "{html}"
+    );
+
+    // Escape reaching the outer dialog while the inner one is open is ignored.
+    key(&dom, keydowns[0], Key::Escape);
+    dom.render_immediate_to_vec();
+    assert!(dioxus_ssr::render(&dom).contains("inner body"));
+
+    key(&dom, keydowns[1], Key::Escape);
+    dom.render_immediate_to_vec();
+    let html = dioxus_ssr::render(&dom);
+    assert!(
+        !html.contains("inner body") && html.contains("Outer"),
+        "{html}"
+    );
+
+    key(&dom, keydowns[0], Key::Escape);
+    dom.render_immediate_to_vec();
+    assert!(!dioxus_ssr::render(&dom).contains("Outer"));
+}

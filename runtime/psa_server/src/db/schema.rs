@@ -9,6 +9,16 @@ use psa_api::events::EventId;
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 
+pub(super) struct SandboxRow {
+    pub probe_id: String,
+    pub manager_id: String,
+    pub name: String,
+    pub image: String,
+    pub mounts: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug)]
 pub(super) struct ProbeRow {
     pub metadata: String,
     pub created_at: i64,

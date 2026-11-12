@@ -721,3 +721,49 @@ fn escape_closes_the_rename_prompt_without_renaming() {
     let html = dioxus_ssr::render(&dom);
     assert!(!html.contains("aria-label=\"Rename session\""), "{html}");
 }
+
+#[test]
+fn picker_options_tab_complete_to_their_typed_command_form() {
+    let option = |action| MenuOption {
+        title: "stop".into(),
+        description: String::new(),
+        action,
+        completion: None,
+    };
+    let sandbox = option(MenuAction::Sandbox(SandboxAction::Stop));
+    assert_eq!(
+        menu_completion(DraftCommandStage::SandboxActions, &sandbox).as_deref(),
+        Some("/sandbox stop")
+    );
+    let effort = option(MenuAction::SessionEffort(Effort::High));
+    assert_eq!(
+        menu_completion(DraftCommandStage::SessionEfforts, &effort).as_deref(),
+        Some("/effort stop")
+    );
+    let refresh = COMMANDS
+        .iter()
+        .find(|c| c.id == CommandId::Refresh)
+        .unwrap();
+    let sandbox_command = COMMANDS
+        .iter()
+        .find(|c| c.id == CommandId::Sandbox)
+        .unwrap();
+    assert!(sandbox_command.picker && !refresh.picker);
+    assert_eq!(
+        menu_completion(
+            DraftCommandStage::Completion,
+            &option(MenuAction::Command(*refresh))
+        )
+        .as_deref(),
+        Some("/refresh")
+    );
+    assert_eq!(
+        menu_completion(
+            DraftCommandStage::Completion,
+            &option(MenuAction::Command(*sandbox_command))
+        )
+        .as_deref(),
+        Some("/sandbox ")
+    );
+    assert_eq!(menu_completion(DraftCommandStage::Models, &effort), None);
+}

@@ -82,6 +82,7 @@ mod tests {
             data_dir: "/probe".into(),
             home_dir: None,
             host,
+            sandboxes: false,
         }
     }
 
@@ -220,6 +221,7 @@ mod tests {
             data_dir: "/one".into(),
             home_dir: None,
             host: false,
+            sandboxes: false,
         };
         let mut cursor = database.cursor().await.unwrap();
         assert!(matches!(

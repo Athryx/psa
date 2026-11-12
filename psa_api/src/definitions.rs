@@ -12,6 +12,9 @@ use std::path::PathBuf;
 pub struct ClientConfig {
     /// Name of the agent configuration suggested for new sessions.
     pub default_agent_name: String,
+    /// Docker image used for new sandboxes that do not name one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_sandbox_image: Option<String>,
 }
 
 /// Namespace for named agent configurations and skills.

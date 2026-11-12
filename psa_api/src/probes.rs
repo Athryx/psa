@@ -6,7 +6,7 @@ use time::OffsetDateTime;
 pub use uuid::Uuid;
 
 /// Supported version of the server-to-probe WebSocket protocol.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 /// Maximum payload bytes in a binary data frame, excluding its nine-byte header.
 pub const CHUNK_SIZE: usize = 64 * 1024;
 /// Maximum number of concurrent operations on one probe connection.
@@ -27,7 +27,7 @@ impl std::fmt::Display for ProbeId {
 }
 
 /// Identity and environment information advertised by a connecting probe.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProbeMetadata {
     /// Persistent probe identifier.
@@ -47,22 +47,27 @@ pub struct ProbeMetadata {
     pub home_dir: Option<String>,
     /// Whether this probe shares the server's filesystem (advertised from config.toml).
     /// Host probes use server-owned skills in place instead of synchronizing copies.
-    #[serde(default, deserialize_with = "deserialize_host")]
+    #[serde(default, deserialize_with = "deserialize_query_bool")]
     pub host: bool,
+    /// Whether this probe can create and manage Docker sandboxes on its machine.
+    #[serde(default, deserialize_with = "deserialize_query_bool")]
+    pub sandboxes: bool,
 }
 
 // Flattened URL query metadata arrives as strings, unlike stored/API JSON.
-fn deserialize_host<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+fn deserialize_query_bool<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<bool, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
-    enum Host {
+    enum Flag {
         Boolean(bool),
         Query(String),
     }
 
-    match Host::deserialize(deserializer)? {
-        Host::Boolean(host) => Ok(host),
-        Host::Query(host) => host.parse().map_err(serde::de::Error::custom),
+    match Flag::deserialize(deserializer)? {
+        Flag::Boolean(value) => Ok(value),
+        Flag::Query(value) => value.parse().map_err(serde::de::Error::custom),
     }
 }
 
@@ -105,7 +110,25 @@ mod metadata_tests {
             data_dir: "/data".into(),
             home_dir: None,
             host: false,
+            sandboxes: false,
         }
+    }
+
+    #[test]
+    fn sandbox_flag_parses_from_query_strings_and_defaults_off() {
+        let mut value = serde_json::to_value(metadata()).unwrap();
+        value["sandboxes"] = serde_json::json!("true");
+        assert!(
+            serde_json::from_value::<ProbeMetadata>(value.clone())
+                .unwrap()
+                .sandboxes
+        );
+        value.as_object_mut().unwrap().remove("sandboxes");
+        assert!(
+            !serde_json::from_value::<ProbeMetadata>(value)
+                .unwrap()
+                .sandboxes
+        );
     }
 
     #[test]
@@ -146,7 +169,7 @@ mod metadata_tests {
 }
 
 /// Server-side probe record with current connection state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Probe {
     /// Most recently advertised metadata, flattened into the wire object.
     #[serde(flatten)]
@@ -321,6 +344,63 @@ pub enum Operation {
         /// Executable, arguments, environment, working directory, and stream routing.
         command: Command,
     },
+    /// Manage a Docker sandbox container on a probe advertising sandbox support.
+    Sandbox {
+        /// Sandbox lifecycle request.
+        request: SandboxRequest,
+    },
+}
+
+/// Lifecycle request for sandbox containers managed by a probe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum SandboxRequest {
+    /// Create a stopped container running a nested probe.
+    Create {
+        /// Container and nested probe specification.
+        spec: SandboxSpec,
+    },
+    /// Start the sandbox container for a nested probe.
+    Start {
+        /// Nested probe identifying the sandbox.
+        probe_id: ProbeId,
+    },
+    /// Stop the sandbox container for a nested probe.
+    Stop {
+        /// Nested probe identifying the sandbox.
+        probe_id: ProbeId,
+    },
+    /// Remove the sandbox container and its nested probe configuration.
+    Remove {
+        /// Nested probe identifying the sandbox.
+        probe_id: ProbeId,
+    },
+    /// Report every sandbox container managed by the probe as [`Event::Containers`].
+    Inspect,
+}
+
+/// Container specification for a new sandbox.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxSpec {
+    /// Identity assigned to the nested probe.
+    pub probe_id: ProbeId,
+    /// Sandbox name, used as the nested probe label and container name suffix.
+    pub name: String,
+    /// Docker image reference.
+    pub image: String,
+    /// Host directories bound into the container.
+    pub mounts: Vec<crate::sandboxes::Mount>,
+}
+
+/// Docker state of one sandbox container.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerStatus {
+    /// Nested probe identifying the sandbox.
+    pub probe_id: ProbeId,
+    /// Docker container name.
+    pub container_name: String,
+    /// Whether the container is running.
+    pub state: crate::sandboxes::SandboxState,
 }
 
 /// Metadata for one immediate child of a listed directory, without following symlinks.
@@ -351,6 +431,11 @@ pub enum Event {
     Started {
         /// Process identifier when available.
         pid: Option<u32>,
+    },
+    /// Result of a sandbox inspection.
+    Containers {
+        /// Sandbox containers managed by the probe.
+        containers: Vec<ContainerStatus>,
     },
     /// Result of a directory listing.
     Entries {

@@ -18,6 +18,10 @@ autostart_local_probe = true
 [database]
 path = "psa.sqlite3"
 
+# Docker image for sandboxes created without an explicit image.
+# [sandboxes]
+# default_image = "ubuntu:24.04"
+
 # Used when session creation omits model_config.
 [session_defaults]
 model = "openai_codex/gpt-5"
@@ -104,6 +108,14 @@ struct Config {
     session_defaults: ModelConfig,
     #[serde(default)]
     agent_defaults: AgentDefaults,
+    #[serde(default)]
+    sandboxes: SandboxConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SandboxConfig {
+    default_image: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,6 +143,7 @@ pub struct ResolvedConfig {
     pub autostart_local_probe: bool,
     pub session_defaults: ModelConfig,
     pub agent_defaults: AgentDefaults,
+    pub default_sandbox_image: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -208,6 +221,10 @@ impl StartOptions {
             autostart_local_probe: config.server.autostart_local_probe,
             session_defaults: config.session_defaults,
             agent_defaults: config.agent_defaults,
+            default_sandbox_image: config
+                .sandboxes
+                .default_image
+                .filter(|image| !image.trim().is_empty()),
         })
     }
 }

@@ -1,5 +1,8 @@
 use futures_util::{SinkExt, StreamExt};
-use psa_api::probes::{DirectoryEntry, Event, Operation, PROTOCOL_VERSION};
+use psa_api::{
+    ProbeId, SandboxState,
+    probes::{ContainerStatus, DirectoryEntry, Event, Operation, PROTOCOL_VERSION, SandboxRequest},
+};
 use psa_server::probes::ProbeRegistry;
 use psa_shared::probe_transport::{Call, Frame, spawn_connection};
 use std::{
@@ -26,6 +29,8 @@ type ProbeSocket =
 pub struct FakeFiles {
     files: Mutex<BTreeMap<PathBuf, Result<Vec<u8>, String>>>,
     directories: Mutex<BTreeMap<PathBuf, Result<Vec<DirectoryEntry>, String>>>,
+    /// Simulated sandbox containers; `None` when sandbox support is not advertised.
+    sandboxes: Option<Mutex<BTreeMap<String, ContainerStatus>>>,
 }
 
 #[allow(dead_code)] // Builders are used by context unit tests, not every integration test.
@@ -59,6 +64,46 @@ impl FakeFiles {
             .entry(path.into())
             .or_insert_with(|| Ok(Vec::new()));
         self
+    }
+
+    /// Advertise sandbox support and simulate containers in memory.
+    pub fn with_sandboxes(mut self) -> Self {
+        self.sandboxes = Some(Mutex::new(BTreeMap::new()));
+        self
+    }
+
+    async fn execute_sandbox(&self, request: SandboxRequest, call: &Call) -> Result<(), String> {
+        let containers = self.sandboxes.as_ref().ok_or("sandboxes disabled")?;
+        let mut containers = containers.lock().await;
+        let mut set_state = |probe_id: ProbeId, state| {
+            containers
+                .get_mut(&probe_id.to_string())
+                .map(|container| container.state = state)
+                .ok_or_else(|| "sandbox container does not exist".to_owned())
+        };
+        match request {
+            SandboxRequest::Create { spec } => {
+                let container = ContainerStatus {
+                    probe_id: spec.probe_id,
+                    container_name: format!("psa-sandbox-{}", spec.name),
+                    state: SandboxState::Stopped,
+                };
+                containers.insert(spec.probe_id.to_string(), container);
+            }
+            SandboxRequest::Start { probe_id } => set_state(probe_id, SandboxState::Running)?,
+            SandboxRequest::Stop { probe_id } => set_state(probe_id, SandboxState::Stopped)?,
+            SandboxRequest::Remove { probe_id } => {
+                containers.remove(&probe_id.to_string());
+            }
+            SandboxRequest::Inspect => {
+                let containers = containers.values().cloned().collect();
+                call.sender
+                    .event(Event::Containers { containers })
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
     }
 
     pub fn list_error(mut self, path: &str) -> Self {
@@ -236,6 +281,7 @@ impl FakeFiles {
                 return;
             }
             Operation::CreateDir { path } => self.create_directories(path).await,
+            Operation::Sandbox { request } => self.execute_sandbox(request, &call).await,
             Operation::WriteFile { path, append } => self.write_file(path, append, &mut call).await,
             _ => Err("unsupported operation".into()),
         };
@@ -277,8 +323,11 @@ impl FakeProbe {
         files: Option<Arc<FakeFiles>>,
     ) -> Self {
         let metadata = super::support::probe_metadata();
+        let sandboxes = files
+            .as_ref()
+            .is_some_and(|files| files.sandboxes.is_some());
         let mut request = format!(
-            "ws://{address}/probes/connect?version={PROTOCOL_VERSION}&id={}&hostname={}&os={}&architecture={}&data_dir=%2Ftmp%2Fpsa-test",
+            "ws://{address}/probes/connect?version={PROTOCOL_VERSION}&id={}&hostname={}&os={}&architecture={}&data_dir=%2Ftmp%2Fpsa-test&sandboxes={sandboxes}",
             metadata.id, metadata.hostname, metadata.os, metadata.architecture,
         )
         .into_client_request()

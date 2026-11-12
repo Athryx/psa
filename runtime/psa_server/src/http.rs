@@ -24,7 +24,7 @@ use std::sync::{
 };
 use tokio::sync::{broadcast, watch};
 
-struct ApiJson<T>(T);
+pub(crate) struct ApiJson<T>(pub(crate) T);
 pub(crate) struct ApiQuery<T>(pub(crate) T);
 pub(crate) struct ApiPath<T>(pub(crate) T);
 
@@ -155,6 +155,7 @@ impl IntoResponse for HttpError {
                 self.to_string(),
             ),
             Self::Database(DbError::ProbeNotFound(_))
+            | Self::Database(DbError::SandboxNotFound(_))
             | Self::Database(DbError::ConfigNotFound(_))
             | Self::Database(DbError::NotFound { .. })
             | Self::Runtime(RuntimeError::Database(
@@ -243,6 +244,7 @@ pub fn router(state: AppState) -> Router {
         .route(routes::MODEL_PIN, axum::routing::put(pin_model))
         .route(routes::MODELS_RESYNC, post(resync_models))
         .merge(crate::probes::client_router())
+        .merge(crate::sandboxes::client_router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_client_key,
@@ -1302,6 +1304,7 @@ mod tests {
             client_key: "test-client-key".into(),
             client_config: api::ClientConfig {
                 default_agent_name: "worker".into(),
+                default_sandbox_image: None,
             },
             probes,
         };
@@ -1498,6 +1501,7 @@ mod tests {
             client_key: "test-client-key".into(),
             client_config: api::ClientConfig {
                 default_agent_name: "root".into(),
+                default_sandbox_image: None,
             },
             probes: crate::probes::ProbeRegistry::start("test".into()),
         };

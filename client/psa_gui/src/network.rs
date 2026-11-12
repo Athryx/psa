@@ -342,6 +342,134 @@ pub async fn refresh_probes(ui: Signal<Ui>) {
         Err(error) => Err(format!("Unable to refresh probes: {error}")),
     };
     publish_probe_refresh(ui, generation, request, result);
+    refresh_sandboxes(ui).await;
+}
+
+/// Reload sandbox state; probe polling drives this since there is no sandbox event feed.
+pub async fn refresh_sandboxes(mut ui: Signal<Ui>) {
+    let generation = ui.peek().generation;
+    let Ok(api) = client(ui) else { return };
+    let result =
+        tokio::time::timeout(std::time::Duration::from_secs(10), api.list_sandboxes(None)).await;
+    let Ok(Ok(sandboxes)) = result else { return };
+
+    if ui.peek().generation != generation || *ui.peek().sandboxes == sandboxes {
+        return;
+    }
+    ui.write().sandboxes = sandboxes.into();
+}
+
+fn apply_sandbox(state: &mut Ui, sandbox: Sandbox) {
+    let sandboxes = &mut *state.sandboxes;
+    match sandboxes
+        .iter_mut()
+        .find(|item| item.probe_id == sandbox.probe_id)
+    {
+        Some(existing) => *existing = sandbox,
+        None => sandboxes.push(sandbox),
+    }
+}
+
+fn describe_api_error(error: &ClientError) -> String {
+    match error {
+        ClientError::Api { error, .. } => error.message.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Create a sandbox on a manager probe and add it to the probe pane.
+pub async fn create_sandbox(
+    mut ui: Signal<Ui>,
+    manager: ProbeId,
+    request: CreateSandbox,
+) -> Result<Sandbox, String> {
+    let generation = ui.peek().generation;
+    let api = client(ui).map_err(|error| error.to_string())?;
+    let sandbox = api
+        .create_sandbox(manager, &request)
+        .await
+        .map_err(|error| describe_api_error(&error))?;
+
+    if ui.peek().generation == generation {
+        apply_sandbox(&mut ui.write(), sandbox.clone());
+        spawn(refresh_probes(ui));
+    }
+    Ok(sandbox)
+}
+
+/// Start, stop, or delete a sandbox, reporting failures in the status bar.
+pub async fn change_sandbox(mut ui: Signal<Ui>, id: ProbeId, action: client_shared::SandboxChange) {
+    let generation = ui.peek().generation;
+    let api = match client(ui) {
+        Ok(api) => api,
+        Err(error) => {
+            ui.write().error = Some(error.to_string());
+            return;
+        }
+    };
+    if !ui.write().sandbox_pending.insert(id) {
+        return;
+    }
+
+    let result = match action {
+        client_shared::SandboxChange::Start => api.start_sandbox(id).await.map(Some),
+        client_shared::SandboxChange::Stop => api.stop_sandbox(id).await.map(Some),
+        client_shared::SandboxChange::Delete => api.delete_sandbox(id).await.map(|()| None),
+    };
+    if ui.peek().generation != generation {
+        return;
+    }
+
+    let mut state = ui.write();
+    state.sandbox_pending.remove(&id);
+    match result {
+        Ok(Some(sandbox)) => {
+            state.notice = Some(format!("Sandbox {} {}", sandbox.name, action.past_tense()));
+            apply_sandbox(&mut state, sandbox);
+        }
+        Ok(None) => {
+            state.sandboxes.retain(|sandbox| sandbox.probe_id != id);
+            state.notice = Some("Sandbox deleted".into());
+        }
+        Err(error) => {
+            state.error = Some(format!(
+                "Unable to {} sandbox: {}",
+                action.as_str(),
+                describe_api_error(&error)
+            ));
+        }
+    }
+}
+
+/// Start or stop the sandbox running a session, as requested by `/sandbox`.
+pub async fn change_session_sandbox(
+    mut ui: Signal<Ui>,
+    session_id: SessionId,
+    action: client_shared::SandboxAction,
+) {
+    let probe_id = ui
+        .peek()
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id)
+        .map(|session| session.probe_id);
+    let sandbox = probe_id.and_then(|probe_id| {
+        ui.peek()
+            .sandboxes
+            .iter()
+            .any(|sandbox| sandbox.probe_id == probe_id)
+            .then_some(probe_id)
+    });
+    let Some(sandbox) = sandbox else {
+        ui.write().error = Some("This session is not running in a sandbox".into());
+        return;
+    };
+
+    let change = match action {
+        client_shared::SandboxAction::Start => client_shared::SandboxChange::Start,
+        client_shared::SandboxAction::Stop => client_shared::SandboxChange::Stop,
+    };
+    change_sandbox(ui, sandbox, change).await;
 }
 
 fn publish_probe_refresh(
@@ -367,6 +495,7 @@ fn probes_match(left: &Probe, right: &Probe) -> bool {
         && a.data_dir == b.data_dir
         && a.home_dir == b.home_dir
         && a.host == b.host
+        && a.sandboxes == b.sandboxes
         && left.is_active == right.is_active
         && left.created_at == right.created_at
         && left.last_connected_at == right.last_connected_at

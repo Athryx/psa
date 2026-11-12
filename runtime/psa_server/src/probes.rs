@@ -14,7 +14,9 @@ use axum::{
 use futures_util::{SinkExt, StreamExt, future::ready};
 use psa_api::{
     ProbeId,
-    probes::{Command, ConnectProbe, Event, Operation, PROTOCOL_VERSION},
+    probes::{
+        Command, ConnectProbe, ContainerStatus, Event, Operation, PROTOCOL_VERSION, SandboxRequest,
+    },
 };
 use psa_shared::probe_transport::{Call, Connection, Frame, ProbeError, spawn_connection};
 use std::collections::HashMap;
@@ -243,6 +245,22 @@ impl ProbeHandle {
                 Event::Entries { entries } => result.extend(entries),
                 Event::Complete { .. } => return Ok(result),
                 _ => return Err(ProbeError::Protocol("unexpected directory response".into())),
+            }
+        }
+    }
+
+    /// Execute a sandbox request on a manager probe; inspections return container states.
+    pub async fn sandbox(
+        &self,
+        request: SandboxRequest,
+    ) -> Result<Option<Vec<ContainerStatus>>, ProbeError> {
+        let mut call = self.request(Operation::Sandbox { request }).await?;
+        let mut containers = None;
+        loop {
+            match call.next_event().await? {
+                Event::Containers { containers: found } => containers = Some(found),
+                Event::Complete { .. } => return Ok(containers),
+                _ => return Err(ProbeError::Protocol("unexpected sandbox response".into())),
             }
         }
     }

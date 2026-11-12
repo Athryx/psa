@@ -20,6 +20,7 @@ pub mod events;
 pub mod models;
 pub mod results;
 pub mod routes;
+pub mod sandboxes;
 mod types;
 
 pub use client::{
@@ -35,3 +36,4 @@ mod tests;
 
 pub mod probes;
 pub use probes::{Probe, ProbeId, ProbeMetadata};
+pub use sandboxes::{CreateSandbox, ListSandboxes, Mount, Sandbox, SandboxState};

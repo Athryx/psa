@@ -127,6 +127,7 @@ pub async fn start_with_shutdown(
         config.session_defaults,
         psa_api::ClientConfig {
             default_agent_name: config.default_agent_name,
+            default_sandbox_image: config.default_sandbox_image,
         },
         keys.client_key,
         shutdown,
@@ -237,6 +238,7 @@ pub async fn serve_with_configuration(
         default_model_config,
         psa_api::ClientConfig {
             default_agent_name: "root".into(),
+            default_sandbox_image: None,
         },
         client_key,
         shutdown,

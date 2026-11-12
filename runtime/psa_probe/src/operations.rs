@@ -1,8 +1,11 @@
+use crate::sandboxes::SandboxManager;
 use nix::{
     sys::signal::{Signal, killpg},
     unistd::Pid,
 };
-use psa_api::probes::{CHUNK_SIZE, Command, DirectoryEntry, Event, ExitStatus, Operation, Stdio};
+use psa_api::probes::{
+    CHUNK_SIZE, Command, DirectoryEntry, Event, ExitStatus, Operation, SandboxRequest, Stdio,
+};
 use psa_shared::probe_transport::{Call, CallSender};
 use std::{
     collections::HashMap,
@@ -29,10 +32,31 @@ static DIRECTORY_PUBLICATIONS: LazyLock<tokio::sync::Mutex<PublicationLocks>> =
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-pub async fn execute(operation: Operation, mut call: Call, bin: PathBuf) {
+/// Probe-wide state shared by operations on every connection.
+pub struct Context {
+    /// Directory holding extracted probe tools.
+    pub bin: PathBuf,
+    /// Sandbox management, present when the probe advertises sandbox support.
+    pub sandboxes: Option<SandboxManager>,
+}
+
+pub async fn execute(operation: Operation, mut call: Call, context: Arc<Context>) {
     let sender = call.sender.clone();
     let result = match operation {
-        Operation::Spawn { command } => run_command(command, &mut call, &bin).await.map(Some),
+        Operation::Spawn { command } => run_command(command, &mut call, &context.bin)
+            .await
+            .map(Some),
+        Operation::Sandbox { request } => {
+            let Some(manager) = &context.sandboxes else {
+                let event = Event::Error {
+                    code: "sandboxes_disabled".into(),
+                    message: "this probe does not support sandboxes".into(),
+                };
+                let _ = sender.finish(event).await;
+                return;
+            };
+            execute_sandbox_request(manager, request, &call).await
+        }
         Operation::UploadDir { path } => upload_directory(path, &mut call, false)
             .await
             .map(|()| None),
@@ -53,6 +77,17 @@ pub async fn execute(operation: Operation, mut call: Call, bin: PathBuf) {
         },
     };
     let _ = sender.finish(event).await;
+}
+
+async fn execute_sandbox_request(
+    manager: &SandboxManager,
+    request: SandboxRequest,
+    call: &Call,
+) -> Result<Option<ExitStatus>> {
+    if let Some(containers) = manager.execute(request).await? {
+        call.sender.event(Event::Containers { containers }).await?;
+    }
+    Ok(None)
 }
 
 fn require_absolute(path: &Path) -> Result<()> {
@@ -95,7 +130,8 @@ async fn execute_filesystem_operation(operation: Operation, call: &mut Call) -> 
         Operation::DownloadDir { .. }
         | Operation::UploadDir { .. }
         | Operation::SyncDir { .. }
-        | Operation::Spawn { .. } => {
+        | Operation::Spawn { .. }
+        | Operation::Sandbox { .. } => {
             unreachable!()
         }
     }

@@ -26,9 +26,31 @@ impl ModalRegistry {
     pub(crate) fn is_open(&self) -> bool {
         self.0.borrow().iter().any(|(_, open)| *open.peek())
     }
+
+    /// Number of open modals registered before this one; the stack position.
+    pub(crate) fn depth(&self, token: &Rc<()>) -> usize {
+        self.0
+            .borrow()
+            .iter()
+            .take_while(|(id, _)| !Rc::ptr_eq(id, token))
+            .filter(|(_, open)| *open.peek())
+            .count()
+    }
+
+    /// Whether this is the most recently opened modal still open.
+    pub(crate) fn is_top(&self, token: &Rc<()>) -> bool {
+        self.0
+            .borrow()
+            .iter()
+            .rev()
+            .find(|(_, open)| *open.peek())
+            .is_none_or(|(id, _)| Rc::ptr_eq(id, token))
+    }
 }
 
-pub(crate) fn register_modal(open: Signal<bool>) {
+/// Register a modal's open flag. Registration order is the stack order, so a
+/// modal opened from inside another one stacks above it.
+pub(crate) fn register_modal(open: Signal<bool>) -> Rc<()> {
     let registry = dioxus::core::try_consume_context::<ModalRegistry>();
     let token = use_hook(|| Rc::new(()));
     use_hook(|| {
@@ -36,14 +58,16 @@ pub(crate) fn register_modal(open: Signal<bool>) {
             registry.0.borrow_mut().push((token.clone(), open));
         }
     });
+    let drop_token = token.clone();
     use_drop(move || {
         if let Some(registry) = registry {
             registry
                 .0
                 .borrow_mut()
-                .retain(|(id, _)| !Rc::ptr_eq(id, &token));
+                .retain(|(id, _)| !Rc::ptr_eq(id, &drop_token));
         }
     });
+    token
 }
 
 enum WorkspaceShortcut {
@@ -275,6 +299,9 @@ pub struct Ui {
     pub fresh_sessions: Shared<HashSet<SessionId>>,
     pub probes: Shared<Vec<Probe>>,
     pub probe_error: Option<String>,
+    pub sandboxes: Shared<Vec<Sandbox>>,
+    /// Sandboxes with a lifecycle request in flight.
+    pub sandbox_pending: HashSet<ProbeId>,
     pub agents: Shared<HashMap<SessionId, Shared<Vec<Agent>>>>,
     pub models: Shared<Vec<ModelInfo>>,
     pub transcripts: HashMap<TranscriptTarget, Shared<Transcript>>,
@@ -323,6 +350,8 @@ impl Ui {
             fresh_sessions: Shared::default(),
             probes: Shared::default(),
             probe_error: None,
+            sandboxes: Shared::default(),
+            sandbox_pending: HashSet::new(),
             agents: Shared::default(),
             models: Shared::default(),
             transcripts: HashMap::new(),

@@ -207,7 +207,7 @@ test('keydown snapshots the live text/selection, not the previous rendered comma
     assert.equal(input.packets.length, before);
 });
 
-test('literal slash text and non-completion stages retain native Tab/caret navigation', () => {
+test('literal slash text keeps native Tab/caret navigation; command pickers capture Tab and arrows', () => {
     const { create } = fixture();
     for (const text of ['/unknown', '/usr/bin', '/agent', '/agent worker', '/refresh', '/info arguments', '//model']) {
         const input = create(text);
@@ -220,11 +220,11 @@ test('literal slash text and non-completion stages retain native Tab/caret navig
     }
     for (const text of ['/model ', '/effort high', '/model\u0085search']) {
         const input = create(text);
-        assert.equal(input.dispatch('keydown', { key: 'Tab' }).defaultPrevented, false, text);
+        assert.equal(input.dispatch('keydown', { key: 'Tab' }).defaultPrevented, true, text);
         assert.equal(input.dispatch('keydown', { key: 'ArrowUp' }).defaultPrevented, true, text);
     }
     const root = create('/agent worker', '', {}, { config: { commands: [{ name: 'agent', picker: true }] } });
-    assert.equal(root.dispatch('keydown', { key: 'Tab' }).defaultPrevented, false);
+    assert.equal(root.dispatch('keydown', { key: 'Tab' }).defaultPrevented, true);
     assert.equal(root.dispatch('keydown', { key: 'ArrowDown' }).defaultPrevented, true);
     root.edit('/ag');
     assert.equal(root.dispatch('keydown', { key: 'Tab' }).defaultPrevented, true);

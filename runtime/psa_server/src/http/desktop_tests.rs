@@ -61,6 +61,7 @@ pub(super) async fn fixture() -> (
         client_key: "test-client-key".into(),
         client_config: psa_api::ClientConfig {
             default_agent_name: "root".into(),
+            default_sandbox_image: None,
         },
         probes,
     };

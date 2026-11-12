@@ -1,13 +1,14 @@
 //! Linux probe runtime. Remote operations execute with this process's permissions.
 pub mod config;
 mod operations;
+pub mod sandboxes;
 pub mod tools;
 
 use config::ResolvedConfig;
 use futures_util::{SinkExt, StreamExt, future::ready};
 use psa_api::probes::PROTOCOL_VERSION;
 use psa_shared::probe_transport::{Frame, spawn_connection};
-use std::{future::Future, path::Path, pin::Pin, time::Duration};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async_with_config,
@@ -36,7 +37,18 @@ pub async fn run(
 ) -> Result<(), ProbeError> {
     tools::ensure_tools(&config.metadata.data_dir).await?;
     let request = build_connect_request(&config)?;
-    let bin = config.metadata.data_dir.join("bin");
+    let context = Arc::new(operations::Context {
+        bin: config.metadata.data_dir.join("bin"),
+        sandboxes: config.sandbox_probe_path.clone().map(|probe_binary| {
+            sandboxes::SandboxManager {
+                manager_id: config.metadata.id,
+                server_url: config.server_url.clone(),
+                key: config.key.clone(),
+                data_dir: config.metadata.data_dir.clone(),
+                probe_binary,
+            }
+        }),
+    });
     tokio::pin!(shutdown);
 
     let mut delay = 1u64;
@@ -53,7 +65,7 @@ pub async fn run(
         match attempt {
             Ok(Ok((socket, _))) => {
                 let connected = tokio::time::Instant::now();
-                if run_connection(socket, &bin, shutdown.as_mut()).await {
+                if run_connection(socket, &context, shutdown.as_mut()).await {
                     return Ok(());
                 }
                 if connected.elapsed() >= Duration::from_secs(30) {
@@ -93,6 +105,10 @@ fn build_connect_request(config: &ResolvedConfig) -> Result<Request, ProbeError>
             .append_pair("architecture", &metadata.architecture)
             .append_pair("host", if metadata.host { "true" } else { "false" })
             .append_pair(
+                "sandboxes",
+                if metadata.sandboxes { "true" } else { "false" },
+            )
+            .append_pair(
                 "data_dir",
                 metadata
                     .data_dir
@@ -123,7 +139,7 @@ fn build_connect_request(config: &ResolvedConfig) -> Result<Request, ProbeError>
 /// Returns true on application shutdown, false when the connection was lost.
 async fn run_connection(
     socket: ProbeSocket,
-    bin: &Path,
+    context: &Arc<operations::Context>,
     mut shutdown: Pin<&mut impl Future<Output = ()>>,
 ) -> bool {
     let socket = socket
@@ -138,7 +154,7 @@ async fn run_connection(
             _ = connection.closed() => break false,
             request = incoming.recv() => {
                 let Some((operation, call)) = request else { break false; };
-                tasks.spawn(operations::execute(operation, call, bin.to_owned()));
+                tasks.spawn(operations::execute(operation, call, context.clone()));
             }
             _ = tasks.join_next(), if !tasks.is_empty() => {}
         }

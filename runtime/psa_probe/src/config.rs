@@ -22,6 +22,11 @@ struct Config {
     id: ProbeId,
     server_url: Option<String>,
     label: Option<String>,
+    /// Allow the server to create Docker sandboxes on this machine.
+    #[serde(default)]
+    supports_sandboxes: bool,
+    /// Static probe executable mounted into sandboxes; defaults to this executable.
+    sandbox_probe_path: Option<PathBuf>,
 }
 
 // Ignore unrelated server fields: only the root host marker affects the probe.
@@ -35,6 +40,8 @@ pub struct ResolvedConfig {
     pub metadata: ProbeMetadata,
     pub server_url: String,
     pub key: String,
+    /// Static probe executable mounted into sandboxes, when sandboxes are supported.
+    pub sandbox_probe_path: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -119,8 +126,15 @@ impl StartOptions {
             .await?
             .trim()
             .to_owned();
+        let sandbox_probe_path = if config.supports_sandboxes {
+            Some(resolve_sandbox_probe_path(config.sandbox_probe_path).await?)
+        } else {
+            None
+        };
+
         let metadata = ProbeMetadata {
             host,
+            sandboxes: config.supports_sandboxes,
             id: config.id,
             hostname,
             os: std::env::consts::OS.into(),
@@ -137,8 +151,39 @@ impl StartOptions {
             metadata,
             server_url: url,
             key,
+            sandbox_probe_path,
         })
     }
+}
+
+// An in-process probe (for example the server's local probe) is not a static
+// probe binary, so it must name the packaged executable explicitly.
+async fn resolve_sandbox_probe_path(configured: Option<PathBuf>) -> Result<PathBuf, ConfigError> {
+    let path = match configured {
+        Some(path) => path,
+        None => {
+            let current = std::env::current_exe()?;
+            let is_probe = current
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("psa_probe"));
+            if !is_probe {
+                return Err(ConfigError::Invalid(
+                    "supports_sandboxes requires sandbox_probe_path in probe.toml \
+                     when the probe runs inside another executable",
+                ));
+            }
+            current
+        }
+    };
+
+    let path = tokio::fs::canonicalize(path).await?;
+    if path.to_str().is_none_or(|text| text.contains([',', '\n'])) {
+        return Err(ConfigError::Invalid(
+            "sandbox_probe_path must be UTF-8 without commas",
+        ));
+    }
+    Ok(path)
 }
 
 fn valid_home_dir(value: Option<std::ffi::OsString>) -> Option<String> {

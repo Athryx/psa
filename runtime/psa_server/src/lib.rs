@@ -15,6 +15,7 @@ pub mod sessions;
 
 pub mod auth;
 pub mod probes;
+pub mod sandboxes;
 
 #[cfg(test)]
 extern crate self as psa_server;

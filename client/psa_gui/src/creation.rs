@@ -1,12 +1,12 @@
 //! Session creation and remote directory selection.
 use crate::{
     app::Ui,
-    input::{BrowserInput, DraftStore},
+    input::BrowserInput,
     network,
     reactive::{use_ui_selector, use_ui_subscription},
 };
 use dioxus::prelude::*;
-use psa_api::{probes::DirectoryEntry, *};
+use psa_api::*;
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct CreationTarget {
@@ -79,115 +79,132 @@ pub fn InlineSessionName(target: CreationTarget) -> Element {
     }
 }
 
-fn parent_directory(path: &str) -> String {
-    std::path::Path::new(path)
-        .parent()
-        .and_then(|p| p.to_str())
-        .filter(|p| !p.is_empty())
-        .unwrap_or("/")
-        .to_owned()
+/// Absolute home directory of an online probe, for a new session's default path.
+fn probe_start_directory(probe: &Probe) -> String {
+    probe
+        .metadata
+        .home_dir
+        .clone()
+        .filter(|path| path.starts_with('/'))
+        .unwrap_or_else(|| "/".into())
 }
 
-fn load_directory(
-    ui: Signal<Ui>,
-    probe: ProbeId,
-    path: String,
-    mut entries: Signal<Vec<DirectoryEntry>>,
-    mut loading: Signal<bool>,
-    mut error: Signal<Option<String>>,
-    mut revision: Signal<u64>,
-) {
-    let next = revision() + 1;
-    revision.set(next);
-    entries.set(Vec::new());
-    error.set(None);
-    loading.set(true);
-    let generation = ui.read().generation;
-    spawn(async move {
-        let result = match network::client(ui) {
-            Ok(api) => api
-                .list_probe_dir(probe, &path)
-                .await
-                .map_err(|e| e.to_string()),
-            Err(_) => Err("Invalid API connection settings".into()),
-        };
-        if ui.read().generation != generation || revision() != next {
-            return;
-        }
-        loading.set(false);
-        match result {
-            Ok(mut found) => {
-                // A symlink may point to a directory; browsing it lets the probe decide.
-                found.retain(|e| e.kind == "directory" || e.kind == "symlink");
-                found.sort_by(|a, b| a.name.cmp(&b.name));
-                entries.set(found);
-            }
-            Err(message) => error.set(Some(format!("Unable to browse directory: {message}"))),
-        }
-    });
+/// The selected probe if it is online, otherwise the first online probe.
+fn initial_probe(state: &Ui) -> Option<(ProbeId, String)> {
+    state
+        .selected_probe
+        .and_then(|id| {
+            state
+                .probes
+                .iter()
+                .find(|p| p.metadata.id == id && p.is_active)
+        })
+        .or_else(|| state.probes.iter().find(|p| p.is_active))
+        .map(|p| (p.metadata.id, probe_start_directory(p)))
 }
 
 #[component]
 pub fn CreateSessionPicker() -> Element {
-    let mut ui = use_context::<Signal<Ui>>();
+    let ui = use_context::<Signal<Ui>>();
     let mut open = use_signal(|| false);
-    crate::app::register_modal(open);
-    let mut probe = use_signal(|| None::<ProbeId>);
-    let mut path = use_signal(|| "/".to_string());
-    let mut path_input = use_signal(|| {
-        let mut input = DraftStore::default();
-        input.insert((), "/".to_string());
-        input
-    });
-    let mut entries = use_signal(Vec::<DirectoryEntry>::new);
-    let mut loading = use_signal(|| false);
+    use_ui_subscription(|state| (state.connection.clone(), state.creation_pending));
+    let state = ui.peek();
+    rsx! {
+        button { class: "primary session-new", title: "New session", disabled: state.connection != "Connected" || state.creation_pending,
+            onclick: move |_| { open.set(true); spawn(network::refresh_probes(ui)); }, "New"
+        }
+        if open() { NewSessionModal { open } }
+    }
+}
+
+#[component]
+fn NewSessionModal(open: Signal<bool>) -> Element {
+    let mut ui = use_context::<Signal<Ui>>();
+    let initial = initial_probe(&ui.peek());
+    let mut probe = use_signal(|| initial.as_ref().map(|(id, _)| *id));
+    let mut path = use_signal(|| initial.map(|(_, path)| path).unwrap_or_default());
+    // Remounts the path input when the probe changes, resetting it to that probe's home.
+    let mut path_reset = use_signal(|| 0u64);
+    let mut checking = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
-    let mut revision = use_signal(|| 0u64);
-    let available = use_ui_selector(|state| (state.probes.clone(), state.selected_probe));
-    use_ui_subscription(|state| {
-        (
-            state.probes.clone(),
-            state.selected_probe,
-            state.connection.clone(),
-            state.creation_pending,
-            state.probe_error.clone(),
-        )
-    });
-    // A probe may come online after the picker opened (for example, after a
+    let available = use_ui_selector(|state| state.probes.clone());
+    use_ui_subscription(|state| (state.probes.clone(), state.probe_error.clone()));
+
+    // A probe may come online after the dialog opened (for example, after a
     // server restart). Select it as soon as the background refresh sees it.
     use_effect(move || {
         let _ = available.read();
-        if !open() || probe().is_some() {
+        if probe.peek().is_some() {
             return;
         }
-        let state = ui.peek();
-        let initial = state
-            .selected_probe
-            .and_then(|id| {
-                state
-                    .probes
-                    .iter()
-                    .find(|p| p.metadata.id == id && p.is_active)
-            })
-            .or_else(|| state.probes.iter().find(|p| p.is_active))
-            .map(|p| {
-                (
-                    p.metadata.id,
-                    p.metadata
-                        .home_dir
-                        .clone()
-                        .filter(|path| path.starts_with('/'))
-                        .unwrap_or_else(|| "/".into()),
-                )
-            });
-        drop(state);
-        if let Some((id, home)) = initial {
+        if let Some((id, home)) = initial_probe(&ui.peek()) {
             probe.set(Some(id));
-            path.set(home.clone());
-            path_input.write().insert((), home.clone());
-            load_directory(ui, id, home, entries, loading, error, revision);
+            path.set(home);
+            path_reset += 1;
         }
     });
+
+    let mut submit = move |requested: String| {
+        let requested = requested.trim().to_owned();
+        if checking() {
+            return;
+        }
+        if !requested.starts_with('/') {
+            error.set(Some("Enter an absolute path on the probe".into()));
+            return;
+        }
+        let Some(id) = *probe.peek() else { return };
+        if !ui
+            .peek()
+            .probes
+            .iter()
+            .any(|p| p.metadata.id == id && p.is_active)
+        {
+            return;
+        }
+
+        checking.set(true);
+        error.set(None);
+        let generation = ui.peek().generation;
+        spawn(async move {
+            let result = match network::client(ui) {
+                Ok(api) => api
+                    .list_probe_dir(id, &requested)
+                    .await
+                    .map_err(|e| e.to_string()),
+                Err(_) => Err("Invalid API connection settings".into()),
+            };
+            if ui.peek().generation != generation {
+                return;
+            }
+            checking.set(false);
+            if let Err(message) = result {
+                error.set(Some(format!("Unable to open directory: {message}")));
+                return;
+            }
+
+            if ui
+                .peek()
+                .selected_probe
+                .is_some_and(|selected| selected != id)
+            {
+                let mut state = ui.write();
+                state.selected_probe = None;
+                state.next_sessions = None;
+                drop(state);
+                spawn(network::load_sessions(ui, false));
+            }
+            select_target(
+                &mut ui.write(),
+                CreationTarget {
+                    probe: id,
+                    directory: requested,
+                },
+            );
+            open.set(false);
+        });
+    };
+
     let state = ui.peek();
     let probes: Vec<_> = state
         .probes
@@ -196,93 +213,46 @@ pub fn CreateSessionPicker() -> Element {
             (
                 p.metadata.id,
                 crate::views::probe_label(p),
-                p.metadata
-                    .home_dir
-                    .clone()
-                    .filter(|p| p.starts_with('/'))
-                    .unwrap_or_else(|| "/".into()),
+                probe_start_directory(p),
                 p.is_active,
             )
         })
         .collect();
     let probe_choices = probes.clone();
     let selected_online = probe().is_some_and(|id| probes.iter().any(|p| p.0 == id && p.3));
-    let initial = state
-        .selected_probe
-        .and_then(|id| probes.iter().find(|p| p.0 == id && p.3))
-        .or_else(|| probes.iter().find(|p| p.3))
-        .cloned();
+    let probe_error = state.probe_error.clone();
+    drop(state);
+
     rsx! {
-        button { class: "primary session-new", title: "New session", disabled: state.connection != "Connected" || state.creation_pending,
-            onclick: move |_| {
-                open.set(true);
-                spawn(network::refresh_probes(ui));
-                if let Some((id, _, home, _)) = initial.clone() { probe.set(Some(id)); path.set(home.clone()); path_input.write().insert((), home.clone()); load_directory(ui, id, home, entries, loading, error, revision); }
-                else { probe.set(None); error.set(Some("No online probes available".into())); }
-            }, "New"
-        }
-        if open() {
-            div { class: "modal-backdrop", onclick: move |event| { event.stop_propagation(); revision += 1; open.set(false); },
-                section { class: "settings directory-picker", role: "dialog", "aria-modal": "true", "aria-label": "Choose working directory", tabindex: "-1",
-                    onclick: move |event| event.stop_propagation(),
-                    onmounted: move |event| { let node = event.data(); spawn(async move { let _ = node.set_focus(true).await; }); },
-                    onkeydown: move |event| { if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); revision += 1; open.set(false); } },
-                    crate::modal::ModalHeader { title: "Choose working directory", close_label: "Close directory picker", onclose: move |_| { revision += 1; open.set(false); } }
-                    form { onsubmit:move |event: FormEvent| {
-                        event.prevent_default(); event.stop_propagation();
-                        let Some(dioxus::html::FormValue::Text(requested)) = event.get_first("path") else { return; };
-                        if requested != *path.peek() {
-                            error.set(Some("Press Enter to browse the typed path before selecting it.".into()));
-                            return;
-                        }
-                        let Some(id) = *probe.peek() else { return; };
-                        if loading() || !ui.peek().probes.iter().any(|item| item.metadata.id == id && item.is_active) { return; }
-                        let needs_filter_reset = ui.peek().selected_probe.is_some_and(|selected| selected != id);
-                        if needs_filter_reset {
-                            let mut state = ui.write(); state.selected_probe = None; state.next_sessions = None;
-                            drop(state);
-                            spawn(network::load_sessions(ui, false));
-                        }
-                        select_target(&mut ui.write(), CreationTarget { probe:id, directory:requested });
-                        revision += 1; open.set(false);
-                    },
-                    label { r#for: "picker-probe", "Probe" }
-                    select { id: "picker-probe", value: probe().map(|id| id.to_string()).unwrap_or_default(),
-                        onchange: move |event| {
-                            if let Some((id, _, home, _)) = probe_choices.iter().find(|p| p.0.to_string() == event.value() && p.3) {
-                                probe.set(Some(*id)); path.set(home.clone()); path_input.write().insert((), home.clone()); load_directory(ui, *id, home.clone(), entries, loading, error, revision);
-                            }
-                        },
-                        for (id, label, _, active) in probes.clone() { option { value: id.to_string(), disabled: !active, "{label}" } }
+        crate::modal::Modal { title: "New session", close_label: "Close new session", class: "new-session", onclose: move |_| open.set(false),
+            label { r#for: "picker-probe", "Probe" }
+            select { id: "picker-probe", value: probe().map(|id| id.to_string()).unwrap_or_default(),
+                onchange: move |event| {
+                    if let Some((id, _, home, _)) = probe_choices.iter().find(|p| p.0.to_string() == event.value() && p.3) {
+                        probe.set(Some(*id));
+                        path.set(home.clone());
+                        path_reset += 1;
+                        error.set(None);
                     }
-                    if let Some(id) = probe() { crate::views::ProbeName { id }
-                    }
-                    label { r#for: "picker-path", "Absolute path on the probe (press Enter to browse)" }
-                    BrowserInput { id: "picker-path", name:"path", aria_label: "Absolute path on the probe", capture_enter:true, initial_value: path_input.read().get(&()).cloned().unwrap_or_default(), mutation: path_input.read().mutation(&()),
-                        onedit: move |snapshot| { path_input.write().apply_snapshot((), snapshot); },
-                        onkey: move |event: crate::input::InputKeyEvent| {
-                            let requested = event.snapshot.text.clone();
-                            {
-                                let mut input = path_input.write();
-                                if !input.apply_snapshot((), event.snapshot.clone()) { return; }
-                                if input.mutation(&()).is_some() && input.get(&()) != Some(&requested) { return; }
-                            }
-                            if event.key() == Key::Enter { event.prevent_default(); event.stop_propagation(); if !requested.starts_with('/') { revision += 1; loading.set(false); entries.set(Vec::new()); error.set(Some("Enter an absolute path on the probe".into())); return; } if let Some(id) = probe() { path.set(requested.clone()); load_directory(ui, id, requested, entries, loading, error, revision); } } }
-                    }
-                    p { class:"muted directory-current", "Current directory: {path()}" }
-                    button { r#type:"button", disabled: loading() || path() == "/", onclick: move |_| { if let Some(id) = probe() { let parent = parent_directory(&path()); path.set(parent.clone()); path_input.write().insert((), parent.clone()); load_directory(ui, id, parent, entries, loading, error, revision); } }, "↑ Parent" }
-                    if loading() { p { class: "muted", "Loading directories…" } }
-                    if let Some(message) = &state.probe_error { p { class: "error", "{message}" } }
-                    if let Some(message) = error() { p { class: "error", "{message}" } button { r#type:"button", onclick: move |_| { if let Some(id) = probe() { load_directory(ui, id, path(), entries, loading, error, revision); } else { spawn(network::refresh_probes(ui)); } }, "Retry" } }
-                    if probe().is_some() && !selected_online { p { class: "error", "Selected probe is offline. Choose an online probe or wait for it to reconnect." } }
-                    if !loading() && error().is_none() && probe().is_some() && entries().is_empty() { p { class: "muted", "No directories in this folder." } }
-                    div { class: "directory-list",
-                        for entry in entries() {
-                            button { key: "{entry.name}", r#type:"button", onclick: { let entry = entry.clone(); move |_| { if let Some(id) = probe() { let child = if path() == "/" { format!("/{}", entry.name) } else { format!("{}/{}", path(), entry.name) }; path.set(child.clone()); path_input.write().insert((), child.clone()); load_directory(ui, id, child, entries, loading, error, revision); } } }, if entry.kind == "symlink" { "↗ " } else { "📁 " } "{entry.name}" if entry.kind == "symlink" { " (symlink)" } }
-                        }
-                    }
-                    button { class:"primary", r#type:"submit", disabled: !selected_online || loading() || error().is_some() || path_input.read().get(&()) != Some(&path()), "Select this directory" }
-                    }
+                },
+                for (id, label, _, active) in probes { option { value: id.to_string(), disabled: !active, "{label}" } }
+            }
+            if let Some(id) = probe() { crate::views::ProbeName { id } }
+            label { r#for: "picker-path", "Working directory" }
+            {rsx! {
+    crate::path_picker::ProbePathInput { key: "{path_reset}", id: "picker-path", probe: probe(), initial: path(), aria_label: "Absolute path on the probe", placeholder: "/home/user/project", disabled: checking(),
+                onchange: move |text: String| { path.set(text); error.set(None); },
+                onenter: move |text: String| submit(text),
+            }
+            }}
+            if probe().is_none() { p { class: "error", "No online probes available" } }
+            if let Some(message) = probe_error { p { class: "error", "{message}" } }
+            if probe().is_some() && !selected_online { p { class: "error", "Selected probe is offline. Choose an online probe or wait for it to reconnect." } }
+            if let Some(message) = error() { p { class: "error", "{message}" } }
+            div { class: "modal-actions",
+                button { r#type: "button", onclick: move |_| open.set(false), "Cancel" }
+                button { class: "primary", r#type: "button", disabled: !selected_online || checking(), onclick: move |_| submit(path()),
+                    if checking() { "Checking…" } else { "Continue" }
                 }
             }
         }

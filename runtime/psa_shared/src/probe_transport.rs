@@ -529,6 +529,7 @@ impl ConnectionActor {
                         event,
                         Event::Started { .. }
                             | Event::Entries { .. }
+                            | Event::Containers { .. }
                             | Event::Eof { stream: 1 | 2 }
                             | Event::Complete { .. }
                             | Event::Error { .. }

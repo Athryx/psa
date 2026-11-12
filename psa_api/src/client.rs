@@ -235,6 +235,52 @@ impl Client {
             .await
     }
 
+    /// List sandboxes with their container state, optionally for one manager probe.
+    pub async fn list_sandboxes(
+        &self,
+        manager_id: Option<crate::ProbeId>,
+    ) -> Result<Vec<crate::Sandbox>, ClientError> {
+        self.get(routes::SANDBOXES, &crate::ListSandboxes { manager_id })
+            .await
+    }
+
+    /// Fetch one sandbox by its nested probe ID.
+    pub async fn get_sandbox(&self, id: crate::ProbeId) -> Result<crate::Sandbox, ClientError> {
+        self.get(&routes::probe_route(routes::SANDBOX, id), &())
+            .await
+    }
+
+    /// Create a sandbox container on a connected manager probe.
+    /// The image defaults to the server's configured sandbox image.
+    pub async fn create_sandbox(
+        &self,
+        manager_id: crate::ProbeId,
+        request: &crate::CreateSandbox,
+    ) -> Result<crate::Sandbox, ClientError> {
+        let path = routes::probe_route(routes::PROBE_SANDBOXES, manager_id);
+        self.send(Method::POST, &path, request).await
+    }
+
+    /// Start a sandbox container; fails with `manager_offline` if its manager is disconnected.
+    pub async fn start_sandbox(&self, id: crate::ProbeId) -> Result<crate::Sandbox, ClientError> {
+        let path = routes::probe_route(routes::SANDBOX_START, id);
+        self.send(Method::POST, &path, &()).await
+    }
+
+    /// Stop a sandbox container; fails with `manager_offline` if its manager is disconnected.
+    pub async fn stop_sandbox(&self, id: crate::ProbeId) -> Result<crate::Sandbox, ClientError> {
+        let path = routes::probe_route(routes::SANDBOX_STOP, id);
+        self.send(Method::POST, &path, &()).await
+    }
+
+    /// Remove a sandbox container and its record; sessions on its probe remain.
+    pub async fn delete_sandbox(&self, id: crate::ProbeId) -> Result<(), ClientError> {
+        let path = routes::probe_route(routes::SANDBOX, id);
+        let response = self.request(Method::DELETE, &path).send().await?;
+        require_success(response).await?;
+        Ok(())
+    }
+
     /// Atomically create or replace named configurations and return their statuses.
     /// Omitted component lists inherit server defaults; explicit lists replace them.
     /// Passing normalized [`crate::AgentConfig`] values keeps all lists explicit.
@@ -663,17 +709,35 @@ pub fn parse_probe_server_url(value: &str) -> Result<String, ClientError> {
     };
     url.set_scheme(scheme)
         .map_err(|_| ClientError::InvalidBaseUrl)?;
-    url.set_path(&format!(
-        "{}{}",
-        url.path().trim_end_matches('/'),
-        routes::PROBES_CONNECT
-    ));
+    // Accept an already-resolved connect URL too, as written for sandbox probes.
+    let base = url.path().trim_end_matches('/');
+    if !base.ends_with(routes::PROBES_CONNECT) {
+        url.set_path(&format!("{base}{}", routes::PROBES_CONNECT));
+    }
     Ok(url.into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_server_urls_append_the_connect_route_once() {
+        for input in [
+            "http://127.0.0.1:8080",
+            "http://127.0.0.1:8080/",
+            "ws://127.0.0.1:8080/probes/connect",
+        ] {
+            assert_eq!(
+                parse_probe_server_url(input).unwrap(),
+                "ws://127.0.0.1:8080/probes/connect"
+            );
+        }
+        assert_eq!(
+            parse_probe_server_url("https://psa.example/prefix").unwrap(),
+            "wss://psa.example/prefix/probes/connect"
+        );
+    }
 
     #[test]
     fn client_requests_include_bearer_key_and_preserve_base_prefix() {

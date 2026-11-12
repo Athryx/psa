@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO sandboxes (probe_id, manager_id, name, image, mounts, created_at)\n             VALUES (?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "90887ccddf77dbaf45e4e1be8a221f4b376d539f1b2aeaf52d40d7f1b25ce0a9"
+}

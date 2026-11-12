@@ -22,6 +22,7 @@ pub fn Rail() -> Element {
     rsx! {nav{class:"rail","aria-label":"Workspace navigation",
         button{title:"Session browser","aria-label":"Session browser","aria-pressed":!ui.peek().sidebar.collapsed && ui.peek().sidebar.expanded_mode == SidebarMode::Browser,onclick:move |_|ui.write().sidebar.toggle_mode(SidebarMode::Browser),"▤"}
         button{title:"Current session and agents","aria-label":"Current session and agents","aria-pressed":!ui.peek().sidebar.collapsed && ui.peek().sidebar.expanded_mode == SidebarMode::Details,onclick:move |_|ui.write().sidebar.toggle_mode(SidebarMode::Details),"♧"}
+        button{title:"Probes and sandboxes","aria-label":"Probes and sandboxes","aria-pressed":!ui.peek().sidebar.collapsed && ui.peek().sidebar.expanded_mode == SidebarMode::Probes,onclick:move |_|ui.write().sidebar.toggle_mode(SidebarMode::Probes),"⧉"}
         div{class:"spacer"}
         button{title:"Settings",onclick:move |_|ui.write().settings_open=true,"⚙"}
     }}
@@ -47,8 +48,14 @@ pub fn Sidebar() -> Element {
         )
     });
     let state = ui.peek();
-    if state.sidebar.expanded_mode == SidebarMode::Details {
-        return rsx! {aside{id:SIDEBAR_ID,class:"sidebar",style:"width:{state.sidebar.width()}px",Details{}}};
+    match state.sidebar.expanded_mode {
+        SidebarMode::Details => {
+            return rsx! {aside{id:SIDEBAR_ID,class:"sidebar",style:"width:{state.sidebar.width()}px",Details{}}};
+        }
+        SidebarMode::Probes => {
+            return rsx! {aside{id:SIDEBAR_ID,class:"sidebar",style:"width:{state.sidebar.width()}px",crate::probes_pane::ProbesPane{}}};
+        }
+        SidebarMode::Browser => {}
     }
     let probe = state.selected_probe;
     let mut index = SessionIndex::default();
@@ -181,46 +188,210 @@ mod probe_name_tests {
     }
 }
 
+/// Status shown by a probe's dot and in its information dialog.
+struct ProbeStatus {
+    /// CSS modifier for `.probe-dot`.
+    class: &'static str,
+    label: &'static str,
+    /// Explanation for states that need attention.
+    detail: Option<&'static str>,
+}
+
+/// Status of a sandbox's container and nested probe.
+fn sandbox_status(sandbox: &Sandbox) -> ProbeStatus {
+    let (class, label, detail) = match (sandbox.state, sandbox.probe_active) {
+        (SandboxState::Running, true) => ("running", "Running", None),
+        (SandboxState::Running, false) => (
+            "starting",
+            "Starting",
+            Some("The container is running but its probe has not connected yet."),
+        ),
+        (SandboxState::Stopped, _) => ("stopped", "Stopped", None),
+        (SandboxState::Missing, _) => (
+            "missing",
+            "Container missing",
+            Some("The manager could not find this sandbox's Docker container."),
+        ),
+        (SandboxState::Unknown, _) => (
+            "unknown",
+            "Unknown",
+            Some("The manager could not report the container state."),
+        ),
+    };
+    ProbeStatus {
+        class,
+        label,
+        detail,
+    }
+}
+
+fn probe_status(probe: Option<&Probe>) -> ProbeStatus {
+    let online = probe.is_some_and(|p| p.is_active);
+    ProbeStatus {
+        class: if online { "online" } else { "offline" },
+        label: if online { "Online" } else { "Offline" },
+        detail: probe.is_none().then_some("Probe metadata is unavailable."),
+    }
+}
+
+/// Which sandbox lifecycle changes are currently allowed. All are disabled for
+/// ordinary probes, while a request is pending, or while the manager is offline.
+#[derive(Clone, Copy, Default)]
+struct SandboxActions {
+    start: bool,
+    stop: bool,
+    delete: bool,
+}
+
+fn sandbox_actions(sandbox: &Sandbox, manager_online: bool, pending: bool) -> SandboxActions {
+    if pending || !manager_online {
+        return SandboxActions::default();
+    }
+    let running = sandbox.state == SandboxState::Running;
+    SandboxActions {
+        start: !running && sandbox.state != SandboxState::Missing,
+        stop: running,
+        delete: true,
+    }
+}
+
 #[component]
 pub(crate) fn ProbeName(id: ProbeId) -> Element {
     let ui = use_context::<Signal<Ui>>();
     let mut open = use_signal(|| false);
     let mut trigger = use_signal(|| None::<std::rc::Rc<MountedData>>);
+    let mut menu = use_signal(|| None::<(f64, f64)>);
+    let mut confirm_delete = use_signal(|| false);
     crate::app::register_modal(open);
-    use_ui_subscription(|state| state.probes.clone());
-    let probe = ui
-        .peek()
-        .probes
-        .iter()
-        .find(|p| p.metadata.id == id)
-        .cloned();
+    use_ui_subscription(|state| {
+        (
+            state.probes.clone(),
+            state.sandboxes.clone(),
+            state.sandbox_pending.clone(),
+        )
+    });
+    let state = ui.peek();
+    let probe = state.probes.iter().find(|p| p.metadata.id == id).cloned();
+    let sandbox = state.sandboxes.iter().find(|s| s.probe_id == id).cloned();
+    let pending = state.sandbox_pending.contains(&id);
+    let actions = sandbox
+        .as_ref()
+        .map(|sandbox| {
+            let manager_online = state
+                .probes
+                .iter()
+                .any(|p| p.metadata.id == sandbox.manager_id && p.is_active);
+            sandbox_actions(sandbox, manager_online, pending)
+        })
+        .unwrap_or_default();
+    drop(state);
+    let change = move |change: SandboxChange| {
+        spawn(network::change_sandbox(ui, id, change));
+    };
+    let is_sandbox = sandbox.is_some();
+    let unavailable = if is_sandbox {
+        "Unavailable in the current sandbox state"
+    } else {
+        "Only sandbox probes can be started or stopped"
+    };
+
     let name = probe
         .as_ref()
         .map(probe_label)
+        .or_else(|| sandbox.as_ref().map(|s| s.name.clone()))
         .unwrap_or_else(|| "Unknown probe".into());
+    let status = match &sandbox {
+        Some(sandbox) => sandbox_status(sandbox),
+        None => probe_status(probe.as_ref()),
+    };
+    let ProbeStatus {
+        class: status_class,
+        label: status_label,
+        detail: status_detail,
+    } = status;
+    let mounts: Vec<String> = sandbox
+        .iter()
+        .flat_map(|s| &s.mounts)
+        .map(|mount| {
+            let mode = if mount.writable { "rw" } else { "ro" };
+            format!(
+                "{} → {} ({mode})",
+                mount.host_path.display(),
+                mount.container_path.display()
+            )
+        })
+        .collect();
+
     rsx! {
-        button { class: "probe-name", title: "Probe information", onmounted: move |event| trigger.set(Some(event.data())), onclick: move |event| { event.stop_propagation(); open.set(true); }, "{name}" }
+        button { class: "probe-name", title: "Probe information ({status_label})", onmounted: move |event| trigger.set(Some(event.data())), onclick: move |event| { event.stop_propagation(); open.set(true); },
+            oncontextmenu: move |event: MouseEvent| {
+                event.prevent_default();
+                event.stop_propagation();
+                let point = event.client_coordinates();
+                menu.set(Some((point.x, point.y)));
+            },
+            span { class: "probe-dot {status_class}", "aria-hidden": "true" }
+            span { class: "probe-name-text", "{name}" }
+            if pending { span { class: "tab-spinner inline-spinner", role: "img", "aria-label": "Sandbox request pending" } }
+        }
+        if let Some((x, y)) = menu() {
+            div { class: "row-menu-backdrop", onclick: move |event| { event.stop_propagation(); menu.set(None); }, oncontextmenu: move |event| { event.prevent_default(); event.stop_propagation(); menu.set(None); } }
+            div { class: "row-menu", role: "menu", tabindex: "-1",
+                style: "left:min({x}px,calc(100vw - 168px));top:min({y}px,calc(100vh - 96px))",
+                onclick: move |event| event.stop_propagation(),
+                onmounted: move |event| { spawn(async move { let _ = event.data().set_focus(true).await; }); },
+                onkeydown: move |event| { if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); menu.set(None); } },
+                button { r#type: "button", role: "menuitem", disabled: !actions.start, title: if !actions.start { unavailable },
+                    onclick: move |_| { menu.set(None); change(SandboxChange::Start); }, "Start" }
+                button { r#type: "button", role: "menuitem", disabled: !actions.stop, title: if !actions.stop { unavailable },
+                    onclick: move |_| { menu.set(None); change(SandboxChange::Stop); }, "Stop" }
+                button { r#type: "button", role: "menuitem", disabled: !actions.delete, title: if !actions.delete { unavailable },
+                    onclick: move |_| { menu.set(None); confirm_delete.set(true); open.set(true); }, "Delete…" }
+            }
+        }
         if open() {
-            div { class: "modal-backdrop", onclick: move |event| { event.stop_propagation(); open.set(false); if let Some(node) = trigger() { spawn(async move { let _ = node.set_focus(true).await; }); } },
+            div { class: "modal-backdrop", onclick: move |event| { event.stop_propagation(); open.set(false); confirm_delete.set(false); if let Some(node) = trigger() { spawn(async move { let _ = node.set_focus(true).await; }); } },
                 section { class: "settings agent-info", role: "dialog", "aria-modal": "true", "aria-label": "Probe information", tabindex: "-1",
                     onclick: move |event| event.stop_propagation(),
                     onmounted: move |event| { spawn(async move { let _ = event.data().set_focus(true).await; }); },
-                    onkeydown: move |event| { if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); open.set(false); if let Some(node) = trigger() { spawn(async move { let _ = node.set_focus(true).await; }); } } },
-                    crate::modal::ModalHeader { title: "Probe information", close_label: "Close probe information", onclose: move |_| { open.set(false); if let Some(node) = trigger() { spawn(async move { let _ = node.set_focus(true).await; }); } } }
+                    onkeydown: move |event| { if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); open.set(false); confirm_delete.set(false); if let Some(node) = trigger() { spawn(async move { let _ = node.set_focus(true).await; }); } } },
+                    crate::modal::ModalHeader { title: "Probe information", close_label: "Close probe information", onclose: move |_| { open.set(false); confirm_delete.set(false); if let Some(node) = trigger() { spawn(async move { let _ = node.set_focus(true).await; }); } } }
                     dl { class: "info-grid",
                         dt { "Name" } dd { "{name}" }
                         dt { "UUID" } dd { "{id}" }
+                        dt { "Status" } dd { span { class: "probe-status", span { class: "probe-dot {status_class}", "aria-hidden": "true" } "{status_label}" } }
+                        if let Some(detail) = status_detail { dt { class: "info-detail", "Details" } dd { class: "probe-status-detail {status_class}", "{detail}" } }
+                        if let Some(sandbox) = sandbox {
+                            dt { "Kind" } dd { "Sandbox container" }
+                            dt { "Manager" } dd { ProbeName { id: sandbox.manager_id } }
+                            dt { "Image" } dd { "{sandbox.image}" }
+                            dt { "Mounts" } dd { if mounts.is_empty() { "None" } else { for mount in mounts { div { "{mount}" } } } }
+                            dt { "Created" } dd { "{sandbox.created_at}" }
+                        }
                         if let Some(probe) = probe {
-                            dt { "Status" } dd { if probe.is_active { "Online" } else { "Offline" } }
                             dt { "Hostname" } dd { "{probe.metadata.hostname}" }
                             dt { "Operating system" } dd { "{probe.metadata.os}" }
                             dt { "Architecture" } dd { "{probe.metadata.architecture}" }
                             dt { "Data directory" } dd { "{probe.metadata.data_dir.display()}" }
                             dt { "Home directory" } dd { "{probe.metadata.home_dir.as_deref().unwrap_or(\"Unknown\")}" }
                             dt { "Host probe" } dd { if probe.metadata.host { "Yes" } else { "No" } }
+                            dt { "Sandboxes" } dd { if probe.metadata.sandboxes { "Supported" } else { "Not supported" } }
                             dt { "First registered" } dd { "{probe.created_at}" }
                             dt { "Last connected" } dd { "{probe.last_connected_at}" }
-                        } else { dt { "Status" } dd { "Unknown (metadata unavailable)" } }
+                        }
+                    }
+                    if is_sandbox {
+                        div { class: "modal-actions",
+                            if pending { span { class: "tab-spinner inline-spinner", role: "img", "aria-label": "Sandbox request pending" } }
+                            if confirm_delete() {
+                                button { r#type: "button", onclick: move |_| confirm_delete.set(false), "Cancel" }
+                                button { r#type: "button", class: "danger", disabled: !actions.delete, onclick: move |_| { confirm_delete.set(false); open.set(false); change(SandboxChange::Delete); }, "Confirm delete" }
+                            } else {
+                                button { r#type: "button", class: "danger", disabled: !actions.delete, onclick: move |_| confirm_delete.set(true), "Delete" }
+                                button { r#type: "button", disabled: !actions.stop, onclick: move |_| change(SandboxChange::Stop), "Stop" }
+                                button { r#type: "button", disabled: !actions.start, onclick: move |_| change(SandboxChange::Start), "Start" }
+                            }
+                        }
                     }
                 }
             }
@@ -242,11 +413,11 @@ fn Details() -> Element {
     });
     let state = ui.peek();
     let Some(tab) = state.workspace.active_tab() else {
-        return rsx! {h2{"Current session"}p{class:"muted","Select a session or agent tab."}};
+        return rsx! {div{class:"sessions-heading",h2{"Current session"}}p{class:"muted","Select a session or agent tab."}};
     };
     let target = tab.target;
     let Some(session) = state.sessions.iter().find(|s| s.id == target.session_id) else {
-        return rsx! {h2{"Session {target.session_id.0}"}p{class:"muted","Restored tab; waiting for session metadata."}};
+        return rsx! {div{class:"sessions-heading",h2{"Session {target.session_id.0}"}}p{class:"muted","Restored tab; waiting for session metadata."}};
     };
     let agents = state
         .agents

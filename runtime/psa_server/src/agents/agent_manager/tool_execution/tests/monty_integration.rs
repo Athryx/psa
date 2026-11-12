@@ -688,6 +688,7 @@ async fn real_worker_shares_bash_sessions_in_both_directions() {
         client_key: "test-client-key".into(),
         client_config: psa_api::ClientConfig {
             default_agent_name: "root".into(),
+            default_sandbox_image: None,
         },
         probes: fixture.probes.clone(),
     });
@@ -708,6 +709,7 @@ async fn real_worker_shares_bash_sessions_in_both_directions() {
         metadata,
         server_url: format!("ws://{address}/probes/connect"),
         key: fake_probe::PROBE_KEY.into(),
+        sandbox_probe_path: None,
     };
     let (stop_probe, stopped_probe) = oneshot::channel();
     let probe_task = tokio::spawn(psa_probe::run(config, async {

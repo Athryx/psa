@@ -14,8 +14,11 @@ mod interaction;
 mod markdown;
 mod modal;
 mod network;
+mod path_picker;
 mod persistence;
+mod probes_pane;
 mod reactive;
+mod sandbox_modal;
 mod style;
 mod syntax_highlight;
 #[cfg(test)]

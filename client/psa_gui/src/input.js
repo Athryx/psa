@@ -234,7 +234,7 @@ if (!window.psaInputs) {
                 if (workspaceShortcut || (key === 'Escape' && !captureEscape)) return;
                 const handled = (captureEnter && key === 'Enter' && !event.shiftKey) ||
                     (captureEscape && key === 'Escape') ||
-                    (plain && !event.shiftKey && completion && key === 'Tab') ||
+                    (plain && !event.shiftKey && (completion || picker) && key === 'Tab') ||
                     (plain && menu && (key === 'ArrowUp' || key === 'ArrowDown'));
                 if (!handled) {
                     // The desktop's delegated Dioxus key listener uses synchronous

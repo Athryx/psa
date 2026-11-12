@@ -11,6 +11,7 @@ pub fn probe_metadata() -> ProbeMetadata {
         data_dir: "/tmp/psa-test".into(),
         home_dir: None,
         host: false,
+        sandboxes: false,
     }
 }
 

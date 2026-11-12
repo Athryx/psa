@@ -38,6 +38,7 @@ pub enum SidebarMode {
     #[default]
     Browser,
     Details,
+    Probes,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -336,6 +337,11 @@ mod tests {
         assert!(sidebar.collapsed);
         sidebar.toggle_mode(SidebarMode::Browser);
         assert!(!sidebar.collapsed);
+        sidebar.toggle_mode(SidebarMode::Probes);
+        assert!(!sidebar.collapsed);
+        assert_eq!(sidebar.expanded_mode, SidebarMode::Probes);
+        sidebar.toggle_mode(SidebarMode::Probes);
+        assert!(sidebar.collapsed);
     }
 
     #[test]

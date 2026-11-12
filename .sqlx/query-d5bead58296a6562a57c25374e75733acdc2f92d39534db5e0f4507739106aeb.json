@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT probe_id, manager_id, name, image, mounts, created_at\n             FROM sandboxes WHERE probe_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "probe_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sandboxes",
+            "name": "probe_id"
+          }
+        }
+      },
+      {
+        "name": "manager_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sandboxes",
+            "name": "manager_id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sandboxes",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "image",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sandboxes",
+            "name": "image"
+          }
+        }
+      },
+      {
+        "name": "mounts",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sandboxes",
+            "name": "mounts"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sandboxes",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d5bead58296a6562a57c25374e75733acdc2f92d39534db5e0f4507739106aeb"
+}

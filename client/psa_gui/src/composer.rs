@@ -25,6 +25,7 @@ enum DraftCommandStage {
     Models,
     SessionModels,
     SessionEfforts,
+    SandboxActions,
 }
 
 fn draft_command_stage(
@@ -55,6 +56,12 @@ fn draft_command_stage(
         .is_some_and(|rest| rest.starts_with(char::is_whitespace))
     {
         return Some(DraftCommandStage::SessionEfforts);
+    }
+    if text
+        .strip_prefix("/sandbox")
+        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+    {
+        return Some(DraftCommandStage::SandboxActions);
     }
     (!complete_commands(text).is_empty()).then_some(DraftCommandStage::Completion)
 }
@@ -513,12 +520,15 @@ enum MenuAction {
     RootModel(ModelSelection),
     SessionModel(ModelConfig),
     SessionEffort(Effort),
+    Sandbox(SandboxAction),
 }
 
 struct MenuOption {
     title: String,
     description: String,
     action: MenuAction,
+    /// Composer text Tab fills in for this option, if any.
+    completion: Option<String>,
 }
 
 struct CommandMenu {
@@ -581,6 +591,7 @@ fn build_command_menu(
                     title: format!("/{}", command.name),
                     description: command.description.into(),
                     action: MenuAction::Command(command),
+                    completion: None,
                 })
                 .collect();
         }
@@ -613,6 +624,7 @@ fn build_command_menu(
                             title: config.config_id.name.clone(),
                             description,
                             action: MenuAction::Configuration(config.config_id.clone()),
+                            completion: None,
                         }
                     })
                     .collect();
@@ -627,6 +639,7 @@ fn build_command_menu(
                         title: draft_model_label(&selection),
                         description: String::new(),
                         action: MenuAction::RootModel(selection),
+                        completion: None,
                     })
                     .collect();
             }
@@ -666,6 +679,24 @@ fn build_command_menu(
                         model: model.model.clone(),
                         effort: choose_effort(model, preferred),
                     }),
+                    completion: None,
+                })
+                .collect();
+        }
+        DraftCommandStage::SandboxActions => {
+            let filter = text
+                .strip_prefix("/sandbox")
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+            options = SandboxAction::ALL
+                .into_iter()
+                .filter(|action| action.as_str().starts_with(&filter))
+                .map(|action| MenuOption {
+                    title: action.as_str().into(),
+                    description: action.description().into(),
+                    action: MenuAction::Sandbox(action),
+                    completion: None,
                 })
                 .collect();
         }
@@ -681,9 +712,13 @@ fn build_command_menu(
                     title: effort.as_str().into(),
                     description: String::new(),
                     action: MenuAction::SessionEffort(effort),
+                    completion: None,
                 })
                 .collect();
         }
+    }
+    for option in &mut options {
+        option.completion = menu_completion(stage, option);
     }
     Some(CommandMenu {
         stage,
@@ -691,6 +726,34 @@ fn build_command_menu(
         current,
         filtered,
     })
+}
+
+/// The slash command a picker stage chooses arguments for.
+fn picker_command(stage: DraftCommandStage) -> Option<CommandId> {
+    match stage {
+        DraftCommandStage::Configurations => Some(CommandId::Agent),
+        DraftCommandStage::SessionModels => Some(CommandId::SessionModel),
+        DraftCommandStage::SessionEfforts => Some(CommandId::SessionEffort),
+        DraftCommandStage::SandboxActions => Some(CommandId::Sandbox),
+        // The root model policy follows `/agent` and has no typed form.
+        DraftCommandStage::Completion | DraftCommandStage::Models => None,
+    }
+}
+
+/// Tab completes a command name, or a picker option as `/command option`,
+/// which the picker's filter then narrows back to that option.
+fn menu_completion(stage: DraftCommandStage, option: &MenuOption) -> Option<String> {
+    if let MenuAction::Command(command) = &option.action {
+        // `/refresh` takes no arguments, so it completes without a trailing space.
+        return Some(if command.id == CommandId::Refresh {
+            format!("/{}", command.name)
+        } else {
+            format!("/{} ", command.name)
+        });
+    }
+    let id = picker_command(stage)?;
+    let command = COMMANDS.iter().find(|command| command.id == id)?;
+    Some(format!("/{} {}", command.name, option.title))
 }
 
 fn select_menu_action(
@@ -744,6 +807,14 @@ fn select_menu_action(
             ui.write().drafts.remove(&target);
         }
         MenuAction::SessionEffort(effort) => select_session_effort(ui, target, effort),
+        MenuAction::Sandbox(action) => {
+            ui.write().drafts.remove(&target);
+            spawn(network::change_session_sandbox(
+                ui,
+                target.session_id,
+                action,
+            ));
+        }
     }
 }
 
@@ -766,6 +837,7 @@ fn render_command_menu(
             DraftCommandStage::Models => "Root agent model policy",
             DraftCommandStage::SessionModels => "Session default model",
             DraftCommandStage::SessionEfforts => "Session default effort",
+            DraftCommandStage::SandboxActions => "Session sandbox",
         }
     };
     let heading = match stage {
@@ -774,6 +846,7 @@ fn render_command_menu(
         DraftCommandStage::Models => "Choose the root agent model policy",
         DraftCommandStage::SessionModels => "Session default model (not individual agents)",
         DraftCommandStage::SessionEfforts => "Session default effort (not individual agents)",
+        DraftCommandStage::SandboxActions => "Session sandbox",
     };
     rsx! {
         div { class:"popup command-popup", role:"listbox", "aria-label":label,
@@ -816,7 +889,7 @@ fn render_command_menu(
                 }}
             }
             div { class:"command-hint",
-                if stage == DraftCommandStage::Completion { "↑↓ navigate · Enter select · Tab complete · Esc dismiss" }
+                if menu.options.iter().any(|option| option.completion.is_some()) { "↑↓ navigate · Enter select · Tab complete · Esc dismiss" }
                 else { "↑↓ navigate · Enter select · Esc dismiss" }
             }
         }
@@ -1091,23 +1164,32 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
                     dismissed.set(Some(event.snapshot.revision.clock));
                     choosing_model.set(None);
                 }
-                Key::Tab
-                    if menu.stage == DraftCommandStage::Completion
-                        && !event.modifiers().contains(Modifiers::SHIFT) =>
-                {
+                Key::Tab if !event.modifiers().contains(Modifiers::SHIFT) => {
                     event.prevent_default();
-                    if let Some(MenuOption {
-                        action: MenuAction::Command(command),
-                        ..
-                    }) = menu.options.get(selected())
-                    {
-                        let text = if command.id == CommandId::Refresh {
-                            "/refresh".into()
-                        } else {
-                            format!("/{} ", command.name)
-                        };
+                    let completion =
+                        menu.options
+                            .get(selected() % count.max(1))
+                            .and_then(|option| {
+                                Some((option.title.clone(), option.completion.clone()?))
+                            });
+                    if let Some((title, text)) = completion {
+                        // Keep the completed option selected under the narrowed filter.
+                        let narrowed = build_command_menu(
+                            &ui.peek(),
+                            target,
+                            &text,
+                            root,
+                            false,
+                            false,
+                            *all_models.peek(),
+                        );
+                        let index = narrowed
+                            .and_then(|menu| {
+                                menu.options.iter().position(|option| option.title == title)
+                            })
+                            .unwrap_or(0);
                         ui.write().drafts.insert(target, text);
-                        selected.set(0);
+                        selected.set(index);
                     }
                 }
                 Key::Enter if !event.modifiers().contains(Modifiers::SHIFT) => {
@@ -1161,6 +1243,22 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
                     spawn(rename_session(ui, session_id, arguments));
                 }
             }
+            ComposerInput::Command {
+                id: CommandId::Sandbox,
+                arguments,
+            } => match SandboxAction::parse(&arguments) {
+                Some(action) => {
+                    ui.write().drafts.remove(&target);
+                    spawn(network::change_session_sandbox(
+                        ui,
+                        target.session_id,
+                        action,
+                    ));
+                }
+                None => {
+                    ui.write().drafts.insert(target, "/sandbox ".into());
+                }
+            },
             ComposerInput::Command {
                 id: CommandId::Fork,
                 arguments,

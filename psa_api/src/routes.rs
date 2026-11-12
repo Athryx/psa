@@ -61,6 +61,16 @@ pub const PROBE: &str = "/probes/{probe_id}";
 pub const PROBE_DIRECTORIES: &str = "/probes/{probe_id}/directories";
 /// GET the authenticated probe WebSocket upgrade endpoint.
 pub const PROBES_CONNECT: &str = "/probes/connect";
+/// POST a new sandbox on a manager probe.
+pub const PROBE_SANDBOXES: &str = "/probes/{probe_id}/sandboxes";
+/// GET sandboxes, optionally filtered by manager probe.
+pub const SANDBOXES: &str = "/sandboxes";
+/// GET or DELETE one sandbox by its nested probe ID.
+pub const SANDBOX: &str = "/sandboxes/{probe_id}";
+/// POST to start a sandbox container.
+pub const SANDBOX_START: &str = "/sandboxes/{probe_id}/start";
+/// POST to stop a sandbox container.
+pub const SANDBOX_STOP: &str = "/sandboxes/{probe_id}/stop";
 
 /// Substitute the session ID in a route template.
 pub fn session_path(route: &str, session: SessionId) -> String {
@@ -94,4 +104,9 @@ pub fn probe_path(id: crate::ProbeId) -> String {
 /// Build the directory-listing path for a probe.
 pub fn probe_directories_path(id: crate::ProbeId) -> String {
     PROBE_DIRECTORIES.replace("{probe_id}", &id.to_string())
+}
+
+/// Substitute the probe ID in a probe or sandbox route template.
+pub fn probe_route(route: &str, id: crate::ProbeId) -> String {
+    route.replace("{probe_id}", &id.to_string())
 }

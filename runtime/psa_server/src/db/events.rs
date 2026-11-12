@@ -7,6 +7,7 @@ use super::{
         now_us, parse_agent_state,
     },
     sessions::get_session,
+    snapshots::{decode_snapshot, encode_snapshot},
 };
 use crate::agents::{AgentId, AgentState, AgentUsage};
 use psa_api::events::{Event, EventId, EventRange, EventType, NewEvent};
@@ -72,19 +73,25 @@ async fn query_private_event(
     upper: i64,
 ) -> Result<Option<PrivateEvent>, DbError> {
     let event = match kind {
-        PrivateEventKind::CodeModeSnapshot => sqlx::query_scalar::<_, Vec<u8>>(
-            "SELECT s.snapshot
-             FROM codemode_snapshots s
-             JOIN events e ON e.event_pk = s.event_pk
-             WHERE e.agent_id = ? AND e.event_seq BETWEEN ? AND ?
-             ORDER BY e.event_seq DESC LIMIT 1",
-        )
-        .bind(owner)
-        .bind(lower)
-        .bind(upper)
-        .fetch_optional(&mut *conn)
-        .await?
-        .map(PrivateEvent::CodeModeSnapshot),
+        PrivateEventKind::CodeModeSnapshot => {
+            let stored = sqlx::query_scalar::<_, Vec<u8>>(
+                "SELECT s.snapshot
+                 FROM codemode_snapshots s
+                 JOIN events e ON e.event_pk = s.event_pk
+                 WHERE e.agent_id = ? AND e.event_seq BETWEEN ? AND ?
+                 ORDER BY e.event_seq DESC LIMIT 1",
+            )
+            .bind(owner)
+            .bind(lower)
+            .bind(upper)
+            .fetch_optional(&mut *conn)
+            .await?;
+            let Some(stored) = stored else {
+                return Ok(None);
+            };
+            let snapshot = decode_snapshot(stored).await?;
+            Some(PrivateEvent::CodeModeSnapshot(snapshot))
+        }
         PrivateEventKind::CodeModeOutput => sqlx::query_scalar::<_, String>(
             "SELECT o.output
              FROM codemode_outputs o
@@ -241,11 +248,12 @@ impl DatabaseCursor {
             for private_event in &private_events[offset] {
                 match private_event {
                     PrivateEvent::CodeModeSnapshot(snapshot) => {
+                        let stored = encode_snapshot(snapshot).await?;
                         sqlx::query(
                             "INSERT INTO codemode_snapshots (event_pk, snapshot) VALUES (?, ?)",
                         )
                         .bind(result.last_insert_rowid())
-                        .bind(snapshot.as_slice())
+                        .bind(stored)
                         .execute(&mut *savepoint)
                         .await?;
                     }

@@ -9,8 +9,10 @@ mod models;
 mod payloads;
 mod probes;
 mod queries;
+mod sandboxes;
 mod schema;
 mod sessions;
+mod snapshots;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use std::{
@@ -28,6 +30,7 @@ pub use events::{
     AddEventResult, EventBatchItem, MAX_CODEMODE_SNAPSHOT_BYTES, PrivateEvent, PrivateEventKind,
 };
 pub use queries::InferenceResultEvents;
+pub use sandboxes::SandboxRecord;
 
 #[derive(Debug, Clone)]
 pub struct Database {
