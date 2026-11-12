@@ -152,6 +152,7 @@ impl Sessions {
                 name: request.name,
                 working_directory: request.working_directory,
                 probe_id: request.probe_id,
+                project_id: request.project_id,
                 model_config,
             })
             .await?;
@@ -164,17 +165,6 @@ impl Sessions {
             session: session.clone().into_api(false),
         });
         Ok(session)
-    }
-
-    pub async fn list_sessions(
-        &self,
-        query: api::ListSessions,
-    ) -> Result<Vec<sessions::Session>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
-        let sessions = cursor.list_sessions(query.parent).await?;
-        cursor.rollback().await?;
-
-        Ok(sessions)
     }
 
     pub async fn get_session(&self, id: SessionId) -> Result<sessions::Session, RuntimeError> {
@@ -581,6 +571,7 @@ mod tests {
                     name: "test".into(),
                     working_directory: "/work".into(),
                     probe_id: api::ProbeId(api::probes::Uuid::nil()),
+                    project_id: None,
                     model_config: Some(crate::test_support::model_config()),
                 })
                 .await
@@ -816,18 +807,6 @@ mod tests {
         assert_eq!(loaded.id, session.id);
         assert_eq!(loaded.first_position, 1);
         assert_eq!(loaded.next_position, 1);
-        let listed = tokio::time::timeout(
-            Duration::from_secs(2),
-            sessions.list_sessions(Default::default()),
-        )
-        .await
-        .expect("list_sessions must not await the manager")
-        .unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].id, session.id);
-        assert_eq!(listed[0].first_position, 1);
-        assert_eq!(listed[0].next_position, 1);
-
         sessions
             .publication
             .update_session_busy(&sessions.database, session.id, true)
@@ -1000,6 +979,7 @@ mod tests {
                     name: "missing probe".into(),
                     working_directory: "/work".into(),
                     probe_id: api::ProbeId(api::probes::Uuid::new_v4()),
+                    project_id: None,
                     model_config: Some(crate::test_support::model_config()),
                 })
                 .await,

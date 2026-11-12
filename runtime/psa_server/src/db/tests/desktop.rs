@@ -119,7 +119,7 @@ async fn summary_equal_timestamps_use_descending_id_keysets_and_direct_children(
         .await
         .unwrap();
     let mut cursor = db.cursor().await.unwrap();
-    let query = psa_api::SessionListQuery {
+    let query = psa_api::SessionsQuery {
         flat: true,
         limit: 1,
         ..Default::default()
@@ -137,7 +137,7 @@ async fn summary_equal_timestamps_use_descending_id_keysets_and_direct_children(
     assert_eq!(second[0].id, session.id);
     let children = cursor
         .query_sessions(
-            &psa_api::SessionListQuery {
+            &psa_api::SessionsQuery {
                 parent: Some(session.id),
                 ..Default::default()
             },
@@ -147,6 +147,107 @@ async fn summary_equal_timestamps_use_descending_id_keysets_and_direct_children(
         .unwrap();
     assert_eq!(children.len(), 1);
     assert_eq!(children[0].id, fork.session.id);
+    cursor.rollback().await.unwrap();
+    db.close().await;
+}
+
+#[tokio::test]
+async fn summary_filters_match_names_probes_and_projects_like_the_shared_filter() {
+    let (_dir, db, global, _agent) = fixture().await;
+    let mut cursor = db.cursor().await.unwrap();
+    let project = psa_api::ProjectId("Pipeline".into());
+    let in_project = cursor
+        .create_session(NewSession {
+            name: "Nightly Build".into(),
+            working_directory: "/work".into(),
+            probe_id: global.probe_id,
+            project_id: Some(project.clone()),
+            model_config: crate::test_support::model_config(),
+        })
+        .await
+        .unwrap();
+    let fork = cursor
+        .fork_session(
+            in_project.id,
+            SessionFork {
+                point: ForkPoint::Head,
+                metadata: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(fork.session.project_id, Some(project.clone()));
+    for invalid in ["", " padded", &"x".repeat(psa_api::ProjectId::MAX_LEN + 1)] {
+        let error = cursor
+            .create_session(NewSession {
+                name: "invalid".into(),
+                working_directory: "/work".into(),
+                probe_id: global.probe_id,
+                project_id: Some(psa_api::ProjectId(invalid.into())),
+                model_config: crate::test_support::model_config(),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, DbError::InvalidInput(_)), "{invalid:?}");
+    }
+    assert_eq!(cursor.list_projects().await.unwrap(), vec![project.clone()]);
+
+    let filters = [
+        psa_api::SessionFilter::default(),
+        psa_api::SessionFilter {
+            name_contains: "NIGHTLY".into(),
+            ..Default::default()
+        },
+        psa_api::SessionFilter {
+            project_ids: vec![None],
+            ..Default::default()
+        },
+        psa_api::SessionFilter {
+            project_ids: vec![Some(project.clone())],
+            ..Default::default()
+        },
+        psa_api::SessionFilter {
+            project_ids: vec![None, Some(project)],
+            ..Default::default()
+        },
+        psa_api::SessionFilter {
+            probe_ids: vec![psa_api::ProbeId(psa_api::probes::Uuid::new_v4())],
+            ..Default::default()
+        },
+    ];
+    let all = cursor
+        .query_sessions(
+            &psa_api::SessionsQuery {
+                flat: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 3);
+    for filter in filters {
+        let query = psa_api::SessionsQuery {
+            flat: true,
+            filter: filter.clone(),
+            ..Default::default()
+        };
+        let mut queried: Vec<_> = cursor
+            .query_sessions(&query, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|session| session.id)
+            .collect();
+        let mut matched: Vec<_> = all
+            .iter()
+            .filter(|session| filter.matches(&(*session).clone().into_api(false)))
+            .map(|session| session.id)
+            .collect();
+        queried.sort_by_key(|id| id.0);
+        matched.sort_by_key(|id| id.0);
+        assert_eq!(queried, matched, "{filter:?}");
+    }
     cursor.rollback().await.unwrap();
     db.close().await;
 }

@@ -127,18 +127,24 @@ async fn sandboxes_follow_manager_lifecycle_and_report_errors() {
         "manager_offline",
     );
 
-    // A reconnected manager with no container reports it missing; delete removes the record.
+    // A reconnected manager with no container reports it missing; delete keeps the record.
     let files = fake_probe::FakeFiles::default().with_sandboxes();
     let probe = fake_probe::FakeProbe::connect_with_files(address, &probes, files).await;
     let missing = client.get_sandbox(sandbox.probe_id).await.unwrap();
     assert_eq!(missing.state, SandboxState::Missing);
     client.delete_sandbox(sandbox.probe_id).await.unwrap();
-    assert!(client.list_sandboxes(None).await.unwrap().is_empty());
-    assert_api_error(
-        client.get_sandbox(sandbox.probe_id).await.unwrap_err(),
-        404,
-        "not_found",
-    );
+    let listed = client.list_sandboxes(None).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].state, SandboxState::Deleted);
+    assert_eq!(listed[0].manager_id, sandbox.manager_id);
+    let deleted = client.get_sandbox(sandbox.probe_id).await.unwrap();
+    assert_eq!(deleted.state, SandboxState::Deleted);
+    for result in [
+        client.start_sandbox(sandbox.probe_id).await.map(|_| ()),
+        client.delete_sandbox(sandbox.probe_id).await,
+    ] {
+        assert_api_error(result.unwrap_err(), 409, "sandbox_deleted");
+    }
 
     probe.disconnect(&probes).await;
     let _ = stop.send(());

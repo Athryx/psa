@@ -122,7 +122,7 @@ async fn recent_to_sse_gap_replays_then_live_promotions_keep_identity() {
 }
 
 #[tokio::test]
-async fn global_probe_filter_suppresses_other_probes_and_agent_creation_updates_summary() {
+async fn global_feed_carries_every_session_and_agent_creation_updates_summary() {
     let (_dir, state, runtime, session, _agent) = fixture().await;
     let mut summaries = state.publication.lock().await.subscribe_global();
     let created = state
@@ -156,18 +156,13 @@ async fn global_probe_filter_suppresses_other_probes_and_agent_creation_updates_
         axum::serve(listener, app).await.unwrap();
     });
     let client = api::Client::new(&base, "test-client-key").unwrap();
-    let mut filtered = client
-        .stream_global_events(
-            &api::GlobalEventsQuery {
-                probe_id: Some(api::ProbeId(api::probes::Uuid::new_v4())),
-                ..Default::default()
-            },
-            None,
-        )
+    // The feed is unfiltered so clients also see sessions leave their filter.
+    let mut feed = client
+        .stream_global_events(&Default::default(), None)
         .await
         .unwrap();
     assert!(matches!(
-        filtered.next().await.unwrap().unwrap().message,
+        feed.next().await.unwrap().unwrap().message,
         api::GlobalStreamMessage::Ready { .. }
     ));
     state
@@ -175,11 +170,16 @@ async fn global_probe_filter_suppresses_other_probes_and_agent_creation_updates_
         .update_session_busy(&state.database, session.id, true)
         .await
         .unwrap();
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), filtered.next())
-            .await
-            .is_err()
-    );
+    let message = tokio::time::timeout(Duration::from_secs(3), feed.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .message;
+    assert!(matches!(
+        message,
+        api::GlobalStreamMessage::SessionUpdated { session: updated, .. } if updated.id == session.id && updated.busy
+    ));
     server.abort();
     runtime.shutdown().await.unwrap();
     state.database.close().await;

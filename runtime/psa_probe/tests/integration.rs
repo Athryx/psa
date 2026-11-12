@@ -249,6 +249,7 @@ async fn registration_auth_sessions_and_reconnect() {
                 name: "remote".into(),
                 working_directory: harness.dir.path().to_owned(),
                 probe_id: harness.id,
+                project_id: None,
                 model_config: Some(
                     serde_json::from_value(serde_json::json!({
                         "model": { "provider": "Openrouter", "api_name": "test-model" },
@@ -278,6 +279,7 @@ async fn registration_auth_sessions_and_reconnect() {
                     name: "bad".into(),
                     working_directory: "/tmp".into(),
                     probe_id: ProbeId(Uuid::new_v4()),
+                    project_id: None,
                     model_config: Some(session.model_config.clone()),
                 })
                 .await
@@ -333,6 +335,7 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
                 name: "skills".into(),
                 working_directory: cwd.clone(),
                 probe_id: harness.id,
+                project_id: None,
                 model_config: Some(serde_json::from_value(serde_json::json!({
                     "model": { "provider": "Openrouter", "api_name": "test-model" },
                     "effort": "Medium"

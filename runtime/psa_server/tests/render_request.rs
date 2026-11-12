@@ -43,6 +43,7 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
             .create_session(NewSession {
                 model_config: support::model_config(),
                 probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+                project_id: None,
                 name: "test".into(),
                 working_directory: "/work".into(),
             })

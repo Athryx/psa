@@ -75,6 +75,7 @@ async fn typed_bridge_validates_and_cancels_before_running() {
             name: "typed".into(),
             working_directory: "/work".into(),
             probe_id: support::probe_metadata().id,
+            project_id: None,
         })
         .await
         .unwrap();

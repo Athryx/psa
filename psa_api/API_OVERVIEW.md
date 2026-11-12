@@ -58,21 +58,42 @@ ignore older replay. The model catalog provides the optional model context limit
 
 ## Ordered session summaries and the global feed
 
-Legacy `GET /sessions?parent=ID` / `Client::list_sessions(parent)` still return
-roots (no parent) or direct children in ID order.
+### Projects
 
-`GET /sessions/query` / `Client::query_sessions(&SessionListQuery)` return
+Sessions carry an optional `project_id: Option<ProjectId>`. `None` is a global
+session, which is what interactive clients create; API-driven applications set a
+project (typically the name of their `ConfigGroup::Custom` namespace) in
+`CreateSession.project_id`. The project is fixed for the session's lifetime and
+forks inherit it. Project IDs must be nonblank, without surrounding whitespace,
+and at most `ProjectId::MAX_LEN` (256) bytes. `GET /projects` /
+`Client::list_projects()` returns the sorted distinct projects of existing
+sessions; global sessions are not represented there.
+
+### Session pages
+
+`POST /sessions/query` / `Client::list_sessions(&SessionsQuery)` return
 `SessionsPage { sessions, next_before, revision }`. Set `flat=true` to include
 forks; otherwise `parent` selects children or its absence selects roots.
-`flat=true` and `parent` together are invalid. Optional `probe_id` filters the
-scope. Summaries include published busy state, ordered by `updated_at DESC, id
-DESC`. `limit` defaults to 100 (1–1000); pass opaque `next_before` as `before`.
-Cursors are exclusive and bound to the filter scope, not to page size. Keyset
-pages are not an immutable snapshot: merge by session ID and reconcile the feed.
+`flat=true` and `parent` together are invalid. `filter: SessionFilter` narrows
+the page, with criteria combined by AND:
 
-`GET /events?kind=session_updated&probe_id=UUID` /
+- `name_contains`: substring of the name, ignoring ASCII case; empty matches all.
+- `probe_ids`: any of these probes; empty matches all.
+- `project_ids`: any of these projects, where `null` selects global sessions;
+  empty matches all.
+
+`SessionFilter::matches(&Session)` applies exactly the server's semantics, so
+clients use it to decide which live feed updates belong in a filtered list.
+Summaries include published busy state, ordered by `updated_at DESC, id DESC`.
+`limit` defaults to 100 (1–1000); pass opaque `next_before` as `before`.
+Cursors are exclusive and bound to the query scope (`flat`, `parent`, and
+`filter`), not to page size. Keyset pages are not an immutable snapshot: merge
+by session ID and reconcile the feed.
+
+`GET /events?kind=session_updated` /
 `Client::stream_global_events(&GlobalEventsQuery, last_event_id)` are a separate
-SSE-only summary feed. The typed allowlist currently contains only
+SSE-only summary feed. It carries every session, unfiltered, so a client sees a
+session leave its filter (for example after a rename) as well as enter it. The typed allowlist currently contains only
 `GlobalEventKind::SessionUpdated`; no transcript data is exposed. Messages:
 
 - `ready { revision }`: subscription established.
@@ -416,7 +437,7 @@ absolute UTF-8 path on a connected probe. The client-authenticated endpoint is
 read-only and returns an array of `DirectoryEntry` objects (`name`, `kind`,
 `size`); kinds are `file`, `directory`, `symlink`, or `other`. Entry metadata
 does not follow symlinks. Paths are passed unchanged, not canonicalized, and
-results are not guaranteed sorted. `Client::list_probe_dir(id, path)` safely
+results are not guaranteed sorted. `Client::list_probe_directory(id, path)` safely
 encodes the query. A malformed path returns 400 `invalid_input`, an unknown
 probe 404 `not_found`, a disconnected or overloaded probe 503 `unavailable`,
 and a remote filesystem or protocol failure 502 `probe_error`. The probe's
@@ -527,7 +548,7 @@ and their resolved `wire_effort`; null wire effort omits reasoning parameters.
 
 `GET /models/lookup?provider=Openrouter&model=vendor%2Fmodel` returns one entry,
 or 404 when unknown. Model names are query values so slash-containing IDs work.
-`Client::model_info(&Model)` performs this lookup using the model's provider
+`Client::get_model(&Model)` performs this lookup using the model's provider
 and API name; reasoning effort is not part of model identity. `ModelLookup`
 keeps flat `provider` and `model` query fields, with `model` holding the API name.
 
@@ -560,7 +581,7 @@ atomically. A 304 refreshes its timestamp without replacing metadata. Failures
 preserve the last good catalog. No model data is bundled: a new database returns
 an empty list until its first successful sync. Reads and inference never fetch
 remote metadata. The Rust client exposes `list_providers`, `list_models`,
-`model_info`, `set_model_pinned`, and `resync_models`.
+`get_model`, `set_model_pinned`, and `resync_models`.
 
 `Effort` now accepts `Off` and `Minimal` alongside `Low`, `Medium`, `High`,
 `Xhigh`, and `Max`. Before inference, known model metadata resolves mappings

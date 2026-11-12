@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sandboxes SET deleted_at = ? WHERE probe_id = ? AND deleted_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "f23ad639c825cbc67f4be9814e2d384e1595668b989acf8bb55676a520245287"
+}

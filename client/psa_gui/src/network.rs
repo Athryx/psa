@@ -160,11 +160,11 @@ async fn summary_connection(mut ui: Signal<Ui>, generation: u64) -> Result<(), C
     if !ui.peek().fresh_sessions.is_empty() {
         ui.write().fresh_sessions.clear();
     }
-    let filter = ui.read().selected_probe;
+    let filter = ui.read().session_filter.clone();
     let page = api
-        .query_sessions(&SessionListQuery {
+        .list_sessions(&SessionsQuery {
             flat: true,
-            probe_id: filter,
+            filter: filter.clone(),
             limit: 100,
             ..Default::default()
         })
@@ -172,10 +172,11 @@ async fn summary_connection(mut ui: Signal<Ui>, generation: u64) -> Result<(), C
     if ui.read().generation != generation {
         return Ok(());
     }
-    if ui.read().selected_probe == filter && ui.peek().network.borrow().list_request == request {
+    if ui.read().session_filter == filter && ui.peek().network.borrow().list_request == request {
         merge_page(ui, page);
     }
     refresh_probes(ui).await;
+    refresh_projects(ui).await;
     if ui.peek().generation != generation {
         return Ok(());
     }
@@ -283,7 +284,7 @@ pub async fn load_sessions(mut ui: Signal<Ui>, older: bool) {
         let state = ui.read();
         (
             state.generation,
-            state.selected_probe,
+            state.session_filter.clone(),
             if older {
                 state.next_sessions.clone()
             } else {
@@ -298,9 +299,9 @@ pub async fn load_sessions(mut ui: Signal<Ui>, older: bool) {
         return;
     };
     match api
-        .query_sessions(&SessionListQuery {
+        .list_sessions(&SessionsQuery {
             flat: true,
-            probe_id: filter,
+            filter: filter.clone(),
             before: cursor,
             limit: 100,
             ..Default::default()
@@ -309,7 +310,7 @@ pub async fn load_sessions(mut ui: Signal<Ui>, older: bool) {
     {
         Ok(page)
             if generation == ui.read().generation
-                && filter == ui.read().selected_probe
+                && filter == ui.read().session_filter
                 && request == ui.peek().network.borrow().list_request =>
         {
             merge_page(ui, page)
@@ -320,6 +321,28 @@ pub async fn load_sessions(mut ui: Signal<Ui>, older: bool) {
         _ => {}
     }
 }
+/// Reload the first session page after the user stops typing a name search.
+/// Displayed sessions are filtered locally meanwhile, so typing stays responsive.
+pub async fn search_sessions(ui: Signal<Ui>) {
+    let search = ui.peek().session_filter.name_contains.clone();
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    if ui.peek().session_filter.name_contains == search {
+        load_sessions(ui, false).await;
+    }
+}
+
+/// Reload the projects offered by the session filter. Failures keep the old list.
+pub async fn refresh_projects(mut ui: Signal<Ui>) {
+    let generation = ui.peek().generation;
+    let Ok(api) = client(ui) else { return };
+    let Ok(projects) = api.list_projects().await else {
+        return;
+    };
+    if ui.peek().generation == generation && *ui.peek().projects != projects {
+        ui.write().projects = projects.into();
+    }
+}
+
 pub async fn more_sessions(ui: Signal<Ui>) {
     load_sessions(ui, true).await;
 }
@@ -428,7 +451,11 @@ pub async fn change_sandbox(mut ui: Signal<Ui>, id: ProbeId, action: client_shar
             apply_sandbox(&mut state, sandbox);
         }
         Ok(None) => {
-            state.sandboxes.retain(|sandbox| sandbox.probe_id != id);
+            // The server keeps deleted sandboxes so they stay under their manager.
+            if let Some(sandbox) = state.sandboxes.iter_mut().find(|s| s.probe_id == id) {
+                sandbox.state = SandboxState::Deleted;
+                sandbox.probe_active = false;
+            }
             state.notice = Some("Sandbox deleted".into());
         }
         Err(error) => {

@@ -280,6 +280,7 @@ impl Harness {
             .create_session(&wire::CreateSession {
                 model_config: Some(model()),
                 probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+                project_id: None,
                 name: "session".into(),
                 working_directory: "/work".into(),
             })
@@ -437,6 +438,7 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
             name: "project".into(),
             working_directory: "/work/project/nested".into(),
             probe_id: support::probe_metadata().id,
+            project_id: None,
             model_config: Some(model()),
         })
         .await
@@ -947,6 +949,7 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
             name: "offline hooks".into(),
             working_directory: "/work/<project>&".into(),
             probe_id: support::probe_metadata().id,
+            project_id: None,
             model_config: Some(model()),
         })
         .await
@@ -1261,7 +1264,15 @@ async fn busy_queries_track_all_workers_and_request_ids_ignore_generations() {
             .unwrap();
         assert_eq!(updated.name, "updated");
         assert!(updated.busy);
-        assert!(harness.client.list_sessions(None).await.unwrap()[0].busy);
+        assert!(
+            harness
+                .client
+                .list_sessions(&Default::default())
+                .await
+                .unwrap()
+                .sessions[0]
+                .busy
+        );
 
         harness
             .client
@@ -1286,7 +1297,15 @@ async fn busy_queries_track_all_workers_and_request_ids_ignore_generations() {
             .await
             .unwrap();
         harness.wait_stopped(session.id).await;
-        assert!(!harness.client.list_sessions(None).await.unwrap()[0].busy);
+        assert!(
+            !harness
+                .client
+                .list_sessions(&Default::default())
+                .await
+                .unwrap()
+                .sessions[0]
+                .busy
+        );
         harness.close().await;
     })
     .await
@@ -1489,6 +1508,7 @@ async fn http_tools_hooks_usage_streaming_and_reconnect() {
         .create_session(&wire::CreateSession {
             model_config: Some(model()),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            project_id: None,
             name: "other".into(),
             working_directory: "/other".into(),
         })
@@ -1641,6 +1661,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
         .create_session(NewSession {
             model_config: model(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            project_id: None,
             name: "root".into(),
             working_directory: "/work".into(),
         })
@@ -1818,6 +1839,7 @@ async fn persistence_failure_does_not_mutate_worker_memory() {
         .create_session(NewSession {
             model_config: model(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            project_id: None,
             name: "root".into(),
             working_directory: "/work".into(),
         })

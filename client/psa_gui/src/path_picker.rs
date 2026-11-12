@@ -119,7 +119,7 @@ pub(crate) fn DirectoryBrowserModal(
         spawn(async move {
             let result = match network::client(ui) {
                 Ok(api) => api
-                    .list_probe_dir(probe, &next)
+                    .list_probe_directory(probe, &next)
                     .await
                     .map_err(|e| e.to_string()),
                 Err(_) => Err("Invalid API connection settings".into()),

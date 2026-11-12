@@ -170,7 +170,7 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
         model: Model::new(ProviderType::Openrouter, "vendor/model").unwrap(),
         effort: Effort::Minimal,
     };
-    let info = client.model_info(&config.model).await.unwrap();
+    let info = client.get_model(&config.model).await.unwrap();
     assert_eq!(info.name, "Catalog model");
     assert_eq!(info.cost.rates.input, Some(2.5));
     assert_eq!(info.context_window, Some(128000));
@@ -205,7 +205,7 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
     let mut missing = config.clone();
     missing.model = Model::new(ProviderType::Openrouter, "unknown/model").unwrap();
     assert!(matches!(
-        client.model_info(&missing.model).await,
+        client.get_model(&missing.model).await,
         Err(api::ClientError::Api { status: 404, .. })
     ));
     let missing_pin = api::PinModel {
@@ -265,6 +265,7 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
                 name: format!("{effort:?}"),
                 working_directory: "/work".into(),
                 probe_id: support::probe_metadata().id,
+                project_id: None,
                 model_config: Some(ModelConfig {
                     effort,
                     ..config.clone()
@@ -346,7 +347,7 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
                 if error.code == "catalog_sync_failed"
         ));
     }
-    assert!(client.model_info(&config.model).await.unwrap().pinned);
+    assert!(client.get_model(&config.model).await.unwrap().pinned);
     probe.disconnect(&probes).await;
     stop.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(5), server)

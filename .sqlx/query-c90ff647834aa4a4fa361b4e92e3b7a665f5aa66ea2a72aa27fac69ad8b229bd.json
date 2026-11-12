@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT DISTINCT project_id AS \"project_id!\" FROM sessions WHERE project_id IS NOT NULL ORDER BY project_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "project_id!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "project_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "c90ff647834aa4a4fa361b4e92e3b7a665f5aa66ea2a72aa27fac69ad8b229bd"
+}

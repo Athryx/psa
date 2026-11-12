@@ -14,6 +14,7 @@ async fn persisted_model_updates_live_request_projection_and_survives_reload() {
         .create_session(NewSession {
             model_config: crate::test_support::model_config(),
             probe_id: crate::test_support::probe_metadata().id,
+            project_id: None,
             name: "model test".into(),
             working_directory: "/work".into(),
         })
@@ -110,6 +111,7 @@ async fn repeated_status_changes_are_omitted_using_prior_transitions_in_the_batc
         .create_session(NewSession {
             model_config: crate::test_support::model_config(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            project_id: None,
             name: "test".into(),
             working_directory: "/work".into(),
         })
@@ -229,6 +231,7 @@ async fn cancelled_persistence_finishes_before_the_next_append() {
         .create_session(NewSession {
             model_config: crate::test_support::model_config(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            project_id: None,
             name: "test".into(),
             working_directory: "/work".into(),
         })
@@ -351,6 +354,7 @@ async fn committed_calls_get_not_run_results_when_interrupted_before_execution()
         .create_session(NewSession {
             model_config: crate::test_support::model_config(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            project_id: None,
             name: "test".into(),
             working_directory: "/work".into(),
         })

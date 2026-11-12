@@ -220,8 +220,9 @@ pub fn router(state: AppState) -> Router {
                 axum::extract::DefaultBodyLimit::max(256 * 1024 * 1024 + 64 * 1024),
             ),
         )
-        .route(routes::SESSIONS, post(create_session).get(list_sessions))
-        .route(routes::SESSION_QUERY, get(query_sessions))
+        .route(routes::SESSIONS, post(create_session))
+        .route(routes::SESSIONS_QUERY, post(list_sessions))
+        .route(routes::PROJECTS, get(list_projects))
         .route(routes::GLOBAL_EVENTS, get(global_events))
         .route(routes::SESSION, get(get_session).patch(update_session))
         .route(routes::FORK, post(fork_session))
@@ -413,25 +414,25 @@ async fn create_session(
     Ok((StatusCode::CREATED, Json(session.into_api(false))))
 }
 
-async fn list_sessions(
-    State(state): State<AppState>,
-    ApiQuery(query): ApiQuery<api::ListSessions>,
-) -> Result<Json<Vec<api::Session>>, HttpError> {
-    let sessions = state.runtime.list_sessions(query).await?;
-    let mut views = Vec::with_capacity(sessions.len());
-    for session in sessions {
-        let busy = state.runtime.is_busy(session.id).await?;
-        views.push(session.into_api(busy));
-    }
-    Ok(Json(views))
+/// Cursors carry their query scope so reusing one with another query cannot omit rows.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SummaryCursor {
+    updated_at_us: i64,
+    id: i64,
+    flat: bool,
+    parent: Option<SessionId>,
+    filter: api::SessionFilter,
 }
 
-// Cursors carry their filter scope so accidentally reusing one cannot omit rows.
-type SummaryCursor = (i64, i64, bool, Option<SessionId>, Option<api::ProbeId>);
+impl SummaryCursor {
+    fn matches_scope(&self, query: &api::SessionsQuery) -> bool {
+        self.flat == query.flat && self.parent == query.parent && self.filter == query.filter
+    }
+}
 
-async fn query_sessions(
+async fn list_sessions(
     State(state): State<AppState>,
-    ApiQuery(query): ApiQuery<api::SessionListQuery>,
+    ApiJson(query): ApiJson<api::SessionsQuery>,
 ) -> Result<Json<api::SessionsPage>, HttpError> {
     state.require_accepting()?;
     if query.limit == 0 || query.limit > 1000 || (query.flat && query.parent.is_some()) {
@@ -445,37 +446,34 @@ async fn query_sessions(
         .map(|value| {
             let cursor: SummaryCursor = serde_json::from_str(value)
                 .map_err(|_| HttpError::Invalid("invalid session cursor".into()))?;
-            if cursor.0 < 0
-                || cursor.1 <= 0
-                || (cursor.2, cursor.3, cursor.4) != (query.flat, query.parent, query.probe_id)
-            {
+            if cursor.updated_at_us < 0 || cursor.id <= 0 || !cursor.matches_scope(&query) {
                 return Err(HttpError::Invalid(
                     "session cursor belongs to another scope".into(),
                 ));
             }
-            Ok((cursor.0, cursor.1))
+            Ok((cursor.updated_at_us, cursor.id))
         })
         .transpose()?;
+
     let publication = state.publication.lock().await;
     let mut cursor = state.database.cursor().await?;
     let mut sessions = cursor.query_sessions(&query, before).await?;
     cursor.rollback().await?;
+
     let more = sessions.len() > query.limit as usize;
     sessions.truncate(query.limit as usize);
     let next_before = if more {
         let last = sessions.last().expect("nonempty bounded page");
-        Some(
-            serde_json::to_string(&(
-                i64::try_from(last.updated_at.unix_timestamp_nanos() / 1000)
-                    .map_err(|_| HttpError::Invalid("invalid session timestamp".into()))?,
-                i64::try_from(last.id.0)
-                    .map_err(|_| HttpError::Invalid("invalid session ID".into()))?,
-                query.flat,
-                query.parent,
-                query.probe_id,
-            ))
-            .expect("summary cursor is serializable"),
-        )
+        let cursor = SummaryCursor {
+            updated_at_us: i64::try_from(last.updated_at.unix_timestamp_nanos() / 1000)
+                .map_err(|_| HttpError::Invalid("invalid session timestamp".into()))?,
+            id: i64::try_from(last.id.0)
+                .map_err(|_| HttpError::Invalid("invalid session ID".into()))?,
+            flat: query.flat,
+            parent: query.parent,
+            filter: query.filter,
+        };
+        Some(serde_json::to_string(&cursor).expect("summary cursor is serializable"))
     } else {
         None
     };
@@ -493,9 +491,18 @@ async fn query_sessions(
     }))
 }
 
+async fn list_projects(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<api::ProjectId>>, HttpError> {
+    let mut cursor = state.database.cursor().await?;
+    let projects = cursor.list_projects().await?;
+    cursor.rollback().await?;
+    Ok(Json(projects))
+}
+
 async fn global_events(
     State(state): State<AppState>,
-    ApiQuery(query): ApiQuery<api::GlobalEventsQuery>,
+    ApiQuery(_): ApiQuery<api::GlobalEventsQuery>,
     headers: HeaderMap,
 ) -> Result<Response, HttpError> {
     state.require_accepting()?;
@@ -521,7 +528,6 @@ async fn global_events(
             };
             match message {
                 Ok(api::GlobalStreamMessage::SessionUpdated { revision, session }) => {
-                    if query.probe_id.is_some_and(|probe| probe != session.probe_id) { continue; }
                     yield SseEvent::default().id(revision.to_string())
                         .json_data(api::GlobalStreamMessage::SessionUpdated { revision, session });
                 }
@@ -1197,9 +1203,9 @@ mod tests {
             ("GET", routes::AGENT_SNAPSHOT),
             ("GET", routes::SKILLS),
             ("POST", routes::SKILLS),
-            ("GET", routes::SESSIONS),
             ("POST", routes::SESSIONS),
-            ("GET", routes::SESSION_QUERY),
+            ("POST", routes::SESSIONS_QUERY),
+            ("GET", routes::PROJECTS),
             ("GET", routes::GLOBAL_EVENTS),
             ("GET", routes::SESSION),
             ("PATCH", routes::SESSION),
@@ -1464,6 +1470,7 @@ mod tests {
         let session = cursor
             .create_session(sessions::NewSession {
                 probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+                project_id: None,
                 name: "test".into(),
                 working_directory: "/work".into(),
                 model_config: crate::test_support::model_config(),

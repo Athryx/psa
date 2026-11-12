@@ -2,6 +2,8 @@
 //!
 //! The server stores sandbox records; container state is queried from the
 //! manager probe and reported as unknown while the manager is disconnected.
+//! Deleting a sandbox removes its container but keeps the record, marked
+//! deleted, so its probe and sessions stay listed under the manager.
 use crate::{
     db::{DbError, SandboxRecord},
     http::{ApiJson, ApiPath, ApiQuery, AppState, HttpError},
@@ -42,6 +44,8 @@ enum SandboxError {
     Unsupported(String),
     #[error("manager probe {0} is not connected")]
     ManagerOffline(String),
+    #[error("sandbox {0} was deleted")]
+    Deleted(String),
     #[error("no image given and the server has no default sandbox image")]
     ImageRequired,
     #[error("{0}")]
@@ -67,6 +71,7 @@ impl IntoResponse for SandboxError {
             }
             Self::Unsupported(_) => (StatusCode::BAD_REQUEST, "sandboxes_unsupported"),
             Self::ManagerOffline(_) => (StatusCode::CONFLICT, "manager_offline"),
+            Self::Deleted(_) => (StatusCode::CONFLICT, "sandbox_deleted"),
             Self::ImageRequired => (StatusCode::BAD_REQUEST, "image_required"),
             Self::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid_input"),
             Self::Probe(ProbeError::Disconnected | ProbeError::Overloaded) => {
@@ -91,7 +96,7 @@ async fn list_sandboxes(
     cursor.rollback().await?;
 
     let mut states = HashMap::new();
-    for record in &records {
+    for record in records.iter().filter(|record| record.deleted_at.is_none()) {
         if let std::collections::hash_map::Entry::Vacant(entry) = states.entry(record.manager_id) {
             entry.insert(inspect_manager(&state, record.manager_id).await);
         }
@@ -99,8 +104,8 @@ async fn list_sandboxes(
 
     let mut sandboxes = Vec::with_capacity(records.len());
     for record in records {
-        let manager_states = &states[&record.manager_id];
-        sandboxes.push(build_sandbox(&state, record, manager_states.as_ref()).await);
+        let manager_states = states.get(&record.manager_id).and_then(Option::as_ref);
+        sandboxes.push(build_sandbox(&state, record, manager_states).await);
     }
     Ok(Json(sandboxes))
 }
@@ -143,7 +148,10 @@ async fn create_sandbox(
             "sandbox name must be 1-64 ASCII letters, digits, '-', '_' or '.'".into(),
         ));
     }
-    if existing.iter().any(|sandbox| sandbox.name == name) {
+    if existing
+        .iter()
+        .any(|sandbox| sandbox.deleted_at.is_none() && sandbox.name == name)
+    {
         return Err(SandboxError::Invalid(format!(
             "sandbox name {name:?} is already in use"
         )));
@@ -156,6 +164,7 @@ async fn create_sandbox(
         image,
         mounts: request.mounts,
         created_at: OffsetDateTime::now_utc(),
+        deleted_at: None,
     };
     let spec = SandboxSpec {
         probe_id,
@@ -206,7 +215,9 @@ async fn delete_sandbox(
     handle.sandbox(SandboxRequest::Remove { probe_id }).await?;
 
     let mut cursor = state.database.cursor().await?;
-    cursor.delete_sandbox(probe_id).await?;
+    cursor
+        .mark_sandbox_deleted(probe_id, OffsetDateTime::now_utc())
+        .await?;
     cursor.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -224,7 +235,8 @@ async fn load_sandbox(state: &AppState, probe_id: ProbeId) -> Result<SandboxReco
     Ok(record)
 }
 
-/// Load a sandbox and a live handle to its manager, failing if the manager is offline.
+/// Load a live sandbox and a handle to its manager, failing if the sandbox was
+/// deleted or the manager is offline.
 async fn load_managed_sandbox(
     state: &AppState,
     probe_id: ProbeId,
@@ -233,6 +245,10 @@ async fn load_managed_sandbox(
     let record = cursor.get_sandbox(probe_id).await?;
     let manager = cursor.get_probe(record.manager_id).await?;
     cursor.rollback().await?;
+
+    if record.deleted_at.is_some() {
+        return Err(SandboxError::Deleted(record.name));
+    }
 
     let handle = require_manager(state, &manager).await?;
     Ok((record, handle))
@@ -282,6 +298,9 @@ async fn inspect_manager(
 }
 
 async fn refresh_sandbox(state: &AppState, record: SandboxRecord) -> Sandbox {
+    if record.deleted_at.is_some() {
+        return build_sandbox(state, record, None).await;
+    }
     let states = inspect_manager(state, record.manager_id).await;
     build_sandbox(state, record, states.as_ref()).await
 }
@@ -292,6 +311,7 @@ async fn build_sandbox(
     containers: Option<&HashMap<ProbeId, ContainerStatus>>,
 ) -> Sandbox {
     let sandbox_state = match containers {
+        _ if record.deleted_at.is_some() => SandboxState::Deleted,
         None => SandboxState::Unknown,
         Some(containers) => containers
             .get(&record.probe_id)

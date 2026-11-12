@@ -1,4 +1,4 @@
-use psa_api::{GlobalStreamMessage, ProbeId, Session, SessionId, SessionsPage};
+use psa_api::{GlobalStreamMessage, ProbeId, Session, SessionFilter, SessionId, SessionsPage};
 use std::{collections::HashMap, path::PathBuf};
 #[derive(Debug, Clone)]
 pub struct SessionGroup {
@@ -75,11 +75,12 @@ impl SessionIndex {
             }
         }
     }
-    pub fn groups(&self, probe: Option<&ProbeId>) -> Vec<SessionGroup> {
+    /// Loaded sessions matching `filter`, grouped by probe and working directory.
+    pub fn groups(&self, filter: &SessionFilter) -> Vec<SessionGroup> {
         let mut sessions: Vec<_> = self
             .sessions
             .values()
-            .filter(|s| probe.is_none_or(|p| &s.probe_id == p))
+            .filter(|s| filter.matches(s))
             .collect();
         sessions.sort_by(|a, b| {
             b.updated_at

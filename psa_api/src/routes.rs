@@ -26,10 +26,12 @@ pub const AGENT_SNAPSHOT: &str = "/agent-snapshots/{definition_id}";
 /// GET registered skills or POST a skill archive upload.
 pub const SKILLS: &str = "/skills";
 
-/// GET root/child sessions or POST a new session.
+/// POST a new session.
 pub const SESSIONS: &str = "/sessions";
-/// Ordered session summary pages.
-pub const SESSION_QUERY: &str = "/sessions/query";
+/// POST a session query for one ordered summary page.
+pub const SESSIONS_QUERY: &str = "/sessions/query";
+/// GET the projects of existing sessions.
+pub const PROJECTS: &str = "/projects";
 /// Global summary SSE feed.
 pub const GLOBAL_EVENTS: &str = "/events";
 /// GET or PATCH one session.
@@ -96,17 +98,7 @@ pub fn client_query_response_path(
     agent_path(CLIENT_QUERY_RESPONSE, session, agent).replace("{query_id}", &query.to_string())
 }
 
-/// Build the discovery path for a registered probe.
-pub fn probe_path(id: crate::ProbeId) -> String {
-    PROBE.replace("{probe_id}", &id.to_string())
-}
-
-/// Build the directory-listing path for a probe.
-pub fn probe_directories_path(id: crate::ProbeId) -> String {
-    PROBE_DIRECTORIES.replace("{probe_id}", &id.to_string())
-}
-
 /// Substitute the probe ID in a probe or sandbox route template.
-pub fn probe_route(route: &str, id: crate::ProbeId) -> String {
+pub fn probe_path(route: &str, id: crate::ProbeId) -> String {
     route.replace("{probe_id}", &id.to_string())
 }

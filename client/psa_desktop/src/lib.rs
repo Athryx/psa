@@ -293,6 +293,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_filters_with_global_projects_save_and_load() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("desktop.toml");
+        let platform = DesktopPlatform::new(path.clone());
+        let mut settings = DesktopSettings::default();
+        let filter = &mut settings.active_profile_mut().workspace.session_filter;
+        filter.project_ids = vec![None, Some(psa_api::ProjectId("examples".into()))];
+        filter.probe_ids = vec![psa_api::ProbeId(psa_api::probes::Uuid::from_u128(7))];
+
+        platform.save(&settings).await.unwrap();
+
+        let loaded = load_settings(&path).await.unwrap();
+        assert_eq!(
+            loaded.active_profile().workspace.session_filter,
+            settings.active_profile().workspace.session_filter
+        );
+    }
+
+    #[tokio::test]
     async fn invalid_settings_are_redacted_and_never_overwritten() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("desktop.toml");

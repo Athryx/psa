@@ -4502,6 +4502,7 @@ dependencies = [
  "dioxus",
  "dioxus-desktop",
  "directories",
+ "psa_api",
  "psa_gui",
  "rand 0.9.5",
  "serde_json",

@@ -35,7 +35,7 @@ pub fn Sidebar() -> Element {
     use_ui_subscription(|state| {
         (
             state.sidebar.clone(),
-            state.selected_probe,
+            state.session_filter.clone(),
             state.sessions.clone(),
             state.fresh_sessions.clone(),
             state.probes.clone(),
@@ -57,7 +57,7 @@ pub fn Sidebar() -> Element {
         }
         SidebarMode::Browser => {}
     }
-    let probe = state.selected_probe;
+    let filter = state.session_filter.clone();
     let mut index = SessionIndex::default();
     for session in &state.sessions {
         if state.connection != "Connected" || state.fresh_sessions.contains(&session.id) {
@@ -65,7 +65,7 @@ pub fn Sidebar() -> Element {
         }
     }
     index.fully_loaded = state.next_sessions.is_none();
-    let mut groups = index.groups(probe.as_ref());
+    let mut groups = index.groups(&filter);
     if let Some(order) = frozen_order.read().as_ref() {
         let ranks: std::collections::HashMap<_, _> = order
             .iter()
@@ -98,20 +98,6 @@ pub fn Sidebar() -> Element {
         .iter()
         .flat_map(|group| group.sessions.iter().map(|session| session.id))
         .collect();
-    let probe_options: Vec<_> = state
-        .probes
-        .iter()
-        .map(|p| {
-            (
-                p.metadata.id,
-                format!(
-                    "{} · {}",
-                    probe_label(p),
-                    if p.is_active { "online" } else { "offline" }
-                ),
-            )
-        })
-        .collect();
     rsx! {aside{id:SIDEBAR_ID,class:"sidebar",style:"width:{state.sidebar.width()}px",
         onmouseenter: move |_| frozen_order.set(Some(displayed_order.clone())),
         onmouseleave: move |_| frozen_order.set(None),
@@ -119,18 +105,32 @@ pub fn Sidebar() -> Element {
             h2{"Sessions"}
             crate::creation::CreateSessionPicker { key: "{state.generation}" }
         }
-        label{class:"sr-only",r#for:"probe-filter","Probe"}
-        select{id:"probe-filter",value:probe.map(|p|p.to_string()).unwrap_or_default(),onchange:move |event|{let id=ui.read().probes.iter().find(|p|p.metadata.id.to_string()==event.value()).map(|p|p.metadata.id);ui.write().selected_probe=id;ui.write().next_sessions=None;frozen_order.set(None);spawn(network::load_sessions(ui,false));},
-            option{value:"","All probes"}
-            for (id,label) in probe_options{option{value:"{id}","{label}"}}
+        div { class: "session-filter-bar",
+            input { r#type: "search", class: "session-search", placeholder: "Search sessions", "aria-label": "Search sessions by name",
+                value: "{filter.name_contains}",
+                oninput: move |event| {
+                    let mut state = ui.write();
+                    state.session_filter.name_contains = event.value();
+                    state.next_sessions = None;
+                    drop(state);
+                    frozen_order.set(None);
+                    spawn(network::search_sessions(ui));
+                },
+            }
+            crate::session_filter::SessionFilterMenu { onchange: move |_| frozen_order.set(None) }
         }
-        if let Some(id) = probe { div { class: "folder-probe", ProbeName { id } } }
-        if groups.is_empty(){p{class:"muted","No sessions loaded. Check the connection or choose another probe."}}
+        if groups.is_empty() {
+            if filter.is_empty() { p { class: "muted", "No sessions loaded. Check the connection." } }
+            else { p { class: "muted", "No sessions match the current filters." } }
+        }
         for group in groups{
             div{key:"{group.probe_id}:{group.working_directory.display()}",class:"folder",
                 details{key: if creation_target.as_ref().is_some_and(|target| target.probe == group.probe_id && group.working_directory.as_os_str() == std::ffi::OsStr::new(&target.directory)) { state.creation_revision.to_string() } else { "0".to_string() },open:true,
-                    summary{"{group.working_directory.display()}" if group.busy{span{class:"tab-spinner inline-spinner",role:"img","aria-label":"Session running"}}}
-                    if probe.is_none() { div { class: "folder-probe", ProbeName { id: group.probe_id } } }
+                    summary{
+                        FolderProbe { id: group.probe_id }
+                        "{group.working_directory.display()}"
+                        if group.busy{span{class:"tab-spinner inline-spinner",role:"img","aria-label":"Session running"}}
+                    }
                     for session in group.sessions{
                         button{key:"{session.id.0}",class:"session",title:"{session.name}",
                             onclick:move |_|{spawn(network::open_session(ui,session.id,false));},
@@ -150,7 +150,7 @@ pub fn Sidebar() -> Element {
             }
         }
         if let Some(target) = creation_target.filter(|_| !target_in_groups) {
-            div { class: "folder transient-folder", div { class: "transient-folder-title", "{target.directory} · " ProbeName { id: target.probe } } crate::creation::InlineSessionName { target } }
+            div { class: "folder transient-folder", div { class: "transient-folder-title", FolderProbe { id: target.probe } "{target.directory}" } crate::creation::InlineSessionName { target } }
         }
         if state.next_sessions.is_some(){button{onclick:move |_|{spawn(network::more_sessions(ui));},"Load more sessions"}p{class:"muted","Folder groups may be incomplete until all pages are loaded."}}
     }}
@@ -217,11 +217,24 @@ fn sandbox_status(sandbox: &Sandbox) -> ProbeStatus {
             "Unknown",
             Some("The manager could not report the container state."),
         ),
+        (SandboxState::Deleted, _) => (
+            "deleted",
+            "Deleted",
+            Some("The container was removed. Its sessions remain."),
+        ),
     };
     ProbeStatus {
         class,
         label,
         detail,
+    }
+}
+
+/// The `.probe-dot` modifier for a probe, following its sandbox state when it has one.
+pub(crate) fn probe_status_class(state: &Ui, id: ProbeId) -> &'static str {
+    match state.sandboxes.iter().find(|s| s.probe_id == id) {
+        Some(sandbox) => sandbox_status(sandbox).class,
+        None => probe_status(state.probes.iter().find(|p| p.metadata.id == id)).class,
     }
 }
 
@@ -244,7 +257,7 @@ struct SandboxActions {
 }
 
 fn sandbox_actions(sandbox: &Sandbox, manager_online: bool, pending: bool) -> SandboxActions {
-    if pending || !manager_online {
+    if pending || !manager_online || sandbox.state == SandboxState::Deleted {
         return SandboxActions::default();
     }
     let running = sandbox.state == SandboxState::Running;
@@ -252,6 +265,18 @@ fn sandbox_actions(sandbox: &Sandbox, manager_online: bool, pending: bool) -> Sa
         start: !running && sandbox.state != SandboxState::Missing,
         stop: running,
         delete: true,
+    }
+}
+
+/// A folder's probe, floated to the right of its path. Clicks open the probe
+/// rather than toggling the folder.
+#[component]
+fn FolderProbe(id: ProbeId) -> Element {
+    rsx! {
+        span { class: "folder-probe",
+            onclick: move |event| { event.prevent_default(); event.stop_propagation(); },
+            ProbeName { id }
+        }
     }
 }
 
@@ -450,6 +475,7 @@ fn Details() -> Element {
             }
             dt{"Working directory"}dd{"{session.working_directory.display()}"}
             dt{"Probe"}dd{ProbeName{id:session.probe_id}}
+            dt{"Project"}dd{if let Some(project) = &session.project_id { "{project}" } else { "Global" }}
             dt{"Default model"}
             dd{title:"{session.model_config.model.provider.as_str()}/{session.model_config.model.api_name}",
                 crate::composer::ModelEffort{

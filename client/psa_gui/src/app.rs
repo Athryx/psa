@@ -287,7 +287,8 @@ pub struct Ui {
     pub settings: Shared<DesktopSettings>,
     pub workspace: Shared<Workspace>,
     pub sidebar: SidebarState,
-    pub selected_probe: Option<ProbeId>,
+    /// Session list criteria; probe and project selections are persisted.
+    pub session_filter: SessionFilter,
     pub creation_target: Option<crate::creation::CreationTarget>,
     pub creation_revision: u64,
     pub creation_name: String,
@@ -300,6 +301,8 @@ pub struct Ui {
     pub probes: Shared<Vec<Probe>>,
     pub probe_error: Option<String>,
     pub sandboxes: Shared<Vec<Sandbox>>,
+    /// Projects of sessions on the server, refreshed on connect and when filtering.
+    pub projects: Shared<Vec<ProjectId>>,
     /// Sandboxes with a lifecycle request in flight.
     pub sandbox_pending: HashSet<ProbeId>,
     pub agents: Shared<HashMap<SessionId, Shared<Vec<Agent>>>>,
@@ -333,7 +336,7 @@ impl Ui {
             settings: settings.into(),
             workspace: workspace.into(),
             sidebar: saved.sidebar,
-            selected_probe: saved.selected_probe,
+            session_filter: saved.session_filter,
             creation_target: None,
             creation_revision: 0,
             creation_name: String::new(),
@@ -350,6 +353,7 @@ impl Ui {
             fresh_sessions: Shared::default(),
             probes: Shared::default(),
             probe_error: None,
+            projects: Shared::default(),
             sandboxes: Shared::default(),
             sandbox_pending: HashSet::new(),
             agents: Shared::default(),
@@ -390,7 +394,10 @@ impl Ui {
             saved.workspace.close(id);
         }
         saved.sidebar = self.sidebar.clone();
-        saved.selected_probe = self.selected_probe;
+        saved.session_filter = SessionFilter {
+            name_contains: String::new(),
+            ..self.session_filter.clone()
+        };
         saved.last_viewed_agents = self
             .last_agents
             .iter()
@@ -684,7 +691,8 @@ pub fn app() -> Element {
             state.settings.clone(),
             state.workspace.clone(),
             state.sidebar.clone(),
-            state.selected_probe,
+            state.session_filter.probe_ids.clone(),
+            state.session_filter.project_ids.clone(),
             state.last_agents.clone(),
         )
     });

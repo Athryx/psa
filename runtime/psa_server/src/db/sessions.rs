@@ -22,15 +22,20 @@ impl DatabaseCursor {
         let probe_id = new.probe_id.to_string();
         let model_config = serde_json::to_string(&new.model_config)?;
         validate_name(&new.name)?;
+        if let Some(project) = &new.project_id {
+            project.validate().map_err(DbError::InvalidInput)?;
+        }
+        let project_id = new.project_id.map(|project| project.0);
         let path = encode_path(&new.working_directory)?;
         let now = now_us()?;
 
         let mut savepoint = self.transaction.begin().await?;
         let result = sqlx::query!(
-            "INSERT INTO sessions (first_position, next_position, name, working_directory, probe_id, model_config, created_at_us, updated_at_us) VALUES (1,1,?,?,?,?,?,?)",
+            "INSERT INTO sessions (first_position, next_position, name, working_directory, probe_id, project_id, model_config, created_at_us, updated_at_us) VALUES (1,1,?,?,?,?,?,?,?)",
             new.name,
             path,
             probe_id,
+            project_id,
             model_config,
             now,
             now
@@ -59,7 +64,7 @@ impl DatabaseCursor {
         let parent = parent.map(|id| encode_integer(id.0)).transpose()?;
         let rows = sqlx::query_as!(
             SessionRow,
-            "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, model_config, created_at_us, updated_at_us FROM sessions WHERE parent_session_id IS ? ORDER BY id",
+            "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, project_id, model_config, created_at_us, updated_at_us FROM sessions WHERE parent_session_id IS ? ORDER BY id",
             parent
         )
         .fetch_all(self.connection())
@@ -69,18 +74,33 @@ impl DatabaseCursor {
     }
 
     /// Summary keyset pages; runtime SQL avoids adding prepared-cache entries.
+    /// Filter semantics must stay identical to [`psa_api::SessionFilter::matches`]:
+    /// SQLite's `lower` folds only ASCII, like the Rust comparison.
     pub async fn query_sessions(
         &mut self,
-        query: &psa_api::SessionListQuery,
+        query: &psa_api::SessionsQuery,
         before: Option<(i64, i64)>,
     ) -> Result<Vec<Session>, DbError> {
         use sqlx::Row;
         let parent = query.parent.map(|id| encode_integer(id.0)).transpose()?;
-        let probe = query.probe_id.map(|id| id.to_string());
+        let filter = &query.filter;
+        let probes = serde_json::to_string(&filter.probe_ids)?;
+        let includes_global = filter.project_ids.contains(&None);
+        let projects =
+            serde_json::to_string(&filter.project_ids.iter().flatten().collect::<Vec<_>>())?;
         let rows = sqlx::query(
-            "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, model_config, created_at_us, updated_at_us FROM sessions WHERE (? OR parent_session_id IS ?) AND (? IS NULL OR probe_id = ?) AND (? IS NULL OR updated_at_us < ? OR (updated_at_us = ? AND id < ?)) ORDER BY updated_at_us DESC, id DESC LIMIT ?"
+            "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, project_id, model_config, created_at_us, updated_at_us FROM sessions \
+             WHERE (? OR parent_session_id IS ?) \
+             AND instr(lower(name), lower(?)) > 0 \
+             AND (? OR probe_id IN (SELECT value FROM json_each(?))) \
+             AND (? OR (project_id IS NULL AND ?) OR project_id IN (SELECT value FROM json_each(?))) \
+             AND (? IS NULL OR updated_at_us < ? OR (updated_at_us = ? AND id < ?)) \
+             ORDER BY updated_at_us DESC, id DESC LIMIT ?",
         )
-        .bind(query.flat).bind(parent).bind(&probe).bind(&probe)
+        .bind(query.flat).bind(parent)
+        .bind(&filter.name_contains)
+        .bind(filter.probe_ids.is_empty()).bind(&probes)
+        .bind(filter.project_ids.is_empty()).bind(includes_global).bind(&projects)
         .bind(before.map(|v| v.0)).bind(before.map(|v| v.0))
         .bind(before.map(|v| v.0)).bind(before.map(|v| v.1))
         .bind(i64::from(query.limit) + 1)
@@ -95,6 +115,7 @@ impl DatabaseCursor {
                     name: row.try_get("name")?,
                     working_directory: row.try_get("working_directory")?,
                     probe_id: row.try_get("probe_id")?,
+                    project_id: row.try_get("project_id")?,
                     model_config: row.try_get("model_config")?,
                     created_at_us: row.try_get("created_at_us")?,
                     updated_at_us: row.try_get("updated_at_us")?,
@@ -102,6 +123,16 @@ impl DatabaseCursor {
                 .try_into()
             })
             .collect()
+    }
+
+    /// Distinct projects of existing sessions, sorted.
+    pub async fn list_projects(&mut self) -> Result<Vec<psa_api::ProjectId>, DbError> {
+        let rows = sqlx::query_scalar!(
+            "SELECT DISTINCT project_id AS \"project_id!\" FROM sessions WHERE project_id IS NOT NULL ORDER BY project_id"
+        )
+        .fetch_all(self.connection())
+        .await?;
+        Ok(rows.into_iter().map(psa_api::ProjectId).collect())
     }
 
     pub async fn update_session(
@@ -184,6 +215,7 @@ impl DatabaseCursor {
         let path = encode_path(&path)?;
         let parent = encode_integer(source.0)?;
         let probe_id = original.probe_id.to_string();
+        let project_id = original.project_id.map(|project| project.0);
         let model_config =
             serde_json::to_string(&fork.metadata.model_config.unwrap_or(original.model_config))?;
         let first = encode_integer(position)?
@@ -192,13 +224,14 @@ impl DatabaseCursor {
         let now = now_us()?;
 
         let result = sqlx::query!(
-            "INSERT INTO sessions (parent_session_id, first_position, next_position, name, working_directory, probe_id, model_config, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO sessions (parent_session_id, first_position, next_position, name, working_directory, probe_id, project_id, model_config, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?,?,?,?)",
             parent,
             first,
             first,
             name,
             path,
             probe_id,
+            project_id,
             model_config,
             now,
             now
@@ -254,7 +287,7 @@ pub(super) async fn get_session(
     let key = encode_integer(id.0)?;
     let row = sqlx::query_as!(
         SessionRow,
-        "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, model_config, created_at_us, updated_at_us FROM sessions WHERE id = ?",
+        "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, project_id, model_config, created_at_us, updated_at_us FROM sessions WHERE id = ?",
         key
     )
     .fetch_optional(conn)

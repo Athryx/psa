@@ -32,6 +32,7 @@ async fn create_configured(
             name: "results".into(),
             working_directory: "/work".into(),
             probe_id: support::probe_metadata().id,
+            project_id: None,
             model_config: Some(model()),
         })
         .await

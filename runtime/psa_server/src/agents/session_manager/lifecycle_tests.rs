@@ -143,6 +143,7 @@ impl Fixture {
                 name: "original".into(),
                 working_directory: "/work".into(),
                 probe_id: self.probe,
+                project_id: None,
             })
             .await
             .unwrap()

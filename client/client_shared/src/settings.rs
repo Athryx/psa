@@ -1,5 +1,4 @@
 use crate::{TranscriptTarget, Workspace};
-use psa_api::ProbeId;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,7 +136,9 @@ pub struct ServerWorkspace {
     pub server_url: String,
     pub workspace: Workspace,
     pub sidebar: SidebarState,
-    pub selected_probe: Option<ProbeId>,
+    /// Probe and project selections of the session list; name searches are not saved.
+    #[serde(with = "saved_session_filter")]
+    pub session_filter: psa_api::SessionFilter,
     pub last_viewed_agents: Vec<TranscriptTarget>,
 }
 impl ServerWorkspace {
@@ -147,6 +148,48 @@ impl ServerWorkspace {
         self.last_viewed_agents.push(target);
     }
 }
+/// TOML arrays cannot hold `None`, so the global project choice is saved as a
+/// separate flag. Older files without it load as not selecting global.
+mod saved_session_filter {
+    use psa_api::{ProbeId, ProjectId, SessionFilter};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Default, Serialize, Deserialize)]
+    #[serde(default)]
+    struct SavedSessionFilter {
+        probe_ids: Vec<ProbeId>,
+        include_global: bool,
+        project_ids: Vec<ProjectId>,
+    }
+
+    pub(super) fn serialize<S: Serializer>(
+        filter: &SessionFilter,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        SavedSessionFilter {
+            probe_ids: filter.probe_ids.clone(),
+            include_global: filter.project_ids.contains(&None),
+            project_ids: filter.project_ids.iter().flatten().cloned().collect(),
+        }
+        .serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<SessionFilter, D::Error> {
+        let saved = SavedSessionFilter::deserialize(deserializer)?;
+        let global = saved.include_global.then_some(None);
+        Ok(SessionFilter {
+            probe_ids: saved.probe_ids,
+            project_ids: global
+                .into_iter()
+                .chain(saved.project_ids.into_iter().map(Some))
+                .collect(),
+            ..SessionFilter::default()
+        })
+    }
+}
+
 pub const LOCAL_PROFILE_ID: &str = "local";
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

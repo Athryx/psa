@@ -473,6 +473,7 @@ async fn deferred_project_discovery_distinguishes_unknown_from_known_absent() {
             name: "deferred".into(),
             working_directory: "/work".into(),
             probe_id,
+            project_id: None,
             model_config: crate::test_support::model_config(),
         })
         .await

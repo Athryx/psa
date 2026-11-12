@@ -227,6 +227,7 @@ impl Fixture {
             .create_session(NewSession {
                 model_config: support::model_config(),
                 probe_id: support::probe_metadata().id,
+                project_id: None,
                 name: "concurrent".into(),
                 working_directory: "/work".into(),
             })

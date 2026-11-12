@@ -14,6 +14,7 @@ pub struct Session {
     pub name: String,
     pub working_directory: PathBuf,
     pub probe_id: psa_api::ProbeId,
+    pub project_id: Option<psa_api::ProjectId>,
     pub model_config: llm_api::providers::ModelConfig,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -27,6 +28,7 @@ impl Session {
             name: self.name,
             working_directory: self.working_directory,
             probe_id: self.probe_id,
+            project_id: self.project_id,
             model_config: self.model_config,
             busy,
             created_at: self.created_at,
@@ -40,6 +42,7 @@ pub struct NewSession {
     pub name: String,
     pub working_directory: PathBuf,
     pub probe_id: psa_api::ProbeId,
+    pub project_id: Option<psa_api::ProjectId>,
     pub model_config: llm_api::providers::ModelConfig,
 }
 

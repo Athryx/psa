@@ -292,7 +292,10 @@ pub fn client_router() -> Router<AppState> {
     Router::new()
         .route(psa_api::routes::PROBES, get(list_probes))
         .route(psa_api::routes::PROBE, get(get_probe))
-        .route(psa_api::routes::PROBE_DIRECTORIES, get(list_probe_dir))
+        .route(
+            psa_api::routes::PROBE_DIRECTORIES,
+            get(list_probe_directory),
+        )
 }
 
 /// Probe transport authenticates independently of the client API.
@@ -341,7 +344,7 @@ struct ListDirectoryQuery {
     path: String,
 }
 
-async fn list_probe_dir(
+async fn list_probe_directory(
     State(state): State<AppState>,
     crate::http::ApiPath(id): crate::http::ApiPath<ProbeId>,
     crate::http::ApiQuery(query): crate::http::ApiQuery<ListDirectoryQuery>,

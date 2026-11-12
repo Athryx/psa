@@ -23,6 +23,7 @@ pub(super) async fn fixture() -> (
     let session = cursor
         .create_session(sessions::NewSession {
             probe_id: api::ProbeId(api::probes::Uuid::nil()),
+            project_id: None,
             name: "test".into(),
             working_directory: "/work".into(),
             model_config: crate::test_support::model_config(),
@@ -351,51 +352,53 @@ async fn summary_keysets_preserve_roots_include_forks_and_reject_cross_scope_cur
         .await
         .unwrap();
     cursor.commit().await.unwrap();
-    let roots = state
-        .runtime
-        .list_sessions(Default::default())
-        .await
-        .unwrap();
-    assert_eq!(roots.len(), 1);
-    let query = api::SessionListQuery {
+    let list = |query: api::SessionsQuery| list_sessions(State(state.clone()), ApiJson(query));
+    let Json(roots) = list(Default::default()).await.unwrap();
+    assert_eq!(roots.sessions.len(), 1);
+    let query = api::SessionsQuery {
         flat: true,
         limit: 1,
         ..Default::default()
     };
-    let Json(first) = query_sessions(State(state.clone()), ApiQuery(query.clone()))
-        .await
-        .unwrap();
+    let Json(first) = list(query.clone()).await.unwrap();
     assert_eq!(first.sessions[0].id, fork.session.id);
-    let Json(second) = query_sessions(
-        State(state.clone()),
-        ApiQuery(api::SessionListQuery {
-            before: first.next_before.clone(),
-            ..query.clone()
-        }),
-    )
+    let Json(second) = list(api::SessionsQuery {
+        before: first.next_before.clone(),
+        ..query.clone()
+    })
     .await
     .unwrap();
     assert_eq!(second.sessions[0].id, session.id);
     assert!(second.next_before.is_none());
     assert!(
-        query_sessions(
-            State(state.clone()),
-            ApiQuery(api::SessionListQuery {
-                flat: false,
-                before: first.next_before,
-                ..query.clone()
-            })
-        )
+        list(api::SessionsQuery {
+            flat: false,
+            before: first.next_before.clone(),
+            ..query.clone()
+        })
         .await
         .is_err()
     );
-    let Json(filtered) = query_sessions(
-        State(state.clone()),
-        ApiQuery(api::SessionListQuery {
-            probe_id: Some(api::ProbeId(api::probes::Uuid::new_v4())),
-            ..query
-        }),
-    )
+    assert!(
+        list(api::SessionsQuery {
+            filter: api::SessionFilter {
+                name_contains: "x".into(),
+                ..Default::default()
+            },
+            before: first.next_before,
+            ..query.clone()
+        })
+        .await
+        .is_err(),
+        "a cursor must not be reused with another filter"
+    );
+    let Json(filtered) = list(api::SessionsQuery {
+        filter: api::SessionFilter {
+            probe_ids: vec![api::ProbeId(api::probes::Uuid::new_v4())],
+            ..Default::default()
+        },
+        ..query
+    })
     .await
     .unwrap();
     assert!(filtered.sessions.is_empty());
@@ -428,7 +431,7 @@ async fn global_ready_page_revision_busy_race_filter_reconnect_and_overflow() {
         .await
         .unwrap();
     let page = client
-        .query_sessions(&api::SessionListQuery {
+        .list_sessions(&api::SessionsQuery {
             flat: true,
             ..Default::default()
         })

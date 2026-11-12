@@ -716,3 +716,65 @@ fn core_subagent_ancestry_and_attributed_requests_round_trip() {
     };
     assert_eq!(source.unwrap().name.as_deref(), Some("parent"));
 }
+
+fn summary(name: &str, project: Option<&str>) -> Session {
+    Session {
+        id: SessionId(1),
+        parent_id: None,
+        name: name.into(),
+        working_directory: "/work".into(),
+        probe_id: ProbeId(probes::Uuid::nil()),
+        project_id: project.map(|project| ProjectId(project.into())),
+        model_config: model_config(),
+        busy: false,
+        created_at: time::OffsetDateTime::UNIX_EPOCH,
+        updated_at: time::OffsetDateTime::UNIX_EPOCH,
+    }
+}
+
+#[test]
+fn project_ids_are_trimmed_bounded_names_and_default_to_global() {
+    assert!(ProjectId("pipeline".into()).validate().is_ok());
+    for invalid in ["", "  ", " pipeline", &"x".repeat(ProjectId::MAX_LEN + 1)] {
+        assert!(ProjectId(invalid.into()).validate().is_err(), "{invalid:?}");
+    }
+
+    let request: CreateSession = serde_json::from_value(serde_json::json!({
+        "name": "s", "working_directory": "/work", "probe_id": probes::Uuid::nil(),
+    }))
+    .unwrap();
+    assert!(request.project_id.is_none());
+    let session = serde_json::to_value(summary("s", Some("pipeline"))).unwrap();
+    assert_eq!(session["project_id"], "pipeline");
+}
+
+#[test]
+fn session_filters_combine_criteria_and_treat_empty_lists_as_all() {
+    let global = summary("Nightly Build", None);
+    let project = summary("nightly deploy", Some("pipeline"));
+    let filter = |name: &str, projects: Vec<Option<&str>>| SessionFilter {
+        name_contains: name.into(),
+        project_ids: projects
+            .into_iter()
+            .map(|project| project.map(|p| ProjectId(p.into())))
+            .collect(),
+        ..Default::default()
+    };
+
+    assert!(SessionFilter::default().is_empty());
+    assert!(SessionFilter::default().matches(&global));
+    assert!(filter("NIGHTLY", vec![]).matches(&project));
+    assert!(!filter("build", vec![]).matches(&project));
+    assert!(filter("", vec![None]).matches(&global));
+    assert!(!filter("", vec![None]).matches(&project));
+    assert!(filter("deploy", vec![None, Some("pipeline")]).matches(&project));
+    assert!(!filter("build", vec![Some("pipeline")]).matches(&global));
+    assert!(
+        !SessionFilter {
+            probe_ids: vec![ProbeId(probes::Uuid::from_u128(1))],
+            ..Default::default()
+        }
+        .matches(&global)
+    );
+    assert!(serde_json::from_value::<SessionFilter>(serde_json::json!({"typo": 1})).is_err());
+}

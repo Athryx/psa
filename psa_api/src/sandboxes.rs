@@ -65,6 +65,9 @@ pub enum SandboxState {
     Missing,
     /// The manager probe is not connected, so the state cannot be queried.
     Unknown,
+    /// The sandbox was deleted. Its record remains so its probe and sessions
+    /// stay associated with the manager; it cannot be started again.
+    Deleted,
 }
 
 /// Server record of a sandbox with its current state.

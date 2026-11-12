@@ -3,6 +3,7 @@ use psa_api::{Mount, ProbeId};
 use time::OffsetDateTime;
 
 /// Stored sandbox record; live state is merged in from the manager probe.
+/// Deleted sandboxes keep their record with `deleted_at` set.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SandboxRecord {
     pub probe_id: ProbeId,
@@ -11,6 +12,7 @@ pub struct SandboxRecord {
     pub image: String,
     pub mounts: Vec<Mount>,
     pub created_at: OffsetDateTime,
+    pub deleted_at: Option<OffsetDateTime>,
 }
 
 impl TryFrom<SandboxRow> for SandboxRecord {
@@ -23,14 +25,18 @@ impl TryFrom<SandboxRow> for SandboxRecord {
                 .map(ProbeId)
                 .map_err(|error| DbError::Corrupt(format!("invalid sandbox probe ID: {error}")))
         };
+        let parse_time = |value: i64| {
+            OffsetDateTime::from_unix_timestamp(value)
+                .map_err(|error| DbError::Corrupt(format!("invalid sandbox timestamp: {error}")))
+        };
         Ok(Self {
             probe_id: parse_id(&row.probe_id)?,
             manager_id: parse_id(&row.manager_id)?,
             name: row.name,
             image: row.image,
             mounts: serde_json::from_str(&row.mounts)?,
-            created_at: OffsetDateTime::from_unix_timestamp(row.created_at)
-                .map_err(|error| DbError::Corrupt(format!("invalid sandbox timestamp: {error}")))?,
+            created_at: parse_time(row.created_at)?,
+            deleted_at: row.deleted_at.map(parse_time).transpose()?,
         })
     }
 }
@@ -66,7 +72,7 @@ impl DatabaseCursor {
         let key = probe_id.to_string();
         let row = sqlx::query_as!(
             SandboxRow,
-            "SELECT probe_id, manager_id, name, image, mounts, created_at
+            "SELECT probe_id, manager_id, name, image, mounts, created_at, deleted_at
              FROM sandboxes WHERE probe_id = ?",
             key
         )
@@ -77,7 +83,8 @@ impl DatabaseCursor {
         row.try_into()
     }
 
-    /// List sandboxes in creation order, optionally only those of one manager.
+    /// List sandboxes, deleted ones included, in creation order, optionally only
+    /// those of one manager.
     pub async fn list_sandboxes(
         &mut self,
         manager_id: Option<ProbeId>,
@@ -85,7 +92,7 @@ impl DatabaseCursor {
         let manager = manager_id.map(|id| id.to_string());
         let rows = sqlx::query_as!(
             SandboxRow,
-            "SELECT probe_id, manager_id, name, image, mounts, created_at
+            "SELECT probe_id, manager_id, name, image, mounts, created_at, deleted_at
              FROM sandboxes WHERE ?1 IS NULL OR manager_id = ?1
              ORDER BY created_at, probe_id",
             manager
@@ -96,11 +103,21 @@ impl DatabaseCursor {
         rows.into_iter().map(TryInto::try_into).collect()
     }
 
-    pub async fn delete_sandbox(&mut self, probe_id: ProbeId) -> Result<(), DbError> {
+    /// Mark a live sandbox deleted, freeing its name for reuse.
+    pub async fn mark_sandbox_deleted(
+        &mut self,
+        probe_id: ProbeId,
+        deleted_at: OffsetDateTime,
+    ) -> Result<(), DbError> {
         let key = probe_id.to_string();
-        let result = sqlx::query!("DELETE FROM sandboxes WHERE probe_id = ?", key)
-            .execute(self.connection())
-            .await?;
+        let deleted_at = deleted_at.unix_timestamp();
+        let result = sqlx::query!(
+            "UPDATE sandboxes SET deleted_at = ? WHERE probe_id = ? AND deleted_at IS NULL",
+            deleted_at,
+            key
+        )
+        .execute(self.connection())
+        .await?;
         if result.rows_affected() == 0 {
             return Err(DbError::SandboxNotFound(probe_id));
         }
@@ -140,11 +157,12 @@ mod tests {
                 writable: true,
             }],
             created_at: OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
+            deleted_at: None,
         }
     }
 
     #[tokio::test]
-    async fn sandboxes_round_trip_and_names_are_unique_per_manager() {
+    async fn sandboxes_round_trip_and_live_names_are_unique_per_manager() {
         let directory = tempfile::tempdir().unwrap();
         let database = Database::open(&directory.path().join("db.sqlite3"))
             .await
@@ -180,14 +198,29 @@ mod tests {
                 .is_empty()
         );
 
+        let deleted_at = OffsetDateTime::from_unix_timestamp(1_700_000_100).unwrap();
         cursor
-            .delete_sandbox(record(10, "a").probe_id)
+            .mark_sandbox_deleted(record(10, "a").probe_id, deleted_at)
             .await
             .unwrap();
+        assert_eq!(
+            cursor
+                .get_sandbox(record(10, "a").probe_id)
+                .await
+                .unwrap()
+                .deleted_at,
+            Some(deleted_at)
+        );
+        assert_eq!(cursor.list_sandboxes(None).await.unwrap().len(), 2);
         assert!(matches!(
-            cursor.get_sandbox(record(10, "a").probe_id).await,
+            cursor
+                .mark_sandbox_deleted(record(10, "a").probe_id, deleted_at)
+                .await,
             Err(DbError::SandboxNotFound(_))
         ));
+
+        // The deleted sandbox's name can be reused.
+        cursor.insert_sandbox(&record(12, "a")).await.unwrap();
         cursor.commit().await.unwrap();
     }
 }

@@ -58,7 +58,7 @@ pub fn InlineSessionName(target: CreationTarget) -> Element {
                         let trimmed = state.creation_name.trim().to_owned();
                         if state.creation_pending || state.creation_uncertain || trimmed.is_empty() { return; }
                         drop(state);
-                        let request = CreateSession { name: trimmed, working_directory: target.directory.as_str().into(), probe_id: target.probe, model_config: None };
+                        let request = CreateSession { name: trimmed, working_directory: target.directory.as_str().into(), probe_id: target.probe, project_id: None, model_config: None };
                         let api = match network::client(ui) { Ok(api) => api, Err(_) => { ui.write().creation_error = Some("Invalid API connection settings".into()); return; } };
                         ui.write().creation_pending = true;
                         ui.write().creation_error = None;
@@ -89,16 +89,13 @@ fn probe_start_directory(probe: &Probe) -> String {
         .unwrap_or_else(|| "/".into())
 }
 
-/// The selected probe if it is online, otherwise the first online probe.
+/// The first online probe selected in the session filter, otherwise the first online probe.
 fn initial_probe(state: &Ui) -> Option<(ProbeId, String)> {
+    let selected = &state.session_filter.probe_ids;
     state
-        .selected_probe
-        .and_then(|id| {
-            state
-                .probes
-                .iter()
-                .find(|p| p.metadata.id == id && p.is_active)
-        })
+        .probes
+        .iter()
+        .find(|p| p.is_active && selected.contains(&p.metadata.id))
         .or_else(|| state.probes.iter().find(|p| p.is_active))
         .map(|p| (p.metadata.id, probe_start_directory(p)))
 }
@@ -169,7 +166,7 @@ fn NewSessionModal(open: Signal<bool>) -> Element {
         spawn(async move {
             let result = match network::client(ui) {
                 Ok(api) => api
-                    .list_probe_dir(id, &requested)
+                    .list_probe_directory(id, &requested)
                     .await
                     .map_err(|e| e.to_string()),
                 Err(_) => Err("Invalid API connection settings".into()),
@@ -183,13 +180,17 @@ fn NewSessionModal(open: Signal<bool>) -> Element {
                 return;
             }
 
-            if ui
-                .peek()
-                .selected_probe
-                .is_some_and(|selected| selected != id)
-            {
+            // New sessions are global and not yet named; show them even when filtered out.
+            let hidden = {
+                let state = ui.peek();
+                let filter = &state.session_filter;
+                !filter.name_contains.is_empty()
+                    || (!filter.probe_ids.is_empty() && !filter.probe_ids.contains(&id))
+                    || (!filter.project_ids.is_empty() && !filter.project_ids.contains(&None))
+            };
+            if hidden {
                 let mut state = ui.write();
-                state.selected_probe = None;
+                state.session_filter = SessionFilter::default();
                 state.next_sessions = None;
                 drop(state);
                 spawn(network::load_sessions(ui, false));
@@ -206,7 +207,7 @@ fn NewSessionModal(open: Signal<bool>) -> Element {
     };
 
     let state = ui.peek();
-    let probes: Vec<_> = state
+    let probe_choices: Vec<_> = state
         .probes
         .iter()
         .map(|p| {
@@ -218,26 +219,23 @@ fn NewSessionModal(open: Signal<bool>) -> Element {
             )
         })
         .collect();
-    let probe_choices = probes.clone();
-    let selected_online = probe().is_some_and(|id| probes.iter().any(|p| p.0 == id && p.3));
+    let selected_online = probe().is_some_and(|id| probe_choices.iter().any(|p| p.0 == id && p.3));
     let probe_error = state.probe_error.clone();
     drop(state);
 
     rsx! {
         crate::modal::Modal { title: "New session", close_label: "Close new session", class: "new-session", onclose: move |_| open.set(false),
             label { r#for: "picker-probe", "Probe" }
-            select { id: "picker-probe", value: probe().map(|id| id.to_string()).unwrap_or_default(),
-                onchange: move |event| {
-                    if let Some((id, _, home, _)) = probe_choices.iter().find(|p| p.0.to_string() == event.value() && p.3) {
+            crate::probe_picker::ProbePicker { id: "picker-probe", selected: probe(),
+                onchange: move |chosen: ProbeId| {
+                    if let Some((id, _, home, _)) = probe_choices.iter().find(|p| p.0 == chosen && p.3) {
                         probe.set(Some(*id));
                         path.set(home.clone());
                         path_reset += 1;
                         error.set(None);
                     }
                 },
-                for (id, label, _, active) in probes { option { value: id.to_string(), disabled: !active, "{label}" } }
             }
-            if let Some(id) = probe() { crate::views::ProbeName { id } }
             label { r#for: "picker-path", "Working directory" }
             {rsx! {
     crate::path_picker::ProbePathInput { key: "{path_reset}", id: "picker-path", probe: probe(), initial: path(), aria_label: "Absolute path on the probe", placeholder: "/home/user/project", disabled: checking(),

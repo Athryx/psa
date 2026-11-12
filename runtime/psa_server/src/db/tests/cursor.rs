@@ -16,6 +16,7 @@ async fn commit_persists_multiple_operations_together() {
         .create_session(NewSession {
             model_config: crate::test_support::model_config(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            project_id: None,
             name: "atomic setup".into(),
             working_directory: "/work".into(),
         })

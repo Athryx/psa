@@ -158,7 +158,8 @@ not necessarily persisted or executed at the time HTTP 202 is returned.
 
 ```rust,no_run
 use psa_api::{Client, CreateSession, NewConfiguredAgent, AgentConfigInput, AgentRequest,
-    ConfigGroup, ConfigId, HookConfig, HookOverrides, IncludedItems, MessageDelivery, ModelSelection};
+    ConfigGroup, ConfigId, HookConfig, HookOverrides, IncludedItems, MessageDelivery, ModelSelection,
+    ProjectId};
 use llm_api::{api::{ContentBlock, TextBlock}, providers::{Effort, Model, ModelConfig, ProviderType}};
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let client_key = std::env::var("PSA_CLIENT_KEY")?; // Server auth.toml: [psa].client_key.
@@ -166,6 +167,8 @@ let client = Client::new("http://127.0.0.1:8080", &client_key)?;
 let probe = client.list_probes().await?.into_iter().next().ok_or("connect a probe first")?;
 let session = client.create_session(&CreateSession {
     probe_id: probe.metadata.id,
+    // Group this application's sessions; None creates a global session.
+    project_id: Some(ProjectId("examples".into())),
     name: "Example".into(), working_directory: "/work/project".into(),
     model_config: Some(ModelConfig {
         model: Model::new(ProviderType::Openrouter, "your-provider/model")?,
@@ -702,6 +705,7 @@ let mut cursor = db.cursor().await?;
 let probe = cursor.list_probes().await?.into_iter().next().ok_or("connect a probe first")?;
 let session = cursor.create_session(NewSession {
     probe_id: probe.metadata.id,
+    project_id: None,
     name: "Example".into(),
     working_directory: "/work/project".into(),
     model_config: ModelConfig {

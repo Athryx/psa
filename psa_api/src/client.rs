@@ -2,9 +2,9 @@
 use crate::{
     Agent, AgentConfigInput, AgentConfigStatus, AgentDefinitionId, AgentId, AgentRequest,
     AgentResult, ApiError, ClientQueryId, ClientQueryResponse, ConfigId, CreateSession, EventsPage,
-    EventsQuery, ForkSession, ForkedSession, ListSessions, NewConfiguredAgent, NewSkill,
-    RequestAccepted, ResolvedAgentConfig, ResultRecord, ResultsQuery, Session, SessionId, Skill,
-    StreamMessage, UpdateSession, routes,
+    EventsQuery, ForkSession, ForkedSession, NewConfiguredAgent, NewSkill, ProjectId,
+    RequestAccepted, ResolvedAgentConfig, ResultRecord, ResultsQuery, Session, SessionId,
+    SessionsPage, SessionsQuery, Skill, StreamMessage, UpdateSession, routes,
 };
 use eventsource_stream::Eventsource;
 use futures_util::{Stream, StreamExt};
@@ -181,7 +181,7 @@ impl Client {
 
     /// Look up cached catalog metadata by provider and API model name.
     /// Returns an API error with HTTP 404 if the model is unknown.
-    pub async fn model_info(
+    pub async fn get_model(
         &self,
         model: &llm_api::providers::Model,
     ) -> Result<crate::ModelInfo, ClientError> {
@@ -221,18 +221,21 @@ impl Client {
     /// Fetch a registered probe by ID, including its live activity state.
     /// Returns HTTP 404 if the probe is unknown.
     pub async fn get_probe(&self, id: crate::ProbeId) -> Result<crate::Probe, ClientError> {
-        self.get(&routes::probe_path(id), &()).await
+        self.get(&routes::probe_path(routes::PROBE, id), &()).await
     }
 
     /// List immediate children of an absolute directory on a connected probe.
     /// Paths are passed unchanged; entry metadata does not follow symlinks.
-    pub async fn list_probe_dir(
+    pub async fn list_probe_directory(
         &self,
         id: crate::ProbeId,
         path: &str,
     ) -> Result<Vec<crate::probes::DirectoryEntry>, ClientError> {
-        self.get(&routes::probe_directories_path(id), &[("path", path)])
-            .await
+        self.get(
+            &routes::probe_path(routes::PROBE_DIRECTORIES, id),
+            &[("path", path)],
+        )
+        .await
     }
 
     /// List sandboxes with their container state, optionally for one manager probe.
@@ -246,7 +249,7 @@ impl Client {
 
     /// Fetch one sandbox by its nested probe ID.
     pub async fn get_sandbox(&self, id: crate::ProbeId) -> Result<crate::Sandbox, ClientError> {
-        self.get(&routes::probe_route(routes::SANDBOX, id), &())
+        self.get(&routes::probe_path(routes::SANDBOX, id), &())
             .await
     }
 
@@ -257,25 +260,25 @@ impl Client {
         manager_id: crate::ProbeId,
         request: &crate::CreateSandbox,
     ) -> Result<crate::Sandbox, ClientError> {
-        let path = routes::probe_route(routes::PROBE_SANDBOXES, manager_id);
+        let path = routes::probe_path(routes::PROBE_SANDBOXES, manager_id);
         self.send(Method::POST, &path, request).await
     }
 
     /// Start a sandbox container; fails with `manager_offline` if its manager is disconnected.
     pub async fn start_sandbox(&self, id: crate::ProbeId) -> Result<crate::Sandbox, ClientError> {
-        let path = routes::probe_route(routes::SANDBOX_START, id);
+        let path = routes::probe_path(routes::SANDBOX_START, id);
         self.send(Method::POST, &path, &()).await
     }
 
     /// Stop a sandbox container; fails with `manager_offline` if its manager is disconnected.
     pub async fn stop_sandbox(&self, id: crate::ProbeId) -> Result<crate::Sandbox, ClientError> {
-        let path = routes::probe_route(routes::SANDBOX_STOP, id);
+        let path = routes::probe_path(routes::SANDBOX_STOP, id);
         self.send(Method::POST, &path, &()).await
     }
 
     /// Remove a sandbox container and its record; sessions on its probe remain.
     pub async fn delete_sandbox(&self, id: crate::ProbeId) -> Result<(), ClientError> {
-        let path = routes::probe_route(routes::SANDBOX, id);
+        let path = routes::probe_path(routes::SANDBOX, id);
         let response = self.request(Method::DELETE, &path).send().await?;
         require_success(response).await?;
         Ok(())
@@ -350,12 +353,17 @@ impl Client {
         self.send(Method::POST, routes::SESSIONS, request).await
     }
 
-    /// List direct children of `parent`, or root sessions when `parent` is `None`.
-    pub async fn list_sessions(
-        &self,
-        parent: Option<SessionId>,
-    ) -> Result<Vec<Session>, ClientError> {
-        self.get(routes::SESSIONS, &ListSessions { parent }).await
+    /// Fetch one page of session summaries matching `query`, newest update first.
+    /// To keep a live list, subscribe with [`Self::stream_global_events`] first and
+    /// apply updates newer than each page's revision, deduplicating by session ID.
+    pub async fn list_sessions(&self, query: &SessionsQuery) -> Result<SessionsPage, ClientError> {
+        self.send(Method::POST, routes::SESSIONS_QUERY, query).await
+    }
+
+    /// List the distinct projects of existing sessions, sorted. Global sessions
+    /// have no project and are not represented.
+    pub async fn list_projects(&self) -> Result<Vec<ProjectId>, ClientError> {
+        self.get(routes::PROJECTS, &()).await
     }
 
     /// Fetch a session and its live busy state. Unknown IDs return HTTP 404.
@@ -560,15 +568,6 @@ impl Client {
             .into_iter()
             .map(|record| record.decode::<T>().map_err(ClientError::from))
             .collect()
-    }
-
-    /// Fetch ordered summaries. Subscribe globally first and reconcile updates
-    /// newer than each page's revision; deduplicate by session ID.
-    pub async fn query_sessions(
-        &self,
-        query: &crate::SessionListQuery,
-    ) -> Result<crate::SessionsPage, ClientError> {
-        self.get(routes::SESSION_QUERY, query).await
     }
 
     /// Subscribe to ephemeral global summaries. Wait for Ready before fetching

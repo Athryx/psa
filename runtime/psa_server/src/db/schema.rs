@@ -16,6 +16,7 @@ pub(super) struct SandboxRow {
     pub image: String,
     pub mounts: String,
     pub created_at: i64,
+    pub deleted_at: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -51,6 +52,7 @@ pub(super) struct SessionRow {
     pub name: String,
     pub working_directory: String,
     pub probe_id: String,
+    pub project_id: Option<String>,
     pub model_config: String,
     pub created_at_us: i64,
     pub updated_at_us: i64,
@@ -75,6 +77,7 @@ impl TryFrom<SessionRow> for Session {
                 psa_api::probes::Uuid::parse_str(&row.probe_id)
                     .map_err(|e| DbError::Corrupt(e.to_string()))?,
             ),
+            project_id: row.project_id.map(psa_api::ProjectId),
             created_at: decode_time(row.created_at_us)?,
             updated_at: decode_time(row.updated_at_us)?,
         })

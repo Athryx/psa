@@ -53,7 +53,10 @@ async fn directory_listing_is_authenticated_read_only_and_uses_connected_probe()
     )
     .await;
     let id = support::probe_metadata().id;
-    let entries = client.list_probe_dir(id, "/a space & ü").await.unwrap();
+    let entries = client
+        .list_probe_directory(id, "/a space & ü")
+        .await
+        .unwrap();
     assert_eq!(entries.len(), 3);
     assert!(
         entries
@@ -72,29 +75,38 @@ async fn directory_listing_is_authenticated_read_only_and_uses_connected_probe()
     );
     assert!(
         client
-            .list_probe_dir(id, "/a space & ü/child")
+            .list_probe_directory(id, "/a space & ü/child")
             .await
             .unwrap()
             .is_empty()
     );
     assert_api_error(
-        client.list_probe_dir(id, "relative").await.unwrap_err(),
+        client
+            .list_probe_directory(id, "relative")
+            .await
+            .unwrap_err(),
         400,
         "invalid_input",
     );
     assert_api_error(
-        client.list_probe_dir(id, "/bad\0path").await.unwrap_err(),
+        client
+            .list_probe_directory(id, "/bad\0path")
+            .await
+            .unwrap_err(),
         400,
         "invalid_input",
     );
     assert_api_error(
-        client.list_probe_dir(id, "/denied").await.unwrap_err(),
+        client
+            .list_probe_directory(id, "/denied")
+            .await
+            .unwrap_err(),
         502,
         "probe_error",
     );
     let unknown = api::ProbeId(api::probes::Uuid::new_v4());
     assert_api_error(
-        client.list_probe_dir(unknown, "/").await.unwrap_err(),
+        client.list_probe_directory(unknown, "/").await.unwrap_err(),
         404,
         "not_found",
     );
@@ -113,7 +125,7 @@ async fn directory_listing_is_authenticated_read_only_and_uses_connected_probe()
     assert_eq!(response.status(), reqwest::StatusCode::METHOD_NOT_ALLOWED);
     probe.disconnect(&probes).await;
     assert_api_error(
-        client.list_probe_dir(id, "/").await.unwrap_err(),
+        client.list_probe_directory(id, "/").await.unwrap_err(),
         503,
         "unavailable",
     );

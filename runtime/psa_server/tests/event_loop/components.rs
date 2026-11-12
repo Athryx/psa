@@ -15,6 +15,7 @@ async fn create_session(harness: &Harness) -> wire::Session {
         .create_session(&wire::CreateSession {
             model_config: Some(model()),
             probe_id: wire::ProbeId(wire::probes::Uuid::nil()),
+            project_id: None,
             name: "component features".into(),
             working_directory: "/work".into(),
         })

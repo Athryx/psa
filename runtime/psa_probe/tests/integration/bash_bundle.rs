@@ -28,6 +28,7 @@ pub(super) async fn install_bundle(harness: &Harness) -> (BashBundle, BashHandle
             name: "bash integration".into(),
             working_directory: harness.dir.path().into(),
             probe_id: harness.id,
+            project_id: None,
             model_config: serde_json::from_value(serde_json::json!({
                 "model":{"provider":"Openrouter","api_name":"test-model"},"effort":"Medium"
             }))

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, model_config, created_at_us, updated_at_us FROM sessions WHERE parent_session_id IS ? ORDER BY id",
+  "query": "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, project_id, model_config, created_at_us, updated_at_us FROM sessions WHERE parent_session_id IS ? ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -81,8 +81,19 @@
         }
       },
       {
-        "name": "model_config",
+        "name": "project_id",
         "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "name": "model_config",
+        "ordinal": 8,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -93,7 +104,7 @@
       },
       {
         "name": "created_at_us",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -104,7 +115,7 @@
       },
       {
         "name": "updated_at_us",
-        "ordinal": 9,
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -125,10 +136,11 @@
       false,
       false,
       false,
+      true,
       false,
       false,
       false
     ]
   },
-  "hash": "e7454af80705af1a47150ae578fef6182bc26ed4acfc5f22d6942423291e6803"
+  "hash": "59f5e4e50e1c0d4eba3bcca9905b2bf025c96b03a92a7a5b043ea6f1c0a3ddf5"
 }

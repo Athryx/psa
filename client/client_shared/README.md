@@ -20,7 +20,7 @@ Drafts, transcript caches, connections and view-local scroll state are not saved
    ephemeral global revisions across connections.
 2. Connect `Client::stream_global_events`, and apply its `Ready` message before
    fetching session pages. Apply each subsequent message using `apply_global`.
-3. Fetch `query_sessions` pages sequentially and call `merge_page` with the
+3. Fetch `Client::list_sessions` pages sequentially and call `merge_page` with the
    generation captured when starting each request. Per-session revisions prevent
    older snapshots from overwriting busy-only changes. Old-generation responses
    are ignored. Retain the cache when offline, but don't label cached state idle.

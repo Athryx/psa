@@ -34,6 +34,43 @@ pub struct AgentDefinitionId(
     pub u64,
 );
 
+/// Client-chosen name grouping the sessions of one application or workflow.
+///
+/// Sessions without a project are global, which is where interactive clients
+/// create sessions. API clients typically reuse the name of their
+/// [`crate::ConfigGroup::Custom`] namespace so sessions and configurations line up.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProjectId(
+    /// Nonblank name without surrounding whitespace, at most [`ProjectId::MAX_LEN`] bytes.
+    pub String,
+);
+
+impl ProjectId {
+    /// Maximum project ID length in bytes.
+    pub const MAX_LEN: usize = 256;
+
+    /// Reject blank IDs, surrounding whitespace, and IDs longer than [`Self::MAX_LEN`].
+    pub fn validate(&self) -> Result<(), String> {
+        if self.0.trim().is_empty() || self.0.trim() != self.0 {
+            return Err("project ID must be nonblank without surrounding whitespace".into());
+        }
+        if self.0.len() > Self::MAX_LEN {
+            return Err(format!(
+                "project ID must be at most {} bytes",
+                Self::MAX_LEN
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for ProjectId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Identity of a built-in lifecycle hook, without its construction data.
 /// Use [`crate::HookConfig`] when selecting and configuring an installation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -347,6 +384,9 @@ pub struct Session {
     pub working_directory: PathBuf,
     /// Probe providing the session's execution environment.
     pub probe_id: crate::ProbeId,
+    /// Project the session belongs to; `None` for global sessions.
+    #[serde(default)]
+    pub project_id: Option<ProjectId>,
     /// Default model configuration for agents without a pinned model.
     pub model_config: ModelConfig,
     /// Whether the runtime reports active work for this session.
@@ -405,6 +445,10 @@ pub struct CreateSession {
     pub working_directory: PathBuf,
     /// Probe that provides the execution environment.
     pub probe_id: crate::ProbeId,
+    /// Project to create the session in; omission or null creates a global session.
+    /// Fixed for the session's lifetime and inherited by its forks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<ProjectId>,
     /// Model configuration for this session. Omission or null uses the server's
     /// configured session defaults; the resolved value is persisted in the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -412,6 +456,7 @@ pub struct CreateSession {
 }
 
 /// Optional session metadata changes; absent fields remain unchanged.
+/// The probe and project are fixed when the session is created.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateSession {
@@ -557,34 +602,61 @@ pub struct RequestAccepted {
     pub request_id: String,
 }
 
-/// Filter for listing direct child sessions.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ListSessions {
-    /// Parent session to list children of; absent to list root sessions only.
-    pub parent: Option<SessionId>,
+/// Session selection shared by summary pages and by clients applying live
+/// summary updates, so both agree on membership. Criteria combine with AND;
+/// the default filter matches every session.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SessionFilter {
+    /// Substring of the session name, compared ignoring ASCII case; empty matches all.
+    pub name_contains: String,
+    /// Sessions on any of these probes; empty matches every probe.
+    pub probe_ids: Vec<crate::ProbeId>,
+    /// Sessions in any of these projects, with `None` selecting global sessions;
+    /// empty matches every project.
+    pub project_ids: Vec<Option<ProjectId>>,
 }
 
-/// Ordered, keyset-paginated session summaries. Legacy listing remains unchanged.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl SessionFilter {
+    /// Whether the filter matches every session.
+    pub fn is_empty(&self) -> bool {
+        self.name_contains.is_empty() && self.probe_ids.is_empty() && self.project_ids.is_empty()
+    }
+
+    /// Whether `session` satisfies every criterion, exactly as the server applies them.
+    pub fn matches(&self, session: &Session) -> bool {
+        let name = session
+            .name
+            .to_ascii_lowercase()
+            .contains(&self.name_contains.to_ascii_lowercase());
+        let probe = self.probe_ids.is_empty() || self.probe_ids.contains(&session.probe_id);
+        let project = self.project_ids.is_empty() || self.project_ids.contains(&session.project_id);
+        name && probe && project
+    }
+}
+
+/// Ordered, keyset-paginated session summaries, newest update first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct SessionListQuery {
-    /// Include roots and forks; incompatible with parent.
+pub struct SessionsQuery {
+    /// Include roots and forks; incompatible with `parent`.
     pub flat: bool,
-    /// Direct children of this session; absent selects roots unless flat.
+    /// Direct children of this session; absent selects roots unless `flat`.
     pub parent: Option<SessionId>,
-    /// Restrict to one probe.
-    pub probe_id: Option<crate::ProbeId>,
-    /// Opaque exclusive cursor returned by the previous page.
+    /// Name, probe, and project criteria.
+    pub filter: SessionFilter,
+    /// Opaque exclusive cursor from the previous page of this same query.
     pub before: Option<String>,
-    /// Page size, 1 through 1000.
+    /// Page size, 1 through 1000; defaults to 100.
     pub limit: u32,
 }
-impl Default for SessionListQuery {
+
+impl Default for SessionsQuery {
     fn default() -> Self {
         Self {
             flat: false,
             parent: None,
-            probe_id: None,
+            filter: SessionFilter::default(),
             before: None,
             limit: 100,
         }
@@ -612,13 +684,14 @@ pub enum GlobalEventKind {
 }
 
 /// Global summary subscription selection, independent of transcript routes.
+///
+/// The feed carries every session so clients see sessions leave a filter too;
+/// apply [`SessionFilter::matches`] to decide which updates to display.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GlobalEventsQuery {
     /// Selected data-event kind.
     pub kind: GlobalEventKind,
-    /// Restrict summaries to one probe.
-    pub probe_id: Option<crate::ProbeId>,
 }
 
 /// Ephemeral global feed protocol. Reconnects require a new summary bootstrap.

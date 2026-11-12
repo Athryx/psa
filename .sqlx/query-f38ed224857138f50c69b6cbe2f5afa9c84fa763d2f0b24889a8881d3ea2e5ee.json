@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT probe_id, manager_id, name, image, mounts, created_at\n             FROM sandboxes WHERE probe_id = ?",
+  "query": "SELECT probe_id, manager_id, name, image, mounts, created_at, deleted_at\n             FROM sandboxes WHERE ?1 IS NULL OR manager_id = ?1\n             ORDER BY created_at, probe_id",
   "describe": {
     "columns": [
       {
@@ -68,6 +68,17 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "name": "deleted_at",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sandboxes",
+            "name": "deleted_at"
+          }
+        }
       }
     ],
     "parameters": {
@@ -79,8 +90,9 @@
       false,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "d5bead58296a6562a57c25374e75733acdc2f92d39534db5e0f4507739106aeb"
+  "hash": "f38ed224857138f50c69b6cbe2f5afa9c84fa763d2f0b24889a8881d3ea2e5ee"
 }

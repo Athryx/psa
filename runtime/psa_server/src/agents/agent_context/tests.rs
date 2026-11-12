@@ -127,6 +127,7 @@ impl Fixture {
                 name: "context test".into(),
                 working_directory: cwd.into(),
                 probe_id: support::probe_metadata().id,
+                project_id: None,
             })
             .await
             .unwrap();

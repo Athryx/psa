@@ -60,7 +60,7 @@ fn grouping_uses_exact_path_and_stable_recency_not_busy() {
     older.updated_at = time::OffsetDateTime::UNIX_EPOCH;
     older.busy = true;
     index.upsert(older);
-    let groups = index.groups(None);
+    let groups = index.groups(&Default::default());
     assert_eq!(groups.len(), 3);
     assert_eq!(
         groups[0]
@@ -97,7 +97,7 @@ fn grouping_preserves_probe_identity_all_path_spellings_and_recency() {
         }
         index.upsert(session);
     }
-    let groups = index.groups(None);
+    let groups = index.groups(&Default::default());
     assert_eq!(groups.len(), 5);
     assert_eq!(
         groups
@@ -123,11 +123,11 @@ fn grouping_preserves_probe_identity_all_path_spellings_and_recency() {
     assert!(groups[4].busy);
     assert!(!groups[0].busy);
     assert_eq!(
-        index.groups(Some(&other_probe))[0].sessions[0].id,
+        index.groups(&probe_filter(other_probe))[0].sessions[0].id,
         SessionId(5)
     );
     let first_probe = index.sessions[&SessionId(1)].probe_id;
-    assert_eq!(index.groups(Some(&first_probe)).len(), 4);
+    assert_eq!(index.groups(&probe_filter(first_probe)).len(), 4);
 }
 
 #[cfg(unix)]
@@ -144,7 +144,7 @@ fn grouping_hashes_original_non_utf8_os_strings_without_loss() {
     let mut duplicate = index.sessions[&SessionId(1)].clone();
     duplicate.id = SessionId(3);
     index.upsert(duplicate);
-    let groups = index.groups(None);
+    let groups = index.groups(&Default::default());
     assert_eq!(groups.len(), 2);
     assert_eq!(groups[0].sessions.len(), 2);
     assert_ne!(
@@ -163,7 +163,7 @@ fn grouping_many_distinct_folders_keeps_descending_id_ties() {
         session.working_directory = format!("/work/{id}").into();
         index.upsert(session);
     }
-    let groups = index.groups(None);
+    let groups = index.groups(&Default::default());
     assert_eq!(groups.len(), 16_384);
     for (offset, group) in groups.iter().enumerate() {
         assert_eq!(group.sessions.len(), 1);
@@ -416,7 +416,10 @@ fn benchmark_grouping_and_deep_ancestry_scaling() {
             agents.push(agent);
         }
         let start = Instant::now();
-        assert_eq!(black_box(index.groups(None)).len(), size as usize);
+        assert_eq!(
+            black_box(index.groups(&Default::default())).len(),
+            size as usize
+        );
         let grouping = start.elapsed();
         let start = Instant::now();
         assert_eq!(black_box(agent_tree(&agents, false)).len(), size as usize);
@@ -509,4 +512,11 @@ fn tool_results_correlate_by_agent_not_name_or_adjacency() {
         t.tool_exchanges_for(&std::collections::HashSet::new())
             .is_empty()
     );
+}
+
+fn probe_filter(probe: psa_api::ProbeId) -> psa_api::SessionFilter {
+    psa_api::SessionFilter {
+        probe_ids: vec![probe],
+        ..Default::default()
+    }
 }

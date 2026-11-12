@@ -36,6 +36,7 @@ impl Fixture {
                 name: "signals".into(),
                 working_directory: "/work".into(),
                 probe_id: crate::test_support::probe_metadata().id,
+                project_id: None,
                 model_config: model.clone(),
             })
             .await

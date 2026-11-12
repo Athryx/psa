@@ -38,6 +38,7 @@ async fn fixture() -> (tempfile::TempDir, Database, Session, Agent) {
         .create_session(NewSession {
             model_config: crate::test_support::model_config(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            project_id: None,
             name: "test".into(),
             working_directory: "/work".into(),
         })
@@ -802,6 +803,7 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
         .create_session(NewSession {
             model_config: crate::test_support::model_config(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            project_id: None,
             name: "blank".into(),
             working_directory: "/".into(),
         })
