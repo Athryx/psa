@@ -13,7 +13,7 @@ use llm_api::api::ContentBlock;
 use serde_json::{Value, json};
 
 const RESET_MESSAGE: &str =
-    "Python REPL reset. Earlier codemode outputs remain available through PRIOR_RESULTS.";
+    "Python REPL reset. Earlier codemode outputs remain available through prior_results.";
 
 fn tools(engine: &Arc<MontyEngine>) -> Vec<ToolKind> {
     vec![
@@ -23,7 +23,9 @@ fn tools(engine: &Arc<MontyEngine>) -> Vec<ToolKind> {
 }
 
 fn install_functions(state: &mut AgentManagerState) {
-    state.codemode_functions = vec![CodeModeFunctionKind::PriorResults(PriorResults)].into();
+    state.codemode_functions = crate::components::codemode_functions::listed_entries([
+        CodeModeFunctionKind::PriorResults(PriorResults),
+    ]);
 }
 
 async fn append_call(state: &mut AgentManagerState, id: &str, name: &str, arguments: Value) {
@@ -226,7 +228,7 @@ async fn real_worker_reset_clears_python_state_but_preserves_history_and_restart
         state,
         "seed",
         "codemode",
-        json!({"code": "import asyncio\nimport math\nx = 41\nitems = [1, 2, 3]\ndef old_function():\n    return x\narchive_alias = PRIOR_RESULTS\nprint('old output')"}),
+        json!({"code": "import asyncio\nimport math\nx = 41\nitems = [1, 2, 3]\ndef old_function():\n    return x\narchive_alias = prior_results\nprint('old output')"}),
     ).await;
     let (seed_id, error, text) = tool_result(&fixture, &state, "seed").await;
     assert!(!error, "{text}");
@@ -273,7 +275,7 @@ async fn real_worker_reset_clears_python_state_but_preserves_history_and_restart
         state,
         "after-restart",
         "codemode",
-        json!({"code": "try:\n    x\nexcept NameError:\n    print('x absent')\ntry:\n    items\nexcept NameError:\n    print('items absent')\ntry:\n    old_function()\nexcept NameError:\n    print('function absent')\ntry:\n    math\nexcept NameError:\n    print('math absent')\ntry:\n    asyncio\nexcept NameError:\n    print('asyncio absent')\ntry:\n    archive_alias()\nexcept NameError:\n    print('alias absent')\ntry:\n    reset_codemode()\nexcept NameError:\n    print('reset is native only')\nprint(PRIOR_RESULTS(0).strip())\nprint(PRIOR_RESULTS() == PRIOR_RESULTS(0))"}),
+        json!({"code": "try:\n    x\nexcept NameError:\n    print('x absent')\ntry:\n    items\nexcept NameError:\n    print('items absent')\ntry:\n    old_function()\nexcept NameError:\n    print('function absent')\ntry:\n    math\nexcept NameError:\n    print('math absent')\ntry:\n    asyncio\nexcept NameError:\n    print('asyncio absent')\ntry:\n    archive_alias()\nexcept NameError:\n    print('alias absent')\ntry:\n    reset_codemode()\nexcept NameError:\n    print('reset is native only')\nprint(prior_results(0).strip())\nprint(prior_results() == prior_results(0))"}),
     ).await;
     let (_, error, text) = tool_result(&fixture, &state, "after-restart").await;
     assert!(!error, "{text}");
@@ -365,7 +367,7 @@ async fn real_worker_reset_recovers_from_corrupt_latest_checkpoint_without_resto
         state,
         "recovered",
         "codemode",
-        json!({"code": "try:\n    x\nexcept NameError:\n    print('old x absent')\nprint(6 * 7)\nprint(PRIOR_RESULTS(0).strip())"}),
+        json!({"code": "try:\n    x\nexcept NameError:\n    print('old x absent')\nprint(6 * 7)\nprint(prior_results(0).strip())"}),
     ).await;
     let (_, error, text) = tool_result(&fixture, &state, "recovered").await;
     assert!(!error, "{text}");
@@ -393,7 +395,7 @@ async fn real_worker_reset_is_a_same_inference_barrier_and_forks_keep_their_stat
         &[
             ("set", "codemode", json!({"code": "x = 17\nprint('before reset')"})),
             ("reset", "reset_codemode", json!({})),
-            ("read", "codemode", json!({"code": "try:\n    x\nexcept NameError:\n    print('fresh state')\nprint(PRIOR_RESULTS().strip())\ntry:\n    PRIOR_RESULTS(1)\nexcept IndexError:\n    print('reset is not archived')"})),
+            ("read", "codemode", json!({"code": "try:\n    x\nexcept NameError:\n    print('fresh state')\nprint(prior_results().strip())\ntry:\n    prior_results(1)\nexcept IndexError:\n    print('reset is not archived')"})),
         ],
     ).await;
     install_functions(&mut state);
@@ -419,13 +421,13 @@ async fn real_worker_reset_is_a_same_inference_barrier_and_forks_keep_their_stat
         (
             set_id,
             &old_checkpoint,
-            "print(x)\nprint(PRIOR_RESULTS().strip())",
+            "print(x)\nprint(prior_results().strip())",
             "17\nbefore reset",
         ),
         (
             reset_id,
             &fresh_checkpoint,
-            "try:\n    x\nexcept NameError:\n    print('fresh fork')\nprint(PRIOR_RESULTS().strip())",
+            "try:\n    x\nexcept NameError:\n    print('fresh fork')\nprint(prior_results().strip())",
             "fresh fork\nbefore reset",
         ),
     ] {

@@ -28,6 +28,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agent_trace"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4565,6 +4579,7 @@ name = "psa_server"
 version = "0.1.0"
 dependencies = [
  "actors",
+ "agent_trace",
  "async-stream",
  "axum",
  "clap",
@@ -6612,6 +6627,19 @@ name = "tower-service"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
+
+[[package]]
+name = "trace_cli"
+version = "0.1.0"
+dependencies = [
+ "agent_trace",
+ "anyhow",
+ "clap",
+ "regex",
+ "serde_json",
+ "time",
+ "tokio",
+]
 
 [[package]]
 name = "tracing"

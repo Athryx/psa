@@ -12,7 +12,10 @@ async fn nested_contexts_have_independent_snapshots_and_shared_registry() {
     let fixture = Fixture::new().await;
     let mut state = fixture.state(vec![], &[]).await;
     let mut components = crate::components::bundles::InstalledComponents::default();
-    components.codemode_functions = vec![CodeModeFunctionKind::Tool(ToolKind::Noop(Noop))].into();
+    components.codemode_functions =
+        crate::components::codemode_functions::listed_entries([CodeModeFunctionKind::Tool(
+            ToolKind::Noop(Noop),
+        )]);
     let registry = components.codemode_functions.clone();
     state
         .attach_components(Arc::new(tokio::sync::Mutex::new(components)))

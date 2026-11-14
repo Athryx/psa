@@ -175,6 +175,18 @@ impl Sessions {
         Ok(session)
     }
 
+    /// Root sessions for `None`, otherwise the immediate forks of `parent`.
+    pub async fn list_sessions(
+        &self,
+        parent: Option<SessionId>,
+    ) -> Result<Vec<sessions::Session>, RuntimeError> {
+        let mut cursor = self.database.cursor().await?;
+        let sessions = cursor.list_sessions(parent).await?;
+        cursor.rollback().await?;
+
+        Ok(sessions)
+    }
+
     pub async fn update_session(
         &self,
         id: SessionId,

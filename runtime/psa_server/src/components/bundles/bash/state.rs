@@ -3,7 +3,8 @@ use super::{
 };
 use actors::{Mailbox, MailboxHandle, Reply};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -14,6 +15,91 @@ use tokio::task::JoinHandle;
 
 type Response = Reply<Result<CollectedOutput, BashError>>;
 
+/// A session unregistering itself, with its final state when it ran.
+pub(super) struct Removal {
+    pub name: String,
+    pub generation: u64,
+    pub record: Option<FinishedSession>,
+}
+
+/// Finished sessions remembered so later polls are not mistaken for typos.
+const MAX_FINISHED_SESSIONS: usize = 256;
+
+/// What a finished session reported last; polling it again returns this.
+pub(super) struct FinishedSession {
+    pub exit_code: Option<i32>,
+    pub error: Option<String>,
+    pub elapsed: Duration,
+    pub log_path: Option<PathBuf>,
+}
+
+impl FinishedSession {
+    fn build_output(&self, name: String) -> CollectedOutput {
+        CollectedOutput {
+            name,
+            log_path: self.log_path.clone(),
+            output: Default::default(),
+            elapsed: self.elapsed,
+            waited: Duration::ZERO,
+            running: false,
+            exit_code: self.exit_code,
+            error: self.error.clone(),
+            stopped: false,
+            already_finished: true,
+        }
+    }
+}
+
+#[derive(Default)]
+struct FinishedSessions {
+    records: HashMap<String, FinishedSession>,
+    order: VecDeque<String>,
+}
+
+impl FinishedSessions {
+    fn insert(&mut self, name: String, record: FinishedSession) {
+        if self.records.insert(name.clone(), record).is_none() {
+            self.order.push_back(name);
+        }
+        while self.order.len() > MAX_FINISHED_SESSIONS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.records.remove(&oldest);
+            }
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<&FinishedSession> {
+        self.records.get(name)
+    }
+}
+
+/// interact_bash and close_bash share one lookup; only the request differs.
+pub(super) enum PollRequest {
+    Collect(Collect),
+    Close,
+}
+
+impl PollRequest {
+    fn into_message(self, reply: Response) -> session::Message {
+        match self {
+            Self::Collect(collect) => session::Message::Collect { collect, reply },
+            Self::Close => session::Message::Close { reply },
+        }
+    }
+
+    /// A finished session can still be polled or closed, but not written to.
+    fn build_finished_reply(
+        &self,
+        name: String,
+        record: &FinishedSession,
+    ) -> Result<CollectedOutput, BashError> {
+        match self {
+            Self::Collect(collect) if collect.has_stdin() => Err(BashError::StdinClosed(name)),
+            _ => Ok(record.build_output(name)),
+        }
+    }
+}
+
 pub(super) enum Message {
     Start {
         probe: ProbeHandle,
@@ -22,13 +108,9 @@ pub(super) enum Message {
         collect: Collect,
         reply: Response,
     },
-    Interact {
+    Poll {
         name: String,
-        collect: Collect,
-        reply: Response,
-    },
-    Close {
-        name: String,
+        request: PollRequest,
         reply: Response,
     },
     Shutdown {
@@ -162,10 +244,11 @@ impl BashHandle {
         yield_time: Duration,
         cancellation: Cancellation,
     ) -> Result<CollectedOutput, BashError> {
+        let collect = Collect::new(stdin, yield_time, cancellation, false);
         self.sender()?
-            .request(|reply| Message::Interact {
+            .request(|reply| Message::Poll {
                 name: session_name,
-                collect: Collect::new(stdin, yield_time, cancellation, false),
+                request: PollRequest::Collect(collect),
                 reply,
             })
             .await
@@ -173,8 +256,9 @@ impl BashHandle {
     }
     pub async fn close(&self, session_name: String) -> Result<CollectedOutput, BashError> {
         self.sender()?
-            .request(|reply| Message::Close {
+            .request(|reply| Message::Poll {
                 name: session_name,
+                request: PollRequest::Close,
                 reply,
             })
             .await
@@ -224,16 +308,22 @@ impl Names {
 }
 
 async fn run_registry(mut mailbox: Mailbox<Message>) {
-    let (registry, mut removals) = actors::unbounded_channel::<(String, u64)>();
+    let (registry, mut removals) = actors::unbounded_channel::<Removal>();
     let mut sessions = HashMap::<String, Entry>::new();
+    let mut finished = FinishedSessions::default();
     let mut names = Names::default();
     let mut generation = 0;
     loop {
         let message = tokio::select! {
             biased;
             removal = removals.recv() => {
-                if let Some((name, generation)) = removal {
-                    if sessions.get(&name).is_some_and(|entry| entry.generation == generation) { sessions.remove(&name); }
+                let Some(Removal { name, generation, record }) = removal else { continue };
+                // Only the live generation may unregister or leave a record.
+                if sessions.get(&name).is_some_and(|entry| entry.generation == generation) {
+                    sessions.remove(&name);
+                    if let Some(record) = record {
+                        finished.insert(name, record);
+                    }
                 }
                 continue;
             }
@@ -275,31 +365,28 @@ async fn run_registry(mut mailbox: Mailbox<Message>) {
                     },
                 );
             }
-            Message::Interact {
+            Message::Poll {
                 name,
-                collect,
+                request,
                 reply,
             } => {
-                let Some(entry) = sessions.get(&name) else {
-                    let _ = reply.send(Err(BashError::UnknownSession(name)));
+                if let Some(entry) = sessions.get(&name) {
+                    // Bounded enqueue never waits for a collector to finish.
+                    if entry
+                        .sender
+                        .send(request.into_message(reply))
+                        .await
+                        .is_err()
+                    {
+                        sessions.remove(&name);
+                    }
                     continue;
-                };
-                // Bounded enqueue never waits for a collector to finish.
-                if entry
-                    .sender
-                    .send(session::Message::Collect { collect, reply })
-                    .await
-                    .is_err()
-                {
-                    sessions.remove(&name);
                 }
-            }
-            Message::Close { name, reply } => {
-                let Some(entry) = sessions.get(&name) else {
-                    let _ = reply.send(Err(BashError::UnknownSession(name)));
-                    continue;
+                let result = match finished.get(&name) {
+                    Some(record) => request.build_finished_reply(name, record),
+                    None => Err(BashError::UnknownSession(name)),
                 };
-                let _ = entry.sender.send(session::Message::Close { reply }).await;
+                let _ = reply.send(result);
             }
             Message::Shutdown { reply } => {
                 mailbox.close();

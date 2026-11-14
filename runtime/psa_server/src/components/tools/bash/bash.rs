@@ -1,5 +1,5 @@
 use super::{
-    super::{Tool, ToolOutput, ToolSystemPrompt, typed_tool_execute},
+    super::{CodeModeResultType, Tool, ToolOutput, ToolSystemPrompt, typed_tool_execute},
     output::TruncationKind,
 };
 use crate::{
@@ -13,8 +13,33 @@ use crate::{
 use llm_api::api::ToolDefinition;
 use psa_api::probes::Command;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+/// The bash session's state when this call returned; a later call returns a new
+/// result. str() gives the same text as the bash tools.
+#[derive(Serialize, JsonSchema)]
+pub(super) struct BashResult {
+    /// Pass as session_name to interact_bash and close_bash.
+    session_name: String,
+    /// Output since the previous call; head and tail only when long.
+    output: String,
+    /// None while running or when the command was killed.
+    exit_code: Option<i32>,
+    running: bool,
+    /// Spawn or signal error.
+    error: Option<String>,
+    /// Seconds since the command started.
+    elapsed: f64,
+    /// Seconds this call waited.
+    waited: f64,
+    /// File holding the full output; None once deleted after a clean run.
+    log_path: Option<String>,
+}
+
+pub(super) fn bash_result_type() -> CodeModeResultType {
+    CodeModeResultType::for_type::<BashResult>()
+}
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -117,6 +142,10 @@ impl Tool for Bash {
         Duration::from_secs(10)
     }
 
+    fn codemode_result_type(&self) -> Option<CodeModeResultType> {
+        Some(bash_result_type())
+    }
+
     typed_tool_execute!(BashArgs, execute_typed);
 }
 
@@ -157,6 +186,23 @@ fn format_size(bytes: usize) -> String {
 }
 
 pub(super) fn format_result(result: CollectedOutput, mode: ResultMode) -> ToolOutput {
+    let fields = BashResult {
+        session_name: result.name.clone(),
+        output: result.output.content.clone(),
+        exit_code: result.exit_code,
+        running: result.running,
+        error: result.error.clone(),
+        elapsed: result.elapsed.as_secs_f64(),
+        waited: result.waited.as_secs_f64(),
+        log_path: result
+            .log_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
+    };
+    format_text(result, mode).with_codemode_fields(&fields)
+}
+
+fn format_text(result: CollectedOutput, mode: ResultMode) -> ToolOutput {
     let t = &result.output.truncation;
     let failed = result.error.is_some() || result.exit_code.is_some_and(|code| code != 0);
     let foreground_success =
@@ -203,38 +249,54 @@ pub(super) fn format_result(result: CollectedOutput, mode: ResultMode) -> ToolOu
             format_size(t.total_bytes)
         )
     };
-    let full_output = format!("{truncation}Full output: {}", result.log_path.display());
-    if result.running && mode != ResultMode::Close {
+    let full_output = match &result.log_path {
+        Some(path) => format!("{truncation}Full output: {}", path.display()),
+        None => truncation.trim_end().to_owned(),
+    };
+    // The full output is mentioned when the preview is partial, or when this
+    // call returned nothing new because the command had already finished.
+    let mention_log = (t.truncated || result.already_finished) && !full_output.is_empty();
+    let finished_note = if result.already_finished {
+        format!("Bash session {} had already finished. ", result.name)
+    } else {
+        String::new()
+    };
+
+    if result.running {
         let instructions = if mode == ResultMode::Initial {
             " Use interact_bash to send stdin or read new output; close_bash to stop it."
         } else {
             ""
         };
         text.push_str(&format!("\n\n[Running bash session: {}. Command elapsed: {elapsed}{waited}. {full_output}.{instructions}]", result.name));
-    } else if mode == ResultMode::Close {
+    } else if result.stopped {
         text.push_str(&format!(
             "\n\n[Closed bash session {}. Command ran for {elapsed}. {full_output}]",
             result.name
         ));
     } else if failed {
-        let suffix = if t.truncated {
+        let suffix = if mention_log {
             format!(". {full_output}")
         } else {
             String::new()
         };
-        text.push_str(&format!("\n\n[Command ran for {elapsed}{suffix}]\n"));
+        text.push_str(&format!(
+            "\n\n[{finished_note}Command ran for {elapsed}{suffix}]\n"
+        ));
         if let Some(error) = &result.error {
             text.push_str(&prompts::truncate_middle(error, 51_200));
         } else if let Some(code) = result.exit_code {
             text.push_str(&format!("Command exited with code {code}"));
         }
     } else {
-        let suffix = if t.truncated {
+        let suffix = if mention_log {
             format!(" {full_output}")
         } else {
             String::new()
         };
-        text.push_str(&format!("\n\n[Command ran for {elapsed}{waited}.{suffix}]"));
+        text.push_str(&format!(
+            "\n\n[{finished_note}Command ran for {elapsed}{waited}.{suffix}]"
+        ));
     }
     if failed {
         ToolOutput::error(prompts::text(text))
@@ -263,13 +325,15 @@ mod tests {
         accumulator.finish();
         CollectedOutput {
             name: "bash1".into(),
-            log_path: "/tmp/pi-bash-abc.log".into(),
+            log_path: Some("/tmp/pi-bash-abc.log".into()),
             output: accumulator.take_snapshot(),
             elapsed: Duration::from_millis(12400),
             waited: Duration::from_millis(2400),
             running: false,
             exit_code: Some(0),
             error: None,
+            stopped: false,
+            already_finished: false,
         }
     }
 
@@ -364,8 +428,34 @@ mod tests {
         ] {
             let mut result = collected("");
             result.running = running;
+            result.stopped = mode == ResultMode::Close;
             assert_eq!(text(format_result(result, mode)), (expected.into(), false));
         }
+    }
+
+    #[test]
+    fn finished_sessions_report_their_final_state_instead_of_closing() {
+        let mut result = collected("");
+        result.already_finished = true;
+        result.exit_code = Some(3);
+        assert_eq!(
+            text(format_result(result, ResultMode::Close)),
+            (
+                "(no new output)\n\n[Bash session bash1 had already finished. Command ran for 12.4s. Full output: /tmp/pi-bash-abc.log]\nCommand exited with code 3".into(),
+                true
+            )
+        );
+
+        let mut result = collected("tail\n");
+        result.already_finished = true;
+        result.log_path = None;
+        assert_eq!(
+            text(format_result(result, ResultMode::Interact)),
+            (
+                "tail\n\n\n[Bash session bash1 had already finished. Command ran for 12.4s; waited: 2.4s this call.]".into(),
+                false
+            )
+        );
     }
 
     #[test]
@@ -435,6 +525,7 @@ mod tests {
             let mut result = collected(&input);
             let preview = result.output.content.clone();
             result.running = running;
+            result.stopped = mode == ResultMode::Close;
             assert_eq!(
                 text(format_result(result, mode)),
                 (format!("{preview}\n\n{status}"), false)

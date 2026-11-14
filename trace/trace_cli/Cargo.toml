@@ -1,0 +1,18 @@
+[package]
+name = "trace_cli"
+version = "0.1.0"
+edition = "2024"
+description = "Command-line access to agent traces: import, inspect, render, and search."
+
+[[bin]]
+name = "trace"
+path = "src/main.rs"
+
+[dependencies]
+agent_trace = { path = "../agent_trace" }
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs"] }
+anyhow = "1"
+time = { version = "0.3.55", features = ["formatting"] }

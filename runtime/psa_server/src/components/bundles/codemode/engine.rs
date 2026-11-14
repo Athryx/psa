@@ -21,14 +21,14 @@ use crate::{
     agents::agent_context::AgentContext,
     components::{
         cancellation::Cancellation,
-        codemode_functions::{CodeModeFunction, CodeModeFunctionKind},
+        codemode_functions::{CodeModeFunction, CodeModeFunctionKind, result_classes},
     },
     db::{MAX_CODEMODE_SNAPSHOT_BYTES, PrivateEvent, PrivateEventKind},
 };
 
 const MAX_OUTPUT_CHARS: usize = 16_000;
 const MAX_PRINT_CHARS: usize = 12_000;
-/// Output kept on disk for PRIOR_RESULTS; only the model's view is truncated
+/// Output kept on disk for prior_results; only the model's view is truncated
 /// to the limits above. Four bytes per character stays within the DB limit.
 pub(crate) const MAX_SAVED_OUTPUT_CHARS: usize = 2 * 1024 * 1024;
 const MAX_SAVED_ERROR_CHARS: usize = 64 * 1024;
@@ -54,7 +54,7 @@ struct ExecutionProgress {
 pub(crate) struct EngineOutput {
     /// Model-facing output, middle-truncated to the context limits.
     pub text: String,
-    /// Full output when `text` was truncated, kept for PRIOR_RESULTS.
+    /// Full output when `text` was truncated, kept for prior_results.
     pub saved_text: Option<String>,
     pub error: bool,
     pub snapshot: Option<Vec<u8>>,
@@ -254,6 +254,18 @@ impl MontyEngine {
             }
         }
 
+        // Redefined on every call so restored checkpoints and model edits
+        // always see the current result classes and wrappers.
+        if let Some(prelude) = result_classes::build_result_prelude(context.codemode_functions()) {
+            let event = session
+                .feed(prelude, vec![], vec![], false, &mut print)
+                .await
+                .map_err(|e| format!("Cannot define codemode result classes: {e}"))?;
+            if !matches!(event, TurnEvent::Complete(_)) {
+                return Err("Codemode result classes did not complete".into());
+            }
+        }
+
         let mut pending: FuturesUnordered<BoxFuture<'_, (u32, ResumeValue)>> =
             FuturesUnordered::new();
         let mut ready = HashMap::new();
@@ -278,9 +290,9 @@ impl MontyEngine {
         let inputs = context
             .codemode_functions()
             .iter()
-            .filter(|function| matches!(function, CodeModeFunctionKind::PriorResults(_)))
-            .map(|function| {
-                let definition = function.definition();
+            .filter(|entry| !entry.function.is_async())
+            .map(|entry| {
+                let definition = entry.function.definition();
                 (
                     definition.name.clone(),
                     MontyObject::function(definition.name, Some(definition.description)),
@@ -321,10 +333,12 @@ impl MontyEngine {
                     ..
                 } => {
                     call_count += 1;
+                    let host_name = result_classes::host_function_name(&function_name);
                     let function = context
                         .codemode_functions()
                         .iter()
-                        .find(|function| function.definition().name == function_name);
+                        .map(|entry| &entry.function)
+                        .find(|function| function.definition().name == host_name);
                     if call_count > MAX_HOST_CALLS
                         || (matches!(function, Some(CodeModeFunctionKind::Tool(_)))
                             && outstanding.len() >= MAX_PENDING_CALLS)
@@ -343,9 +357,9 @@ impl MontyEngine {
                             aborted.clone(),
                             &progress.host_call_started,
                         );
-                        if matches!(function, CodeModeFunctionKind::PriorResults(_)) {
-                            // History lookup suspends the worker for server-side IO,
-                            // but resumes with a plain string rather than a Python future.
+                        if !function.is_async() {
+                            // Built-in lookups suspend the worker for server-side work,
+                            // but resume with a plain value rather than a Python future.
                             let value = cancellable_turn!(call);
                             cancellable_turn!(session.resume(value, &mut print))
                         } else {
@@ -616,13 +630,19 @@ fn parse_function_arguments(
     function: &CodeModeFunctionKind,
     args: &CallArgs,
 ) -> Result<Value, String> {
-    if matches!(function, CodeModeFunctionKind::PriorResults(_))
+    // Built-in lookups accept their single argument positionally.
+    let positional_field = match function {
+        CodeModeFunctionKind::PriorResults(_) => Some("index"),
+        CodeModeFunctionKind::Help(_) => Some("name"),
+        CodeModeFunctionKind::Tool(_) => None,
+    };
+    if let Some(field) = positional_field
         && args.args().len() == 1
         && args.kwargs().len() == 0
     {
         let mut budget = 100_000;
-        let index = monty_to_json(args.args().next().unwrap(), 0, &mut budget)?;
-        return Ok(serde_json::json!({"index": index}));
+        let value = monty_to_json(args.args().next().unwrap(), 0, &mut budget)?;
+        return Ok(serde_json::json!({ field: value }));
     }
     parse_call_arguments(args)
 }

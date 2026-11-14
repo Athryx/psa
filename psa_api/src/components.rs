@@ -102,6 +102,8 @@ pub enum BundleConfig {
         #[serde(default = "default_result_retries")]
         max_retries: u32,
     },
+    /// Installs tools for listing psa sessions and exporting them as traces.
+    Traces,
     /// Summarizes older context before inference once it nears the context window,
     /// and handles the manual `Compact` command, using a hidden summarizer agent.
     Compaction {
@@ -130,6 +132,7 @@ impl BundleConfig {
             Self::Subagents => BundleId::Subagents,
             Self::TypedResult { .. } => BundleId::TypedResult,
             Self::Compaction { .. } => BundleId::Compaction,
+            Self::Traces => BundleId::Traces,
         }
     }
 
@@ -213,6 +216,7 @@ mod tests {
                 BundleId::AskQuestion,
             ),
             (BundleConfig::Subagents, BundleId::Subagents),
+            (BundleConfig::Traces, BundleId::Traces),
             (
                 BundleConfig::TypedResult {
                     schema: serde_json::json!({"type": "object"}).into(),

@@ -11,5 +11,7 @@ members = [
     "runtime/psa_shared",
     "runtime/psa_server",
     "runtime/psa_probe",
+    "trace/agent_trace",
+    "trace/trace_cli",
 ]
 exclude = ["target/probe-sources/ripgrep", "target/probe-sources/fd"]

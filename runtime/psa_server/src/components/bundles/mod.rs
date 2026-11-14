@@ -18,6 +18,7 @@ pub mod subagents;
 pub(crate) mod testing;
 #[cfg(test)]
 mod tests;
+mod traces;
 pub(crate) mod typed_result;
 
 pub use ask_question::AskQuestionBundle;
@@ -29,12 +30,15 @@ pub use goal::GoalBundle;
 pub use noop::NoopBundle;
 pub use psa_api::BundleConfig;
 pub use subagents::SubagentsBundle;
+pub use traces::TracesBundle;
 pub use typed_result::TypedResultBundle;
 
 use crate::{
     agents::{Agent, AgentDefinition},
     components::{
-        codemode_functions::{CodeModeFunction, CodeModeFunctionKind},
+        codemode_functions::{
+            CodeModeEntry, CodeModeFunction, CodeModeFunctionKind, CodeModeListing,
+        },
         hooks::{CommandHookKind, HookKind, Hooks},
         tools::ToolKind,
     },
@@ -74,6 +78,7 @@ pub enum BundleKind {
     TypedResult(TypedResultBundle),
     Subagents(SubagentsBundle),
     Compaction(CompactionBundle),
+    Traces(TracesBundle),
     #[cfg(test)]
     Probe(testing::ProbeBundle),
 }
@@ -115,6 +120,7 @@ impl BundleKind {
                 *keep_recent_tokens,
                 *context_window,
             )),
+            BundleConfig::Traces => Self::Traces(TracesBundle),
         };
         Ok(bundle)
     }
@@ -130,6 +136,7 @@ impl BundleKind {
             Self::TypedResult(_) => "TypedResult".into(),
             Self::Subagents(_) => "Subagents".into(),
             Self::Compaction(_) => "Compaction".into(),
+            Self::Traces(_) => "Traces".into(),
             #[cfg(test)]
             Self::Probe(bundle) => bundle.name.clone(),
         }
@@ -153,6 +160,7 @@ impl Bundle for BundleKind {
             Self::TypedResult(bundle) => bundle.install(agent, session, installer),
             Self::Subagents(bundle) => bundle.install(agent, session, installer),
             Self::Compaction(bundle) => bundle.install(agent, session, installer),
+            Self::Traces(bundle) => bundle.install(agent, session, installer),
             #[cfg(test)]
             Self::Probe(bundle) => bundle.install(agent, session, installer),
         }
@@ -169,6 +177,7 @@ impl Bundle for BundleKind {
             Self::TypedResult(bundle) => bundle.cleanup().await,
             Self::Subagents(bundle) => bundle.cleanup().await,
             Self::Compaction(bundle) => bundle.cleanup().await,
+            Self::Traces(bundle) => bundle.cleanup().await,
             #[cfg(test)]
             Self::Probe(bundle) => bundle.cleanup().await,
         }
@@ -185,6 +194,7 @@ impl Bundle for BundleKind {
             Self::TypedResult(bundle) => bundle.cleanup_timeout(),
             Self::Subagents(bundle) => bundle.cleanup_timeout(),
             Self::Compaction(bundle) => bundle.cleanup_timeout(),
+            Self::Traces(bundle) => bundle.cleanup_timeout(),
             #[cfg(test)]
             Self::Probe(bundle) => bundle.cleanup_timeout(),
         }
@@ -203,7 +213,7 @@ pub enum HookStage {
 #[derive(Default)]
 pub struct Installer {
     tools: Vec<ToolKind>,
-    codemode_functions: Vec<CodeModeFunctionKind>,
+    codemode_functions: Vec<CodeModeEntry>,
     hooks: Hooks,
 }
 
@@ -225,10 +235,28 @@ impl Installer {
         Ok(())
     }
 
-    /// Register an internal function independently of model-facing tool names.
+    /// Register an internal function independently of model-facing tool names,
+    /// with its stub listed in the system prompt.
     pub fn add_codemode_function(
         &mut self,
         function: CodeModeFunctionKind,
+    ) -> Result<(), InstallError> {
+        self.register_codemode_function(function, CodeModeListing::SystemPrompt)
+    }
+
+    /// Register an internal function whose stub is returned only by `help`,
+    /// keeping rarely used functions out of the system prompt.
+    pub fn add_help_only_codemode_function(
+        &mut self,
+        function: CodeModeFunctionKind,
+    ) -> Result<(), InstallError> {
+        self.register_codemode_function(function, CodeModeListing::HelpOnly)
+    }
+
+    fn register_codemode_function(
+        &mut self,
+        function: CodeModeFunctionKind,
+        listing: CodeModeListing,
     ) -> Result<(), InstallError> {
         if let CodeModeFunctionKind::Tool(
             ToolKind::CodeMode(_)
@@ -247,14 +275,15 @@ impl Installer {
         if self
             .codemode_functions
             .iter()
-            .any(|existing| existing.definition().name == name)
+            .any(|existing| existing.function.definition().name == name)
         {
             return Err(InstallError::new(format!(
                 "duplicate codemode function name: {name}"
             )));
         }
 
-        self.codemode_functions.push(function);
+        self.codemode_functions
+            .push(CodeModeEntry { function, listing });
         Ok(())
     }
 
@@ -298,7 +327,7 @@ pub fn require_command_support(
 #[derive(Default)]
 pub struct InstalledComponents {
     pub(crate) tools: Arc<[ToolKind]>,
-    pub(crate) codemode_functions: Arc<[CodeModeFunctionKind]>,
+    pub(crate) codemode_functions: Arc<[CodeModeEntry]>,
     pub(crate) hooks: Hooks,
     bundles: Vec<BundleKind>,
 }

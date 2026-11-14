@@ -29,7 +29,7 @@ impl CodeMode {
     pub(crate) fn definition() -> ToolDefinition {
         ToolDefinition::for_type::<CodeModeArgs>(
             "codemode",
-            "Execute Python in a persistent sandboxed REPL. Use print() for output, await async functions, and call PRIOR_RESULTS() without await.",
+            "Execute Python in a persistent sandboxed REPL. Use print() for output, await async functions, and call prior_results() without await.",
             Some(false),
         )
     }
@@ -74,16 +74,16 @@ impl Tool for CodeMode {
                 "Runs a restricted Python subset (not full CPython) in a persistent REPL: variables, functions, and imports persist between calls. ",
                 "Python's own filesystem and network access is disabled; use the functions in <codemode_functions> for external work. ",
                 "globals(), dir(), vars(), and __import__() are unavailable.\n\n",
-                "Use print() for output; final expressions aren't displayed. Output over 12,000 characters is middle-truncated in what you see, but PRIOR_RESULTS returns it in full. ",
-                "Call those functions with keyword arguments, awaiting the async ones; they return text and raise RuntimeError on failure. ",
+                "Use print() for output; final expressions aren't displayed. Output over 12,000 characters is middle-truncated in what you see, but prior_results returns it in full. ",
+                "Call those functions with keyword arguments, awaiting the async ones; they return their stub's type (result objects print as the tool's text) and raise RuntimeError on failure. ",
                 "Use asyncio.gather for independent calls, and finish all awaits before the code ends.\n\n",
                 "Limits per call: 60s of Python execution (time spent inside functions doesn't count), 660s total, 64 MiB memory, and 16 MiB of saved REPL state. ",
                 "If the code raises, REPL changes made before the error are kept; after a timeout, cancellation, or limit error the REPL state is unchanged. ",
                 "Effects of functions, such as file writes or commands, are never rolled back."
             ).into()),
             rules: vec![concat!(
-                "When codemode output is truncated, read the rest with PRIOR_RESULTS instead of rerunning: slice, search, or compute a short excerpt before printing, ",
-                "e.g. print(PRIOR_RESULTS(-1)[6000:18000]). Never repeat side effects just to recover output."
+                "When codemode output is truncated, read the rest with prior_results instead of rerunning: slice, search, or compute a short excerpt before printing, ",
+                "e.g. print(prior_results(-1)[6000:18000]). Never repeat side effects just to recover output."
             ).into(), "If the codemode REPL gets into a bad state, call the reset_codemode tool (it is not a Python function). It clears Python variables only, not history or external effects.".into()],
         }
     }
@@ -128,7 +128,7 @@ mod tests {
             "persistent sandboxed REPL",
             "print() for output",
             "await async functions",
-            "PRIOR_RESULTS() without await",
+            "prior_results() without await",
         ] {
             assert!(description.contains(guidance), "missing: {guidance}");
         }
@@ -150,9 +150,9 @@ mod tests {
             "globals(), dir(), vars(), and __import__() are unavailable",
             "print() for output; final expressions aren't displayed",
             "middle-truncated in what you see",
-            "PRIOR_RESULTS returns it in full",
+            "prior_results returns it in full",
             "keyword arguments, awaiting the async ones",
-            "return text and raise RuntimeError",
+            "print as the tool's text) and raise RuntimeError",
             "asyncio.gather",
             "finish all awaits",
             "60s of Python execution",
@@ -174,7 +174,7 @@ mod tests {
         assert!(words <= 240, "codemode prompt grew to {words} words");
         assert!(!directions.contains("sleep"));
         assert!(!directions.contains("Supported stdlib imports"));
-        assert!(!directions.contains("await PRIOR_RESULTS"));
+        assert!(!directions.contains("await prior_results"));
         assert!(!directions.contains("Monty"));
         assert!(!directions.contains("checkpoint"));
     }
@@ -188,9 +188,9 @@ mod tests {
         assert_eq!(prompt.rules.len(), 2);
         let rule = &prompt.rules[0];
         for guidance in [
-            "When codemode output is truncated, read the rest with PRIOR_RESULTS",
+            "When codemode output is truncated, read the rest with prior_results",
             "slice, search, or compute a short excerpt before printing",
-            "print(PRIOR_RESULTS(-1)[6000:18000])",
+            "print(prior_results(-1)[6000:18000])",
             "Never repeat side effects",
         ] {
             assert!(rule.contains(guidance), "missing: {guidance}");
@@ -222,7 +222,7 @@ mod tests {
         let function = CodeModeFunctionKind::PriorResults(PriorResults);
         let definition = function.definition();
         let schema = definition.parameters.as_value();
-        assert_eq!(definition.name, "PRIOR_RESULTS");
+        assert_eq!(definition.name, "prior_results");
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["properties"]["index"]["type"], "integer");

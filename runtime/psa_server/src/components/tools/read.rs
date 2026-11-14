@@ -1,7 +1,7 @@
 //! Pi-compatible model-visible read output. Text is counted and streamed in two
 //! passes, retaining only a bounded selected prefix; images use Pi's default
 //! limits (there is no model-specific inputLimits capability in AgentContext).
-use super::{Tool, ToolOutput, ToolSystemPrompt, file_ops, typed_tool_execute};
+use super::{CodeModeResultType, Tool, ToolOutput, ToolSystemPrompt, file_ops, typed_tool_execute};
 use crate::{
     agents::agent_context::AgentContext, components::cancellation::Cancellation,
     probes::ProbeHandle, prompts,
@@ -10,7 +10,7 @@ use llm_api::api::{ContentBlock, ImageBlock, MediaSource, ToolDefinition};
 use psa_api::probes::{Command, Event, Stdio};
 use psa_shared::probe_transport::ProbeError;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -23,6 +23,27 @@ use unicode_normalization::UnicodeNormalization;
 
 #[path = "read_images.rs"]
 mod images;
+
+/// A selected range of a text file. str() gives the same text as the read tool.
+#[derive(Serialize, JsonSchema)]
+struct ReadResult {
+    path: String,
+    /// The selected lines, without the continuation notice.
+    content: String,
+    /// First line shown, 1-indexed.
+    start_line: u64,
+    /// Last line shown; start_line - 1 when nothing was shown.
+    end_line: u64,
+    total_lines: u64,
+    /// Pass as offset to continue; None at the end of the file.
+    next_offset: Option<u64>,
+}
+
+/// The read tool's text and the matching CodeMode fields.
+struct ReadPage {
+    text: String,
+    result: ReadResult,
+}
 
 const MAX_LINES: usize = 2000;
 const MAX_BYTES: usize = 50 * 1024;
@@ -109,11 +130,10 @@ impl Read {
             result = read_selection(probe, &path, &selection) => result,
         };
         match result {
-            Ok(preview) => ToolOutput::success(prompts::text(preview.format(
-                &arguments,
-                &selection,
-                scanned.lines,
-            ))),
+            Ok(preview) => {
+                let page = preview.format(&arguments, &selection, scanned.lines);
+                ToolOutput::success(prompts::text(page.text)).with_codemode_fields(&page.result)
+            }
             Err(error) => io_error(&error, &path),
         }
     }
@@ -137,6 +157,10 @@ impl Tool for Read {
 
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(5)
+    }
+
+    fn codemode_result_type(&self) -> Option<CodeModeResultType> {
+        Some(CodeModeResultType::for_type::<ReadResult>())
     }
 
     typed_tool_execute!(ReadArgs, execute_typed);
@@ -390,30 +414,46 @@ impl Preview {
         self.prefix.push_str(&text[..keep]);
     }
 
-    fn format(&self, args: &ReadArgs, selection: &Selection, total: usize) -> String {
+    fn format(&self, args: &ReadArgs, selection: &Selection, total: usize) -> ReadPage {
         let selected_lines = if self.bytes == 0 {
             0
         } else {
             (selection.end - selection.start).saturating_sub(usize::from(self.ends_newline))
         };
         let display = selection.start_number + 1.0;
+        let build_page = |text: String, content: String, end: f64, next: Option<f64>| ReadPage {
+            text,
+            result: ReadResult {
+                path: args.path.clone(),
+                content,
+                start_line: display as u64,
+                end_line: end.max(display - 1.0) as u64,
+                total_lines: total as u64,
+                next_offset: next.map(|line| line as u64),
+            },
+        };
+
         if selected_lines <= MAX_LINES && self.bytes <= MAX_BYTES {
             if let Some(end) = selection.user_end.filter(|end| *end < total as f64) {
-                return format!(
+                let text = format!(
                     "{}\n\n[{} more lines in file. Use offset={} to continue.]",
                     self.prefix,
                     total as f64 - end,
                     end + 1.0
                 );
+                return build_page(text, self.prefix.clone(), end, Some(end + 1.0));
             }
-            return self.prefix.clone();
+            let end = display + selected_lines as f64 - 1.0;
+            return build_page(self.prefix.clone(), self.prefix.clone(), end, None);
         }
         if self.first_line_bytes > MAX_BYTES {
-            return format!(
+            let text = format!(
                 "[Line {display} is {}, exceeds 50.0KB limit. Use bash: sed -n '{display}p' {} | head -c {MAX_BYTES}]",
                 format_size(self.first_line_bytes),
                 args.path
             );
+            let next = (display < total as f64).then_some(display + 1.0);
+            return build_page(text, String::new(), display - 1.0, next);
         }
 
         let mut kept = Vec::new();
@@ -431,11 +471,12 @@ impl Preview {
 
         let end = display + kept.len() as f64 - 1.0;
         let qualifier = if byte_limited { " (50.0KB limit)" } else { "" };
-        format!(
-            "{}\n\n[Showing lines {display}-{end} of {total}{qualifier}. Use offset={} to continue.]",
-            kept.join("\n"),
+        let content = kept.join("\n");
+        let text = format!(
+            "{content}\n\n[Showing lines {display}-{end} of {total}{qualifier}. Use offset={} to continue.]",
             end + 1.0
-        )
+        );
+        build_page(text, content, end, Some(end + 1.0))
     }
 }
 
@@ -599,7 +640,7 @@ mod tests {
             decoder.push(chunk, false, &mut consume);
         }
         decoder.push(&[], true, &mut consume);
-        Ok(preview.format(&args, &selection, total))
+        Ok(preview.format(&args, &selection, total).text)
     }
 
     #[test]

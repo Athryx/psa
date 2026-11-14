@@ -4,10 +4,14 @@
 //! runtime-owned handles. The default adapter delegates to the tool's existing
 //! typed argument bridge and preserves its cancellation behavior.
 
+pub(crate) mod help;
 pub(crate) mod prior_results;
 pub(crate) mod python_stub;
+pub(crate) mod result_classes;
 
+use help::Help;
 use prior_results::PriorResults;
+use python_stub::PythonStub;
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
@@ -18,7 +22,7 @@ use crate::{
     agents::agent_context::AgentContext,
     components::{
         cancellation::Cancellation,
-        tools::{Tool, ToolKind, ToolOutput},
+        tools::{CodeModeResultType, Tool, ToolKind, ToolOutput},
     },
 };
 
@@ -113,10 +117,63 @@ pub trait CodeModeFunction: Send + Sync {
     ) -> BoxFuture<'a, CodeModeFunctionResult>;
 }
 
+/// Where the model learns a function's signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeModeListing {
+    /// Rendered as a stub in the system prompt's codemode function section.
+    SystemPrompt,
+    /// Named in the system prompt; its stub is returned only by `help`.
+    HelpOnly,
+}
+
+/// An installed function together with how it is documented to the model.
+pub struct CodeModeEntry {
+    pub function: CodeModeFunctionKind,
+    pub listing: CodeModeListing,
+}
+
 /// A distinct registration from a model-facing tool; both may share bundle state.
 pub enum CodeModeFunctionKind {
     Tool(ToolKind),
     PriorResults(PriorResults),
+    Help(Help),
+}
+
+impl CodeModeFunctionKind {
+    /// Tool adapters return Python futures; built-in lookups return plain values.
+    pub fn is_async(&self) -> bool {
+        matches!(self, Self::Tool(_))
+    }
+
+    /// The class this function returns instead of text, if any.
+    pub fn result_type(&self) -> Option<CodeModeResultType> {
+        match self {
+            Self::Tool(tool) => tool.codemode_result_type(),
+            Self::PriorResults(_) | Self::Help(_) => None,
+        }
+    }
+
+    /// The Python stub shown to the model, identical in the prompt and `help`,
+    /// including the fields of its result class.
+    pub(crate) fn python_stub(&self) -> PythonStub {
+        let definition = self.definition();
+        let result_type = self.result_type();
+        let returns = result_type.as_ref().map_or("str", |result| &result.name);
+        let mut stub = python_stub::render_python_stub(
+            &definition.name,
+            &definition.description,
+            definition.parameters.as_value(),
+            self.is_async(),
+            returns,
+        );
+        if let Some(result) = &result_type {
+            stub.classes.extend(python_stub::render_result_class(
+                &result.name,
+                result.schema.as_value(),
+            ));
+        }
+        stub
+    }
 }
 
 impl CodeModeFunction for CodeModeFunctionKind {
@@ -131,6 +188,7 @@ impl CodeModeFunction for CodeModeFunctionKind {
                 }
             }
             Self::PriorResults(function) => function.definition(),
+            Self::Help(function) => function.definition(),
         }
     }
 
@@ -138,6 +196,7 @@ impl CodeModeFunction for CodeModeFunctionKind {
         match self {
             Self::Tool(tool) => tool.cancellation_timeout(),
             Self::PriorResults(function) => function.cancellation_timeout(),
+            Self::Help(function) => function.cancellation_timeout(),
         }
     }
 
@@ -155,11 +214,15 @@ impl CodeModeFunction for CodeModeFunctionKind {
                 Self::PriorResults(function) => {
                     function.execute(arguments, context, cancellation).await
                 }
+                Self::Help(function) => function.execute(arguments, context, cancellation).await,
             }
         })
     }
 }
 
+/// Text for plain tools. A tool with result fields yields an object holding the
+/// fields plus its text, even when it flagged an error: the fields describe
+/// the outcome, and the prelude class wraps the object.
 fn adapt_tool_output(output: ToolOutput) -> CodeModeFunctionResult {
     if !output.private_events.is_empty() {
         return Err(CodeModeError::runtime(
@@ -179,11 +242,29 @@ fn adapt_tool_output(output: ToolOutput) -> CodeModeFunctionResult {
         }
     }
     let text = parts.join("\n");
+    if let Some(mut fields) = output.codemode_fields {
+        fields.insert(result_classes::TEXT_FIELD.into(), Value::String(text));
+        return Ok(Value::Object(fields));
+    }
     if output.error {
         Err(CodeModeError::runtime(text))
     } else {
         Ok(Value::String(text))
     }
+}
+
+/// Test fixture: a registry with every function listed in the system prompt.
+#[cfg(test)]
+pub(crate) fn listed_entries(
+    functions: impl IntoIterator<Item = CodeModeFunctionKind>,
+) -> std::sync::Arc<[CodeModeEntry]> {
+    functions
+        .into_iter()
+        .map(|function| CodeModeEntry {
+            function,
+            listing: CodeModeListing::SystemPrompt,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -208,6 +289,32 @@ mod tests {
         assert_eq!(definition.description, tool.description);
         assert_eq!(definition.parameters, tool.parameters);
         assert_eq!(function.cancellation_timeout(), Noop.cancellation_timeout());
+    }
+
+    #[test]
+    fn result_types_name_their_class_and_show_only_fields() {
+        let function = CodeModeFunctionKind::Tool(ToolKind::Read(crate::components::tools::Read));
+        let text = help::format_stub(function.python_stub());
+        println!("{text}");
+        assert!(text.contains("async def read(*, path: str"));
+        assert!(text.contains("-> ReadResult:"));
+        assert!(text.starts_with("class ReadResult:\n    \"\"\"A selected range"));
+        assert!(text.contains("    next_offset: int | None  # Pass as offset to continue"));
+        assert!(!text.contains("__str__"));
+        assert!(!text.contains("_text"));
+
+        let noop = CodeModeFunctionKind::Tool(ToolKind::Noop(Noop));
+        assert!(noop.python_stub().function.contains("-> str:"));
+    }
+
+    #[test]
+    fn structured_outputs_keep_fields_and_text_even_when_flagged_as_errors() {
+        let output = ToolOutput::error(prompts::text("failed"))
+            .with_codemode_fields(&serde_json::json!({"exit_code": 3}));
+        assert_eq!(
+            adapt_tool_output(output).unwrap(),
+            serde_json::json!({"exit_code": 3, "_text": "failed"})
+        );
     }
 
     #[test]

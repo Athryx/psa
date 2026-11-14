@@ -543,15 +543,16 @@ async fn codemode_registry_rejects_recursive_and_completion_tools() {
             .unwrap_err();
         assert!(error.message.contains("codemode cannot expose"));
     }
-    assert_eq!(installer.codemode_functions.len(), 1);
-    assert_eq!(
-        installer.codemode_functions[0].definition().name,
-        "PRIOR_RESULTS"
-    );
+    let names: Vec<_> = installer
+        .codemode_functions
+        .iter()
+        .map(|entry| entry.function.definition().name)
+        .collect();
+    assert_eq!(names, ["prior_results", "help"]);
     installer
         .add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::Read(Read)))
         .unwrap();
-    assert_eq!(installer.codemode_functions.len(), 2);
+    assert_eq!(installer.codemode_functions.len(), 3);
 
     drop(installer);
     result.cleanup().await.unwrap();

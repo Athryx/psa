@@ -179,7 +179,7 @@ async fn prior_results_pages_mixed_history_with_positive_negative_and_frozen_ind
         2000,
         "current-call",
         "codemode",
-        json!({"code": "PRIOR_RESULTS()"}),
+        json!({"code": "prior_results()"}),
     );
     state.persist_events(&events).await.unwrap();
     let probe = fixture.probes.handle(state.session.probe_id).await.unwrap();
@@ -480,7 +480,9 @@ async fn real_worker_prior_results_is_synchronous_archived_and_restart_safe() {
     let mut state = fixture
         .state(vec![ToolKind::CodeMode(CodeMode::new(engine.clone()))], &[])
         .await;
-    state.codemode_functions = vec![CodeModeFunctionKind::PriorResults(PriorResults)].into();
+    state.codemode_functions = crate::components::codemode_functions::listed_entries([
+        CodeModeFunctionKind::PriorResults(PriorResults),
+    ]);
     let mut archive = Vec::new();
     for index in 0..20 {
         let mut text = format!("archive-{index:02}:");
@@ -498,7 +500,7 @@ async fn real_worker_prior_results_is_synchronous_archived_and_restart_safe() {
         &fixture,
         state,
         "archive-size",
-        "f = PRIOR_RESULTS\nprint(len(PRIOR_RESULTS()))\nprint(len(PRIOR_RESULTS(-1)))\nprint(len(PRIOR_RESULTS(index=0)))",
+        "f = prior_results\nprint(len(prior_results()))\nprint(len(prior_results(-1)))\nprint(len(prior_results(index=0)))",
     ).await;
     let (error, text) = tool_result(&fixture, &state, "archive-size").await;
     assert!(!error, "{text}");
@@ -540,7 +542,7 @@ async fn real_worker_prior_results_is_synchronous_archived_and_restart_safe() {
         &fixture,
         state,
         "retrieve-failure",
-        "print(f() == PRIOR_RESULTS(-1))\nprint('failing output' in PRIOR_RESULTS())\nprint('archive failure' in PRIOR_RESULTS())",
+        "print(f() == prior_results(-1))\nprint('failing output' in prior_results())\nprint('archive failure' in prior_results())",
     ).await;
     let (error, text) = tool_result(&fixture, &state, "retrieve-failure").await;
     assert!(!error, "{text}");
@@ -553,7 +555,7 @@ async fn real_worker_prior_results_is_synchronous_archived_and_restart_safe() {
         &fixture,
         state,
         "after-restart",
-        "print(f(0)[:11])\nprint(f() == PRIOR_RESULTS())",
+        "print(f(0)[:11])\nprint(f() == prior_results())",
     )
     .await;
     let (error, text) = tool_result(&fixture, &state, "after-restart").await;
@@ -566,7 +568,7 @@ async fn real_worker_prior_results_is_synchronous_archived_and_restart_safe() {
         &fixture,
         state,
         "exact-archive-text",
-        "saved = PRIOR_RESULTS()\nprint(saved)",
+        "saved = prior_results()\nprint(saved)",
     )
     .await;
     let (error, text) = tool_result(&fixture, &state, "exact-archive-text").await;
@@ -577,7 +579,7 @@ async fn real_worker_prior_results_is_synchronous_archived_and_restart_safe() {
         &fixture,
         state,
         "malformed-archive-calls",
-        "assert saved.startswith('first line')\nfor index in ['bad', None, True, 1.5]:\n    try:\n        PRIOR_RESULTS(index)\n    except TypeError:\n        print('caught type')\n    else:\n        raise ValueError('bad index accepted')\ntry:\n    PRIOR_RESULTS(0, 1)\nexcept TypeError:\n    print('caught extra positional')\ntry:\n    PRIOR_RESULTS(0, index=1)\nexcept TypeError:\n    print('caught duplicate index')\ntry:\n    PRIOR_RESULTS(unexpected=True)\nexcept TypeError:\n    print('caught keyword')\ntry:\n    PRIOR_RESULTS(999999)\nexcept IndexError:\n    print('caught bounds')\ntry:\n    not_a_real_function()\nexcept NameError:\n    print('caught unknown')",
+        "assert saved.startswith('first line')\nfor index in ['bad', None, True, 1.5]:\n    try:\n        prior_results(index)\n    except TypeError:\n        print('caught type')\n    else:\n        raise ValueError('bad index accepted')\ntry:\n    prior_results(0, 1)\nexcept TypeError:\n    print('caught extra positional')\ntry:\n    prior_results(0, index=1)\nexcept TypeError:\n    print('caught duplicate index')\ntry:\n    prior_results(unexpected=True)\nexcept TypeError:\n    print('caught keyword')\ntry:\n    prior_results(999999)\nexcept IndexError:\n    print('caught bounds')\ntry:\n    not_a_real_function()\nexcept NameError:\n    print('caught unknown')",
     ).await;
     let (error, text) = tool_result(&fixture, &state, "malformed-archive-calls").await;
     assert!(!error, "{text}");

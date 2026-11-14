@@ -287,7 +287,7 @@ separate function configuration: participating installed bundles register their
 functions automatically. `ToolDefinitions` publishes the available functions,
 their calling conventions, and their generated argument schemas to the agent.
 Tool-backed functions are async and are called with `await` and keyword arguments;
-the built-in `PRIOR_RESULTS` function is synchronous and must not be awaited.
+the built-in `prior_results` function is synchronous and must not be awaited.
 CodeMode calls are sequential barriers around other model-issued tool calls;
 async functions within a script can still run in parallel with `asyncio.gather`.
 For example:
@@ -297,8 +297,8 @@ contents = await read(path="README.md")
 print(contents)
 ```
 
-CodeMode installs the read-only `PRIOR_RESULTS` function by default. Call
-`PRIOR_RESULTS()`, `PRIOR_RESULTS(index=-1)`, or `PRIOR_RESULTS(-1)` **without
+CodeMode installs the read-only `prior_results` function by default. Call
+`prior_results()`, `prior_results(index=-1)`, or `prior_results(-1)` **without
 `await`** to get the exact text string of one previous committed `codemode`
 invocation result, including errors and cancellations. Index `0` selects the
 oldest result, `-1` the latest, and other negative indices count from the end.
@@ -313,9 +313,9 @@ normal checkpoint data and can grow the checkpoint, so prefer printing or
 processing inline instead of saving each result:
 
 ```python
-print(PRIOR_RESULTS())       # Latest committed codemode result, no await.
-print(PRIOR_RESULTS(0))      # Oldest visible codemode result.
-print(len(PRIOR_RESULTS(-1)))  # Process inline without retaining the string.
+print(prior_results())       # Latest committed codemode result, no await.
+print(prior_results(0))      # Oldest visible codemode result.
+print(len(prior_results(-1)))  # Process inline without retaining the string.
 ```
 
 This returns the stored tool-result text, with its original output bounds and
@@ -391,7 +391,7 @@ Reset appends a fresh, valid private `CodeModeSnapshot`,
 clearing Python globals, imports, and functions; the next `codemode` call starts
 fresh with the current policy (including the 60-second interpreter feed limit
 and no separate sleep cap). The committed reset survives server restart.
-Older checkpoints and tool results are preserved, and `PRIOR_RESULTS` history
+Older checkpoints and tool results are preserved, and `prior_results` history
 remains available with the same visible-fork cutoffs. A historical fork before
 the reset still sees its earlier checkpoint. If reset creation fails or is
 cancelled, no new checkpoint is committed and the previous checkpoint remains.

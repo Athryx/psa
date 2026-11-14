@@ -1,4 +1,7 @@
-use super::{BashError, Cancellation, CollectedOutput, ProbeHandle, log};
+use super::{
+    BashError, Cancellation, CollectedOutput, ProbeHandle, log,
+    state::{FinishedSession, Removal},
+};
 use crate::components::tools::bash::output::OutputAccumulator;
 use actors::{Mailbox, Reply, UnboundedMailboxHandle};
 use futures_util::{FutureExt, future::BoxFuture};
@@ -29,6 +32,10 @@ impl Collect {
             initial,
             started: Instant::now(),
         }
+    }
+
+    pub fn has_stdin(&self) -> bool {
+        self.stdin.as_ref().is_some_and(|stdin| !stdin.is_empty())
     }
 }
 pub(super) enum Message {
@@ -64,8 +71,11 @@ struct Session {
     collector: Option<Collector>,
     closing: Option<Closing>,
     background: bool,
+    /// close_bash killed the process, rather than finding it already ended.
+    stopped: bool,
+    log_deleted: bool,
     writer: Option<BoxFuture<'static, Result<(), BashError>>>,
-    registry: UnboundedMailboxHandle<(String, u64)>,
+    registry: UnboundedMailboxHandle<Removal>,
     generation: u64,
 }
 
@@ -78,7 +88,7 @@ pub(super) async fn start(
     mut collect: Collect,
     reply: Response,
     mailbox: Mailbox<Message>,
-    registry: UnboundedMailboxHandle<(String, u64)>,
+    registry: UnboundedMailboxHandle<Removal>,
 ) {
     let outcome = initialize(&probe, command, &mut collect).await;
     match outcome {
@@ -99,6 +109,8 @@ pub(super) async fn start(
                 collector: Some(Collector { collect, reply }),
                 closing: None,
                 background: false,
+                stopped: false,
+                log_deleted: false,
                 writer: None,
                 registry: registry.clone(),
                 generation,
@@ -106,11 +118,19 @@ pub(super) async fn start(
             session.run(mailbox).await;
         }
         Err(error) => {
-            let _ = registry.send((name.clone(), generation));
+            let _ = registry.send(Removal {
+                name: name.clone(),
+                generation,
+                record: None,
+            });
             let _ = reply.send(Err(error));
         }
     }
-    let _ = registry.send((name, generation));
+    let _ = registry.send(Removal {
+        name,
+        generation,
+        record: None,
+    });
 }
 
 async fn initialize(
@@ -313,6 +333,7 @@ impl Session {
             let _ = collector.reply.send(Err(BashError::Interrupted));
         }
         self.writer = None;
+        self.stopped = self.ended.is_none() && matches!(reply, ClosingReply::Tool(_));
         self.closing = Some(Closing {
             reply,
             deadline: Instant::now() + Duration::from_secs(3),
@@ -333,7 +354,7 @@ impl Session {
         accumulator.finish();
         CollectedOutput {
             name: self.name.clone(),
-            log_path: self.log_path.clone(),
+            log_path: (!self.log_deleted).then(|| self.log_path.clone()),
             output: accumulator.take_snapshot(),
             elapsed: self
                 .ended
@@ -343,6 +364,8 @@ impl Session {
             running: self.ended.is_none(),
             exit_code: self.exit_code,
             error: self.error.clone(),
+            stopped: self.stopped,
+            already_finished: false,
         }
     }
 
@@ -350,12 +373,13 @@ impl Session {
         if let Some(closing) = self.closing.take() {
             match closing.reply {
                 ClosingReply::Interrupted(reply) => {
-                    log::delete_best_effort(&self.probe, &self.log_path).await;
+                    self.delete_log().await;
                     self.notify_finished();
                     let _ = reply.send(Err(BashError::Interrupted));
                 }
                 ClosingReply::Tool(reply) => {
-                    let output = self.snapshot(Duration::ZERO);
+                    let mut output = self.snapshot(Duration::ZERO);
+                    output.already_finished = !output.stopped;
                     self.notify_finished();
                     let _ = reply.send(Ok(output));
                 }
@@ -373,7 +397,7 @@ impl Session {
         let Some(collector) = self.collector.take() else {
             return;
         };
-        let output = self.snapshot(collector.collect.started.elapsed());
+        let mut output = self.snapshot(collector.collect.started.elapsed());
         if output.running {
             self.background = true;
         }
@@ -383,7 +407,8 @@ impl Session {
             && output.exit_code == Some(0)
             && !output.was_truncated()
         {
-            log::delete_best_effort(&self.probe, &self.log_path).await;
+            self.delete_log().await;
+            output.log_path = None;
         }
         if !output.running {
             self.notify_finished();
@@ -391,8 +416,26 @@ impl Session {
         let _ = collector.reply.send(Ok(output));
     }
 
+    async fn delete_log(&mut self) {
+        log::delete_best_effort(&self.probe, &self.log_path).await;
+        self.log_deleted = true;
+    }
+
+    /// Unregister the session, leaving a record so later polls of its name
+    /// report that it finished instead of an unknown session.
     fn notify_finished(&self) {
-        let _ = self.registry.send((self.name.clone(), self.generation));
+        let ended = self.ended.unwrap_or_else(Instant::now);
+        let record = FinishedSession {
+            exit_code: self.exit_code,
+            error: self.error.clone(),
+            elapsed: ended.duration_since(self.started),
+            log_path: (!self.log_deleted).then(|| self.log_path.clone()),
+        };
+        let _ = self.registry.send(Removal {
+            name: self.name.clone(),
+            generation: self.generation,
+            record: Some(record),
+        });
     }
 }
 

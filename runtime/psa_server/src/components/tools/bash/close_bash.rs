@@ -1,6 +1,6 @@
 use super::{
-    super::{Tool, ToolOutput, ToolSystemPrompt, typed_tool_execute},
-    bash::{ResultMode, backend_error, format_result},
+    super::{CodeModeResultType, Tool, ToolOutput, ToolSystemPrompt, typed_tool_execute},
+    bash::{ResultMode, backend_error, bash_result_type, format_result},
 };
 use crate::{
     agents::agent_context::AgentContext,
@@ -63,6 +63,10 @@ impl Tool for CloseBash {
 
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(10)
+    }
+
+    fn codemode_result_type(&self) -> Option<CodeModeResultType> {
+        Some(bash_result_type())
     }
 
     typed_tool_execute!(CloseBashArgs, execute_typed);

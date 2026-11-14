@@ -12,7 +12,7 @@ use crate::{
     components::{
         bundles::InstalledComponents,
         cancellation::wait_for_interrupt,
-        codemode_functions::CodeModeFunctionKind,
+        codemode_functions::CodeModeEntry,
         hooks::{CommandOutcome, run_command_hooks, run_hooks},
         tools::{self, ToolKind, failed_tool_result},
     },
@@ -54,7 +54,7 @@ pub struct AgentManagerState {
     session: Session,
     definition: psa_api::AgentDefinition,
     tools: Arc<[ToolKind]>,
-    codemode_functions: Arc<[CodeModeFunctionKind]>,
+    codemode_functions: Arc<[CodeModeEntry]>,
     components: Option<Arc<Mutex<InstalledComponents>>>,
     publication: Publication,
     pending_persistence: Option<PendingPersistence>,
@@ -87,7 +87,7 @@ impl AgentManagerState {
         &self.tools
     }
 
-    pub fn codemode_functions(&self) -> &[CodeModeFunctionKind] {
+    pub fn codemode_functions(&self) -> &[CodeModeEntry] {
         &self.codemode_functions
     }
 

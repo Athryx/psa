@@ -12,6 +12,7 @@ pub mod prompts;
 pub mod providers;
 pub mod server;
 pub mod sessions;
+pub mod trace_export;
 
 pub mod auth;
 pub mod probes;

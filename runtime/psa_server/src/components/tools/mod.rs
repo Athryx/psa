@@ -18,8 +18,10 @@ mod ask_question;
 pub(crate) mod bash;
 pub(crate) mod codemode;
 mod edit;
+mod export_trace;
 mod file_ops;
 pub(crate) mod goal;
+mod list_sessions;
 mod noop;
 mod read;
 mod record_result;
@@ -31,7 +33,9 @@ pub use ask_question::AskQuestion;
 pub use bash::{Bash, CloseBash, InteractBash};
 pub use codemode::CodeMode;
 pub use edit::Edit;
+pub use export_trace::ExportTrace;
 pub use goal::{SetGoal, SetGoalStatus};
+pub use list_sessions::ListSessions;
 pub use noop::Noop;
 pub use read::Read;
 pub use record_result::RecordResult;
@@ -88,10 +92,32 @@ pub struct ToolSystemPrompt {
     pub rules: Vec<String>,
 }
 
+/// The Python class a tool's CodeMode result is exposed as, declared statically
+/// so stubs can name it before the tool runs. Fields come from the schema;
+/// `str()` of an instance is the tool's text output.
+#[derive(Debug, Clone)]
+pub struct CodeModeResultType {
+    pub name: String,
+    pub schema: llm_api::api::ToolSchema,
+}
+
+impl CodeModeResultType {
+    pub fn for_type<T: schemars::JsonSchema>() -> Self {
+        Self {
+            name: T::schema_name().into_owned(),
+            schema: llm_api::api::ToolSchema::for_type::<T>(),
+        }
+    }
+}
+
 /// A model-facing tool response. `error` does not control agent execution.
 pub struct ToolOutput {
     pub content: ToolResult,
     pub error: bool,
+    /// Fields of the tool's CodeMode result object, matching its declared
+    /// [`CodeModeResultType`]. Native tool calls ignore them. When present,
+    /// CodeMode returns the object even if `error` is set.
+    pub(crate) codemode_fields: Option<serde_json::Map<String, serde_json::Value>>,
     /// Private events committed atomically with this tool result.
     pub(crate) private_events: Vec<crate::db::PrivateEvent>,
     /// Agent message this call delivered; client-facing only.
@@ -103,6 +129,7 @@ impl ToolOutput {
         Self {
             content,
             error: false,
+            codemode_fields: None,
             private_events: Vec::new(),
             delivery: None,
         }
@@ -112,9 +139,19 @@ impl ToolOutput {
         Self {
             content,
             error: true,
+            codemode_fields: None,
             private_events: Vec::new(),
             delivery: None,
         }
+    }
+
+    /// Attach the CodeMode result fields; `fields` must serialize as an object.
+    pub fn with_codemode_fields(mut self, fields: &impl serde::Serialize) -> Self {
+        match serde_json::to_value(fields) {
+            Ok(serde_json::Value::Object(map)) => self.codemode_fields = Some(map),
+            _ => tracing::warn!("codemode result fields did not serialize as an object"),
+        }
+        self
     }
 }
 
@@ -139,6 +176,8 @@ pub fn tool_definition(id: ToolId) -> Option<ToolDefinition> {
         ToolId::SendMessage => SendMessage::definition(),
         ToolId::WaitMessage => WaitMessage::definition(),
         ToolId::ListAgents => ListAgents::definition(),
+        ToolId::ExportTrace => ExportTrace::definition(),
+        ToolId::ListSessions => ListSessions::definition(),
     })
 }
 
@@ -252,6 +291,8 @@ pub enum ToolKind {
     SendMessage(SendMessage),
     WaitMessage(WaitMessage),
     ListAgents(ListAgents),
+    ExportTrace(ExportTrace),
+    ListSessions(ListSessions),
     #[cfg(test)]
     BundleProbe(crate::components::bundles::testing::SharedTool),
     #[cfg(test)]
@@ -278,6 +319,8 @@ impl ToolKind {
             Self::SendMessage(_) => ToolId::SendMessage,
             Self::WaitMessage(_) => ToolId::WaitMessage,
             Self::ListAgents(_) => ToolId::ListAgents,
+            Self::ExportTrace(_) => ToolId::ExportTrace,
+            Self::ListSessions(_) => ToolId::ListSessions,
             #[cfg(test)]
             Self::BundleProbe(tool) => tool.id,
             #[cfg(test)]
@@ -304,6 +347,8 @@ impl ToolKind {
             Self::SendMessage(tool) => tool.tool_definition(),
             Self::WaitMessage(tool) => tool.tool_definition(),
             Self::ListAgents(tool) => tool.tool_definition(),
+            Self::ExportTrace(tool) => tool.tool_definition(),
+            Self::ListSessions(tool) => tool.tool_definition(),
             #[cfg(test)]
             Self::BundleProbe(tool) => tool.tool_definition(),
             #[cfg(test)]
@@ -336,6 +381,8 @@ impl Tool for ToolKind {
             Self::SendMessage(tool) => tool.system_prompt(),
             Self::WaitMessage(tool) => tool.system_prompt(),
             Self::ListAgents(tool) => tool.system_prompt(),
+            Self::ExportTrace(tool) => tool.system_prompt(),
+            Self::ListSessions(tool) => tool.system_prompt(),
             #[cfg(test)]
             Self::BundleProbe(tool) => tool.system_prompt(),
             #[cfg(test)]
@@ -362,6 +409,8 @@ impl Tool for ToolKind {
             Self::SendMessage(tool) => tool.execution_mode(),
             Self::WaitMessage(tool) => tool.execution_mode(),
             Self::ListAgents(tool) => tool.execution_mode(),
+            Self::ExportTrace(tool) => tool.execution_mode(),
+            Self::ListSessions(tool) => tool.execution_mode(),
             #[cfg(test)]
             Self::BundleProbe(tool) => tool.execution_mode(),
             #[cfg(test)]
@@ -388,10 +437,22 @@ impl Tool for ToolKind {
             Self::SendMessage(tool) => tool.cancellation_timeout(),
             Self::WaitMessage(tool) => tool.cancellation_timeout(),
             Self::ListAgents(tool) => tool.cancellation_timeout(),
+            Self::ExportTrace(tool) => tool.cancellation_timeout(),
+            Self::ListSessions(tool) => tool.cancellation_timeout(),
             #[cfg(test)]
             Self::BundleProbe(tool) => tool.cancellation_timeout(),
             #[cfg(test)]
             Self::ExecutionProbe(tool) => tool.cancellation_timeout(),
+        }
+    }
+
+    fn codemode_result_type(&self) -> Option<CodeModeResultType> {
+        match self {
+            Self::Read(tool) => tool.codemode_result_type(),
+            Self::Bash(tool) => tool.codemode_result_type(),
+            Self::InteractBash(tool) => tool.codemode_result_type(),
+            Self::CloseBash(tool) => tool.codemode_result_type(),
+            _ => None,
         }
     }
 
@@ -419,6 +480,8 @@ impl Tool for ToolKind {
             Self::SendMessage(tool) => tool.execute(arguments, context, cancellation).await,
             Self::WaitMessage(tool) => tool.execute(arguments, context, cancellation).await,
             Self::ListAgents(tool) => tool.execute(arguments, context, cancellation).await,
+            Self::ExportTrace(tool) => tool.execute(arguments, context, cancellation).await,
+            Self::ListSessions(tool) => tool.execute(arguments, context, cancellation).await,
             #[cfg(test)]
             Self::BundleProbe(tool) => tool.execute(arguments, context, cancellation).await,
             #[cfg(test)]
@@ -442,6 +505,12 @@ pub trait Tool: Send + Sync {
     }
 
     fn cancellation_timeout(&self) -> Duration;
+
+    /// The class CodeMode returns for this tool; `None` returns its text.
+    fn codemode_result_type(&self) -> Option<CodeModeResultType> {
+        None
+    }
+
     fn execute(
         &self,
         arguments: serde_json::Value,

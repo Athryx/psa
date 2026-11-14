@@ -17,6 +17,7 @@ pub(crate) fn render_python_stub(
     description: &str,
     parameters: &Value,
     is_async: bool,
+    returns: &str,
 ) -> PythonStub {
     let mut renderer = Renderer {
         defs: parameters.get("$defs").and_then(Value::as_object),
@@ -52,9 +53,9 @@ pub(crate) fn render_python_stub(
 
     let prefix = if is_async { "async def" } else { "def" };
     let signature = if arguments.is_empty() {
-        format!("{prefix} {name}() -> str:")
+        format!("{prefix} {name}() -> {returns}:")
     } else {
-        format!("{prefix} {name}(*, {}) -> str:", arguments.join(", "))
+        format!("{prefix} {name}(*, {}) -> {returns}:", arguments.join(", "))
     };
 
     let mut docstring: Vec<String> = description.trim().lines().map(str::to_owned).collect();
@@ -75,6 +76,36 @@ pub(crate) fn render_python_stub(
         classes: renderer.classes,
         function: format!("{signature}\n    \"\"\"\n{body}\n    \"\"\""),
     }
+}
+
+/// Render a result class as its documented fields only; the methods that make
+/// `str()` match the tool's text are an implementation detail.
+pub(crate) fn render_result_class(name: &str, schema: &Value) -> BTreeSet<String> {
+    let mut renderer = Renderer {
+        defs: schema.get("$defs").and_then(Value::as_object),
+        classes: BTreeSet::new(),
+    };
+    let properties = schema.get("properties").and_then(Value::as_object);
+
+    let mut lines = vec![format!("class {name}:")];
+    if let Some(description) = schema.get("description").and_then(Value::as_str) {
+        lines.push(format!(
+            "    \"\"\"{}\"\"\"",
+            escape_docstring(&single_line(description))
+        ));
+    }
+    for (field, field_schema) in properties.into_iter().flatten() {
+        let annotation = renderer.python_type(field_schema);
+        let comment = field_schema
+            .get("description")
+            .and_then(Value::as_str)
+            .map(|text| format!("  # {}", single_line(text)))
+            .unwrap_or_default();
+        lines.push(format!("    {field}: {annotation}{comment}"));
+    }
+
+    renderer.classes.insert(lines.join("\n"));
+    renderer.classes
 }
 
 struct Renderer<'a> {
@@ -228,6 +259,7 @@ mod tests {
                 "required": ["path"]
             }),
             true,
+            "str",
         );
         assert_eq!(
             stub.function,
@@ -266,6 +298,7 @@ mod tests {
                 "required": ["edits", "mode"]
             }),
             false,
+            "str",
         );
         assert!(stub.function.starts_with(
             "def edit(*, edits: list[Replacement], mode: Literal[\"a\", \"b\"], flag: bool | None = None) -> str:"
@@ -285,6 +318,7 @@ mod tests {
             "Say \"\"\"hi\"\"\".",
             &json!({"type": "object"}),
             true,
+            "str",
         );
         assert!(stub.function.starts_with("async def noop() -> str:"));
         assert!(!stub.function.contains("Say \"\"\""));

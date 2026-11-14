@@ -119,6 +119,8 @@ pub enum BundleId {
     TypedResult,
     /// Installs automatic context compaction and the `Compact` command.
     Compaction,
+    /// Installs session listing and trace export tools.
+    Traces,
 }
 
 /// Model policy of an agent definition version.
@@ -287,6 +289,10 @@ pub enum ToolId {
     ListAgents,
     /// Records a structured result validated against the installed result schema.
     RecordResult,
+    /// Exports a session as a harness-neutral trace directory on the probe.
+    ExportTrace,
+    /// Lists psa sessions.
+    ListSessions,
 }
 
 /// Content blocks returned by a native tool.

@@ -76,7 +76,7 @@ async fn registry_follows_bundle_installation_and_cleanup() {
     let names: Vec<_> = components
         .codemode_functions
         .iter()
-        .map(|f| f.definition().name)
+        .map(|f| f.function.definition().name)
         .collect();
     assert_eq!(
         names,
@@ -86,7 +86,8 @@ async fn registry_follows_bundle_installation_and_cleanup() {
             "interact_bash",
             "close_bash",
             "noop",
-            "PRIOR_RESULTS"
+            "prior_results",
+            "help"
         ]
     );
     components.cleanup().await.unwrap();
@@ -109,7 +110,7 @@ async fn writable_files_and_interactive_question_are_installed() {
     let names: Vec<_> = components
         .codemode_functions
         .iter()
-        .map(|f| f.definition().name)
+        .map(|f| f.function.definition().name)
         .collect();
     assert_eq!(names, ["read", "edit", "write", "ask_question"]);
     components.cleanup().await.unwrap();

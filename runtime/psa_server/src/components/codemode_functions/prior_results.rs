@@ -106,7 +106,7 @@ impl PriorResults {
 impl CodeModeFunction for PriorResults {
     fn definition(&self) -> CodeModeFunctionDefinition {
         CodeModeFunctionDefinition {
-            name: "PRIOR_RESULTS".into(),
+            name: "prior_results".into(),
             description: "Return the full text output of an earlier codemode call, including errors and any part truncated from what you were shown (saved up to 2M characters). -1 is the latest, 0 the oldest. Not async; do not await.".into(),
             parameters: ToolSchema::for_type::<PriorResultsArgs>(),
         }
@@ -191,7 +191,7 @@ async fn load_event_page(
 fn index_error(index: i64) -> CodeModeError {
     CodeModeError {
         exception_type: "IndexError".into(),
-        message: format!("PRIOR_RESULTS index {index} is out of range"),
+        message: format!("prior_results index {index} is out of range"),
     }
 }
 
@@ -220,7 +220,7 @@ mod tests {
     fn definition_uses_closed_defaulted_integer_index() {
         let definition = PriorResults.definition();
         let schema = serde_json::to_value(definition.parameters).unwrap();
-        assert_eq!(definition.name, "PRIOR_RESULTS");
+        assert_eq!(definition.name, "prior_results");
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["properties"]["index"]["type"], "integer");

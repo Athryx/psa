@@ -42,8 +42,7 @@ pub(crate) struct InvocationSnapshot {
     pub definition: psa_api::AgentDefinition,
     pub projection: std::sync::Arc<AgentProjection>,
     pub tools: std::sync::Arc<[crate::components::tools::ToolKind]>,
-    pub codemode_functions:
-        std::sync::Arc<[crate::components::codemode_functions::CodeModeFunctionKind]>,
+    pub codemode_functions: std::sync::Arc<[crate::components::codemode_functions::CodeModeEntry]>,
     pub database: Database,
     pub saves: actors::UnboundedMailboxHandle<super::agent_manager::tool_execution::SaveRequest>,
 }
@@ -122,9 +121,7 @@ impl<'a> AgentContext<'a> {
         }
     }
 
-    pub fn codemode_functions(
-        &self,
-    ) -> &[crate::components::codemode_functions::CodeModeFunctionKind] {
+    pub fn codemode_functions(&self) -> &[crate::components::codemode_functions::CodeModeEntry] {
         match &self.state {
             ContextState::Borrowed(state) => state.codemode_functions(),
             ContextState::Invocation(snapshot) => &snapshot.codemode_functions,

@@ -8,7 +8,7 @@ use super::{Bundle, CleanupError, HookStage, InstallError, Installer};
 use crate::{
     agents::Agent,
     components::{
-        codemode_functions::{CodeModeFunctionKind, prior_results::PriorResults},
+        codemode_functions::{CodeModeFunctionKind, help::Help, prior_results::PriorResults},
         hooks::{CodeModeFunctionsHook, HookKind},
         tools::{CodeMode, ResetCodeMode, ToolKind},
     },
@@ -49,6 +49,7 @@ impl Bundle for CodeModeBundle {
         installer: &mut Installer,
     ) -> Result<(), InstallError> {
         installer.add_codemode_function(CodeModeFunctionKind::PriorResults(PriorResults))?;
+        installer.add_codemode_function(CodeModeFunctionKind::Help(Help))?;
         installer.add_tool(ToolKind::CodeMode(CodeMode::new(self.engine.clone())))?;
         installer.add_tool(ToolKind::ResetCodeMode(ResetCodeMode::new(
             self.engine.clone(),

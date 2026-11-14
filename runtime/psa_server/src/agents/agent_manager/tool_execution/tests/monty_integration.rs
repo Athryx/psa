@@ -96,11 +96,10 @@ async fn real_worker_persists_snapshots_errors_output_and_registered_functions()
     let mut state = fixture
         .state(vec![ToolKind::CodeMode(CodeMode::new(engine.clone()))], &[])
         .await;
-    state.codemode_functions = vec![
+    state.codemode_functions = crate::components::codemode_functions::listed_entries([
         CodeModeFunctionKind::Tool(ToolKind::Noop(Noop)),
         CodeModeFunctionKind::PriorResults(PriorResults),
-    ]
-    .into();
+    ]);
 
     state = invoke_codemode(&fixture, state, "first", "x = 41\nprint('first')").await;
     let (error, text) = load_tool_result(&fixture, &state, "first").await;
@@ -202,7 +201,7 @@ async fn real_worker_persists_snapshots_errors_output_and_registered_functions()
         &fixture,
         state,
         "recover",
-        "full = PRIOR_RESULTS(-1)\nprint(len(full), full.count('a'))",
+        "full = prior_results(-1)\nprint(len(full), full.count('a'))",
     )
     .await;
     let (error, text) = load_tool_result(&fixture, &state, "recover").await;
@@ -225,7 +224,10 @@ async fn real_worker_unknown_calls_raise_name_error_without_awaiting() {
     let mut state = fixture
         .state(vec![ToolKind::CodeMode(CodeMode::new(engine.clone()))], &[])
         .await;
-    state.codemode_functions = vec![CodeModeFunctionKind::Tool(ToolKind::Noop(Noop))].into();
+    state.codemode_functions =
+        crate::components::codemode_functions::listed_entries([CodeModeFunctionKind::Tool(
+            ToolKind::Noop(Noop),
+        )]);
 
     for (index, expression) in [
         "not_a_real_function(1, 2)",
@@ -317,7 +319,10 @@ async fn real_worker_sleeps_inline_and_concurrently_with_registered_functions() 
     let mut state = fixture
         .state(vec![ToolKind::CodeMode(CodeMode::new(engine.clone()))], &[])
         .await;
-    state.codemode_functions = vec![CodeModeFunctionKind::Tool(ToolKind::Noop(Noop))].into();
+    state.codemode_functions =
+        crate::components::codemode_functions::listed_entries([CodeModeFunctionKind::Tool(
+            ToolKind::Noop(Noop),
+        )]);
 
     state = invoke_codemode(
         &fixture,
@@ -625,7 +630,10 @@ async fn preflight_missing_worker_and_oversized_source_do_not_claim_host_effects
     let mut state = fixture
         .state(vec![ToolKind::CodeMode(CodeMode::new(engine.clone()))], &[])
         .await;
-    state.codemode_functions = vec![CodeModeFunctionKind::Tool(ToolKind::Noop(Noop))].into();
+    state.codemode_functions =
+        crate::components::codemode_functions::listed_entries([CodeModeFunctionKind::Tool(
+            ToolKind::Noop(Noop),
+        )]);
 
     let oversized_source = "#".repeat(256 * 1024 + 1);
     for (id, script, reason) in [
@@ -731,7 +739,11 @@ async fn real_worker_shares_bash_sessions_in_both_directions() {
     state.session.probe_id = probe_id;
     state.session.working_directory = fixture._directory.path().to_owned();
     let mut definition = state.definition.clone();
-    definition.bundles = vec![psa_api::BundleConfig::Bash, psa_api::BundleConfig::CodeMode];
+    definition.bundles = vec![
+        psa_api::BundleConfig::Bash,
+        psa_api::BundleConfig::FileTools { read_only: true },
+        psa_api::BundleConfig::CodeMode,
+    ];
     let installed = crate::components::bundles::InstalledComponents::install(
         &definition,
         &state.agent,
@@ -767,18 +779,59 @@ async fn real_worker_shares_bash_sessions_in_both_directions() {
         "{text}"
     );
 
+    // A failing command is a result, not an exception; str() is the tool text.
     state = invoke_codemode(
         &fixture,
         state,
         "python-bash-failure",
-        "async def fail():\n    await bash(command='exit 3')\nasyncio.run(fail())",
+        "async def fail():\n    r = await bash(command='echo out; exit 3')\n    print(r.exit_code, r.running, r.output.strip())\n    print(repr(r))\n    print(r)\nasyncio.run(fail())",
     )
     .await;
     let (error, text) = load_tool_result(&fixture, &state, "python-bash-failure").await;
+    assert!(!error, "{text}");
+    assert!(text.starts_with("3 False out\nBashResult("), "{text}");
+    assert!(text.contains("exit_code=3"), "{text}");
+    assert!(text.contains("Command exited with code 3"), "{text}");
+
+    // Finished sessions stay addressable; only names never used are unknown.
+    state = invoke_codemode(
+        &fixture,
+        state,
+        "python-finished",
+        "r = await bash(command='exit 4')\nc = await close_bash(session_name=r.session_name)\nprint(c.running, c.exit_code, repr(c.output))\nprint(c)\np = await interact_bash(session_name=r.session_name)\nprint(p.exit_code)\ntry:\n    await interact_bash(session_name=r.session_name, stdin='x')\nexcept RuntimeError as e:\n    print('stdin:', e)\ntry:\n    await close_bash(session_name='never-started')\nexcept RuntimeError as e:\n    print('unknown:', e)",
+    )
+    .await;
+    let (error, text) = load_tool_result(&fixture, &state, "python-finished").await;
+    assert!(!error, "{text}");
+    assert!(text.starts_with("False 4 ''\n"), "{text}");
+    assert!(text.contains("had already finished"), "{text}");
+    assert!(text.contains("Command exited with code 4\n4\n"), "{text}");
+    assert!(text.contains("stdin: Bash session"), "{text}");
+    assert!(text.contains("not accepting stdin"), "{text}");
     assert!(
-        error && text.contains("Command exited with code 3"),
+        text.contains("unknown: Unknown bash session: never-started"),
         "{text}"
     );
+
+    std::fs::write(
+        fixture._directory.path().join("lines.txt"),
+        "one\ntwo\nthree\n",
+    )
+    .unwrap();
+    state = invoke_codemode(
+        &fixture,
+        state,
+        "python-read",
+        "r = await read(path='lines.txt', limit=2)\nprint(r.content.split())\nprint(r.start_line, r.end_line, r.total_lines, r.next_offset)\nprint(r)",
+    )
+    .await;
+    let (error, text) = load_tool_result(&fixture, &state, "python-read").await;
+    assert!(!error, "{text}");
+    assert!(
+        text.starts_with("['one', 'two']\n1 2 4 3\none\ntwo"),
+        "{text}"
+    );
+    assert!(text.contains("Use offset=3 to continue."), "{text}");
 
     state = invoke_codemode(&fixture, state, "python-start", "async def start():\n    print(await bash(command=\"read -r line; printf 'python-received:%s\\\\n' \\\"$line\\\"\", session_name='python-session', yield_time_ms=50))\nasyncio.run(start())").await;
     let (error, text) = load_tool_result(&fixture, &state, "python-start").await;

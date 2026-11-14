@@ -48,7 +48,7 @@ impl ResetCodeMode {
         };
 
         let mut output = ToolOutput::success(prompts::text(
-            "Python REPL reset. Earlier codemode outputs remain available through PRIOR_RESULTS.",
+            "Python REPL reset. Earlier codemode outputs remain available through prior_results.",
         ));
         output
             .private_events

@@ -1,6 +1,8 @@
 use super::{
-    super::{Tool, ToolOutput, ToolSystemPrompt, typed_tool_execute},
-    bash::{ResultMode, backend_error, format_result, optional_value, yield_duration},
+    super::{CodeModeResultType, Tool, ToolOutput, ToolSystemPrompt, typed_tool_execute},
+    bash::{
+        ResultMode, backend_error, bash_result_type, format_result, optional_value, yield_duration,
+    },
 };
 use crate::{
     agents::agent_context::AgentContext,
@@ -93,6 +95,10 @@ impl Tool for InteractBash {
 
     fn cancellation_timeout(&self) -> Duration {
         Duration::from_secs(10)
+    }
+
+    fn codemode_result_type(&self) -> Option<CodeModeResultType> {
+        Some(bash_result_type())
     }
 
     typed_tool_execute!(InteractBashArgs, execute_typed);

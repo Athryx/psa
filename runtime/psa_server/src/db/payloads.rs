@@ -251,6 +251,8 @@ pub(super) async fn insert_payload(
                 ToolId::RecordResult => "record_result",
                 ToolId::CodeMode => "codemode",
                 ToolId::ResetCodeMode => "reset_codemode",
+                ToolId::ExportTrace => "export_trace",
+                ToolId::ListSessions => "list_sessions",
             };
             let def = &value.definition;
             let parameters = serialize_json(&def.parameters)?;
@@ -546,6 +548,8 @@ pub(super) async fn load_payloads(
                 "record_result" => ToolId::RecordResult,
                 "codemode" => ToolId::CodeMode,
                 "reset_codemode" => ToolId::ResetCodeMode,
+                "export_trace" => ToolId::ExportTrace,
+                "list_sessions" => ToolId::ListSessions,
                 s => return Err(invalid(s)),
             },
             definition: api::ToolDefinition {

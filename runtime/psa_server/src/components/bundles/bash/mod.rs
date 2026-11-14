@@ -54,13 +54,18 @@ impl From<psa_shared::probe_transport::ProbeError> for BashError {
 #[derive(Debug)]
 pub struct CollectedOutput {
     pub name: String,
-    pub log_path: PathBuf,
+    /// None once the log was deleted after a clean foreground run.
+    pub log_path: Option<PathBuf>,
     pub(crate) output: tools::bash::output::OutputSnapshot,
     pub elapsed: Duration,
     pub waited: Duration,
     pub running: bool,
     pub exit_code: Option<i32>,
     pub error: Option<String>,
+    /// This call (close_bash) killed the process.
+    pub stopped: bool,
+    /// The command had ended before this call; any output is what was left unread.
+    pub already_finished: bool,
 }
 
 impl CollectedOutput {
