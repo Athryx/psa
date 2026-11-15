@@ -71,6 +71,7 @@ async fn typed_bridge_validates_and_cancels_before_running() {
     let mut cursor = database.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            decision_model: None,
             model_config: support::model_config(),
             name: "typed".into(),
             working_directory: "/work".into(),

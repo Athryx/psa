@@ -333,7 +333,7 @@ impl AgentManagerState {
             })?;
 
         let started = Instant::now();
-        let mut response = ModelResponse::default_for_model(request.history.config.clone());
+        let mut response = ModelResponse::new(request.history.config.clone());
         let generated = match providers.resolve_reasoning(&request.history.config).await {
             Err(error) => Some(Err(error)),
             Ok(reasoning) => {

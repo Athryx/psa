@@ -72,11 +72,25 @@ pub struct ReasoningOption {
     pub wire_effort: Option<Effort>,
 }
 
+/// What kind of model a catalog entry is, which determines how it is called.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ModelKind {
+    /// Generates text and tool calls; usable as an agent's model.
+    #[default]
+    Chat,
+    /// Answers typed questions with probabilities; never an agent's model.
+    Decision,
+}
+
 /// Catalog metadata with live authentication status and persisted pin state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
     /// Identity containing both provider and provider-specific API name.
     pub model: Model,
+    /// Whether this is a chat or a decision model; entries stored before the
+    /// field existed are chat models.
+    #[serde(default)]
+    pub kind: ModelKind,
     /// Catalog display name.
     pub name: String,
     /// Supported input modality names from the catalog.
@@ -114,6 +128,9 @@ pub struct ListModels {
     /// Include only pinned (`Some(true)`) or unpinned (`Some(false)`) models.
     /// `None` includes both.
     pub pinned: Option<bool>,
+    /// Include only chat (`Some(Chat)`) or decision models. `None` includes both.
+    #[serde(default)]
+    pub kind: Option<ModelKind>,
 }
 
 /// Flat query parameters for lookup by provider and API name, without effort.

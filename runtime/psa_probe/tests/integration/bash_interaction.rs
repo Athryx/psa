@@ -79,11 +79,12 @@ async fn bash_poll_cancellation_preserves_unread_output_and_close_rejects_busy_s
             .unwrap();
         assert!(!done.running);
         assert_eq!(done.output_text(), "end");
-        let (full, _, _) = collect(probe.read_file(&initial.log_path).await.unwrap()).await;
+        let log = initial.log_path.expect("background session keeps its log");
+        let (full, _, _) = collect(probe.read_file(&log).await.unwrap()).await;
         assert_eq!(full, b"laterend");
 
         bundle.cleanup().await.unwrap();
-        remove_logs(&probe, &[initial.log_path]).await;
+        remove_logs(&probe, &[log]).await;
         harness.stop().await;
     })
     .await
@@ -109,9 +110,7 @@ async fn bash_foreground_success_deletes_log_but_failure_retains_it() {
             .unwrap();
         assert!(!success.running);
         assert_eq!(success.exit_code, Some(0));
-        let mut missing = probe.read_file(&success.log_path).await.unwrap();
-        assert!(missing.next_event().await.is_err());
-        drop(missing);
+        assert!(success.log_path.is_none());
 
         let failed = bash
             .execute(
@@ -126,21 +125,27 @@ async fn bash_foreground_success_deletes_log_but_failure_retains_it() {
         assert!(!failed.running);
         assert_eq!(failed.exit_code, Some(7));
         assert_eq!(failed.output_text(), "failure");
-        let (full, _, _) = collect(probe.read_file(&failed.log_path).await.unwrap()).await;
+        let failed_log = failed
+            .log_path
+            .clone()
+            .expect("failed command keeps its log");
+        let (full, _, _) = collect(probe.read_file(&failed_log).await.unwrap()).await;
         assert_eq!(full, b"failure");
-        assert!(matches!(
-            bash.interact(
+        let finished = bash
+            .interact(
                 failed.name,
                 None,
                 Duration::ZERO,
-                cancellation(&mut cancellations)
+                cancellation(&mut cancellations),
             )
-            .await,
-            Err(BashError::UnknownSession(_))
-        ));
+            .await
+            .unwrap();
+        assert!(finished.already_finished);
+        assert_eq!(finished.exit_code, Some(7));
+        assert_eq!(finished.log_path, Some(failed_log.clone()));
 
         bundle.cleanup().await.unwrap();
-        remove_logs(&probe, &[failed.log_path]).await;
+        remove_logs(&probe, &[failed_log]).await;
         harness.stop().await;
     })
     .await

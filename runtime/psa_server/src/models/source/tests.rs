@@ -121,3 +121,27 @@ async fn live_pi_catalogs_normalize_for_supported_providers() {
         eprintln!("{provider:?}: {} chat models", models.len());
     }
 }
+
+#[test]
+fn classifier_entries_become_decision_models_without_reasoning() {
+    let models = normalize_catalog(
+        ProviderType::Openrouter,
+        json!([
+            {"id":"vendor/chat","type":"chat","reasoning":false},
+            {"id":"vendor/decider","type":"classifier","name":"Decider",
+             "contextWindow":65536,"input":["text"],"cost":{"input":0.02,"output":0}},
+            {"id":"vendor/picture","type":"image"}
+        ]),
+    )
+    .unwrap();
+
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0].kind, psa_api::ModelKind::Chat);
+    let decider = &models[1];
+    assert_eq!(decider.kind, psa_api::ModelKind::Decision);
+    assert_eq!(decider.name, "Decider");
+    assert_eq!(decider.context_window, Some(65536));
+    assert_eq!(decider.max_output_tokens, None);
+    assert_eq!(decider.cost.rates.input, Some(0.02));
+    assert!(!decider.reasoning);
+}

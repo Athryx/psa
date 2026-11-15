@@ -12,9 +12,9 @@ fn ReasoningRoot(mode: ReasoningDisplay) -> Element {
     let kind = psa_api::events::EventType::Thinking(psa_api::events::Thinking {
         contents: llm_api::api::Reasoning {
             summary: vec!["First thought".into(), "Second thought".into()],
-            opaque_state: Some(llm_api::api::ProviderOpaqueData {
+            opaque_state: Some(llm_api::api::ProviderData {
                 provider: llm_api::providers::ProviderType::OpenAiCodex,
-                data: serde_json::json!({"secret": "opaque-secret"}),
+                raw: serde_json::json!({"secret": "opaque-secret"}),
             }),
         },
         metadata: Default::default(),

@@ -447,6 +447,20 @@ impl Client {
         .await
     }
 
+    /// Fetch cumulative usage per model for one agent, sorted by model slug.
+    /// The agent's `usage` holds the combined total.
+    pub async fn get_agent_model_usage(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+    ) -> Result<Vec<crate::ModelUsage>, ClientError> {
+        self.get(
+            &routes::agent_path(routes::AGENT_USAGE, session, agent),
+            &(),
+        )
+        .await
+    }
+
     /// Submit an interrupt or message-delivery request and return its acceptance ID.
     /// Acceptance does not mean inference or tool execution has finished.
     pub async fn submit_request(

@@ -58,7 +58,7 @@ pub fn InlineSessionName(target: CreationTarget) -> Element {
                         let trimmed = state.creation_name.trim().to_owned();
                         if state.creation_pending || state.creation_uncertain || trimmed.is_empty() { return; }
                         drop(state);
-                        let request = CreateSession { name: trimmed, working_directory: target.directory.as_str().into(), probe_id: target.probe, project_id: None, model_config: None };
+                        let request = CreateSession { name: trimmed, working_directory: target.directory.as_str().into(), probe_id: target.probe, project_id: None, model_config: None, decision_model: None };
                         let api = match network::client(ui) { Ok(api) => api, Err(_) => { ui.write().creation_error = Some("Invalid API connection settings".into()); return; } };
                         ui.write().creation_pending = true;
                         ui.write().creation_error = None;

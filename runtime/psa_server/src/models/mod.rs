@@ -93,6 +93,7 @@ impl ModelCatalog {
                 .is_none_or(|provider| model.model.provider == provider)
                 && query.authed.is_none_or(|authed| model.authed == authed)
                 && query.pinned.is_none_or(|pinned| model.pinned == pinned)
+                && query.kind.is_none_or(|kind| model.kind == kind)
         });
         Ok(models)
     }
@@ -142,6 +143,12 @@ impl ModelCatalog {
         let Some(info) = self.model_info(&config.model).await? else {
             return Ok(None);
         };
+        if info.kind != psa_api::ModelKind::Chat {
+            return Err(CatalogError::Invalid(format!(
+                "{} is a decision model and cannot generate chat responses",
+                info.model.api_name
+            )));
+        }
         let Some(option) = info
             .reasoning_options
             .iter()

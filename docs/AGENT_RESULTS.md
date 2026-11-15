@@ -52,7 +52,7 @@ bundle supplies the completion hook. Generated server defaults use Goal with
 
 The canonical schema field is a raw `ToolSchema`, not a string or a result
 wrapper. It requires an explicit object root, JSON Schema Draft 2020-12, and
-local references only. Shared `CompiledToolSchema` validation is offline;
+local references only. The server's `ResultSchema` validation is offline;
 remote schema resolution is not supported.
 
 The bundle installs a sequential `record_result` tool and a require-result

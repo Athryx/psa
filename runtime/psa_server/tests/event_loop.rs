@@ -278,6 +278,7 @@ impl Harness {
         let session = self
             .client
             .create_session(&wire::CreateSession {
+                decision_model: None,
                 model_config: Some(model()),
                 probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
                 project_id: None,
@@ -435,6 +436,7 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
     let session = harness
         .client
         .create_session(&wire::CreateSession {
+            decision_model: None,
             name: "project".into(),
             working_directory: "/work/project/nested".into(),
             probe_id: support::probe_metadata().id,
@@ -946,6 +948,7 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
     let session = harness
         .client
         .create_session(&wire::CreateSession {
+            decision_model: None,
             name: "offline hooks".into(),
             working_directory: "/work/<project>&".into(),
             probe_id: support::probe_metadata().id,
@@ -1506,6 +1509,7 @@ async fn http_tools_hooks_usage_streaming_and_reconnect() {
     let other = harness
         .client
         .create_session(&wire::CreateSession {
+            decision_model: None,
             model_config: Some(model()),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             project_id: None,
@@ -1659,6 +1663,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            decision_model: None,
             model_config: model(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             project_id: None,
@@ -1837,6 +1842,7 @@ async fn persistence_failure_does_not_mutate_worker_memory() {
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            decision_model: None,
             model_config: model(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             project_id: None,

@@ -12,7 +12,6 @@ base64 = "0.22"
 httpdate = "1"
 schemars = "1"
 serde_path_to_error = "0.1"
-jsonschema = { version = "0.56", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }

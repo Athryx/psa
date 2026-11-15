@@ -2,15 +2,18 @@
 
 use super::{
     DatabaseCursor, DbError,
-    events::{add_usage, event_cutoff_at, load_event_rows, load_segments},
+    events::{add_decision_cost, add_usage, event_cutoff_at, load_event_rows, load_segments},
+    payloads::parse_model,
     schema::{decode_integer, decode_time, encode_integer},
 };
 use crate::{
     agents::{AgentId, AgentUsage},
     sessions::SessionId,
 };
-use psa_api::{EventEnvelope, ResultRecord, events::*};
-use sqlx::{Row, SqliteConnection};
+use llm_api::providers::Model;
+use psa_api::{DecisionCall, DecisionOutcome, EventEnvelope, ModelUsage, ResultRecord, events::*};
+use sqlx::{Row, SqliteConnection, sqlite::SqliteRow};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct InferenceResultEvents {
@@ -82,6 +85,19 @@ impl DatabaseCursor {
     ) -> Result<Vec<EventEnvelope>, DbError> {
         self.require_agent_session(session, agent).await?;
         load_result_envelopes(self.connection(), session, agent, range, false).await
+    }
+
+    /// Usage per model across the bounded fork lineage, sorted by model slug.
+    pub async fn load_agent_model_usage(
+        &mut self,
+        session: SessionId,
+        agent: AgentId,
+    ) -> Result<Vec<ModelUsage>, DbError> {
+        let metadata = self.require_agent_session(session, agent).await?;
+        let Some(through) = metadata.next_event_id.0.checked_sub(1).filter(|id| *id > 0) else {
+            return Ok(Vec::new());
+        };
+        model_usage_at(self.connection(), agent, EventId(through)).await
     }
 
     /// Project status from the newest relevant markers across the bounded fork lineage.
@@ -532,35 +548,13 @@ pub(super) async fn usage_at(
     let mut total = AgentUsage::default();
     for (owner, lower, upper) in load_segments(conn, agent, EventId(0), Some(through)).await? {
         let rows = sqlx::query(
-            "SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens, p.usage_details FROM event_inference_result_end p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ? UNION ALL SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens, p.usage_details FROM event_compaction p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ? AND (p.input_tokens IS NOT NULL OR p.output_tokens IS NOT NULL OR p.total_tokens IS NOT NULL OR p.cached_tokens IS NOT NULL OR p.reasoning_tokens IS NOT NULL OR p.usage_details <> '{}')",
+            "SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.cache_write_tokens, p.reasoning_tokens, p.cost, p.usage_details FROM event_inference_result_end p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ? UNION ALL SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.cache_write_tokens, p.reasoning_tokens, p.cost, p.usage_details FROM event_compaction p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ? AND (p.input_tokens IS NOT NULL OR p.output_tokens IS NOT NULL OR p.total_tokens IS NOT NULL OR p.cached_tokens IS NOT NULL OR p.cache_write_tokens IS NOT NULL OR p.reasoning_tokens IS NOT NULL OR p.cost IS NOT NULL OR p.usage_details <> '{}')",
         ).bind(owner).bind(lower).bind(upper).bind(owner).bind(lower).bind(upper).fetch_all(&mut *conn).await?;
         for row in rows {
-            add_usage(
-                &mut total,
-                &llm_api::api::Usage {
-                    input_tokens: row
-                        .try_get::<Option<i64>, _>("input_tokens")?
-                        .map(decode_integer)
-                        .transpose()?,
-                    output_tokens: row
-                        .try_get::<Option<i64>, _>("output_tokens")?
-                        .map(decode_integer)
-                        .transpose()?,
-                    total_tokens: row
-                        .try_get::<Option<i64>, _>("total_tokens")?
-                        .map(decode_integer)
-                        .transpose()?,
-                    cached_input_tokens: row
-                        .try_get::<Option<i64>, _>("cached_tokens")?
-                        .map(decode_integer)
-                        .transpose()?,
-                    reasoning_output_tokens: row
-                        .try_get::<Option<i64>, _>("reasoning_tokens")?
-                        .map(decode_integer)
-                        .transpose()?,
-                    provider_details: serde_json::from_str(row.try_get("usage_details")?)?,
-                },
-            )?;
+            add_usage(&mut total, &parse_usage_row(&row)?)?;
+        }
+        for call in load_decision_calls(conn, owner, lower, upper).await? {
+            add_decision_cost(&mut total, &call);
         }
     }
     // Validate the final known totals against SQLite's integer domain as well.
@@ -578,4 +572,89 @@ pub(super) async fn usage_at(
         encode_integer(count)?;
     }
     Ok(total)
+}
+
+/// Usage per model over the bounded fork lineage, sorted by model slug.
+pub(super) async fn model_usage_at(
+    conn: &mut SqliteConnection,
+    agent: AgentId,
+    through: EventId,
+) -> Result<Vec<ModelUsage>, DbError> {
+    let mut totals = BTreeMap::new();
+    for (owner, lower, upper) in load_segments(conn, agent, EventId(0), Some(through)).await? {
+        // Inference IDs are the start event's sequence, unique within an agent.
+        let rows = sqlx::query(
+            "SELECT s.model_provider, s.model_name, s.model_effort, p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.cache_write_tokens, p.reasoning_tokens, p.cost, p.usage_details FROM event_inference_result_end p JOIN events e ON e.event_pk=p.event_pk JOIN event_inference_result_start s ON s.inference_id=p.inference_id JOIN events es ON es.event_pk=s.event_pk AND es.agent_id=e.agent_id WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+        ).bind(owner).bind(lower).bind(upper).fetch_all(&mut *conn).await?;
+        for row in rows {
+            let (Some(provider), Some(name), Some(effort)) = (
+                row.try_get::<Option<String>, _>("model_provider")?,
+                row.try_get::<Option<String>, _>("model_name")?,
+                row.try_get::<Option<String>, _>("model_effort")?,
+            ) else {
+                return Err(DbError::Corrupt(
+                    "result start has no model snapshot".into(),
+                ));
+            };
+            let model = parse_model(&provider, name, &effort)?.model;
+            add_usage(model_entry(&mut totals, model), &parse_usage_row(&row)?)?;
+        }
+
+        for call in load_decision_calls(conn, owner, lower, upper).await? {
+            if matches!(call.outcome, DecisionOutcome::Failed(_)) {
+                continue;
+            }
+            let usage = llm_api::api::Usage {
+                input_tokens: call.usage.input_tokens,
+                cached_input_tokens: call.usage.cached_tokens,
+                cost: call.usage.cost,
+                ..Default::default()
+            };
+            add_usage(model_entry(&mut totals, call.model), &usage)?;
+        }
+    }
+    Ok(totals.into_values().collect())
+}
+
+fn model_entry(totals: &mut BTreeMap<String, ModelUsage>, model: Model) -> &mut AgentUsage {
+    &mut totals
+        .entry(model.slug())
+        .or_insert_with(|| ModelUsage {
+            model,
+            usage: AgentUsage::default(),
+        })
+        .usage
+}
+
+fn parse_usage_row(row: &SqliteRow) -> Result<llm_api::api::Usage, DbError> {
+    let count = |column: &str| -> Result<Option<u64>, DbError> {
+        row.try_get::<Option<i64>, _>(column)?
+            .map(decode_integer)
+            .transpose()
+    };
+    Ok(llm_api::api::Usage {
+        input_tokens: count("input_tokens")?,
+        output_tokens: count("output_tokens")?,
+        total_tokens: count("total_tokens")?,
+        cached_input_tokens: count("cached_tokens")?,
+        cache_write_input_tokens: count("cache_write_tokens")?,
+        reasoning_output_tokens: count("reasoning_tokens")?,
+        cost: row.try_get("cost")?,
+        provider_details: serde_json::from_str(row.try_get("usage_details")?)?,
+    })
+}
+
+async fn load_decision_calls(
+    conn: &mut SqliteConnection,
+    owner: i64,
+    lower: i64,
+    upper: i64,
+) -> Result<Vec<DecisionCall>, DbError> {
+    let calls = sqlx::query_scalar::<_, String>(
+        "SELECT p.value FROM event_decision_call p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+    ).bind(owner).bind(lower).bind(upper).fetch_all(&mut *conn).await?;
+    calls
+        .iter()
+        .map(|call| Ok(serde_json::from_str(call)?))
+        .collect()
 }

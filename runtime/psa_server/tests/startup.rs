@@ -251,6 +251,43 @@ async fn config_parses_host_marker_without_rewriting_existing_files() {
 }
 
 #[tokio::test]
+async fn config_parses_decision_concurrency_and_rejects_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let base = "[server]\nlisten = '127.0.0.1:0'\n[database]\npath = 'psa.sqlite3'\n";
+    let options = || StartOptions {
+        data_dir: Some(dir.path().into()),
+        ..Default::default()
+    };
+
+    for (section, expected) in [
+        ("", 8),
+        ("[decisions]\n", 8),
+        ("[decisions]\nmax_concurrent_calls = 2\n", 2),
+    ] {
+        tokio::fs::write(&path, format!("{base}{section}"))
+            .await
+            .unwrap();
+        let resolved = options().resolve().await.unwrap();
+        assert_eq!(resolved.max_concurrent_decision_calls.get(), expected);
+    }
+
+    for section in [
+        "[decisions]\nmax_concurrent_calls = 0\n",
+        "[decisions]\nmax_concurrent_calls = -1\n",
+        "[decisions]\nspend_limit = 5\n",
+    ] {
+        tokio::fs::write(&path, format!("{base}{section}"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            options().resolve().await,
+            Err(ConfigError::Parse { .. })
+        ));
+    }
+}
+
+#[tokio::test]
 async fn config_parses_agent_defaults_and_preserves_explicit_empty_lists() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");

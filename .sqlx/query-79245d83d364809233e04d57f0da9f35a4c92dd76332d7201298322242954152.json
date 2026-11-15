@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT p.event_pk, p.summary_type, p.summary, p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens, p.usage_details FROM event_compaction p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+  "query": "SELECT p.event_pk, p.summary_type, p.summary, p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.cache_write_tokens, p.reasoning_tokens, p.cost, p.usage_details FROM event_compaction p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
   "describe": {
     "columns": [
       {
@@ -81,8 +81,19 @@
         }
       },
       {
-        "name": "reasoning_tokens",
+        "name": "cache_write_tokens",
         "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_compaction",
+            "name": "cache_write_tokens"
+          }
+        }
+      },
+      {
+        "name": "reasoning_tokens",
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -92,8 +103,19 @@
         }
       },
       {
+        "name": "cost",
+        "ordinal": 9,
+        "type_info": "Float",
+        "origin": {
+          "Table": {
+            "table": "event_compaction",
+            "name": "cost"
+          }
+        }
+      },
+      {
         "name": "usage_details",
-        "ordinal": 8,
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -115,8 +137,10 @@
       true,
       true,
       true,
+      true,
+      true,
       false
     ]
   },
-  "hash": "1b03665b598fa7d13fbc1c2a9dc9a0aa0a6dc80e81a075fe7851928b1fd6865f"
+  "hash": "79245d83d364809233e04d57f0da9f35a4c92dd76332d7201298322242954152"
 }

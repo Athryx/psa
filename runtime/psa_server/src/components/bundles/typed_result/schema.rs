@@ -1,10 +1,12 @@
-//! Offline instance validation, separate from provider schema pass-through checks.
+//! Local JSON Schema validation for user-supplied TypedResult schemas.
+//!
+//! Native tools validate arguments by deserializing into their Rust type. A
+//! TypedResult schema has no Rust type, so its results are checked here instead.
 
 use std::{collections::HashSet, io, sync::Arc};
 
+use llm_api::api::ToolSchema;
 use serde_json::Value;
-
-use super::ToolSchema;
 
 const MAX_SCHEMA_BYTES: usize = 64 * 1024;
 const MAX_SCHEMA_DEPTH: usize = 64;
@@ -13,18 +15,24 @@ const MAX_INSTANCE_DEPTH: usize = 128;
 const MAX_PATH_CHARS: usize = 256;
 const DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 
-/// A bounded diagnostic containing locations and a category, never instance values.
-/// Paths are JSON Pointers (the empty string denotes the root), truncated when
-/// necessary. Object member names can appear in paths; payload values never do.
+/// Why a schema failed to compile or a result failed validation.
+///
+/// Never contains submitted values, which may be secret; only locations and a
+/// fixed message. Paths are JSON Pointers (`""` is the root), cut to 256 chars.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message} (instance path: {instance_path}, schema path: {schema_path})")]
-pub struct SchemaValidationError {
+pub struct ResultSchemaError {
+    /// Where in the validated result the failure is, e.g. `/entries/1/count`.
+    /// Empty for compile errors, which have no result.
     pub instance_path: String,
+    /// The schema location that failed, e.g. `/properties/count/minimum`.
+    /// Empty for size and depth limit errors.
     pub schema_path: String,
+    /// Fixed description of the failure category.
     pub message: String,
 }
 
-impl SchemaValidationError {
+impl ResultSchemaError {
     fn new(instance_path: &str, schema_path: &str, message: &str) -> Self {
         Self {
             instance_path: bounded_path(instance_path),
@@ -34,64 +42,55 @@ impl SchemaValidationError {
     }
 }
 
-/// An owned, reusable Draft 2020-12 validator. Clones share the compiled engine.
+/// A compiled Draft 2020-12 validator for a TypedResult schema. Cheap to clone.
 #[derive(Debug, Clone)]
-pub struct CompiledToolSchema {
+pub struct ResultSchema {
     validator: Arc<jsonschema::Validator>,
 }
 
-impl ToolSchema {
-    /// Compile a dynamic object-input schema without network or filesystem access.
+impl ResultSchema {
+    /// Compile a schema with an object root, without network or filesystem access.
     ///
-    /// Only Draft 2020-12 (or an omitted `$schema`) and local JSON Pointer refs
-    /// are supported. Resource IDs, anchors, and dynamic references are rejected.
-    /// Compilation does not change the canonical raw/generated schema or the
-    /// separate provider-facing `to_openai_parameters` validation policy.
-    pub fn compile(&self) -> Result<CompiledToolSchema, SchemaValidationError> {
-        let schema = self.as_value();
+    /// Only Draft 2020-12 (or no `$schema`) and local `#/...` references are
+    /// accepted; `$id`, anchors and dynamic references are rejected. Size and
+    /// depth are limited since the schema comes from user configuration.
+    pub fn compile(schema: &ToolSchema) -> Result<Self, ResultSchemaError> {
+        let schema = schema.as_value();
         validate_limits(schema, MAX_SCHEMA_BYTES, MAX_SCHEMA_DEPTH)
-            .map_err(|message| SchemaValidationError::new("", "", message))?;
+            .map_err(|message| ResultSchemaError::new("", "", message))?;
         if schema.get("type").and_then(Value::as_str) != Some("object") {
-            return Err(SchemaValidationError::new(
+            return Err(ResultSchemaError::new(
                 "",
                 "/type",
-                "tool schema must have an explicit object root type",
+                "result schema must have an explicit object root type",
             ));
         }
         validate_schema_resources(schema)?;
 
-        // Both safeguards are intentional: no retrieval features are enabled in
-        // Cargo, and offline mode refuses retrieval even if features are unified
-        // with another consumer of jsonschema in the same workspace.
+        // The jsonschema crate is built without retrieval features, and offline
+        // mode also refuses retrieval in case another crate enables them.
         let validator = jsonschema::draft202012::options()
             .offline()
             .build(schema)
             .map_err(|error| {
-                SchemaValidationError::new(
-                    "",
-                    error.instance_path().as_str(),
-                    "invalid tool schema",
-                )
+                ResultSchemaError::new("", error.instance_path().as_str(), "invalid result schema")
             })?;
-        Ok(CompiledToolSchema {
+        Ok(Self {
             validator: Arc::new(validator),
         })
     }
-}
 
-impl CompiledToolSchema {
-    /// Validate an instance, reporting only the first failure and no payload.
-    /// The encoded instance is limited to 1 MiB and its JSON depth to 128.
-    pub fn validate(&self, instance: &Value) -> Result<(), SchemaValidationError> {
+    /// Check a result against the schema, reporting the first failure.
+    /// The result is limited to 1 MiB encoded and a JSON depth of 128.
+    pub fn validate(&self, instance: &Value) -> Result<(), ResultSchemaError> {
         validate_limits(instance, MAX_INSTANCE_BYTES, MAX_INSTANCE_DEPTH)
-            .map_err(|message| SchemaValidationError::new("", "", message))?;
+            .map_err(|message| ResultSchemaError::new("", "", message))?;
         self.validator.validate(instance).map_err(|error| {
-            // Do not Display/Debug the engine error: many keyword diagnostics
-            // include the submitted value (including nested combinator errors).
-            SchemaValidationError::new(
+            // The engine's own message often includes the submitted value.
+            ResultSchemaError::new(
                 error.instance_path().as_str(),
                 error.schema_path().as_str(),
-                "tool instance does not satisfy schema",
+                "result does not satisfy schema",
             )
         })
     }
@@ -141,9 +140,10 @@ fn validate_limits(value: &Value, max_bytes: usize, max_depth: usize) -> Result<
         .map_err(|_| "JSON encoded size limit exceeded")
 }
 
-/// Visit schema positions only, not enum/const/default/examples/extension data.
-/// Reference targets become schema positions, even inside an annotation value.
-fn validate_schema_resources(root: &Value) -> Result<(), SchemaValidationError> {
+/// Reject non-local resources. Only values in schema positions are visited, so
+/// literal data in `enum`, `default` or `examples` may contain any keys. A
+/// `$ref` target is always treated as a schema, wherever it points.
+fn validate_schema_resources(root: &Value) -> Result<(), ResultSchemaError> {
     let mut pending = vec![(root, String::new())];
     let mut visited = HashSet::new();
     while let Some((schema, path)) = pending.pop() {
@@ -161,7 +161,7 @@ fn validate_schema_resources(root: &Value) -> Result<(), SchemaValidationError> 
                 "$id" | "$anchor" | "$recursiveRef" | "$recursiveAnchor"
             ) || keyword.starts_with("$dynamic")
             {
-                return Err(SchemaValidationError::new(
+                return Err(ResultSchemaError::new(
                     "",
                     &keyword_path,
                     "schema resource IDs, anchors and dynamic references are unsupported",
@@ -170,7 +170,7 @@ fn validate_schema_resources(root: &Value) -> Result<(), SchemaValidationError> 
             if keyword == "$schema"
                 && !matches!(object[keyword].as_str(), Some(uri) if uri == DIALECT || uri == format!("{DIALECT}#"))
             {
-                return Err(SchemaValidationError::new(
+                return Err(ResultSchemaError::new(
                     "",
                     &keyword_path,
                     "only the Draft 2020-12 schema dialect is supported",
@@ -181,14 +181,14 @@ fn validate_schema_resources(root: &Value) -> Result<(), SchemaValidationError> 
             let reference_path = append_pointer(&path, "$ref");
             let target = reference.as_str().and_then(parse_local_pointer);
             let Some(pointer) = target else {
-                return Err(SchemaValidationError::new(
+                return Err(ResultSchemaError::new(
                     "",
                     &reference_path,
                     "only local JSON Pointer references are supported",
                 ));
             };
             let Some(target) = root.pointer(&pointer) else {
-                return Err(SchemaValidationError::new(
+                return Err(ResultSchemaError::new(
                     "",
                     &reference_path,
                     "local schema reference does not resolve",
@@ -285,7 +285,7 @@ mod tests {
         }
         let schema = ToolSchema::for_type::<Input>();
         let before = schema.as_value().clone();
-        let compiled = schema.compile().unwrap();
+        let compiled = ResultSchema::compile(&schema).unwrap();
         let instance = json!({"entries":[{"count":2}]});
         compiled.clone().validate(&instance).unwrap();
         let decoded: Input = serde_json::from_value(instance).unwrap();
@@ -309,8 +309,7 @@ mod tests {
         }
         let config_schema = ToolSchema::for_type::<Config>();
         let config_instance = json!({"schema": before});
-        config_schema
-            .compile()
+        ResultSchema::compile(&config_schema)
             .unwrap()
             .validate(&config_instance)
             .unwrap();
@@ -320,38 +319,35 @@ mod tests {
 
     #[test]
     fn local_references_support_nested_and_recursive_schemas() {
-        let compiled = ToolSchema::from(json!({
+        let compiled = ResultSchema::compile(&ToolSchema::from(json!({
             "type":"object", "properties":{"entry":{"$ref":"#/$defs/a~1b"}},
             "$defs":{"a/b":{"type":"integer","minimum":2}},
             "required":["entry"]
-        }))
-        .compile()
+        })))
         .unwrap();
         compiled.validate(&json!({"entry":2})).unwrap();
         let error = compiled.validate(&json!({"entry":1})).unwrap_err();
         assert_eq!(error.instance_path, "/entry");
         assert!(error.schema_path.ends_with("/minimum"));
         assert!(
-            ToolSchema::from(json!({
+            ResultSchema::compile(&ToolSchema::from(json!({
                 "type":"object", "properties":{"child":{"$ref":"#"}}
-            }))
-            .compile()
+            })))
             .unwrap()
             .validate(&json!({"child":{}}))
             .is_ok()
         );
         assert!(
-            ToolSchema::from(json!({
+            ResultSchema::compile(&ToolSchema::from(json!({
                 "type":"object", "properties":{"x":{"$ref":"#/$defs/missing"}}
-            }))
-            .compile()
+            })))
             .is_err()
         );
     }
 
     #[test]
     fn engine_enforces_instance_constraints() {
-        let compiled = ToolSchema::from(json!({
+        let compiled = ResultSchema::compile(&ToolSchema::from(json!({
             "type":"object", "required":["name","numbers"], "additionalProperties":false,
             "properties":{
                 "name":{"type":"string","minLength":2,"pattern":"^[a-z]+$"},
@@ -359,8 +355,7 @@ mod tests {
                     "items":{"type":"integer","minimum":1,"maximum":5}},
                 "choice":{"oneOf":[{"const":"yes"},{"type":"integer","multipleOf":2}]}
             }
-        }))
-        .compile()
+        })))
         .unwrap();
         compiled
             .validate(&json!({"name":"ok","numbers":[1,2],"choice":4}))
@@ -393,12 +388,13 @@ mod tests {
             json!({"type":"object","properties":{"x":{"pattern":"["}}}),
             json!({"type":"object","$schema":"http://json-schema.org/draft-07/schema#"}),
         ] {
-            assert!(ToolSchema::from(schema).compile().is_err());
+            assert!(ResultSchema::compile(&ToolSchema::from(schema)).is_err());
         }
         assert!(
-            ToolSchema::from(json!({"type":"object","$schema":DIALECT}))
-                .compile()
-                .is_ok()
+            ResultSchema::compile(&ToolSchema::from(
+                json!({"type":"object","$schema":DIALECT})
+            ))
+            .is_ok()
         );
     }
 
@@ -411,10 +407,9 @@ mod tests {
             "#anchor",
         ] {
             assert!(
-                ToolSchema::from(json!({
+                ResultSchema::compile(&ToolSchema::from(json!({
                     "type":"object","$defs":{"unused":{"$ref":reference}}
-                }))
-                .compile()
+                })))
                 .is_err()
             );
         }
@@ -426,39 +421,35 @@ mod tests {
             "$dynamicFuture",
         ] {
             assert!(
-                ToolSchema::from(json!({
+                ResultSchema::compile(&ToolSchema::from(json!({
                     "type":"object","properties":{"x":{keyword:"untrusted"}}
-                }))
-                .compile()
+                })))
                 .is_err()
             );
         }
         let literal =
             json!({"$ref":"https://example.com/secret","$id":"literal","$dynamicRef":"literal"});
-        let compiled = ToolSchema::from(json!({
+        let compiled = ResultSchema::compile(&ToolSchema::from(json!({
             "type":"object", "properties":{"literal":{"enum":[literal.clone()],
                 "default":literal.clone(),"examples":[literal.clone()]}},
             "examples":[literal.clone()], "default":literal.clone()
-        }))
-        .compile()
+        })))
         .unwrap();
         compiled.validate(&json!({"literal":literal})).unwrap();
         // A pointer into literal data makes its target a schema, not an escape.
         assert!(
-            ToolSchema::from(json!({
+            ResultSchema::compile(&ToolSchema::from(json!({
                 "type":"object", "$ref":"#/default", "default":{"$id":"not-allowed"}
-            }))
-            .compile()
+            })))
             .is_err()
         );
     }
 
     #[test]
     fn diagnostics_are_bounded_and_do_not_echo_submitted_values() {
-        let compiled = ToolSchema::from(json!({
+        let compiled = ResultSchema::compile(&ToolSchema::from(json!({
             "type":"object","properties":{"payload":{"type":"integer"}}
-        }))
-        .compile()
+        })))
         .unwrap();
         let error = compiled
             .validate(&json!({"payload":{"secret":"DO_NOT_ECHO"}}))
@@ -467,10 +458,9 @@ mod tests {
         assert_eq!(error.schema_path, "/properties/payload/type");
         assert!(!format!("{error:?} {error}").contains("DO_NOT_ECHO"));
         let long_key = "é".repeat(1000);
-        let compiled = ToolSchema::from(json!({
+        let compiled = ResultSchema::compile(&ToolSchema::from(json!({
             "type":"object","additionalProperties":{"type":"integer"}
-        }))
-        .compile()
+        })))
         .unwrap();
         let error = compiled
             .validate(&json!({long_key:"DO_NOT_ECHO"}))
@@ -482,22 +472,22 @@ mod tests {
     #[test]
     fn limits_schema_and_instance_size_and_depth() {
         assert!(
-            ToolSchema::from(json!({"type":"object","description":"x".repeat(MAX_SCHEMA_BYTES)}))
-                .compile()
-                .is_err()
+            ResultSchema::compile(&ToolSchema::from(
+                json!({"type":"object","description":"x".repeat(MAX_SCHEMA_BYTES)})
+            ))
+            .is_err()
         );
         let mut nested = json!(true);
         for _ in 0..MAX_SCHEMA_DEPTH + 1 {
             nested = json!({"not":nested});
         }
         assert!(
-            ToolSchema::from(json!({"type":"object","properties":{"x":nested}}))
-                .compile()
-                .is_err()
+            ResultSchema::compile(&ToolSchema::from(
+                json!({"type":"object","properties":{"x":nested}})
+            ))
+            .is_err()
         );
-        let compiled = ToolSchema::from(json!({"type":"object"}))
-            .compile()
-            .unwrap();
+        let compiled = ResultSchema::compile(&ToolSchema::from(json!({"type":"object"}))).unwrap();
         assert!(
             compiled
                 .validate(&json!({"x":"s".repeat(MAX_INSTANCE_BYTES)}))

@@ -123,6 +123,7 @@ impl Fixture {
         let mut cursor = self.database.cursor().await.unwrap();
         let session = cursor
             .create_session(NewSession {
+                decision_model: None,
                 model_config: crate::test_support::model_config(),
                 name: "context test".into(),
                 working_directory: cwd.into(),

@@ -3290,7 +3290,6 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "httpdate",
- "jsonschema",
  "reqwest",
  "schemars",
  "serde",
@@ -4587,6 +4586,7 @@ dependencies = [
  "directories",
  "futures-util",
  "image",
+ "jsonschema",
  "llm_api",
  "monty-pool",
  "monty-types",

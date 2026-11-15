@@ -12,7 +12,6 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use base64::Engine;
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::Error;
@@ -22,20 +21,18 @@ use super::transport::{
     ApiClient, Decoder, SseEvent, StreamingResponse, parse_usage, protocol, provider_error,
 };
 use super::{
-    AgentHistory, Annotation, ApiProvider, ContentBlock, ContentDelta, HistoryItem,
-    HistoryItemKind, HistoryItemMetadata, ImageDetail, ItemUpdate, MediaSource, Message,
-    ModelResponse, ModelTurnStream, Outcome, ProviderOpaqueData, Reasoning, ReasoningOverride,
-    RefusalBlock, RequestConfig, Role, StopReason, TextBlock, ToolCall, ToolChoice, TurnEvent,
-    validate_request,
+    AgentHistory, ApiProvider, ContentBlock, ContentDelta, HistoryItem, HistoryItemKind,
+    HistoryItemMetadata, ImageDetail, ItemStatus, ItemUpdate, MediaSource, Message, ModelResponse,
+    ModelTurnStream, Outcome, ProviderData, Reasoning, ReasoningOverride, RefusalBlock,
+    RequestConfig, Role, StopReason, TextBlock, ToolCall, ToolChoice, TurnEvent, validate_request,
 };
 
 /// Wire-dialect settings, independent of the client's provider identity.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OpenAiCompletionsConfig {
     /// Use OpenRouter's `reasoning` request option and accept/replay its native
     /// reasoning fields. False uses standard `reasoning_effort` and rejects native
     /// reasoning instead of dropping it or forwarding it to a standard endpoint.
-    #[serde(default)]
     pub openrouter_reasoning_fields: bool,
 }
 
@@ -86,7 +83,7 @@ impl ApiProvider for OpenAiCompletions {
         Ok(OpenAiCompletionsStream {
             inner: StreamingResponse::new(
                 response,
-                ModelResponse::default_for_model(history.config.clone()),
+                ModelResponse::new(history.config.clone()),
                 CompletionsDecoder::new(self.config.openrouter_reasoning_fields),
             ),
         })
@@ -181,8 +178,7 @@ fn serialize_tools(tools: &[super::ToolDefinition]) -> Result<Value, Error> {
         let mut function = json!({
             "name": tool.name,
             "description": tool.description,
-            "parameters": tool.parameters.to_openai_parameters(tool.strict)
-                .map_err(|message| Error::InvalidToolDefinition { name: tool.name.clone(), message })?,
+            "parameters": tool.parameters.as_value(),
         });
         if let Some(strict) = tool.strict {
             function["strict"] = json!(strict);
@@ -228,7 +224,7 @@ impl AssistantMessage {
         }
 
         let state = state
-            .data
+            .raw
             .as_object()
             .filter(|object| {
                 !object.is_empty()
@@ -300,7 +296,7 @@ fn append_messages(
     let mut assistant = AssistantMessage::default();
 
     for item in items {
-        if !item.metadata.provider_metadata.is_empty() {
+        if item.metadata.provider_data.is_some() {
             return Err(unsupported("Chat Completions item replay metadata"));
         }
         match &item.kind {
@@ -806,17 +802,11 @@ impl CompletionsDecoder {
         if let HistoryItemKind::Message(message) = &mut output.items[message_index].kind
             && let ContentBlock::Text(text) = &mut message.content[content_index]
         {
-            text.annotations.extend(annotations.iter().map(|raw| {
-                Annotation {
+            text.annotations
+                .extend(annotations.iter().map(|raw| ProviderData {
                     provider: output.config.model.provider,
-                    annotation_type: raw
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown")
-                        .to_owned(),
                     raw: raw.clone(),
-                }
-            }));
+                }));
         }
         events.push_back(TurnEvent::ItemUpdated {
             index: message_index,
@@ -1077,9 +1067,9 @@ impl CompletionsDecoder {
         }
 
         if let HistoryItemKind::Reasoning(reasoning) = &mut output.items[index].kind {
-            reasoning.opaque_state = Some(ProviderOpaqueData {
+            reasoning.opaque_state = Some(ProviderData {
                 provider: output.config.model.provider,
-                data: Value::Object(data),
+                raw: Value::Object(data),
             });
         }
         events.push_back(TurnEvent::ItemUpdated {
@@ -1112,9 +1102,9 @@ impl CompletionsDecoder {
         }
 
         let status = if matches!(reason, "length" | "content_filter" | "error") {
-            "incomplete"
+            ItemStatus::Incomplete
         } else {
-            "completed"
+            ItemStatus::Completed
         };
 
         // Complete only previously existing items here; newly appended calls are
@@ -1128,7 +1118,7 @@ impl CompletionsDecoder {
                     });
                 }
             }
-            output.items[index].metadata.item_status = Some(status.into());
+            output.items[index].metadata.item_status = Some(status.clone());
             events.push_back(TurnEvent::ItemCompleted { index });
         }
 
@@ -1141,7 +1131,7 @@ impl CompletionsDecoder {
                     arguments: call.arguments,
                 }),
                 metadata: HistoryItemMetadata {
-                    item_status: Some(status.into()),
+                    item_status: Some(status.clone()),
                     ..HistoryItemMetadata::default()
                 },
             });
@@ -1198,7 +1188,7 @@ fn merge_reasoning_detail(
 
 fn build_streaming_metadata() -> HistoryItemMetadata {
     HistoryItemMetadata {
-        item_status: Some("in_progress".into()),
+        item_status: Some(ItemStatus::InProgress),
         ..HistoryItemMetadata::default()
     }
 }
@@ -1296,9 +1286,9 @@ mod tests {
     fn native_reasoning() -> HistoryItem {
         item(HistoryItemKind::Reasoning(Reasoning {
             summary: vec!["display summary".into()],
-            opaque_state: Some(ProviderOpaqueData {
+            opaque_state: Some(ProviderData {
                 provider: ProviderType::Openrouter,
-                data: json!({"reasoning_details":[{"type":"reasoning.encrypted","data":"secret","id":"r1","format":"native"}]}),
+                raw: json!({"reasoning_details":[{"type":"reasoning.encrypted","data":"secret","id":"r1","format":"native"}]}),
             }),
         }))
     }
@@ -1340,10 +1330,6 @@ mod tests {
 
     #[test]
     fn provider_identity_and_reasoning_dialect_are_independent() {
-        assert_eq!(
-            OpenAiCompletionsConfig::default(),
-            serde_json::from_str::<OpenAiCompletionsConfig>("{}").unwrap()
-        );
         assert!(!OpenAiCompletionsConfig::default().openrouter_reasoning_fields);
         for provider in [ProviderType::OpenAiCodex, ProviderType::Openrouter] {
             for enabled in [false, true] {
@@ -1359,13 +1345,6 @@ mod tests {
                 .unwrap();
                 assert_eq!(client.provider_type(), provider);
                 assert_eq!(client.clone().provider_type(), provider);
-                assert_eq!(
-                    serde_json::from_value::<OpenAiCompletionsConfig>(
-                        serde_json::to_value(adapter_config).unwrap()
-                    )
-                    .unwrap(),
-                    adapter_config
-                );
                 let mut history = AgentHistory::new(model_for(provider));
                 history.items.push(message(Role::User, "hi"));
                 let body = super::build_request_body(
@@ -1416,9 +1395,9 @@ mod tests {
             if let HistoryItemKind::Reasoning(reasoning) = &mut reasoning.kind {
                 let state = reasoning.opaque_state.as_mut().unwrap();
                 state.provider = provider;
-                state.data["reasoning"] = json!("native text");
+                state.raw["reasoning"] = json!("native text");
             }
-            let mut saved = ModelResponse::default_for_model(model_for(provider));
+            let mut saved = ModelResponse::new(model_for(provider));
             saved.outcome = Outcome::Completed {
                 reason: StopReason::EndTurn,
             };
@@ -1466,7 +1445,7 @@ mod tests {
         for provider in [ProviderType::OpenAiCodex, ProviderType::Openrouter] {
             for enabled in [false, true] {
                 let mut decoder = CompletionsDecoder::new(enabled);
-                let mut output = ModelResponse::default_for_model(model_for(provider));
+                let mut output = ModelResponse::new(model_for(provider));
                 let mut events = VecDeque::new();
                 let mut delta = json!({"content":"answer", "annotations":[{"type":"url_citation","url":"https://example.com"}]});
                 if enabled {
@@ -1501,7 +1480,7 @@ mod tests {
                     };
                     assert_eq!(reasoning.opaque_state.as_ref().unwrap().provider, provider);
                     assert_eq!(
-                        reasoning.opaque_state.as_ref().unwrap().data["reasoning"],
+                        reasoning.opaque_state.as_ref().unwrap().raw["reasoning"],
                         "native text"
                     );
                 } else {
@@ -1514,7 +1493,7 @@ mod tests {
                 ("reasoning_details", json!([])),
             ] {
                 let mut decoder = CompletionsDecoder::new(false);
-                let mut output = ModelResponse::default_for_model(model_for(provider));
+                let mut output = ModelResponse::new(model_for(provider));
                 let mut events = VecDeque::new();
                 let mut delta = json!({"content":"must not silently discard native state"});
                 delta[field] = value;
@@ -1689,10 +1668,10 @@ mod tests {
             Err(Error::Unsupported { .. })
         ));
         history.items = vec![message(Role::User, "hi")];
-        history.items[0]
-            .metadata
-            .provider_metadata
-            .insert("native".into(), json!("state"));
+        history.items[0].metadata.provider_data = Some(ProviderData {
+            provider: history.config.model.provider,
+            raw: json!("state"),
+        });
         assert!(matches!(
             request_body(&history, &RequestConfig::default()),
             Err(Error::Unsupported { .. })
@@ -1763,7 +1742,7 @@ mod tests {
     fn repeated_finish_usage_trailers_preserve_text_and_tool_items() {
         for reason in ["stop", "tool_calls"] {
             let mut decoder = CompletionsDecoder::new(true);
-            let mut output = ModelResponse::default_for_model(model());
+            let mut output = ModelResponse::new(model());
             let mut events = VecDeque::new();
             let delta = if reason == "tool_calls" {
                 json!({"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls -la\"}"}}]})
@@ -1832,7 +1811,7 @@ mod tests {
             (json!({}), json!("stop"), false),
         ] {
             let mut decoder = CompletionsDecoder::new(true);
-            let mut output = ModelResponse::default_for_model(model());
+            let mut output = ModelResponse::new(model());
             let mut events = VecDeque::new();
             decode(
                 &mut decoder,
@@ -1857,7 +1836,7 @@ mod tests {
     #[test]
     fn decodes_text_refusal_and_replace_only_reported_usage() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelResponse::default_for_model(model());
+        let mut output = ModelResponse::new(model());
         let mut events = VecDeque::new();
         assert!(
             !decode(
@@ -1945,7 +1924,7 @@ mod tests {
     #[test]
     fn buffers_fragmented_interleaved_tool_identity_and_arguments() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelResponse::default_for_model(model());
+        let mut output = ModelResponse::new(model());
         let mut events = VecDeque::new();
         decode(&mut decoder, &mut output, &mut events, chunk(json!({"tool_calls":[
             {"index":1,"id":"b","type":"function","function":{"name":"sec","arguments":"{"}},
@@ -2025,7 +2004,7 @@ mod tests {
     #[test]
     fn incomplete_calls_cannot_be_replayed() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelResponse::default_for_model(model());
+        let mut output = ModelResponse::new(model());
         let mut events = VecDeque::new();
         decode(&mut decoder, &mut output, &mut events, chunk(json!({"tool_calls":[{"index":0,"id":"a","function":{"name":"test","arguments":"{"}}]}), json!("length"))).unwrap();
         done(&mut decoder, &mut output, &mut events).unwrap();
@@ -2036,8 +2015,8 @@ mod tests {
             }
         ));
         assert_eq!(
-            output.items[0].metadata.item_status.as_deref(),
-            Some("incomplete")
+            output.items[0].metadata.item_status,
+            Some(ItemStatus::Incomplete)
         );
         let mut history = AgentHistory::new(model());
         history.items = output.items;
@@ -2051,7 +2030,7 @@ mod tests {
     #[test]
     fn replays_plain_native_reasoning_in_a_tool_loop() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelResponse::default_for_model(model());
+        let mut output = ModelResponse::new(model());
         let mut events = VecDeque::new();
         decode(
             &mut decoder,
@@ -2070,7 +2049,7 @@ mod tests {
         };
         assert_eq!(reasoning.summary, vec!["thinking"]);
         assert_eq!(
-            reasoning.opaque_state.as_ref().unwrap().data,
+            reasoning.opaque_state.as_ref().unwrap().raw,
             json!({"reasoning":"thinking"})
         );
         let mut history = AgentHistory::new(model());
@@ -2087,7 +2066,7 @@ mod tests {
     #[test]
     fn reasoning_precedes_text_and_empty_content_creates_no_message() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelResponse::default_for_model(model());
+        let mut output = ModelResponse::new(model());
         let mut events = VecDeque::new();
         decode(
             &mut decoder,
@@ -2114,9 +2093,9 @@ mod tests {
         let reasoning = |text: &str| HistoryItem {
             kind: HistoryItemKind::Reasoning(Reasoning {
                 summary: vec![text.into()],
-                opaque_state: Some(ProviderOpaqueData {
+                opaque_state: Some(ProviderData {
                     provider: ProviderType::Openrouter,
-                    data: json!({ "reasoning": text }),
+                    raw: json!({ "reasoning": text }),
                 }),
                 ..Default::default()
             }),
@@ -2140,7 +2119,7 @@ mod tests {
     #[test]
     fn null_reasoning_fields_are_absent_and_identity_can_arrive_later() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelResponse::default_for_model(model());
+        let mut output = ModelResponse::new(model());
         let mut events = VecDeque::new();
         for detail in [
             json!({"index":0,"id":null,"type":"reasoning.text","format":null,"text":"a","signature":null,"data":null,"summary":null}),
@@ -2159,7 +2138,7 @@ mod tests {
         let HistoryItemKind::Reasoning(reasoning) = &output.items[0].kind else {
             panic!()
         };
-        let detail = &reasoning.opaque_state.as_ref().unwrap().data["reasoning_details"][0];
+        let detail = &reasoning.opaque_state.as_ref().unwrap().raw["reasoning_details"][0];
         assert_eq!(detail["id"], "r");
         assert_eq!(detail["format"], "native");
         assert_eq!(detail["text"], "ab");
@@ -2183,7 +2162,7 @@ mod tests {
     #[test]
     fn unindexed_reasoning_details_use_ids_not_delta_array_positions() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelResponse::default_for_model(model());
+        let mut output = ModelResponse::new(model());
         let mut events = VecDeque::new();
         for detail in [
             json!({"id":"a","type":"reasoning.text","text":"x"}),
@@ -2209,7 +2188,7 @@ mod tests {
         let HistoryItemKind::Reasoning(reasoning) = &output.items[0].kind else {
             panic!()
         };
-        let details = &reasoning.opaque_state.as_ref().unwrap().data["reasoning_details"];
+        let details = &reasoning.opaque_state.as_ref().unwrap().raw["reasoning_details"];
         assert_eq!(details.as_array().unwrap().len(), 2);
         assert_eq!(
             details[0],
@@ -2224,7 +2203,7 @@ mod tests {
     #[test]
     fn retains_and_replays_fragmented_native_reasoning() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelResponse::default_for_model(model());
+        let mut output = ModelResponse::new(model());
         let mut events = VecDeque::new();
         decode(&mut decoder, &mut output, &mut events, chunk(json!({"reasoning":"think", "reasoning_details":[{"index":0,"type":"reasoning.encrypted","data":"ab","id":"r","format":"native"}]}), Value::Null)).unwrap();
         decode(&mut decoder, &mut output, &mut events, chunk(json!({"reasoning":"ing", "reasoning_details":[{"index":0,"type":"reasoning.encrypted","data":"cd"}], "content":"answer"}), json!("stop"))).unwrap();
@@ -2234,7 +2213,7 @@ mod tests {
         };
         assert_eq!(reasoning.summary, vec!["thinking"]);
         assert_eq!(
-            reasoning.opaque_state.as_ref().unwrap().data["reasoning_details"][0]["data"],
+            reasoning.opaque_state.as_ref().unwrap().raw["reasoning_details"][0]["data"],
             "abcd"
         );
         let mut messages = Vec::new();
@@ -2254,7 +2233,7 @@ mod tests {
             assert!(
                 decode(
                     &mut CompletionsDecoder::new(true),
-                    &mut ModelResponse::default_for_model(model()),
+                    &mut ModelResponse::new(model()),
                     &mut VecDeque::new(),
                     payload
                 )
@@ -2262,7 +2241,7 @@ mod tests {
             );
         }
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelResponse::default_for_model(model());
+        let mut output = ModelResponse::new(model());
         let mut events = VecDeque::new();
         assert!(done(&mut decoder, &mut output, &mut events).is_err());
         decode(
@@ -2301,7 +2280,7 @@ mod tests {
     #[test]
     fn error_finish_reason_is_a_failed_provider_outcome() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelResponse::default_for_model(model());
+        let mut output = ModelResponse::new(model());
         let mut events = VecDeque::new();
         decode(
             &mut decoder,
@@ -2315,15 +2294,15 @@ mod tests {
             matches!(output.outcome, Outcome::Failed(Error::Provider { code: Some(ref code), .. }) if code == "error")
         );
         assert_eq!(
-            output.items[0].metadata.item_status.as_deref(),
-            Some("incomplete")
+            output.items[0].metadata.item_status,
+            Some(ItemStatus::Incomplete)
         );
     }
 
     #[test]
     fn provider_errors_and_unsupported_output_are_explicit() {
         let mut decoder = CompletionsDecoder::new(true);
-        let mut output = ModelResponse::default_for_model(model());
+        let mut output = ModelResponse::new(model());
         let mut events = VecDeque::new();
         assert!(
             matches!(decode(&mut decoder, &mut output, &mut events, json!({"error":{"message":"bad","code":"denied"}})), Err(Error::Provider { code: Some(code), message, .. }) if code == "denied" && message == "bad")

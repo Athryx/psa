@@ -3,6 +3,7 @@ use super::{
     DatabaseCursor, DbError,
     schema::{decode_integer, encode_integer},
 };
+use crate::components::bundles::validate_completion_config;
 use psa_api::*;
 use serde::Serialize;
 use sqlx::Row;
@@ -39,12 +40,29 @@ fn validate_id(id: &ConfigId) -> Result<(), DbError> {
     Ok(())
 }
 
+/// Syntax only: whether a slug names a decision model is checked against the
+/// live catalog when the model is called, since the catalog may not be loaded yet.
+fn validate_decision_model_slugs(bundles: &[psa_api::BundleConfig]) -> Result<(), DbError> {
+    for bundle in bundles {
+        let psa_api::BundleConfig::DecisionModels { models, .. } = bundle else {
+            continue;
+        };
+        for slug in models {
+            llm_api::providers::Model::parse_slug(slug).map_err(|error| {
+                DbError::InvalidInput(format!("invalid decision model {slug:?}: {error}"))
+            })?;
+        }
+    }
+    Ok(())
+}
+
 fn validate_batch(agents: &[AgentConfig], skills: &[SkillRegistration]) -> Result<(), DbError> {
     let mut seen = HashSet::new();
     for config in agents {
         validate_id(&config.config_id)?;
         validate_completion_config(&config.bundles, &config.hooks)
             .map_err(|error| DbError::InvalidInput(error.to_string()))?;
+        validate_decision_model_slugs(&config.bundles)?;
         if !seen.insert(&config.config_id) {
             return Err(DbError::InvalidInput(
                 "duplicate agent config ID in batch".into(),

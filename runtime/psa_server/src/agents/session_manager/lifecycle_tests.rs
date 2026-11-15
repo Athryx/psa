@@ -139,6 +139,7 @@ impl Fixture {
     async fn create_session(&self, sessions: &Sessions) -> Session {
         sessions
             .create_session(psa_api::CreateSession {
+                decision_model: None,
                 model_config: Some(crate::test_support::model_config()),
                 name: "original".into(),
                 working_directory: "/work".into(),
@@ -509,6 +510,7 @@ async fn subagent_identity_is_created_once_and_preserved_on_reload_restart_and_f
     let mut resources = crate::components::bundles::session::SessionBundleResources::start(
         session.id,
         runtime.handle.clone(),
+        None,
     );
     let mut installed = crate::components::bundles::InstalledComponents::install_with_session(
         &definition,

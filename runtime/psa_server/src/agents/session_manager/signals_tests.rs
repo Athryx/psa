@@ -33,6 +33,7 @@ impl Fixture {
         let model = crate::test_support::model_config();
         let session = cursor
             .create_session(NewSession {
+                decision_model: None,
                 name: "signals".into(),
                 working_directory: "/work".into(),
                 probe_id: crate::test_support::probe_metadata().id,

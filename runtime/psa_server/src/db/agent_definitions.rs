@@ -105,7 +105,7 @@ impl DatabaseCursor {
         version: u64,
         request: CreateAgentDefinition,
     ) -> Result<AgentDefinition, DbError> {
-        psa_api::validate_completion_config(&request.bundles, &request.hooks)
+        crate::components::bundles::validate_completion_config(&request.bundles, &request.hooks)
             .map_err(|error| DbError::InvalidInput(error.to_string()))?;
 
         let previous = previous.map(|id| encode_integer(id.0)).transpose()?;

@@ -289,7 +289,8 @@ impl AgentProjection {
                     None
                 };
             }
-            EventType::Log(_) | EventType::Command(_) => {}
+            // Not part of the model's context, so never added to history.
+            EventType::Log(_) | EventType::Command(_) | EventType::DecisionCall(_) => {}
             EventType::InferenceResultStart(start) => {
                 if self.open.is_some() {
                     return Err(invalid("overlapping inference result blocks"));
@@ -309,7 +310,7 @@ impl AgentProjection {
 
                 self.open = Some(OpenInferenceResult {
                     start: start.clone(),
-                    output: ModelResponse::default_for_model(start.model_config.clone()),
+                    output: ModelResponse::new(start.model_config.clone()),
                 });
             }
             EventType::InferenceResultEnd(end) => {
@@ -351,10 +352,11 @@ impl AgentProjection {
             HistoryItemKind::ToolCall(call)
                 if call.name == "record_result"
                     && !resolved.contains(call.call_id.as_str())
-                    && !matches!(
-                        item.metadata.item_status.as_deref(),
-                        Some("in_progress" | "incomplete")
-                    ) =>
+                    && !item
+                        .metadata
+                        .item_status
+                        .as_ref()
+                        .is_some_and(llm_api::api::ItemStatus::is_unfinished) =>
             {
                 Some(call.call_id.clone())
             }
@@ -391,10 +393,12 @@ impl AgentProjection {
             .iter()
             .filter_map(|item| match &item.kind {
                 HistoryItemKind::ToolCall(call)
-                    if matches!(
-                        item.metadata.item_status.as_deref(),
-                        Some("in_progress" | "incomplete")
-                    ) && errors.contains_key(call.call_id.as_str()) =>
+                    if item
+                        .metadata
+                        .item_status
+                        .as_ref()
+                        .is_some_and(llm_api::api::ItemStatus::is_unfinished)
+                        && errors.contains_key(call.call_id.as_str()) =>
                 {
                     Some(call.call_id.as_str())
                 }

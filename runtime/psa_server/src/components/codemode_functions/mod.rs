@@ -4,12 +4,16 @@
 //! runtime-owned handles. The default adapter delegates to the tool's existing
 //! typed argument bridge and preserves its cancellation behavior.
 
+pub(crate) mod decide;
 pub(crate) mod help;
+pub(crate) mod list_decision_models;
 pub(crate) mod prior_results;
 pub(crate) mod python_stub;
 pub(crate) mod result_classes;
 
+use decide::Decide;
 use help::Help;
+use list_decision_models::ListDecisionModels;
 use prior_results::PriorResults;
 use python_stub::PythonStub;
 use std::time::Duration;
@@ -137,19 +141,34 @@ pub enum CodeModeFunctionKind {
     Tool(ToolKind),
     PriorResults(PriorResults),
     Help(Help),
+    ListDecisionModels(ListDecisionModels),
+    Decide(Decide),
 }
 
 impl CodeModeFunctionKind {
-    /// Tool adapters return Python futures; built-in lookups return plain values.
+    /// Tool adapters and decision calls return Python futures, so scripts can
+    /// run them concurrently; built-in lookups return plain values.
     pub fn is_async(&self) -> bool {
-        matches!(self, Self::Tool(_))
+        matches!(self, Self::Tool(_) | Self::Decide(_))
+    }
+
+    /// The Python type shown for a function without a result class.
+    fn return_annotation(&self) -> &'static str {
+        match self {
+            Self::Decide(_) => "dict",
+            Self::ListDecisionModels(_) => "list[dict]",
+            Self::Tool(_) | Self::PriorResults(_) | Self::Help(_) => "str",
+        }
     }
 
     /// The class this function returns instead of text, if any.
     pub fn result_type(&self) -> Option<CodeModeResultType> {
         match self {
             Self::Tool(tool) => tool.codemode_result_type(),
-            Self::PriorResults(_) | Self::Help(_) => None,
+            Self::PriorResults(_)
+            | Self::Help(_)
+            | Self::ListDecisionModels(_)
+            | Self::Decide(_) => None,
         }
     }
 
@@ -158,7 +177,9 @@ impl CodeModeFunctionKind {
     pub(crate) fn python_stub(&self) -> PythonStub {
         let definition = self.definition();
         let result_type = self.result_type();
-        let returns = result_type.as_ref().map_or("str", |result| &result.name);
+        let returns = result_type
+            .as_ref()
+            .map_or(self.return_annotation(), |result| &result.name);
         let mut stub = python_stub::render_python_stub(
             &definition.name,
             &definition.description,
@@ -189,6 +210,8 @@ impl CodeModeFunction for CodeModeFunctionKind {
             }
             Self::PriorResults(function) => function.definition(),
             Self::Help(function) => function.definition(),
+            Self::ListDecisionModels(function) => function.definition(),
+            Self::Decide(function) => function.definition(),
         }
     }
 
@@ -197,6 +220,8 @@ impl CodeModeFunction for CodeModeFunctionKind {
             Self::Tool(tool) => tool.cancellation_timeout(),
             Self::PriorResults(function) => function.cancellation_timeout(),
             Self::Help(function) => function.cancellation_timeout(),
+            Self::ListDecisionModels(function) => function.cancellation_timeout(),
+            Self::Decide(function) => function.cancellation_timeout(),
         }
     }
 
@@ -215,6 +240,10 @@ impl CodeModeFunction for CodeModeFunctionKind {
                     function.execute(arguments, context, cancellation).await
                 }
                 Self::Help(function) => function.execute(arguments, context, cancellation).await,
+                Self::ListDecisionModels(function) => {
+                    function.execute(arguments, context, cancellation).await
+                }
+                Self::Decide(function) => function.execute(arguments, context, cancellation).await,
             }
         })
     }
@@ -267,6 +296,8 @@ pub(crate) fn listed_entries(
         .collect()
 }
 
+#[cfg(test)]
+mod decision_tests;
 #[cfg(test)]
 mod registration_tests;
 #[cfg(test)]

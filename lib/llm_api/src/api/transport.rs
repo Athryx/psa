@@ -54,7 +54,7 @@ impl ApiClient {
     }
 }
 
-fn parse_endpoint_url(value: &str) -> Result<reqwest::Url, Error> {
+pub(super) fn parse_endpoint_url(value: &str) -> Result<reqwest::Url, Error> {
     let url = reqwest::Url::parse(value).map_err(|_| Error::InvalidConfig {
         field: "api_url".into(),
         message: "expected an absolute HTTP(S) endpoint URL".into(),
@@ -74,7 +74,7 @@ fn parse_endpoint_url(value: &str) -> Result<reqwest::Url, Error> {
     Ok(url)
 }
 
-fn build_authenticated_headers(key: &str) -> Result<HeaderMap, Error> {
+pub(super) fn build_authenticated_headers(key: &str) -> Result<HeaderMap, Error> {
     if key.is_empty() || key.trim() != key {
         return Err(Error::InvalidConfig {
             field: "api_key".into(),
@@ -96,7 +96,7 @@ fn build_authenticated_headers(key: &str) -> Result<HeaderMap, Error> {
     Ok(headers)
 }
 
-async fn http_error(mut response: reqwest::Response) -> Error {
+pub(super) async fn http_error(mut response: reqwest::Response) -> Error {
     let status = response.status().as_u16();
     let retry_after_seconds = response
         .headers()
@@ -426,10 +426,15 @@ pub(super) fn parse_usage(value: &Value, chat: bool) -> Usage {
             .get(format!("{input}_details"))
             .and_then(|details| details.get("cached_tokens"))
             .and_then(Value::as_u64),
+        cache_write_input_tokens: value
+            .get(format!("{input}_details"))
+            .and_then(|details| details.get("cache_write_tokens"))
+            .and_then(Value::as_u64),
         reasoning_output_tokens: value
             .get(format!("{output}_details"))
             .and_then(|details| details.get("reasoning_tokens"))
             .and_then(Value::as_u64),
+        cost: value.get("cost").and_then(Value::as_f64),
         provider_details: value
             .as_object()
             .map(|fields| {
@@ -541,7 +546,7 @@ mod tests {
             }
         }
         let response = reqwest::get(format!("http://{address}")).await.unwrap();
-        let output = ModelResponse::default_for_model(crate::providers::ModelConfig {
+        let output = ModelResponse::new(crate::providers::ModelConfig {
             model: crate::providers::Model::new(
                 crate::providers::ProviderType::OpenAiCodex,
                 "test-model",

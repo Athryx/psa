@@ -29,6 +29,7 @@ async fn create_configured(
     let session = harness
         .client
         .create_session(&wire::CreateSession {
+            decision_model: None,
             name: "results".into(),
             working_directory: "/work".into(),
             probe_id: support::probe_metadata().id,

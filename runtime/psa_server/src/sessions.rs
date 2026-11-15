@@ -16,6 +16,7 @@ pub struct Session {
     pub probe_id: psa_api::ProbeId,
     pub project_id: Option<psa_api::ProjectId>,
     pub model_config: llm_api::providers::ModelConfig,
+    pub decision_model: Option<llm_api::providers::Model>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -30,6 +31,7 @@ impl Session {
             probe_id: self.probe_id,
             project_id: self.project_id,
             model_config: self.model_config,
+            decision_model: self.decision_model,
             busy,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -44,11 +46,13 @@ pub struct NewSession {
     pub probe_id: psa_api::ProbeId,
     pub project_id: Option<psa_api::ProjectId>,
     pub model_config: llm_api::providers::ModelConfig,
+    pub decision_model: Option<llm_api::providers::Model>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct SessionUpdate {
     pub model_config: Option<llm_api::providers::ModelConfig>,
+    pub decision_model: Option<llm_api::providers::Model>,
     pub name: Option<String>,
     pub working_directory: Option<PathBuf>,
 }

@@ -25,6 +25,7 @@ pub(super) async fn install_bundle(harness: &Harness) -> (BashBundle, BashHandle
         .unwrap();
     let session = cursor
         .create_session(NewSession {
+            decision_model: None,
             name: "bash integration".into(),
             working_directory: harness.dir.path().into(),
             probe_id: harness.id,
@@ -96,7 +97,7 @@ async fn bash_bundle_handles_background_stdin_intervals_duplicates_and_close() {
             .args(["-c", "printf 'first\\n'; IFS= read -r line; printf 'got:%s\\n' \"$line\"; sleep 0.1; printf done"]),
             Some("interactive".into()), Duration::from_millis(30), cancellation(&mut cancellations)).await.unwrap();
         assert!(initial.running);
-        let log = initial.log_path.clone();
+        let log = initial.log_path.clone().expect("background session keeps its log");
         let mut combined = initial.output_text().to_owned();
         assert!(matches!(bash.execute(probe.clone(), Command::new("bash", &cwd).args(["-c", "true"]),
             Some("interactive".into()), Duration::ZERO, cancellation(&mut cancellations)).await,
@@ -112,8 +113,12 @@ async fn bash_bundle_handles_background_stdin_intervals_duplicates_and_close() {
         assert_eq!(combined.matches("first\n").count(), 1);
         assert!(combined.contains("got:hello\n"));
         assert!(combined.ends_with("done"));
-        assert!(matches!(bash.interact("interactive".into(), None, Duration::ZERO, cancellation(&mut cancellations)).await,
-            Err(BashError::UnknownSession(_))));
+        let finished = bash.interact("interactive".into(), None, Duration::ZERO, cancellation(&mut cancellations)).await.unwrap();
+        assert!(finished.already_finished && !finished.running);
+        assert_eq!(finished.exit_code, Some(0));
+        assert!(finished.output_text().is_empty());
+        assert!(matches!(bash.interact("interactive".into(), Some("more\n".into()), Duration::ZERO, cancellation(&mut cancellations)).await,
+            Err(BashError::StdinClosed(_))));
         let (full, _, _) = collect(probe.read_file(&log).await.unwrap()).await;
         assert_eq!(full, combined.as_bytes());
 
@@ -122,10 +127,12 @@ async fn bash_bundle_handles_background_stdin_intervals_duplicates_and_close() {
         assert!(running.running);
         let closed = bash.close("close-me".into()).await.unwrap();
         assert!(!closed.running);
-        assert!(matches!(bash.close("close-me".into()).await, Err(BashError::UnknownSession(_))));
+        assert!(bash.close("close-me".into()).await.unwrap().already_finished);
+        assert!(matches!(bash.close("never-started".into()).await, Err(BashError::UnknownSession(_))));
 
         bundle.cleanup().await.unwrap();
-        remove_logs(&probe, &[log, closed.log_path]).await;
+        let closed_log = closed.log_path.expect("closed session keeps its log");
+        remove_logs(&probe, &[log, closed_log]).await;
         harness.stop().await;
     }).await.unwrap();
 }
@@ -149,7 +156,8 @@ async fn bash_bundle_retains_full_output_and_cleans_up_live_processes() {
         assert!(output.output_text().ends_with("line2999"));
         assert!(output.output_text().contains("[middle output omitted]"));
         assert!(output.output_text().len() <= 50 * 1024);
-        let (full, _, _) = collect(probe.read_file(&output.log_path).await.unwrap()).await;
+        let log = output.log_path.expect("truncated output keeps its log");
+        let (full, _, _) = collect(probe.read_file(&log).await.unwrap()).await;
         let full = String::from_utf8(full).unwrap();
         assert_eq!(full.lines().count(), 3000);
         assert!(full.ends_with("line2999\n"));
@@ -204,7 +212,8 @@ async fn bash_bundle_retains_full_output_and_cleans_up_live_processes() {
         )
         .await;
         assert_ne!(status.unwrap().code, Some(0));
-        remove_logs(&probe, &[output.log_path, live.log_path]).await;
+        let live_log = live.log_path.expect("background session keeps its log");
+        remove_logs(&probe, &[log, live_log]).await;
         harness.stop().await;
     })
     .await

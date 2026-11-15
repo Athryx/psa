@@ -41,6 +41,7 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
         let mut cursor = db.cursor().await.unwrap();
         let session = cursor
             .create_session(NewSession {
+                decision_model: None,
                 model_config: support::model_config(),
                 probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
                 project_id: None,

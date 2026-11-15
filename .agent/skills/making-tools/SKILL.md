@@ -48,7 +48,7 @@ to introduce new general-purpose capabilities.
   depend on declaration-order results or on another parallel invocation's side effects.
 - Ordinary production concrete tools MUST use a typed argument struct and
   `typed_tool_execute!`. The schema-configured `record_result` tool is the
-  deliberate dynamic-schema exception, using shared `CompiledToolSchema`
+  deliberate dynamic-schema exception, using the server's `ResultSchema`
   validation rather than a fixed Rust argument schema. Do not handwrite JSON field extraction or a separate
   JSON-valued implementation of `Tool::execute`.
 
@@ -155,7 +155,7 @@ macro are unchanged.
   `TypedResult { schema: ToolSchema, max_retries }` installs sequential
   `record_result` and a require-result completion hook. Its schema is a raw,
   explicit object-root Draft 2020-12 schema with local references, validated
-  offline by shared `CompiledToolSchema`. The whole argument object is the
+  offline by the server's `ResultSchema`. The whole argument object is the
   result, without a wrapper. Do not generate a separate fixed schema for it.
   Valid data atomically saves Result and Idle; acknowledgment is only
   `Result recorded.`. Invalid data yields an error, never a Result.
@@ -309,7 +309,7 @@ to reach around their ownership or lifecycle rules.
   `load_last_inference_result()`, and `load_agent_envelopes(range)`. These are
   scoped to the agent, including inherited fork history. Use them rather than SQL.
 
-### `Sessions` (`runtime/psa_server/src/agents/sessions.rs`)
+### `Sessions` (`runtime/psa_server/src/agents/sessions/mod.rs`)
 
 Existing async operations cover agent-definition create/get/list/update;
 session create/get/list/update/fork; agent create/get/list (including immutable

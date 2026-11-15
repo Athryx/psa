@@ -22,9 +22,7 @@ pub(super) fn validate_tool(tool: &ToolDefinition) -> Result<(), Error> {
             return Err("function names must be 1-64 ASCII letters, digits, '_' or '-'".into());
         }
 
-        tool.parameters
-            .to_openai_parameters(tool.strict)
-            .map(|_| ())
+        tool.parameters.validate_openai_parameters(tool.strict)
     };
 
     validate().map_err(|message| Error::InvalidToolDefinition {

@@ -30,6 +30,7 @@ fn snapshots() -> (Agent, Session) {
         updated_at: now,
     };
     let session = Session {
+        decision_model: None,
         id: agent.session_id,
         parent_id: None,
         first_position: 1,

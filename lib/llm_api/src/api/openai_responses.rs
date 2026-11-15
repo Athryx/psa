@@ -11,12 +11,11 @@ use serde_json::{Value, json};
 use crate::Error;
 use crate::providers::ProviderType;
 
+use super::agent_history::require_provider;
 use super::transport::{
     ApiClient, Decoder, SseEvent, StreamingResponse, parse_usage, protocol, provider_error,
 };
 use super::*;
-
-const RAW_ITEM: &str = "openai_responses_item";
 
 /// An authenticated, reusable Responses client. Clones share the HTTP client.
 #[derive(Clone)]
@@ -59,7 +58,7 @@ impl ApiProvider for OpenAiResponses {
         Ok(OpenAiResponsesStream {
             inner: StreamingResponse::new(
                 response,
-                ModelResponse::default_for_model(history.config.clone()),
+                ModelResponse::new(history.config.clone()),
                 ResponsesDecoder::default(),
             ),
         })
@@ -93,14 +92,6 @@ fn unsupported(feature: impl Into<String>) -> Error {
     Error::Unsupported {
         feature: feature.into(),
     }
-}
-
-fn require_provider(expected: ProviderType, actual: ProviderType) -> Result<(), Error> {
-    if actual != expected {
-        return Err(Error::ProviderMismatch { expected, actual });
-    }
-
-    Ok(())
 }
 
 fn build_request_body(history: &AgentHistory, config: &RequestConfig) -> Result<Value, Error> {
@@ -163,18 +154,12 @@ fn build_request_items(history: &AgentHistory) -> Result<Vec<Value>, Error> {
 }
 
 fn serialize_tool(tool: &ToolDefinition) -> Result<Value, Error> {
-    let parameters = tool
-        .parameters
-        .to_openai_parameters(tool.strict)
-        .map_err(|message| Error::InvalidToolDefinition {
-            name: tool.name.clone(),
-            message,
-        })?;
+    super::schema::validate_tool(tool)?;
     let mut value = json!({
         "type": "function",
         "name": tool.name,
         "description": tool.description,
-        "parameters": parameters,
+        "parameters": tool.parameters.as_value(),
     });
 
     if let Some(strict) = tool.strict {
@@ -184,35 +169,38 @@ fn serialize_tool(tool: &ToolDefinition) -> Result<Value, Error> {
     Ok(value)
 }
 
-fn parse_replay_item_metadata(item: &HistoryItem) -> Result<Value, Error> {
-    match item.metadata.provider_metadata.get(RAW_ITEM) {
-        Some(value) if value.is_object() => Ok(value.clone()),
-        Some(_) => Err(unsupported("malformed Responses item replay metadata")),
-        None => Ok(json!({})),
+fn parse_replay_item_metadata(provider: ProviderType, item: &HistoryItem) -> Result<Value, Error> {
+    let Some(native) = &item.metadata.provider_data else {
+        return Ok(json!({}));
+    };
+    require_provider(provider, native.provider)?;
+    if !native.raw.is_object() {
+        return Err(unsupported("malformed Responses item replay metadata"));
     }
+    Ok(native.raw.clone())
 }
 
-fn parse_native_value(value: &Value, expected_type: &str) -> Result<Value, Error> {
-    if !value.is_object() || value.get("type").and_then(Value::as_str) != Some(expected_type) {
-        return Err(unsupported(
-            "native Responses data must be an object with its declared type",
-        ));
+fn parse_native_value(native: &ProviderData) -> Result<Value, Error> {
+    if !native.raw.is_object() || native.type_name().is_none() {
+        return Err(unsupported("native Responses data must be a typed object"));
     }
-    Ok(value.clone())
+    Ok(native.raw.clone())
 }
 
 fn serialize_item(provider: ProviderType, item: &HistoryItem) -> Result<Value, Error> {
-    let mut value = parse_replay_item_metadata(item)?;
+    let mut value = parse_replay_item_metadata(provider, item)?;
 
     match &item.kind {
         HistoryItemKind::Message(message) => {
             serialize_message(provider, &item.metadata, message, &mut value)?;
         }
         HistoryItemKind::ToolCall(call) => {
-            if matches!(
-                item.metadata.item_status.as_deref(),
-                Some("in_progress" | "incomplete")
-            ) {
+            if item
+                .metadata
+                .item_status
+                .as_ref()
+                .is_some_and(ItemStatus::is_unfinished)
+            {
                 return Err(Error::InvalidHistory {
                     message: "cannot replay an unfinished function call".into(),
                 });
@@ -245,7 +233,7 @@ fn serialize_item(provider: ProviderType, item: &HistoryItem) -> Result<Value, E
         }
         HistoryItemKind::ProviderItem(item) => {
             require_provider(provider, item.provider)?;
-            value = parse_native_value(&item.raw, &item.item_type)?;
+            value = parse_native_value(item)?;
         }
     }
 
@@ -254,7 +242,7 @@ fn serialize_item(provider: ProviderType, item: &HistoryItem) -> Result<Value, E
         object.insert("id".into(), json!(id));
     }
     if let Some(status) = &item.metadata.item_status {
-        object.insert("status".into(), json!(status));
+        object.insert("status".into(), json!(status.as_str()));
     }
 
     Ok(value)
@@ -307,7 +295,7 @@ fn serialize_content(
         ContentBlock::File(file) if !assistant => serialize_file(provider, file),
         ContentBlock::ProviderContent(content) => {
             require_provider(provider, content.provider)?;
-            parse_native_value(&content.raw, &content.content_type)
+            parse_native_value(content)
         }
         ContentBlock::Audio(_) => Err(unsupported("audio input/replay in the Responses adapter")),
         ContentBlock::Refusal(_) => Err(unsupported("refusal content outside assistant messages")),
@@ -332,11 +320,8 @@ fn serialize_message(
             .as_deref()
             .or_else(|| value.get("id").and_then(Value::as_str))
             .is_some_and(|id| !id.is_empty())
-        && metadata
-            .item_status
-            .as_deref()
-            .or_else(|| value.get("status").and_then(Value::as_str))
-            .is_some();
+        && (metadata.item_status.is_some()
+            || value.get("status").and_then(Value::as_str).is_some());
     if message.role == Role::Assistant
         && !native_output
         && (metadata.item_id.is_some()
@@ -429,11 +414,11 @@ fn serialize_reasoning(
 
     value.as_object_mut().unwrap().remove("encrypted_content");
     require_provider(provider, state.provider)?;
-    let encrypted = if state.data.is_string() {
-        &state.data
+    let encrypted = if state.raw.is_string() {
+        &state.raw
     } else {
         state
-            .data
+            .raw
             .get("encrypted_content")
             .filter(|v| v.is_string())
             .ok_or_else(|| unsupported("reasoning state without Responses encrypted_content"))?
@@ -1294,15 +1279,14 @@ fn parse_item(
                 opaque_state: raw
                     .get("encrypted_content")
                     .filter(|v| !v.is_null())
-                    .map(|data| ProviderOpaqueData {
+                    .map(|data| ProviderData {
                         provider,
-                        data: data.clone(),
+                        raw: data.clone(),
                     }),
             })
         }
-        item_type => HistoryItemKind::ProviderItem(ProviderItem {
+        _ => HistoryItemKind::ProviderItem(ProviderData {
             provider,
-            item_type: item_type.into(),
             raw: raw.clone(),
         }),
     };
@@ -1310,8 +1294,14 @@ fn parse_item(
         kind,
         metadata: HistoryItemMetadata {
             item_id: raw.get("id").and_then(Value::as_str).map(str::to_owned),
-            item_status: raw.get("status").and_then(Value::as_str).map(str::to_owned),
-            provider_metadata: [(RAW_ITEM.into(), raw.clone())].into(),
+            item_status: raw
+                .get("status")
+                .and_then(Value::as_str)
+                .map(|status| ItemStatus::from(status.to_owned())),
+            provider_data: Some(ProviderData {
+                provider,
+                raw: raw.clone(),
+            }),
         },
     }))
 }
@@ -1329,13 +1319,8 @@ fn parse_content(provider: ProviderType, raw: &Value) -> Result<ContentBlock, Er
                 .transpose()?
                 .into_iter()
                 .flatten()
-                .map(|raw| Annotation {
+                .map(|raw| ProviderData {
                     provider,
-                    annotation_type: raw
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown")
-                        .into(),
                     raw: raw.clone(),
                 })
                 .collect(),
@@ -1343,9 +1328,8 @@ fn parse_content(provider: ProviderType, raw: &Value) -> Result<ContentBlock, Er
         "refusal" => ContentBlock::Refusal(RefusalBlock {
             text: parse_string_field(raw, "refusal")?.into(),
         }),
-        content_type => ContentBlock::ProviderContent(ProviderContent {
+        _ => ContentBlock::ProviderContent(ProviderData {
             provider,
-            content_type: content_type.into(),
             raw: raw.clone(),
         }),
     })
@@ -1361,8 +1345,8 @@ fn matches_completed_item(
 ) -> Result<bool, Error> {
     let mut previous = parse_item(provider, previous, true)?.unwrap();
     let mut next = parse_item(provider, next, true)?.unwrap();
-    previous.metadata.provider_metadata.clear();
-    next.metadata.provider_metadata.clear();
+    previous.metadata.provider_data = None;
+    next.metadata.provider_data = None;
     previous.metadata.item_status = None;
     next.metadata.item_status = None;
     Ok(serde_json::to_value(previous)? == serde_json::to_value(next)?)
@@ -1396,7 +1380,7 @@ fn validate_item_compatibility(previous: &HistoryItem, next: &HistoryItem) -> Re
         (HistoryItemKind::Reasoning(a), HistoryItemKind::Reasoning(b))
             if a.summary.len() <= b.summary.len() => {}
         (HistoryItemKind::ProviderItem(a), HistoryItemKind::ProviderItem(b))
-            if a.item_type == b.item_type => {}
+            if a.type_name() == b.type_name() => {}
         (HistoryItemKind::ToolResult(a), HistoryItemKind::ToolResult(b))
             if a.call_id == b.call_id => {}
         _ => return Err(protocol("output item type or identity changed")),
@@ -1471,7 +1455,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 decoder: ResponsesDecoder::default(),
-                output: ModelResponse::default_for_model(model()),
+                output: ModelResponse::new(model()),
                 events: VecDeque::new(),
             }
         }
@@ -1517,7 +1501,7 @@ mod tests {
     #[test]
     fn request_serializes_flat_history_exactly_once() {
         let mut history = AgentHistory::new(model());
-        let mut output = ModelResponse::default_for_model(model());
+        let mut output = ModelResponse::new(model());
         output.outcome = Outcome::Completed {
             reason: StopReason::EndTurn,
         };
@@ -1675,19 +1659,17 @@ mod tests {
             build_request_body(&history, &RequestConfig::default()),
             Err(Error::Unsupported { .. })
         ));
-        let native = item(HistoryItemKind::ProviderItem(ProviderItem {
+        let native = item(HistoryItemKind::ProviderItem(ProviderData {
             provider: ProviderType::Openrouter,
-            item_type: "search".into(),
             raw: json!({"type":"search"}),
         }));
         assert!(matches!(
             serialize_item(&native),
             Err(Error::ProviderMismatch { .. })
         ));
-        let native = item(HistoryItemKind::ProviderItem(ProviderItem {
+        let native = item(HistoryItemKind::ProviderItem(ProviderData {
             provider: PROVIDER,
-            item_type: "search".into(),
-            raw: json!({"type":"other"}),
+            raw: json!({"query":"untyped"}),
         }));
         assert!(matches!(
             serialize_item(&native),
@@ -1699,7 +1681,7 @@ mod tests {
             arguments: "{\"a\":".into(),
         }));
         assert_eq!(serialize_item(&partial).unwrap()["arguments"], "{\"a\":");
-        partial.metadata.item_status = Some("incomplete".into());
+        partial.metadata.item_status = Some(ItemStatus::Incomplete);
         assert!(matches!(
             serialize_item(&partial),
             Err(Error::InvalidHistory { .. })
@@ -1791,7 +1773,7 @@ mod tests {
             panic!()
         };
         assert_eq!(reasoning.summary, ["final summary", "second"]);
-        assert_eq!(reasoning.opaque_state.as_ref().unwrap().data, "opaque");
+        assert_eq!(reasoning.opaque_state.as_ref().unwrap().raw, "opaque");
         assert!(h.events.iter().any(|e| matches!(
             e,
             TurnEvent::ItemUpdated {
@@ -2007,7 +1989,12 @@ mod tests {
         h.finish(json!([enriched.clone()]));
         assert_eq!(h.output.provider_metadata["output"][0], enriched);
         assert!(
-            !h.output.items[0].metadata.provider_metadata[RAW_ITEM]
+            !h.output.items[0]
+                .metadata
+                .provider_data
+                .as_ref()
+                .unwrap()
+                .raw
                 .as_object()
                 .unwrap()
                 .contains_key("extra")
@@ -2049,7 +2036,7 @@ mod tests {
         let native = parse_item(&raw, true).unwrap().unwrap();
         assert_eq!(serialize_item(&native).unwrap(), raw);
         let mut history = AgentHistory::new(model());
-        let mut output = ModelResponse::default_for_model(model());
+        let mut output = ModelResponse::new(model());
         output.outcome = Outcome::Completed {
             reason: StopReason::EndTurn,
         };
@@ -2091,9 +2078,9 @@ mod tests {
         let HistoryItemKind::Reasoning(state) = &mut reasoning.kind else {
             panic!()
         };
-        state.opaque_state = Some(ProviderOpaqueData {
+        state.opaque_state = Some(ProviderData {
             provider: PROVIDER,
-            data: json!("encrypted"),
+            raw: json!("encrypted"),
         });
         assert_eq!(
             serialize_item(&reasoning).unwrap()["encrypted_content"],

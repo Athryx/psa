@@ -1,9 +1,12 @@
 use super::{Hook, HookError};
 use crate::{
     agents::{AgentState, agent_context::AgentContext},
-    components::{bundles::typed_result::TypedResultState, cancellation::Cancellation},
+    components::{
+        bundles::typed_result::{ResultSchema, TypedResultState},
+        cancellation::Cancellation,
+    },
 };
-use llm_api::api::{CompiledToolSchema, Outcome, StopReason};
+use llm_api::api::{Outcome, StopReason};
 use psa_api::events::{
     Event, EventId, EventType, Log, Message, MessageType, NewEvent, StatusChange,
 };
@@ -144,7 +147,7 @@ fn can_complete(outcome: &Outcome) -> bool {
     )
 }
 
-fn assess_response(events: &[Event], schema: &CompiledToolSchema) -> Option<Violation> {
+fn assess_response(events: &[Event], schema: &ResultSchema) -> Option<Violation> {
     let mut has_tools = false;
     let mut has_result = false;
     for event in events {
@@ -156,10 +159,12 @@ fn assess_response(events: &[Event], schema: &CompiledToolSchema) -> Option<Viol
             continue;
         }
         has_result = true;
-        if matches!(
-            call.metadata.item_status.as_deref(),
-            Some("in_progress" | "incomplete")
-        ) {
+        if call
+            .metadata
+            .item_status
+            .as_ref()
+            .is_some_and(llm_api::api::ItemStatus::is_unfinished)
+        {
             continue;
         }
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&call.arguments)
@@ -293,14 +298,13 @@ mod tests {
         )
     }
 
-    fn schema() -> CompiledToolSchema {
-        ToolSchema::from(json!({
+    fn schema() -> ResultSchema {
+        ResultSchema::compile(&ToolSchema::from(json!({
             "type":"object",
             "required":["answer"],
             "properties":{"answer":{"type":"integer"}},
             "additionalProperties":false
-        }))
-        .compile()
+        })))
         .unwrap()
     }
 
@@ -339,7 +343,7 @@ mod tests {
         let EventType::ToolCall(call) = &mut incomplete.kind else {
             unreachable!()
         };
-        call.metadata.item_status = Some("incomplete".into());
+        call.metadata.item_status = Some(llm_api::api::ItemStatus::Incomplete);
         assert_eq!(
             assess_response(&[incomplete], &schema),
             Some(Violation::InvalidResult)

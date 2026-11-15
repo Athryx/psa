@@ -26,6 +26,7 @@ pub(super) fn event_kind(event: &EventType) -> &'static str {
         EventType::Compaction(_) => "compaction",
         EventType::Log(_) => "log",
         EventType::Command(_) => "command",
+        EventType::DecisionCall(_) => "decision_call",
         EventType::Result(_) => "result",
         // Stable on-disk tags from migration 0001; the payload tables were renamed.
         EventType::InferenceResultStart(_) => "inference_start",
@@ -45,7 +46,11 @@ fn invalid(value: &str) -> DbError {
     DbError::Corrupt(format!("unknown stored discriminator: {value}"))
 }
 
-fn parse_model(provider: &str, model: String, effort: &str) -> Result<ModelConfig, DbError> {
+pub(super) fn parse_model(
+    provider: &str,
+    model: String,
+    effort: &str,
+) -> Result<ModelConfig, DbError> {
     Ok(ModelConfig {
         model: Model::new(
             match provider {
@@ -93,7 +98,9 @@ struct StoredUsage {
     output_tokens: Option<i64>,
     total_tokens: Option<i64>,
     cached_tokens: Option<i64>,
+    cache_write_tokens: Option<i64>,
     reasoning_tokens: Option<i64>,
+    cost: Option<f64>,
     usage_details: String,
 }
 
@@ -104,10 +111,15 @@ impl StoredUsage {
             output_tokens: usage.output_tokens.map(encode_integer).transpose()?,
             total_tokens: usage.total_tokens.map(encode_integer).transpose()?,
             cached_tokens: usage.cached_input_tokens.map(encode_integer).transpose()?,
+            cache_write_tokens: usage
+                .cache_write_input_tokens
+                .map(encode_integer)
+                .transpose()?,
             reasoning_tokens: usage
                 .reasoning_output_tokens
                 .map(encode_integer)
                 .transpose()?,
+            cost: usage.cost,
             usage_details: serialize_json(&usage.provider_details)?,
         })
     }
@@ -118,7 +130,9 @@ impl StoredUsage {
             output_tokens: self.output_tokens.map(decode_integer).transpose()?,
             total_tokens: self.total_tokens.map(decode_integer).transpose()?,
             cached_input_tokens: self.cached_tokens.map(decode_integer).transpose()?,
+            cache_write_input_tokens: self.cache_write_tokens.map(decode_integer).transpose()?,
             reasoning_output_tokens: self.reasoning_tokens.map(decode_integer).transpose()?,
+            cost: self.cost,
             provider_details: parse_json(&self.usage_details)?,
         })
     }
@@ -316,7 +330,7 @@ pub(super) async fn insert_payload(
             let usage = StoredUsage::encode(&value.usage)?;
 
             sqlx::query!(
-                "INSERT INTO event_compaction (event_pk,summary_type,summary,input_tokens,output_tokens,total_tokens,cached_tokens,reasoning_tokens,usage_details) VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO event_compaction (event_pk,summary_type,summary,input_tokens,output_tokens,total_tokens,cached_tokens,cache_write_tokens,reasoning_tokens,cost,usage_details) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 pk,
                 summary_type,
                 summary,
@@ -324,7 +338,9 @@ pub(super) async fn insert_payload(
                 usage.output_tokens,
                 usage.total_tokens,
                 usage.cached_tokens,
+                usage.cache_write_tokens,
                 usage.reasoning_tokens,
+                usage.cost,
                 usage.usage_details
             )
             .execute(&mut *conn)
@@ -334,6 +350,16 @@ pub(super) async fn insert_payload(
             let value = serialize_json(value)?;
             sqlx::query!(
                 "INSERT INTO event_command (event_pk,value) VALUES (?,?)",
+                pk,
+                value
+            )
+            .execute(&mut *conn)
+            .await?;
+        }
+        EventType::DecisionCall(value) => {
+            let value = serialize_json(value)?;
+            sqlx::query!(
+                "INSERT INTO event_decision_call (event_pk,value) VALUES (?,?)",
                 pk,
                 value
             )
@@ -413,7 +439,7 @@ pub(super) async fn insert_payload(
             let usage = StoredUsage::encode(&value.usage)?;
 
             sqlx::query!(
-                "INSERT INTO event_inference_result_end (event_pk,inference_id,outcome,stop_reason,failure,request_time_us,response_id,provider_metadata,input_tokens,output_tokens,total_tokens,cached_tokens,reasoning_tokens,usage_details) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO event_inference_result_end (event_pk,inference_id,outcome,stop_reason,failure,request_time_us,response_id,provider_metadata,input_tokens,output_tokens,total_tokens,cached_tokens,cache_write_tokens,reasoning_tokens,cost,usage_details) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 pk,
                 id,
                 outcome,
@@ -426,7 +452,9 @@ pub(super) async fn insert_payload(
                 usage.output_tokens,
                 usage.total_tokens,
                 usage.cached_tokens,
+                usage.cache_write_tokens,
                 usage.reasoning_tokens,
+                usage.cost,
                 usage.usage_details
             )
             .execute(&mut *conn)
@@ -462,7 +490,9 @@ pub(super) async fn load_payloads(
                 output_tokens: $r.output_tokens,
                 total_tokens: $r.total_tokens,
                 cached_tokens: $r.cached_tokens,
+                cache_write_tokens: $r.cache_write_tokens,
                 reasoning_tokens: $r.reasoning_tokens,
+                cost: $r.cost,
                 usage_details: $r.usage_details,
             }
             .decode()?
@@ -587,7 +617,7 @@ pub(super) async fn load_payloads(
         })
     );
     load!(
-        "SELECT p.event_pk, p.summary_type, p.summary, p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens, p.usage_details FROM event_compaction p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+        "SELECT p.event_pk, p.summary_type, p.summary, p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.cache_write_tokens, p.reasoning_tokens, p.cost, p.usage_details FROM event_compaction p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
         |r| EventType::Compaction(Compaction {
             summary: match r.summary_type.as_str() {
                 "text" => CompactionSummary::Text(r.summary),
@@ -600,6 +630,10 @@ pub(super) async fn load_payloads(
     load!(
         "SELECT p.event_pk, p.value FROM event_command p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
         |r| EventType::Command(parse_json(&r.value)?)
+    );
+    load!(
+        "SELECT p.event_pk, p.value FROM event_decision_call p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+        |r| EventType::DecisionCall(parse_json(&r.value)?)
     );
     load!(
         "SELECT p.event_pk, p.error, p.message FROM event_log p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
@@ -631,7 +665,7 @@ pub(super) async fn load_payloads(
         })
     );
     load!(
-        "SELECT p.event_pk, p.inference_id, p.outcome, p.stop_reason, p.failure, p.request_time_us, p.response_id, p.provider_metadata, p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens, p.usage_details FROM event_inference_result_end p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+        "SELECT p.event_pk, p.inference_id, p.outcome, p.stop_reason, p.failure, p.request_time_us, p.response_id, p.provider_metadata, p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.cache_write_tokens, p.reasoning_tokens, p.cost, p.usage_details FROM event_inference_result_end p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
         |r| EventType::InferenceResultEnd(InferenceResultEnd {
             id: decode_integer(r.inference_id)?,
             outcome: match r.outcome.as_str() {

@@ -1,7 +1,7 @@
 //! Pi catalog transport and normalization; upstream URLs and headers are never imported.
 use super::{CatalogError, ProviderSyncState};
 use llm_api::providers::{Effort, Model, ProviderType};
-use psa_api::{ModelCost, ModelCostRates, ModelCostTier, ModelInfo, ReasoningOption};
+use psa_api::{ModelCost, ModelCostRates, ModelCostTier, ModelInfo, ModelKind, ReasoningOption};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::HashMap, time::Duration};
@@ -63,7 +63,7 @@ impl CatalogSource {
         };
         let mut url = self.base_url.clone();
         url.set_path(&format!("/api/models/providers/{id}"));
-        url.set_query(Some("types=chat"));
+        url.set_query(Some("types=chat,classifier"));
         let mut request = self
             .client
             .get(url)
@@ -107,6 +107,8 @@ struct PiModel {
     context_window: Option<u64>,
     max_tokens: Option<u64>,
     cost: Option<PiCost>,
+    /// Absent on decision models, which never reason.
+    #[serde(default)]
     reasoning: bool,
     #[serde(default)]
     thinking_level_map: HashMap<String, Option<String>>,
@@ -185,9 +187,11 @@ fn normalize_catalog(provider: ProviderType, value: Value) -> Result<Vec<ModelIn
     let mut models = Vec::new();
     let mut ids = std::collections::HashSet::new();
     for value in entries {
-        if value.get("type").is_some_and(|kind| kind != "chat") {
-            continue;
-        }
+        let kind = match value.get("type").and_then(Value::as_str) {
+            None | Some("chat") => ModelKind::Chat,
+            Some("classifier") => ModelKind::Decision,
+            Some(_) => continue,
+        };
         let raw: PiModel = serde_json::from_value(value)?;
         let model = Model::new(provider, raw.id.clone())
             .map_err(|error| CatalogError::Invalid(error.to_string()))?;
@@ -203,6 +207,7 @@ fn normalize_catalog(provider: ProviderType, value: Value) -> Result<Vec<ModelIn
 
         models.push(ModelInfo {
             model,
+            kind,
             name: raw
                 .name
                 .filter(|name| !name.trim().is_empty())

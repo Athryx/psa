@@ -21,6 +21,7 @@ async fn create_agent_record(
     let definition = cursor.create_agent_definition(definition).await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            decision_model: None,
             name: "bundle worker".into(),
             working_directory: "/work".into(),
             probe_id: crate::test_support::probe_metadata().id,

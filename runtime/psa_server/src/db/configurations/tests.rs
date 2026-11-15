@@ -470,6 +470,7 @@ async fn deferred_project_discovery_distinguishes_unknown_from_known_absent() {
     let probe_id = psa_api::ProbeId(psa_api::probes::Uuid::nil());
     let session = cursor
         .create_session(crate::sessions::NewSession {
+            decision_model: None,
             name: "deferred".into(),
             working_directory: "/work".into(),
             probe_id,

@@ -12,6 +12,7 @@ async fn persisted_model_updates_live_request_projection_and_survives_reload() {
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            decision_model: None,
             model_config: crate::test_support::model_config(),
             probe_id: crate::test_support::probe_metadata().id,
             project_id: None,
@@ -109,6 +110,7 @@ async fn repeated_status_changes_are_omitted_using_prior_transitions_in_the_batc
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            decision_model: None,
             model_config: crate::test_support::model_config(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             project_id: None,
@@ -229,6 +231,7 @@ async fn cancelled_persistence_finishes_before_the_next_append() {
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            decision_model: None,
             model_config: crate::test_support::model_config(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             project_id: None,
@@ -352,6 +355,7 @@ async fn committed_calls_get_not_run_results_when_interrupted_before_execution()
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            decision_model: None,
             model_config: crate::test_support::model_config(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             project_id: None,

@@ -246,6 +246,7 @@ async fn registration_auth_sessions_and_reconnect() {
         let session = harness
             .client
             .create_session(&psa_api::CreateSession {
+                decision_model: None,
                 name: "remote".into(),
                 working_directory: harness.dir.path().to_owned(),
                 probe_id: harness.id,
@@ -276,6 +277,7 @@ async fn registration_auth_sessions_and_reconnect() {
             harness
                 .client
                 .create_session(&psa_api::CreateSession {
+                    decision_model: None,
                     name: "bad".into(),
                     working_directory: "/tmp".into(),
                     probe_id: ProbeId(Uuid::new_v4()),
@@ -332,6 +334,7 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
         let session = harness
             .client
             .create_session(&psa_api::CreateSession {
+                decision_model: None,
                 name: "skills".into(),
                 working_directory: cwd.clone(),
                 probe_id: harness.id,

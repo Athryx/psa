@@ -344,6 +344,13 @@ impl Converter<'_> {
                     text: serde_json::to_string(command).unwrap_or_default(),
                 },
             ),
+            EventType::DecisionCall(call) => self.push(
+                t,
+                EventKind::Context {
+                    kind: "decision_call".into(),
+                    text: serde_json::to_string(call).unwrap_or_default(),
+                },
+            ),
             EventType::ProviderItem(_) | EventType::NewContext => {}
         }
     }

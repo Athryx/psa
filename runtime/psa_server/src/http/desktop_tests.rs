@@ -22,6 +22,7 @@ pub(super) async fn fixture() -> (
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(sessions::NewSession {
+            decision_model: None,
             probe_id: api::ProbeId(api::probes::Uuid::nil()),
             project_id: None,
             name: "test".into(),

@@ -53,7 +53,8 @@ pub async fn start_with_shutdown(
     // Validate existing provider credentials before changing the shared file.
     let providers = ProviderRegistry::load(&auth_path)
         .await?
-        .with_auth_path(auth_path.clone());
+        .with_auth_path(auth_path.clone())
+        .with_max_concurrent_decisions(config.max_concurrent_decision_calls);
     let keys = crate::auth::ensure_keys(&auth_path).await?;
     let database = Database::open(&config.database_path).await?;
     let listener = TcpListener::bind(config.listen).await?;

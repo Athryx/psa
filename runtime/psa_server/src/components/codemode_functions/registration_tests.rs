@@ -10,7 +10,7 @@ use crate::{
 use psa_api::{AgentDefinitionId, AgentId, SessionId, events::EventId};
 use time::OffsetDateTime;
 
-fn snapshots() -> (AgentDefinition, Agent, Session) {
+pub(super) fn snapshots() -> (AgentDefinition, Agent, Session) {
     let now = OffsetDateTime::now_utc();
     let agent = Agent {
         interactive: false,
@@ -30,6 +30,7 @@ fn snapshots() -> (AgentDefinition, Agent, Session) {
         updated_at: now,
     };
     let session = Session {
+        decision_model: None,
         id: agent.session_id,
         parent_id: None,
         first_position: 1,

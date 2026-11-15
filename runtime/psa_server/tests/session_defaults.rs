@@ -129,6 +129,7 @@ async fn session_defaults_resolve_once_and_survive_updates_forks_and_server_rest
 
             let override_session = client
                 .create_session(&CreateSession {
+                    decision_model: None,
                     name: "explicit".into(),
                     working_directory: "/work".into(),
                     probe_id: support::probe_metadata().id,

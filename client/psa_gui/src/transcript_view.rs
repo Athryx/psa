@@ -815,6 +815,7 @@ fn row_is_visible(kind: &psa_api::events::EventType, preferences: &UiPreferences
         EventType::Message(_)
         | EventType::Log(_)
         | EventType::Command(_)
+        | EventType::DecisionCall(_)
         | EventType::ToolCall(_)
         | EventType::ToolResult(_)
         | EventType::Compaction(_)
@@ -1120,7 +1121,7 @@ pub(crate) fn blocks(content: &[ContentBlock]) -> String {
             ContentBlock::ProviderContent(content) => format!(
                 "[Provider content: {} / {}]",
                 content.provider.as_str(),
-                content.content_type
+                content.type_name().unwrap_or("unknown")
             ),
         })
         .collect::<Vec<_>>()
@@ -1600,6 +1601,15 @@ fn EventContent(
         EventType::Command(command) => {
             let text = client_shared::describe_agent_command(command);
             rsx! { article { class: "message command-message", title: "Command", pre { "{text}" } } }
+        }
+        EventType::DecisionCall(call) => {
+            let text = client_shared::describe_decision_call(call);
+            let class = if matches!(call.outcome, psa_api::DecisionOutcome::Failed(_)) {
+                "message error"
+            } else {
+                "message muted"
+            };
+            rsx! { article { class, title: "Decision model call", pre { "{text}" } } }
         }
         EventType::ToolCall(call) => {
             let result = result.as_ref().and_then(|result| match result.kind() {

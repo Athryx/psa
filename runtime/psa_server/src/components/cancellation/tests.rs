@@ -5,6 +5,7 @@ use std::time::Duration;
 
 fn session() -> Session {
     Session {
+        decision_model: None,
         id: SessionId(1),
         probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
         parent_id: None,

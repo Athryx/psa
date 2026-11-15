@@ -53,6 +53,7 @@ impl Fixture {
             .unwrap();
         let session = cursor
             .create_session(NewSession {
+                decision_model: None,
                 name: "tool cancellation".into(),
                 working_directory: "/work".into(),
                 probe_id: crate::test_support::probe_metadata().id,
@@ -88,7 +89,7 @@ impl Fixture {
             ManagerClient::new(commands),
             queries.handle(),
         );
-        let resources = SessionBundleResources::start(session.id, sessions.clone());
+        let resources = SessionBundleResources::start(session.id, sessions.clone(), None);
         Self {
             _directory: directory,
             database,

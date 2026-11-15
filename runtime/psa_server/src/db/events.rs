@@ -11,6 +11,7 @@ use super::{
 };
 use crate::agents::{AgentId, AgentState, AgentUsage};
 use psa_api::events::{Event, EventId, EventRange, EventType, NewEvent};
+use psa_api::{DecisionCall, DecisionOutcome};
 use sqlx::{Acquire, SqliteConnection};
 use std::collections::HashSet;
 
@@ -288,6 +289,7 @@ impl DatabaseCursor {
         for event in events {
             match &event.kind {
                 EventType::InferenceResultEnd(end) => add_usage(&mut usage, &end.usage)?,
+                EventType::DecisionCall(call) => add_decision_cost(&mut usage, call),
                 // A summary billed on its own agent reports nothing here; adding
                 // it would turn every known total into "unknown".
                 EventType::Compaction(compaction) if !compaction.usage.is_unreported() => {
@@ -597,15 +599,21 @@ pub(super) fn add_usage(
     total.output_tokens = add(total.output_tokens, usage.output_tokens)?;
     total.total_tokens = add(total.total_tokens, usage.total_tokens)?;
     total.cached_input_tokens = add(total.cached_input_tokens, usage.cached_input_tokens)?;
-    // OpenRouter chat completions report writes in prompt_tokens_details. Do not
-    // treat omitted or unrecognized provider fields as zero.
-    let cache_write = usage
-        .provider_details
-        .get("prompt_tokens_details")
-        .and_then(|details| details.get("cache_write_tokens"))
-        .and_then(serde_json::Value::as_u64);
-    total.cache_write_tokens = add(total.cache_write_tokens, cache_write)?;
+    total.cache_write_tokens = add(total.cache_write_tokens, usage.cache_write_input_tokens)?;
     total.reasoning_output_tokens =
         add(total.reasoning_output_tokens, usage.reasoning_output_tokens)?;
+    add_cost(total, usage.cost);
     Ok(())
+}
+
+/// Add a decision call's charge. A failed call produced no answer and reports
+/// no charge, so it leaves the total known.
+pub(super) fn add_decision_cost(total: &mut AgentUsage, call: &DecisionCall) {
+    if !matches!(call.outcome, DecisionOutcome::Failed(_)) {
+        add_cost(total, call.usage.cost);
+    }
+}
+
+fn add_cost(total: &mut AgentUsage, cost: Option<f64>) {
+    total.cost = total.cost.zip(cost).map(|(total, cost)| total + cost);
 }

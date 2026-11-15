@@ -54,6 +54,7 @@ pub(super) struct SessionRow {
     pub probe_id: String,
     pub project_id: Option<String>,
     pub model_config: String,
+    pub decision_model: Option<String>,
     pub created_at_us: i64,
     pub updated_at_us: i64,
 }
@@ -73,6 +74,11 @@ impl TryFrom<SessionRow> for Session {
             name: row.name,
             working_directory: PathBuf::from(row.working_directory),
             model_config: serde_json::from_str(&row.model_config)?,
+            decision_model: row
+                .decision_model
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()?,
             probe_id: psa_api::ProbeId(
                 psa_api::probes::Uuid::parse_str(&row.probe_id)
                     .map_err(|e| DbError::Corrupt(e.to_string()))?,

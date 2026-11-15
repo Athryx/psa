@@ -16,6 +16,7 @@ use std::time::Duration;
 mod codemode_definition;
 mod codemode_snapshots;
 mod cursor;
+mod decisions;
 mod definitions;
 mod desktop;
 mod file_tools;
@@ -36,6 +37,7 @@ async fn fixture() -> (tempfile::TempDir, Database, Session, Agent) {
     let mut cursor = db.cursor().await.unwrap();
     let session = cursor
         .create_session(NewSession {
+            decision_model: None,
             model_config: crate::test_support::model_config(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             project_id: None,
@@ -88,7 +90,9 @@ fn usage() -> Usage {
         output_tokens: Some(7),
         total_tokens: None,
         cached_input_tokens: Some(0),
+        cache_write_input_tokens: Some(2),
         reasoning_output_tokens: Some(3),
+        cost: Some(0.125),
         provider_details: std::collections::BTreeMap::from([(
             "cache_write".into(),
             serde_json::json!(2),
@@ -97,9 +101,8 @@ fn usage() -> Usage {
 }
 fn native() -> HistoryItem {
     HistoryItem {
-        kind: HistoryItemKind::ProviderItem(api::ProviderItem {
+        kind: HistoryItemKind::ProviderItem(api::ProviderData {
             provider: ProviderType::Openrouter,
-            item_type: "test".into(),
             raw: serde_json::json!({"type":"test", "secret":"opaque"}),
         }),
         metadata: HistoryItemMetadata {
@@ -119,9 +122,9 @@ async fn round_trips_all_payloads_and_reopens_database() {
         EventType::Thinking(Thinking {
             contents: api::Reasoning {
                 summary: vec!["summary".into()],
-                opaque_state: Some(api::ProviderOpaqueData {
+                opaque_state: Some(api::ProviderData {
                     provider: ProviderType::Openrouter,
-                    data: serde_json::json!({"encrypted":"x"}),
+                    raw: serde_json::json!({"encrypted":"x"}),
                 }),
             },
             metadata: HistoryItemMetadata::default(),
@@ -133,7 +136,7 @@ async fn round_trips_all_payloads_and_reopens_database() {
             tool_name: "noop".into(),
             arguments: "{ malformed".into(),
             metadata: HistoryItemMetadata {
-                item_status: Some("incomplete".into()),
+                item_status: Some(llm_api::api::ItemStatus::Incomplete),
                 ..Default::default()
             },
         }),
@@ -801,6 +804,7 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
     );
     let blank = cursor
         .create_session(NewSession {
+            decision_model: None,
             model_config: crate::test_support::model_config(),
             probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
             project_id: None,

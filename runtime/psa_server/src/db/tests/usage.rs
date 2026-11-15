@@ -37,10 +37,7 @@ async fn cache_writes_count_only_reported_values() {
     );
 
     let mut usage = reported(5);
-    usage.provider_details.insert(
-        "prompt_tokens_details".into(),
-        serde_json::json!({"cache_write_tokens": 4}),
-    );
+    usage.cache_write_input_tokens = Some(4);
     let updated = cursor
         .add_events(agent.id, &[result(usage.clone()), result(usage)])
         .await
@@ -337,6 +334,97 @@ async fn unreported_compaction_usage_keeps_totals_known_and_poisoned_totals_are_
     assert_eq!(cursor.repair_unknown_usage().await.unwrap(), 1);
     assert_eq!(cursor.get_agent(agent.id).await.unwrap().usage, usage);
     assert_eq!(cursor.repair_unknown_usage().await.unwrap(), 0);
+    cursor.rollback().await.unwrap();
+    db.close().await;
+}
+
+#[tokio::test]
+async fn model_usage_groups_inference_and_decision_calls_by_model() {
+    use llm_api::providers::{Effort, Model, ModelConfig, ProviderType};
+    use psa_api::{DecisionCall, DecisionCallUsage, DecisionOutcome};
+
+    let (_dir, db, session, agent) = fixture().await;
+    let model = |name: &str| Model::new(ProviderType::Openrouter, name).unwrap();
+    let start = |id: u64, name: &str| {
+        NewEvent::new(EventType::InferenceResultStart(InferenceResultStart {
+            id,
+            model_config: ModelConfig {
+                model: model(name),
+                effort: Effort::Low,
+            },
+            request_config: api::RequestConfig::default(),
+        }))
+    };
+    let end = |id: u64, tokens: u64, cost: Option<f64>| {
+        NewEvent::new(EventType::InferenceResultEnd(InferenceResultEnd {
+            id,
+            outcome: Outcome::Cancelled,
+            usage: Usage {
+                cost,
+                ..reported(tokens)
+            },
+            request_time: Duration::ZERO,
+            response_id: None,
+            provider_metadata: Default::default(),
+        }))
+    };
+    let decision = |outcome: DecisionOutcome, cost: Option<f64>| {
+        NewEvent::new(EventType::DecisionCall(DecisionCall {
+            tool_call_id: None,
+            model: model("vendor/decider"),
+            questions: Vec::new(),
+            outcome,
+            answers: Vec::new(),
+            usage: DecisionCallUsage {
+                input_tokens: Some(4),
+                cached_tokens: None,
+                cost,
+            },
+            duration: Duration::ZERO,
+            request_id: None,
+        }))
+    };
+
+    let mut cursor = db.cursor().await.unwrap();
+    let first = cursor.get_agent(agent.id).await.unwrap().next_event_id.0;
+    let updated = cursor
+        .add_events(
+            agent.id,
+            &[
+                start(first, "vendor/b"),
+                end(first, 10, Some(0.5)),
+                start(first + 2, "vendor/a"),
+                end(first + 2, 7, None),
+                start(first + 4, "vendor/b"),
+                end(first + 4, 3, Some(0.25)),
+                decision(DecisionOutcome::Answered, Some(0.125)),
+                decision(DecisionOutcome::Failed("timeout".into()), None),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.new_usage.unwrap().cost, None);
+
+    let usage = cursor
+        .load_agent_model_usage(session.id, agent.id)
+        .await
+        .unwrap();
+    let names: Vec<_> = usage.iter().map(|entry| entry.model.slug()).collect();
+    assert_eq!(
+        names,
+        [
+            "openrouter/vendor/a",
+            "openrouter/vendor/b",
+            "openrouter/vendor/decider"
+        ]
+    );
+    assert_eq!(usage[0].usage.input_tokens, Some(7));
+    assert_eq!(usage[0].usage.cost, None);
+    assert_eq!(usage[1].usage.input_tokens, Some(13));
+    assert_eq!(usage[1].usage.cost, Some(0.75));
+    assert_eq!(usage[2].usage.input_tokens, Some(4));
+    assert_eq!(usage[2].usage.output_tokens, None);
+    assert_eq!(usage[2].usage.cost, Some(0.125));
     cursor.rollback().await.unwrap();
     db.close().await;
 }

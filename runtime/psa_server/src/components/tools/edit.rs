@@ -536,7 +536,7 @@ mod tests {
         assert!(
             definition
                 .parameters
-                .to_openai_parameters(definition.strict)
+                .validate_openai_parameters(definition.strict)
                 .is_ok()
         );
         assert_eq!(Edit.system_prompt().rules.len(), 1);

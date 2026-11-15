@@ -24,6 +24,16 @@ impl ProviderType {
         }
     }
 
+    /// Complete endpoint of the decision-model API, for providers offering one.
+    /// Decision models answer typed questions about a state and are not chat
+    /// models; OpenRouter serves this on a separate, alpha-versioned route.
+    pub const fn decisions_url(self) -> Option<&'static str> {
+        match self {
+            Self::OpenAiCodex => None,
+            Self::Openrouter => Some("https://openrouter.ai/api/alpha/decisions"),
+        }
+    }
+
     /// API root, without the operation-specific `/responses` or
     /// `/chat/completions` path. Codex uses the ChatGPT subscription endpoint,
     /// not the separately billed OpenAI platform API.
@@ -90,6 +100,11 @@ impl Model {
         Self::new(provider, api_name)
     }
 
+    /// The `provider_slug/api_name` form accepted by [`Model::parse_slug`].
+    pub fn slug(&self) -> String {
+        format!("{}/{}", self.provider.as_str(), self.api_name)
+    }
+
     /// Validate a nonempty API model name with no surrounding whitespace.
     pub(crate) fn validate(&self) -> Result<(), crate::Error> {
         let name = self.api_name.as_str();
@@ -131,7 +146,7 @@ pub enum Effort {
 }
 
 impl Effort {
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
             Self::Minimal => "minimal",
@@ -209,10 +224,9 @@ mod tests {
                 "vendor/model/variant",
             ),
         ] {
-            assert_eq!(
-                Model::parse_slug(slug).unwrap(),
-                Model::new(provider, api_name).unwrap(),
-            );
+            let model = Model::parse_slug(slug).unwrap();
+            assert_eq!(model, Model::new(provider, api_name).unwrap());
+            assert_eq!(model.slug(), slug);
         }
     }
 

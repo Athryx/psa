@@ -13,6 +13,7 @@ async fn create_session(harness: &Harness) -> wire::Session {
     harness
         .client
         .create_session(&wire::CreateSession {
+            decision_model: None,
             model_config: Some(model()),
             probe_id: wire::ProbeId(wire::probes::Uuid::nil()),
             project_id: None,

@@ -262,6 +262,7 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
     for effort in [Effort::Minimal, Effort::Off] {
         let session = client
             .create_session(&api::CreateSession {
+                decision_model: None,
                 name: format!("{effort:?}"),
                 working_directory: "/work".into(),
                 probe_id: support::probe_metadata().id,

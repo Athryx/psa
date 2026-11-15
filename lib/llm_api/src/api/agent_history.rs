@@ -6,8 +6,8 @@ use crate::Error;
 use crate::providers::{ModelConfig, ProviderType};
 
 use super::{
-    ContentBlock, HistoryItem, HistoryItemKind, HistoryItemMetadata, MediaSource, RequestConfig,
-    ToolCall, ToolChoice, ToolDefinition,
+    ContentBlock, HistoryItem, HistoryItemKind, HistoryItemMetadata, ItemStatus, MediaSource,
+    RequestConfig, ToolCall, ToolChoice, ToolDefinition,
 };
 
 /// Ordered model-facing context and tools available to the next request.
@@ -137,7 +137,7 @@ fn validate_history_items(items: &[HistoryItem], provider: ProviderType) -> Resu
     calls.require_resolved()
 }
 
-fn require_provider(expected: ProviderType, actual: ProviderType) -> Result<(), Error> {
+pub(super) fn require_provider(expected: ProviderType, actual: ProviderType) -> Result<(), Error> {
     if expected != actual {
         return Err(Error::ProviderMismatch { expected, actual });
     }
@@ -181,10 +181,11 @@ impl ToolCalls {
         if call.call_id.is_empty() || call.name.trim().is_empty() {
             return Err(invalid_history("tool calls require a name and call ID"));
         }
-        if matches!(
-            metadata.item_status.as_deref(),
-            Some("in_progress" | "incomplete")
-        ) {
+        if metadata
+            .item_status
+            .as_ref()
+            .is_some_and(ItemStatus::is_unfinished)
+        {
             return Err(invalid_history("cannot replay an unfinished tool call"));
         }
 
@@ -249,6 +250,9 @@ fn validate_content_providers(
 
 fn validate_item_providers(items: &[HistoryItem], provider: ProviderType) -> Result<(), Error> {
     for item in items {
+        if let Some(native) = &item.metadata.provider_data {
+            require_provider(provider, native.provider)?;
+        }
         match &item.kind {
             HistoryItemKind::Message(message) => {
                 validate_content_providers(&message.content, provider)?
@@ -328,10 +332,11 @@ fn strip_item_replay_state(item: &mut HistoryItem, provider: ProviderType) -> Re
 
     // An incomplete native call must not become valid by losing its status.
     if matches!(item.kind, HistoryItemKind::ToolCall(_))
-        && matches!(
-            item.metadata.item_status.as_deref(),
-            Some("in_progress" | "incomplete")
-        )
+        && item
+            .metadata
+            .item_status
+            .as_ref()
+            .is_some_and(ItemStatus::is_unfinished)
     {
         return Err(invalid_history("cannot convert an unfinished tool call"));
     }
@@ -344,8 +349,8 @@ fn strip_item_replay_state(item: &mut HistoryItem, provider: ProviderType) -> Re
 mod tests {
     use super::*;
     use crate::api::{
-        FileBlock, Message, ModelResponse, Outcome, ProviderOpaqueData, Reasoning, Role,
-        StopReason, TextBlock, ToolCall, ToolResult,
+        FileBlock, Message, ModelResponse, Outcome, ProviderData, Reasoning, Role, StopReason,
+        TextBlock, ToolCall, ToolResult,
     };
     use crate::providers::{Effort, Model};
 
@@ -378,7 +383,7 @@ mod tests {
     }
 
     fn output(config: ModelConfig, items: Vec<HistoryItem>) -> ModelResponse {
-        let mut output = ModelResponse::default_for_model(config);
+        let mut output = ModelResponse::new(config);
         output.outcome = Outcome::Completed {
             reason: StopReason::EndTurn,
         };
@@ -513,9 +518,9 @@ mod tests {
             vec![
                 item(HistoryItemKind::Reasoning(Reasoning {
                     summary: vec!["summary".into()],
-                    opaque_state: Some(ProviderOpaqueData {
+                    opaque_state: Some(ProviderData {
                         provider: old.model.provider,
-                        data: serde_json::json!("encrypted"),
+                        raw: serde_json::json!("encrypted"),
                     }),
                 })),
                 item(HistoryItemKind::Message(Message {

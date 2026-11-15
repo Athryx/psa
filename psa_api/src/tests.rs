@@ -726,10 +726,52 @@ fn summary(name: &str, project: Option<&str>) -> Session {
         probe_id: ProbeId(probes::Uuid::nil()),
         project_id: project.map(|project| ProjectId(project.into())),
         model_config: model_config(),
+        decision_model: None,
         busy: false,
         created_at: time::OffsetDateTime::UNIX_EPOCH,
         updated_at: time::OffsetDateTime::UNIX_EPOCH,
     }
+}
+
+#[test]
+fn decision_call_events_round_trip_with_durations() {
+    use std::time::Duration;
+    let call = DecisionCall {
+        tool_call_id: Some("call-1".into()),
+        model: llm_api::providers::Model::new(
+            llm_api::providers::ProviderType::Openrouter,
+            "vendor/decider",
+        )
+        .unwrap(),
+        questions: vec![DecisionQuestionSummary {
+            key: "angry".into(),
+            kind: "noul".into(),
+        }],
+        outcome: DecisionOutcome::PartlyAnswered,
+        answers: vec![
+            DecisionAnswerSummary {
+                key: "angry".into(),
+                result: DecisionAnswerResult::Noul(0.25),
+                confidence: Some(0.9),
+            },
+            DecisionAnswerSummary {
+                key: "other".into(),
+                result: DecisionAnswerResult::Refused,
+                confidence: None,
+            },
+        ],
+        usage: DecisionCallUsage {
+            input_tokens: Some(128),
+            cached_tokens: None,
+            cost: Some(0.0000384),
+        },
+        duration: Duration::from_millis(1250),
+        request_id: Some("gen-dec-1".into()),
+    };
+    let event = events::EventType::DecisionCall(call.clone());
+    let restored: events::EventType =
+        serde_json::from_value(serde_json::to_value(&event).unwrap()).unwrap();
+    assert!(matches!(restored, events::EventType::DecisionCall(restored) if restored == call));
 }
 
 #[test]

@@ -7,14 +7,17 @@ use crate::{
     },
     sessions::Session,
 };
-use llm_api::api::{CompiledToolSchema, ToolSchema};
+use llm_api::api::ToolSchema;
 use std::sync::Arc;
+
+mod schema;
+pub use schema::{ResultSchema, ResultSchemaError};
 
 /// Immutable configuration shared by the tool and its completion policy.
 /// Retry state is reconstructed from the invocation's persisted history.
 pub(crate) struct TypedResultState {
     pub schema: ToolSchema,
-    pub compiled: CompiledToolSchema,
+    pub compiled: ResultSchema,
     pub max_retries: u32,
 }
 
@@ -24,8 +27,7 @@ pub struct TypedResultBundle {
 
 impl TypedResultBundle {
     pub fn new(schema: ToolSchema, max_retries: u32) -> Result<Self, InstallError> {
-        let compiled = schema
-            .compile()
+        let compiled = ResultSchema::compile(&schema)
             .map_err(|error| InstallError::new(format!("Invalid TypedResult schema: {error}")))?;
         Ok(Self {
             state: Arc::new(TypedResultState {

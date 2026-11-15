@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO event_inference_result_end (event_pk,inference_id,outcome,stop_reason,failure,request_time_us,response_id,provider_metadata,input_tokens,output_tokens,total_tokens,cached_tokens,cache_write_tokens,reasoning_tokens,cost,usage_details) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 16
+    },
+    "nullable": []
+  },
+  "hash": "22d519f3b067a638e5fc944eea37596ad0d3a1849a25b80eadecca006a842aac"
+}

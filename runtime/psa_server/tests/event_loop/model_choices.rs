@@ -7,6 +7,7 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
     let session = harness
         .client
         .create_session(&wire::CreateSession {
+            decision_model: None,
             name: "model choices".into(),
             working_directory: "/work".into(),
             probe_id: support::probe_metadata().id,

@@ -267,7 +267,7 @@ async fn malformed_unknown_incomplete_and_typed_invalid_calls_each_get_one_resul
     ] {
         let mut metadata = llm_api::api::HistoryItemMetadata::default();
         if incomplete {
-            metadata.item_status = Some("incomplete".into());
+            metadata.item_status = Some(llm_api::api::ItemStatus::Incomplete);
         }
         events.push(NewEvent::new(EventType::ToolCall(ToolCall {
             call_id: call_id.into(),

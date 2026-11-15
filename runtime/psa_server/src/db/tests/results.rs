@@ -373,7 +373,8 @@ async fn recovery_of_a_structured_result_fork_acknowledges_only_its_producer_and
                     r#"{"count":9}"#.into()
                 },
                 metadata: api::HistoryItemMetadata {
-                    item_status: incomplete_later_call.then(|| "incomplete".into()),
+                    item_status: incomplete_later_call
+                        .then(|| llm_api::api::ItemStatus::Incomplete),
                     ..Default::default()
                 },
             })),

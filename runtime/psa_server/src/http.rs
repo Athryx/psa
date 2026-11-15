@@ -229,6 +229,7 @@ pub fn router(state: AppState) -> Router {
         .route(routes::AGENTS, post(create_agent).get(list_agents))
         .route(routes::AGENT, get(get_agent))
         .route(routes::AGENT_STATUS, get(get_agent_status))
+        .route(routes::AGENT_USAGE, get(get_agent_model_usage))
         .route(routes::AGENT_RESULTS, get(get_agent_results))
         .route(routes::REQUESTS, post(submit_request))
         .route(routes::CLIENT_QUERY_RESPONSE, post(respond_to_client_query))
@@ -624,6 +625,17 @@ async fn get_agent_status(
         .load_agent_status(SessionId(session), AgentId(agent))
         .await?;
     Ok(Json(status))
+}
+
+async fn get_agent_model_usage(
+    State(state): State<AppState>,
+    ApiPath((session, agent)): ApiPath<(u64, u64)>,
+) -> Result<Json<Vec<api::ModelUsage>>, HttpError> {
+    let mut cursor = state.database.cursor().await?;
+    let usage = cursor
+        .load_agent_model_usage(SessionId(session), AgentId(agent))
+        .await?;
+    Ok(Json(usage))
 }
 
 async fn get_agent_results(
@@ -1214,6 +1226,7 @@ mod tests {
             ("POST", routes::AGENTS),
             ("GET", routes::AGENT),
             ("GET", routes::AGENT_STATUS),
+            ("GET", routes::AGENT_USAGE),
             ("POST", routes::REQUESTS),
             ("POST", routes::CLIENT_QUERY_RESPONSE),
             ("GET", routes::SESSION_EVENTS),
@@ -1469,6 +1482,7 @@ mod tests {
         let mut cursor = db.cursor().await.unwrap();
         let session = cursor
             .create_session(sessions::NewSession {
+                decision_model: None,
                 probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
                 project_id: None,
                 name: "test".into(),

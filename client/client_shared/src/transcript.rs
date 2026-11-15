@@ -291,6 +291,7 @@ impl Transcript {
             EventType::Message(_)
             | EventType::Log(_)
             | EventType::Command(_)
+            | EventType::DecisionCall(_)
             | EventType::ToolCall(_)
             | EventType::ToolResult(_)
             | EventType::Compaction(_)

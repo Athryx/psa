@@ -32,6 +32,7 @@ rand = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
+jsonschema = { version = "0.56", default-features = false }
 futures-util = "0.3"
 monty-pool = "=1.4.0"
 monty-types = "=1.4.0"

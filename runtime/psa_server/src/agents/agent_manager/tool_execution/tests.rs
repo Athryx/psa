@@ -225,6 +225,7 @@ impl Fixture {
         let mut cursor = self.database.cursor().await.unwrap();
         let session = cursor
             .create_session(NewSession {
+                decision_model: None,
                 model_config: support::model_config(),
                 probe_id: support::probe_metadata().id,
                 project_id: None,

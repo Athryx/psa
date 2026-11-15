@@ -180,7 +180,7 @@ async fn summary_connection(mut ui: Signal<Ui>, generation: u64) -> Result<(), C
     if ui.peek().generation != generation {
         return Ok(());
     }
-    if let Ok(models) = api.list_models(&ListModels::default()).await {
+    if let Ok(models) = api.list_models(&chat_models_query()).await {
         if ui.read().generation != generation {
             return Ok(());
         }
@@ -588,7 +588,7 @@ pub async fn refresh_metadata(mut ui: Signal<Ui>) {
     if ui.read().generation != generation {
         return;
     }
-    match api.list_models(&ListModels::default()).await {
+    match api.list_models(&chat_models_query()).await {
         Ok(models) if ui.read().generation == generation => apply_models(ui, models),
         Err(_) if ui.read().generation == generation => {
             ui.write().error = Some("Unable to refresh model catalog".into())
@@ -2405,5 +2405,13 @@ mod draft_root_tests {
             Some("first message")
         );
         assert!(!ui.drafts.contains_key(&from));
+    }
+}
+
+/// Agents can only run chat models; decision models are called from CodeMode.
+fn chat_models_query() -> ListModels {
+    ListModels {
+        kind: Some(psa_api::ModelKind::Chat),
+        ..ListModels::default()
     }
 }

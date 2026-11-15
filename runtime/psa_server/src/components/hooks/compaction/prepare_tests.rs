@@ -509,10 +509,9 @@ fn file_tracking_is_sorted_cumulative_and_removes_modified_files_from_reads() {
 #[test]
 fn native_compaction_is_not_silently_replaced_by_a_text_summary() {
     let native = llm_api::api::HistoryItem {
-        kind: llm_api::api::HistoryItemKind::ProviderItem(llm_api::api::ProviderItem {
+        kind: llm_api::api::HistoryItemKind::ProviderItem(llm_api::api::ProviderData {
             provider: ProviderType::Openrouter,
-            item_type: "compaction".into(),
-            raw: serde_json::json!({}),
+            raw: serde_json::json!({"type": "compaction"}),
         }),
         metadata: Default::default(),
     };

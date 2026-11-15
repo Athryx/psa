@@ -4,9 +4,6 @@ use schemars::{JsonSchema, generate::SchemaSettings};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
-mod validation;
-pub use validation::{CompiledToolSchema, SchemaValidationError};
-
 /// An owned JSON Schema, serialized exactly as the schema object in snapshots.
 ///
 /// Keeping JSON preserves dialect-specific keywords, references, and annotations
@@ -51,7 +48,7 @@ impl ToolSchema {
         &self.schema
     }
 
-    /// Serialize for either OpenAI-compatible protocol, without changing meaning.
+    /// Check the schema can be sent unchanged to either OpenAI-compatible protocol.
     ///
     /// Strict generation requires closed objects with every property required.
     /// Optional/defaulted fields cannot be silently made required or nullable:
@@ -60,7 +57,7 @@ impl ToolSchema {
     /// conservative common subset, not model-specific capabilities. Arbitrary
     /// dialect keywords are preserved in non-strict mode; strict mode rejects
     /// unsupported keywords rather than silently removing them.
-    pub fn to_openai_parameters(&self, strict: Option<bool>) -> Result<Value, String> {
+    pub fn validate_openai_parameters(&self, strict: Option<bool>) -> Result<(), String> {
         if !self.schema.is_object() {
             return Err("parameters must be a JSON Schema object".into());
         }
@@ -71,7 +68,7 @@ impl ToolSchema {
             }
             validate_strict_schema(&self.schema)?;
         }
-        Ok(self.schema.clone())
+        Ok(())
     }
 }
 
@@ -238,7 +235,7 @@ mod tests {
         assert!(value["properties"]["optional"].to_string().contains("null"));
         let tool = ToolDefinition::for_type::<Arguments>("submit", "Submit entries", Some(false));
         assert_eq!(tool.strict, Some(false));
-        assert_eq!(schema.to_openai_parameters(Some(false)).unwrap(), *value);
+        schema.validate_openai_parameters(Some(false)).unwrap();
         let args: Arguments = parse_tool_arguments(json!({"entries":[{"label":"ok"}]})).unwrap();
         assert_eq!(args.children[0].label, "ok");
         assert_eq!(args.optional, None);
@@ -259,8 +256,9 @@ mod tests {
         }
         let schema = ToolSchema::for_type::<Input>();
         let before = schema.as_value().clone();
-        assert!(schema.to_openai_parameters(Some(true)).is_err());
-        assert_eq!(schema.to_openai_parameters(Some(false)).unwrap(), before);
+        assert!(schema.validate_openai_parameters(Some(true)).is_err());
+        schema.validate_openai_parameters(Some(false)).unwrap();
+        assert_eq!(schema.as_value(), &before);
         assert_eq!(
             parse_tool_arguments::<Input>(json!({}))
                 .unwrap()
@@ -316,7 +314,12 @@ mod tests {
                 Some(value) => assert_eq!(snapshot["strict"], value),
                 None => assert!(snapshot.get("strict").is_none()),
             }
-            assert!(definition.parameters.to_openai_parameters(strict).is_ok());
+            assert!(
+                definition
+                    .parameters
+                    .validate_openai_parameters(strict)
+                    .is_ok()
+            );
         }
     }
 
@@ -335,31 +338,25 @@ mod tests {
             ),
         ] {
             let before = schema.as_value().clone();
-            assert!(schema.to_openai_parameters(Some(true)).is_err());
-            assert_eq!(schema.to_openai_parameters(Some(false)).unwrap(), before);
+            assert!(schema.validate_openai_parameters(Some(true)).is_err());
+            schema.validate_openai_parameters(Some(false)).unwrap();
             assert_eq!(*schema.as_value(), before);
             let restored: ToolSchema = serde_json::from_value(before).unwrap();
-            assert!(restored.to_openai_parameters(Some(true)).is_err());
+            assert!(restored.validate_openai_parameters(Some(true)).is_err());
         }
         let schema = ToolSchema::for_type::<StrictArguments>();
-        assert_eq!(
-            schema.to_openai_parameters(Some(true)).unwrap(),
-            *schema.as_value()
-        );
+        schema.validate_openai_parameters(Some(true)).unwrap();
         // Raw schemas retain full-dialect pass-through in non-strict mode.
         let raw = json!({"type":"object", "properties":{"optional":{"type":"string"}}, "x-provider":"keep"});
-        assert_eq!(
-            ToolSchema::from(raw.clone())
-                .to_openai_parameters(Some(false))
-                .unwrap(),
-            raw
-        );
+        ToolSchema::from(raw)
+            .validate_openai_parameters(Some(false))
+            .unwrap();
         let unsupported = ToolSchema::from(
             json!({"type":"object","properties":{},"additionalProperties":false,"allOf":[{}]}),
         );
         assert!(
             unsupported
-                .to_openai_parameters(Some(true))
+                .validate_openai_parameters(Some(true))
                 .unwrap_err()
                 .contains("allOf")
         );

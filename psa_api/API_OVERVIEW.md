@@ -462,7 +462,7 @@ treats a token limit as completion. Non-running Goal states include Blocked: the
 goal remains retained/paused while the current run settles Idle with a text Result.
 
 TypedResult requires an explicit object-root Draft 2020-12 schema with local
-references, validated offline by shared `CompiledToolSchema`. It installs
+references, validated offline by the server's `ResultSchema`. It installs
 sequential `record_result` and a require-result hook. Whole tool arguments are
 the result, without a wrapper. Validation success atomically saves Result and
 Idle, acknowledging only `Result recorded.`; invalid data is a tool error and

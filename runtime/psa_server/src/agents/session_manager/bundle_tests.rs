@@ -31,6 +31,7 @@ async fn runtime_shutdown_cleans_retained_owners_and_reports_failures() {
             .unwrap();
         let session = cursor
             .create_session(NewSession {
+                decision_model: None,
                 name: "owners".into(),
                 working_directory: "/work".into(),
                 probe_id: crate::test_support::probe_metadata().id,

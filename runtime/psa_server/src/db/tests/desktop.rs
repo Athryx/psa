@@ -158,6 +158,7 @@ async fn summary_filters_match_names_probes_and_projects_like_the_shared_filter(
     let project = psa_api::ProjectId("Pipeline".into());
     let in_project = cursor
         .create_session(NewSession {
+            decision_model: None,
             name: "Nightly Build".into(),
             working_directory: "/work".into(),
             probe_id: global.probe_id,
@@ -180,6 +181,7 @@ async fn summary_filters_match_names_probes_and_projects_like_the_shared_filter(
     for invalid in ["", " padded", &"x".repeat(psa_api::ProjectId::MAX_LEN + 1)] {
         let error = cursor
             .create_session(NewSession {
+                decision_model: None,
                 name: "invalid".into(),
                 working_directory: "/work".into(),
                 probe_id: global.probe_id,

@@ -65,7 +65,7 @@ fn file_tool_instances_have_stable_ids_definitions_and_prompt_guidance() {
         assert!(
             definition
                 .parameters
-                .to_openai_parameters(definition.strict)
+                .validate_openai_parameters(definition.strict)
                 .is_ok()
         );
         assert_eq!(

@@ -1093,7 +1093,11 @@ impl SessionManager {
 
     fn ensure_session_resources(&mut self, session: SessionId) -> SessionBundleHandle {
         let resources = self.session_resources.entry(session).or_insert_with(|| {
-            let resources = SessionBundleResources::start(session, self.sessions.clone());
+            let resources = SessionBundleResources::start(
+                session,
+                self.sessions.clone(),
+                Some(self.providers.clone()),
+            );
             // A bundle may be installed after other session agents started.
             for (agent_id, run) in self.runs.iter().filter(|(_, run)| run.session == session) {
                 resources.notify(AgentLifecycleEvent::Started {

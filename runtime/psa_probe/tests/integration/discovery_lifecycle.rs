@@ -85,6 +85,7 @@ async fn assert_configured_creation(host: bool) {
         .await
         .unwrap();
     let session = harness.client.create_session(&CreateSession {
+        decision_model: None,
         name: "configured".into(), working_directory: nested.clone(), probe_id: harness.id, project_id: None,
         model_config: Some(serde_json::from_value(serde_json::json!({"model":{"provider":"Openrouter","api_name":"test-model"}, "effort":"Medium"})).unwrap()),
     }).await.unwrap();

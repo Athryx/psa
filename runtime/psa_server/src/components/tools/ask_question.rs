@@ -109,7 +109,7 @@ mod tests {
         assert!(
             definition
                 .parameters
-                .to_openai_parameters(Some(false))
+                .validate_openai_parameters(Some(false))
                 .is_ok()
         );
     }

@@ -121,6 +121,8 @@ pub enum BundleId {
     Compaction,
     /// Installs session listing and trace export tools.
     Traces,
+    /// Installs the CodeMode functions for calling decision models.
+    DecisionModels,
 }
 
 /// Model policy of an agent definition version.
@@ -300,7 +302,7 @@ pub type ToolResult = Vec<ContentBlock>;
 
 /// Exact cumulative counts. A field is unknown if any call omitted it.
 /// Includes inherited calls; do not sum forks to estimate provider spend.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentUsage {
     /// Cumulative input tokens, or unknown.
     pub input_tokens: Option<u64>,
@@ -315,6 +317,10 @@ pub struct AgentUsage {
     pub cache_write_tokens: Option<u64>,
     /// Cumulative reasoning output tokens, or unknown.
     pub reasoning_output_tokens: Option<u64>,
+    /// Cumulative provider charge, such as OpenRouter credits, including
+    /// decision-model calls; unknown once any call did not report one.
+    #[serde(default)]
+    pub cost: Option<f64>,
 }
 
 impl Default for AgentUsage {
@@ -326,8 +332,20 @@ impl Default for AgentUsage {
             cached_input_tokens: Some(0),
             cache_write_tokens: Some(0),
             reasoning_output_tokens: Some(0),
+            cost: Some(0.0),
         }
     }
+}
+
+/// Cumulative usage of one model by an agent, including inherited calls.
+/// Decision-model calls count their input tokens and cost; their other counts
+/// are unreported, so they stay unknown. Failed decision calls are skipped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelUsage {
+    /// Model the calls were made to.
+    pub model: Model,
+    /// Totals over every call to this model.
+    pub usage: AgentUsage,
 }
 
 /// Per-agent model and most recent inference usage at an event boundary.
@@ -395,6 +413,10 @@ pub struct Session {
     pub project_id: Option<ProjectId>,
     /// Default model configuration for agents without a pinned model.
     pub model_config: ModelConfig,
+    /// Session decision model, called from CodeMode by agents whose
+    /// `DecisionModels` bundle includes the global model. `None` when unset.
+    #[serde(default)]
+    pub decision_model: Option<Model>,
     /// Whether the runtime reports active work for this session.
     pub busy: bool,
     /// Creation time in RFC 3339 format.
@@ -459,6 +481,10 @@ pub struct CreateSession {
     /// configured session defaults; the resolved value is persisted in the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_config: Option<ModelConfig>,
+    /// Session decision model; omission or null uses the server's configured
+    /// default, which may be unset. Must be a decision model in the catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_model: Option<Model>,
 }
 
 /// Optional session metadata changes; absent fields remain unchanged.
@@ -472,6 +498,10 @@ pub struct UpdateSession {
     pub working_directory: Option<PathBuf>,
     /// Replacement default model configuration.
     pub model_config: Option<ModelConfig>,
+    /// Replacement session decision model. Absent leaves it unchanged; it cannot
+    /// be cleared. Must be a decision model in the catalog.
+    #[serde(default)]
+    pub decision_model: Option<Model>,
 }
 
 /// Inclusive transcript boundary at which to fork a session.

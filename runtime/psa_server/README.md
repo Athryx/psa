@@ -174,6 +174,7 @@ let session = client.create_session(&CreateSession {
         model: Model::new(ProviderType::Openrouter, "your-provider/model")?,
         effort: Effort::Medium,
     }), // Use None to accept server session_defaults.
+    decision_model: None, // Optional session decision model for DecisionModels.
 }).await?;
 let config_id = ConfigId { config_group: ConfigGroup::Custom("examples".into()), name: "Assistant".into() };
 let mut config = AgentConfigInput::new(config_id.clone(), vec![ModelSelection::Global]);
@@ -712,6 +713,7 @@ let session = cursor.create_session(NewSession {
         model: Model::new(ProviderType::Openrouter, "example-model")?,
         effort: Effort::High,
     },
+    decision_model: None,
 }).await?;
 // Low-level cursor registration takes normalized configs, not server-default input.
 let config: psa_api::AgentConfig = serde_json::from_value(serde_json::json!({

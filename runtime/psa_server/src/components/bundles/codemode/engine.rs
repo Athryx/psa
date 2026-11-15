@@ -340,7 +340,7 @@ impl MontyEngine {
                         .map(|entry| &entry.function)
                         .find(|function| function.definition().name == host_name);
                     if call_count > MAX_HOST_CALLS
-                        || (matches!(function, Some(CodeModeFunctionKind::Tool(_)))
+                        || (function.is_some_and(CodeModeFunctionKind::is_async)
                             && outstanding.len() >= MAX_PENDING_CALLS)
                         || object_id.is_some()
                     {
@@ -596,7 +596,7 @@ async fn execute_function(
         ));
     };
     let (sender, cancellation) = Cancellation::channel();
-    if matches!(function, CodeModeFunctionKind::Tool(_)) {
+    if function.is_async() {
         host_call_started.store(true, Ordering::Relaxed);
     }
     let mut invocation = Box::pin(function.execute(arguments, &mut child, cancellation));
@@ -634,7 +634,9 @@ fn parse_function_arguments(
     let positional_field = match function {
         CodeModeFunctionKind::PriorResults(_) => Some("index"),
         CodeModeFunctionKind::Help(_) => Some("name"),
-        CodeModeFunctionKind::Tool(_) => None,
+        CodeModeFunctionKind::Tool(_)
+        | CodeModeFunctionKind::ListDecisionModels(_)
+        | CodeModeFunctionKind::Decide(_) => None,
     };
     if let Some(field) = positional_field
         && args.args().len() == 1

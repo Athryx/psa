@@ -21,6 +21,11 @@ impl DatabaseCursor {
         self.get_probe(new.probe_id).await?;
         let probe_id = new.probe_id.to_string();
         let model_config = serde_json::to_string(&new.model_config)?;
+        let decision_model = new
+            .decision_model
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         validate_name(&new.name)?;
         if let Some(project) = &new.project_id {
             project.validate().map_err(DbError::InvalidInput)?;
@@ -31,12 +36,13 @@ impl DatabaseCursor {
 
         let mut savepoint = self.transaction.begin().await?;
         let result = sqlx::query!(
-            "INSERT INTO sessions (first_position, next_position, name, working_directory, probe_id, project_id, model_config, created_at_us, updated_at_us) VALUES (1,1,?,?,?,?,?,?,?)",
+            "INSERT INTO sessions (first_position, next_position, name, working_directory, probe_id, project_id, model_config, decision_model, created_at_us, updated_at_us) VALUES (1,1,?,?,?,?,?,?,?,?)",
             new.name,
             path,
             probe_id,
             project_id,
             model_config,
+            decision_model,
             now,
             now
         )
@@ -64,7 +70,7 @@ impl DatabaseCursor {
         let parent = parent.map(|id| encode_integer(id.0)).transpose()?;
         let rows = sqlx::query_as!(
             SessionRow,
-            "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, project_id, model_config, created_at_us, updated_at_us FROM sessions WHERE parent_session_id IS ? ORDER BY id",
+            "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, project_id, model_config, decision_model, created_at_us, updated_at_us FROM sessions WHERE parent_session_id IS ? ORDER BY id",
             parent
         )
         .fetch_all(self.connection())
@@ -89,7 +95,7 @@ impl DatabaseCursor {
         let projects =
             serde_json::to_string(&filter.project_ids.iter().flatten().collect::<Vec<_>>())?;
         let rows = sqlx::query(
-            "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, project_id, model_config, created_at_us, updated_at_us FROM sessions \
+            "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, project_id, model_config, decision_model, created_at_us, updated_at_us FROM sessions \
              WHERE (? OR parent_session_id IS ?) \
              AND instr(lower(name), lower(?)) > 0 \
              AND (? OR probe_id IN (SELECT value FROM json_each(?))) \
@@ -117,6 +123,7 @@ impl DatabaseCursor {
                     probe_id: row.try_get("probe_id")?,
                     project_id: row.try_get("project_id")?,
                     model_config: row.try_get("model_config")?,
+                    decision_model: row.try_get("decision_model")?,
                     created_at_us: row.try_get("created_at_us")?,
                     updated_at_us: row.try_get("updated_at_us")?,
                 }
@@ -153,16 +160,22 @@ impl DatabaseCursor {
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
+        let decision_model = update
+            .decision_model
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let key = encode_integer(id.0)?;
         let now = now_us()?;
 
         let mut savepoint = self.transaction.begin().await?;
         get_session(&mut savepoint, id).await?;
         sqlx::query!(
-            "UPDATE sessions SET name = COALESCE(?, name), working_directory = COALESCE(?, working_directory), model_config = COALESCE(?, model_config), updated_at_us = ? WHERE id = ?",
+            "UPDATE sessions SET name = COALESCE(?, name), working_directory = COALESCE(?, working_directory), model_config = COALESCE(?, model_config), decision_model = COALESCE(?, decision_model), updated_at_us = ? WHERE id = ?",
             update.name,
             path,
             model_config,
+            decision_model,
             now,
             key
         )
@@ -218,13 +231,20 @@ impl DatabaseCursor {
         let project_id = original.project_id.map(|project| project.0);
         let model_config =
             serde_json::to_string(&fork.metadata.model_config.unwrap_or(original.model_config))?;
+        let decision_model = fork
+            .metadata
+            .decision_model
+            .or(original.decision_model)
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let first = encode_integer(position)?
             .checked_add(1)
             .ok_or_else(|| DbError::InvalidInput("session position exhausted".into()))?;
         let now = now_us()?;
 
         let result = sqlx::query!(
-            "INSERT INTO sessions (parent_session_id, first_position, next_position, name, working_directory, probe_id, project_id, model_config, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO sessions (parent_session_id, first_position, next_position, name, working_directory, probe_id, project_id, model_config, decision_model, created_at_us, updated_at_us) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             parent,
             first,
             first,
@@ -233,6 +253,7 @@ impl DatabaseCursor {
             probe_id,
             project_id,
             model_config,
+            decision_model,
             now,
             now
         )
@@ -287,7 +308,7 @@ pub(super) async fn get_session(
     let key = encode_integer(id.0)?;
     let row = sqlx::query_as!(
         SessionRow,
-        "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, project_id, model_config, created_at_us, updated_at_us FROM sessions WHERE id = ?",
+        "SELECT id, parent_session_id, first_position, next_position, name, working_directory, probe_id, project_id, model_config, decision_model, created_at_us, updated_at_us FROM sessions WHERE id = ?",
         key
     )
     .fetch_optional(conn)

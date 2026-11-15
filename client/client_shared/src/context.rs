@@ -185,7 +185,7 @@ fn build_context_item(event: &Event, tool_names: &HashMap<&str, &str>) -> Option
                 .contents
                 .opaque_state
                 .as_ref()
-                .map_or(0, |state| json_size(&state.data));
+                .map_or(0, |state| json_size(&state.raw));
             let preview = thinking.contents.summary.first().map_or("", String::as_str);
             (
                 ContextCategory::Reasoning,

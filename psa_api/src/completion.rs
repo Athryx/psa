@@ -1,7 +1,6 @@
 //! Shared configuration validation for mutually exclusive agent completion policies.
 
 use crate::{BundleConfig, HookConfig, HookConfigs};
-use llm_api::api::SchemaValidationError;
 
 /// A configuration cannot safely establish its selected completion policy.
 #[derive(Debug, thiserror::Error)]
@@ -12,9 +11,6 @@ pub enum CompletionConfigurationError {
     /// A terminal-response hook was assigned to a nonterminal lifecycle stage.
     #[error("StopWithoutTools must be configured in after_request")]
     InvalidStopperStage,
-    /// The configured typed-result schema cannot be compiled safely.
-    #[error("invalid typed-result schema: {0}")]
-    InvalidSchema(#[from] SchemaValidationError),
 }
 
 /// Validate completion-policy selection after applying server defaults.
@@ -22,7 +18,7 @@ pub enum CompletionConfigurationError {
 /// Goal and TypedResult are incompatible with each other and with StopWithoutTools,
 /// even when a bundle's installation policy could skip a particular agent.
 /// Repeated copies of the same hook do not select a second completion mode.
-/// Runtime bundle construction separately compiles and retains typed schemas.
+/// The server additionally compiles TypedResult schemas when saving configs.
 pub fn validate_completion_modes(
     bundles: &[BundleConfig],
     hooks: &HookConfigs,
@@ -49,21 +45,6 @@ pub fn validate_completion_modes(
     Ok(())
 }
 
-/// Validate effective completion policy and compile its schema offline.
-/// Use this at configuration boundaries so invalid schemas fail before persistence.
-pub fn validate_completion_config(
-    bundles: &[BundleConfig],
-    hooks: &HookConfigs,
-) -> Result<(), CompletionConfigurationError> {
-    validate_completion_modes(bundles, hooks)?;
-    for bundle in bundles {
-        if let BundleConfig::TypedResult { schema, .. } = bundle {
-            schema.compile()?;
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,12 +67,12 @@ mod tests {
         let goal = BundleConfig::Goal {
             interactive_only: true,
         };
-        assert!(validate_completion_config(&[], &ordinary).is_ok());
-        assert!(validate_completion_config(&[goal.clone()], &HookConfigs::default()).is_ok());
-        assert!(validate_completion_config(&[typed()], &HookConfigs::default()).is_ok());
-        assert!(validate_completion_config(&[goal.clone()], &ordinary).is_err());
-        assert!(validate_completion_config(&[typed()], &ordinary).is_err());
-        assert!(validate_completion_config(&[goal, typed()], &HookConfigs::default()).is_err());
+        assert!(validate_completion_modes(&[], &ordinary).is_ok());
+        assert!(validate_completion_modes(&[goal.clone()], &HookConfigs::default()).is_ok());
+        assert!(validate_completion_modes(&[typed()], &HookConfigs::default()).is_ok());
+        assert!(validate_completion_modes(&[goal.clone()], &ordinary).is_err());
+        assert!(validate_completion_modes(&[typed()], &ordinary).is_err());
+        assert!(validate_completion_modes(&[goal, typed()], &HookConfigs::default()).is_err());
     }
 
     #[test]
@@ -105,21 +86,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_schemas_and_nonterminal_stopper_stages() {
-        let bundles = [BundleConfig::TypedResult {
-            schema: ToolSchema::from(json!({"type":"string"})),
-            max_retries: 0,
-        }];
-        assert!(matches!(
-            validate_completion_config(&bundles, &HookConfigs::default()),
-            Err(CompletionConfigurationError::InvalidSchema(_))
-        ));
+    fn rejects_nonterminal_stopper_stages() {
         let hooks = HookConfigs {
             before_request: vec![HookConfig::StopWithoutTools],
             ..Default::default()
         };
         assert!(matches!(
-            validate_completion_config(&[], &hooks),
+            validate_completion_modes(&[], &hooks),
             Err(CompletionConfigurationError::InvalidStopperStage)
         ));
     }

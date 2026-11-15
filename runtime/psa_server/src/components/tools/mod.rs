@@ -256,10 +256,11 @@ pub(crate) async fn execute(
 fn is_incomplete_call(context: &AgentProjection, call_id: &str) -> bool {
     context.items().iter().any(|item| {
         matches!(&item.kind, HistoryItemKind::ToolCall(call) if call.call_id == call_id)
-            && matches!(
-                item.metadata.item_status.as_deref(),
-                Some("in_progress" | "incomplete")
-            )
+            && item
+                .metadata
+                .item_status
+                .as_ref()
+                .is_some_and(llm_api::api::ItemStatus::is_unfinished)
     })
 }
 

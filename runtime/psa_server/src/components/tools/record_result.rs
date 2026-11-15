@@ -103,12 +103,13 @@ fn result_error(message: String) -> ToolOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::bundles::typed_result::ResultSchema;
     use llm_api::api::{ToolSchema, parse_tool_arguments};
     use serde_json::json;
 
     fn tool(schema: Value) -> RecordResult {
         let schema = ToolSchema::from(schema);
-        let compiled = schema.compile().unwrap();
+        let compiled = ResultSchema::compile(&schema).unwrap();
         RecordResult::with_state(Arc::new(TypedResultState {
             schema,
             compiled,

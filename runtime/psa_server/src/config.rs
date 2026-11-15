@@ -4,6 +4,7 @@ use psa_api::AgentDefaults;
 use serde::{Deserialize, Deserializer};
 use std::{
     net::SocketAddr,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
 };
 use tokio::io::AsyncWriteExt;
@@ -21,6 +22,10 @@ path = "psa.sqlite3"
 # Docker image for sandboxes created without an explicit image.
 # [sandboxes]
 # default_image = "ubuntu:24.04"
+
+# Decision-model calls a session runs at once; further calls queue.
+# [decisions]
+# max_concurrent_calls = 8
 
 # Used when session creation omits model_config.
 [session_defaults]
@@ -110,6 +115,27 @@ struct Config {
     agent_defaults: AgentDefaults,
     #[serde(default)]
     sandboxes: SandboxConfig,
+    #[serde(default)]
+    decisions: DecisionsConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionsConfig {
+    #[serde(default = "default_max_concurrent_decision_calls")]
+    max_concurrent_calls: NonZeroUsize,
+}
+
+impl Default for DecisionsConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_calls: default_max_concurrent_decision_calls(),
+        }
+    }
+}
+
+fn default_max_concurrent_decision_calls() -> NonZeroUsize {
+    crate::components::bundles::decision_models::DEFAULT_MAX_CONCURRENT_CALLS
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -144,6 +170,7 @@ pub struct ResolvedConfig {
     pub session_defaults: ModelConfig,
     pub agent_defaults: AgentDefaults,
     pub default_sandbox_image: Option<String>,
+    pub max_concurrent_decision_calls: NonZeroUsize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -165,7 +192,7 @@ pub enum ConfigError {
     #[error("database path must not be empty")]
     EmptyDatabasePath,
     #[error("invalid agent defaults: {0}")]
-    AgentDefaults(#[from] psa_api::CompletionConfigurationError),
+    AgentDefaults(#[from] crate::components::bundles::CompletionConfigError),
 }
 
 impl StartOptions {
@@ -205,7 +232,7 @@ impl StartOptions {
             return Err(ConfigError::EmptyDatabasePath);
         }
 
-        psa_api::validate_completion_config(
+        crate::components::bundles::validate_completion_config(
             &config.agent_defaults.bundles,
             &config.agent_defaults.hooks,
         )?;
@@ -225,6 +252,7 @@ impl StartOptions {
                 .sandboxes
                 .default_image
                 .filter(|image| !image.trim().is_empty()),
+            max_concurrent_decision_calls: config.decisions.max_concurrent_calls,
         })
     }
 }

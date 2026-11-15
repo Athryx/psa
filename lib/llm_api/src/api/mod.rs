@@ -39,6 +39,7 @@
 //! Never execute a partial tool call during replay.
 
 pub mod agent_history;
+pub mod decisions;
 pub mod openai_completions;
 pub mod openai_responses;
 pub mod provider;
@@ -59,16 +60,15 @@ pub use agent_history::{AgentHistory, validate_request};
 pub use openai_completions::{OpenAiCompletions, OpenAiCompletionsConfig, OpenAiCompletionsStream};
 pub use openai_responses::{OpenAiResponses, OpenAiResponsesStream};
 pub use provider::{Provider, ProviderStream};
-pub use tool_schema::{
-    CompiledToolSchema, SchemaValidationError, ToolArgumentError, ToolSchema, parse_tool_arguments,
-};
+pub use tool_schema::{ToolArgumentError, ToolSchema, parse_tool_arguments};
 pub use types::*;
 
 /// Per-request settings. The model comes from `AgentHistory::config`.
 /// Unset options use provider/model defaults.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RequestConfig {
-    /// Catalog-resolved wire behavior, independent of the requested ModelConfig.
+    /// Reasoning parameter actually sent, usually resolved from a model catalog.
+    /// `None` sends `AgentHistory::config.effort` as is; `Some` replaces it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ReasoningOverride>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,9 +80,13 @@ pub struct RequestConfig {
     pub parallel_tool_calls: Option<bool>,
 }
 
+/// Wire reasoning setting that replaces the requested `ModelConfig::effort`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReasoningOverride {
+    /// Send no reasoning parameter, leaving the provider default. Used for
+    /// models that reject it. Unlike `Effort(Effort::Off)`, which sends `none`.
     Omit,
+    /// Send this effort, which may differ from the requested one.
     Effort(crate::providers::Effort),
 }
 

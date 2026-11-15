@@ -1,11 +1,12 @@
 //! Credentials never leave this server-side registry.
 
 use llm_api::{
-    api::{ApiProvider, Provider},
+    api::{ApiProvider, Provider, decisions::Decisions},
     providers::ProviderType,
 };
 use serde::Deserialize;
 use std::{
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
@@ -13,6 +14,11 @@ use std::{
 #[derive(Clone, Default)]
 pub struct ProviderRegistry {
     providers: Arc<RwLock<Vec<Provider>>>,
+    /// Decision-model clients for providers that offer them. They hold the same
+    /// credentials as `providers` and are replaced together with them.
+    decisions: Arc<RwLock<Vec<Decisions>>>,
+    /// Per-session concurrency cap; `None` uses the built-in default.
+    max_concurrent_decisions: Option<NonZeroUsize>,
     auth_path: Option<PathBuf>,
     catalog: Option<Box<crate::models::ModelCatalog>>,
     catalog_source: Option<crate::models::CatalogSource>,
@@ -22,10 +28,32 @@ impl ProviderRegistry {
     pub fn new(providers: Vec<Provider>) -> Self {
         Self {
             providers: Arc::new(RwLock::new(providers)),
+            decisions: Arc::default(),
+            max_concurrent_decisions: None,
             auth_path: None,
             catalog: None,
             catalog_source: None,
         }
+    }
+
+    /// Replace the decision-model clients, for registries built without credentials files.
+    pub fn with_decisions(self, decisions: Vec<Decisions>) -> Self {
+        *self
+            .decisions
+            .write()
+            .expect("provider registry lock poisoned") = decisions;
+        self
+    }
+
+    pub fn with_max_concurrent_decisions(mut self, limit: NonZeroUsize) -> Self {
+        self.max_concurrent_decisions = Some(limit);
+        self
+    }
+
+    /// Decision calls a session may run at once; further calls queue.
+    pub(crate) fn max_concurrent_decisions(&self) -> NonZeroUsize {
+        self.max_concurrent_decisions
+            .unwrap_or(crate::components::bundles::decision_models::DEFAULT_MAX_CONCURRENT_CALLS)
     }
 
     pub fn with_catalog_source(mut self, source: crate::models::CatalogSource) -> Self {
@@ -72,6 +100,17 @@ impl ProviderRegistry {
             .cloned()
     }
 
+    /// The decision-model client for a provider, when it has credentials and
+    /// offers decision models.
+    pub fn decisions(&self, kind: ProviderType) -> Option<Decisions> {
+        self.decisions
+            .read()
+            .expect("provider registry lock poisoned")
+            .iter()
+            .find(|decisions| decisions.provider_type() == kind)
+            .cloned()
+    }
+
     pub async fn load(path: &Path) -> Result<Self, AuthError> {
         let contents = match tokio::fs::read_to_string(path).await {
             Ok(contents) => contents,
@@ -88,6 +127,7 @@ impl ProviderRegistry {
         let auth: Auth = toml::from_str(contents).map_err(|_| AuthError::Invalid)?;
         let _ = &auth.psa;
         let mut providers = Vec::new();
+        let mut decisions = Vec::new();
         for (kind, credential) in [
             (
                 ProviderType::Openrouter,
@@ -102,11 +142,16 @@ impl ProviderRegistry {
                 if credential.trim().is_empty() {
                     return Err(AuthError::Invalid);
                 }
+                if kind.decisions_url().is_some() {
+                    decisions.push(
+                        Decisions::new(kind, credential.clone()).map_err(|_| AuthError::Invalid)?,
+                    );
+                }
                 providers.push(Provider::new(kind, credential).map_err(|_| AuthError::Invalid)?);
             }
         }
 
-        Ok(Self::new(providers))
+        Ok(Self::new(providers).with_decisions(decisions))
     }
 
     pub fn with_auth_path(mut self, path: PathBuf) -> Self {
@@ -158,6 +203,14 @@ impl ProviderRegistry {
             .write()
             .expect("provider registry lock poisoned") = updated
             .providers
+            .read()
+            .expect("provider registry lock poisoned")
+            .clone();
+        *self
+            .decisions
+            .write()
+            .expect("provider registry lock poisoned") = updated
+            .decisions
             .read()
             .expect("provider registry lock poisoned")
             .clone();

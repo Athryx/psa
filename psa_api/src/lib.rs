@@ -11,6 +11,7 @@ pub mod client;
 pub mod client_queries;
 pub mod completion;
 pub mod components;
+pub mod decisions;
 pub mod definitions;
 pub mod events;
 pub mod models;
@@ -28,8 +29,9 @@ pub use client::{
     Client, ClientError, EventStream, GlobalEventStream, GlobalStreamEvent, StreamEvent,
 };
 pub use client_queries::*;
-pub use completion::{CompletionConfigurationError, validate_completion_config};
+pub use completion::{CompletionConfigurationError, validate_completion_modes};
 pub use components::{BundleConfig, HookConfig, HookConfigs};
+pub use decisions::*;
 pub use definitions::*;
 pub use models::*;
 pub use probes::{Probe, ProbeId, ProbeMetadata};

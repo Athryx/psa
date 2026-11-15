@@ -154,6 +154,16 @@ with Goal and `StopWithoutTools`, including default-inherited hooks. Override
 `hooks.after_request` with `[]` to disable an inherited ordinary completion hook.
 See [durable results](AGENT_RESULTS.md) for validation, retry limits, typed
 configuration helpers, and retrieval.
+`DecisionModels { include_global, models }` installs the help-only CodeMode
+functions `list_decision_models()` and `await decide(model, state, questions)`.
+`models` lists `provider/model` slugs the agent may call; `include_global`
+(default false) also allows the session's decision model and makes it the default
+when `model` is omitted. Without it, `model` may be omitted only when exactly one
+model is legal. For example,
+`{"DecisionModels":{"include_global":true,"models":["openrouter/typesafe/jev-1.14"]}}`.
+Each call is recorded as a public `DecisionCall` event. A session runs at most
+`[decisions] max_concurrent_calls` (server `config.toml`, default 8) calls at
+once; further calls queue until a slot frees.
 
 `HookConfigs` contains four ordered `Vec<HookConfig>` stages. Unit hook and bundle
 variants remain JSON/TOML strings. The `ExtraSystemPrompt` hook instead carries

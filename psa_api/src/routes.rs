@@ -44,6 +44,8 @@ pub const AGENTS: &str = "/sessions/{session_id}/agents";
 pub const AGENT: &str = "/sessions/{session_id}/agents/{agent_id}";
 /// Effective model and last inference usage at an agent event boundary.
 pub const AGENT_STATUS: &str = "/sessions/{session_id}/agents/{agent_id}/status";
+/// GET cumulative usage per model, including inherited calls.
+pub const AGENT_USAGE: &str = "/sessions/{session_id}/agents/{agent_id}/usage";
 /// POST an interrupt or message request to an agent.
 pub const REQUESTS: &str = "/sessions/{session_id}/agents/{agent_id}/requests";
 /// POST a response to an outstanding scoped client query.

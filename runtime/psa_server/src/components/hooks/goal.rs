@@ -258,6 +258,7 @@ mod tests {
                     .unwrap();
                 let session = cursor
                     .create_session(NewSession {
+                        decision_model: None,
                         name: "goal hook".into(),
                         working_directory: "/work".into(),
                         probe_id: support::probe_metadata().id,

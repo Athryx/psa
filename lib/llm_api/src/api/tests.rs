@@ -793,3 +793,151 @@ async fn cancelling_next_event_does_not_lose_buffered_output() {
         Outcome::Completed { .. }
     ));
 }
+
+fn decision_request() -> decisions::DecisionRequest {
+    use decisions::{DecisionQuestion, DecisionRequest};
+    DecisionRequest {
+        model: crate::providers::Model::new(ProviderType::Openrouter, "vendor/decider").unwrap(),
+        state: json!({"ticket": "The package never arrived.", "tier": "pro"}),
+        questions: [
+            (
+                "angry".to_owned(),
+                DecisionQuestion::Noul {
+                    instructions: "Is the customer angry?".into(),
+                    criteria: None,
+                },
+            ),
+            (
+                "action".to_owned(),
+                DecisionQuestion::Choice {
+                    instructions: "What should we do?".into(),
+                    criteria: [
+                        ("refund".to_owned(), "Return the money".to_owned()),
+                        ("resend".to_owned(), "Ship again".to_owned()),
+                    ]
+                    .into(),
+                },
+            ),
+        ]
+        .into(),
+    }
+}
+
+#[tokio::test]
+async fn decisions_http_round_trip() {
+    let body = json!({
+        "id": "gen-dec-1",
+        "model": "vendor/decider",
+        "provider": "Vendor",
+        "answers": {
+            "angry": {"type": "noul", "noul": 0.25, "confidence": 0.9},
+            "action": {"type": "choice", "choice": "refund",
+                "probabilities": {"refund": 0.7, "resend": 0.3}, "confidence": 0.8},
+            "urgency": {"type": "score", "score": 1.4,
+                "probabilities": {"0": 0.1, "1": 0.4, "2": 0.5},
+                "legend": {"0": "low", "1": "medium", "2": "high"}},
+            "extra": {"type": "box", "box": {"top": 0.1, "bottom": 0.2, "left": 0.3, "right": 0.4}},
+            "declined": {"type": "refusal"}
+        },
+        "usage": {"input_tokens": 128, "output_tokens": 0, "cost": 0.0000384,
+            "input_tokens_details": {"cached_tokens": 64}}
+    });
+    let (url, request) = server("200 OK", "application/json", "", body.to_string()).await;
+    let client = decisions::Decisions::with_url(ProviderType::Openrouter, &url, "secret").unwrap();
+
+    let response = client.decide(&decision_request()).await.unwrap();
+    let recorded = request.await.unwrap();
+
+    assert!(recorded.headers.starts_with("POST /custom-endpoint"));
+    assert!(recorded.headers.contains("authorization: Bearer secret"));
+    assert!(recorded.headers.contains("accept: application/json"));
+    assert_eq!(recorded.body["model"], "vendor/decider");
+    assert_eq!(
+        recorded.body["state"],
+        json!({"ticket": "The package never arrived.", "tier": "pro"})
+    );
+    assert_eq!(
+        recorded.body["questions"]["angry"],
+        json!({"type": "noul", "instructions": "Is the customer angry?"})
+    );
+    assert_eq!(recorded.body["questions"]["action"]["type"], "choice");
+    assert_eq!(
+        recorded.body["questions"]["action"]["criteria"]["refund"],
+        "Return the money"
+    );
+
+    assert_eq!(response.response_id.as_deref(), Some("gen-dec-1"));
+    assert_eq!(response.model, decision_request().model);
+    assert_eq!(response.provider_metadata["provider"], "Vendor");
+    assert_eq!(response.provider_metadata["model"], "vendor/decider");
+    assert!(matches!(
+        response.answers["angry"],
+        decisions::DecisionAnswer::Noul { noul, confidence: Some(_) } if noul == 0.25
+    ));
+    assert!(matches!(
+        &response.answers["action"],
+        decisions::DecisionAnswer::Choice { choice, probabilities, .. }
+            if choice == "refund" && probabilities.len() == 2
+    ));
+    assert!(matches!(
+        &response.answers["urgency"],
+        decisions::DecisionAnswer::Score { score, legend, .. }
+            if *score == 1.4 && legend["2"] == "high"
+    ));
+    assert_eq!(
+        response.answers["extra"],
+        decisions::DecisionAnswer::Unsupported
+    );
+    assert_eq!(
+        response.answers["declined"],
+        decisions::DecisionAnswer::Refusal
+    );
+    assert_eq!(response.usage.input_tokens, Some(128));
+    assert_eq!(response.usage.output_tokens, Some(0));
+    assert_eq!(response.usage.cached_input_tokens, Some(64));
+    assert_eq!(response.usage.cost, Some(0.0000384));
+}
+
+#[tokio::test]
+async fn decisions_validate_locally_and_report_http_errors() {
+    let (url, _request) = server(
+        "429 Too Many Requests",
+        "application/json",
+        "Retry-After: 3\r\n",
+        json!({"error": {"message": "slow down"}}).to_string(),
+    )
+    .await;
+    let client = decisions::Decisions::with_url(ProviderType::Openrouter, &url, "secret").unwrap();
+
+    let mut invalid = decision_request();
+    invalid.questions.clear();
+    assert!(matches!(
+        client.decide(&invalid).await,
+        Err(Error::InvalidRequest { .. })
+    ));
+
+    let mut other_provider = decision_request();
+    other_provider.model.provider = ProviderType::OpenAiCodex;
+    assert!(matches!(
+        client.decide(&other_provider).await,
+        Err(Error::ProviderMismatch { .. })
+    ));
+
+    assert!(matches!(
+        client.decide(&decision_request()).await,
+        Err(Error::Http {
+            status: 429,
+            retry_after_seconds: Some(3),
+            ..
+        })
+    ));
+}
+
+#[test]
+fn decisions_require_a_provider_endpoint() {
+    assert!(matches!(
+        decisions::Decisions::new(ProviderType::OpenAiCodex, "key"),
+        Err(Error::Unsupported { .. })
+    ));
+    assert!(decisions::Decisions::new(ProviderType::Openrouter, "key").is_ok());
+}

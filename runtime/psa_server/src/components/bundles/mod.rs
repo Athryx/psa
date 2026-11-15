@@ -9,6 +9,8 @@ mod ask_question;
 pub mod bash;
 pub mod codemode;
 mod compaction;
+mod completion;
+pub(crate) mod decision_models;
 mod file_tools;
 pub mod goal;
 mod noop;
@@ -25,6 +27,8 @@ pub use ask_question::AskQuestionBundle;
 pub use bash::BashBundle;
 pub use codemode::CodeModeBundle;
 pub use compaction::CompactionBundle;
+pub use completion::{CompletionConfigError, validate_completion_config};
+pub use decision_models::DecisionModelsBundle;
 pub use file_tools::FileToolsBundle;
 pub use goal::GoalBundle;
 pub use noop::NoopBundle;
@@ -79,6 +83,7 @@ pub enum BundleKind {
     Subagents(SubagentsBundle),
     Compaction(CompactionBundle),
     Traces(TracesBundle),
+    DecisionModels(DecisionModelsBundle),
     #[cfg(test)]
     Probe(testing::ProbeBundle),
 }
@@ -121,6 +126,19 @@ impl BundleKind {
                 *context_window,
             )),
             BundleConfig::Traces => Self::Traces(TracesBundle),
+            BundleConfig::DecisionModels {
+                include_global,
+                models,
+            } => {
+                let resources = resources.ok_or_else(|| {
+                    InstallError::new("DecisionModels requires session bundle resources")
+                })?;
+                Self::DecisionModels(DecisionModelsBundle::new(
+                    *include_global,
+                    models,
+                    resources,
+                )?)
+            }
         };
         Ok(bundle)
     }
@@ -137,6 +155,7 @@ impl BundleKind {
             Self::Subagents(_) => "Subagents".into(),
             Self::Compaction(_) => "Compaction".into(),
             Self::Traces(_) => "Traces".into(),
+            Self::DecisionModels(_) => "DecisionModels".into(),
             #[cfg(test)]
             Self::Probe(bundle) => bundle.name.clone(),
         }
@@ -161,6 +180,7 @@ impl Bundle for BundleKind {
             Self::Subagents(bundle) => bundle.install(agent, session, installer),
             Self::Compaction(bundle) => bundle.install(agent, session, installer),
             Self::Traces(bundle) => bundle.install(agent, session, installer),
+            Self::DecisionModels(bundle) => bundle.install(agent, session, installer),
             #[cfg(test)]
             Self::Probe(bundle) => bundle.install(agent, session, installer),
         }
@@ -178,6 +198,7 @@ impl Bundle for BundleKind {
             Self::Subagents(bundle) => bundle.cleanup().await,
             Self::Compaction(bundle) => bundle.cleanup().await,
             Self::Traces(bundle) => bundle.cleanup().await,
+            Self::DecisionModels(bundle) => bundle.cleanup().await,
             #[cfg(test)]
             Self::Probe(bundle) => bundle.cleanup().await,
         }
@@ -195,6 +216,7 @@ impl Bundle for BundleKind {
             Self::Subagents(bundle) => bundle.cleanup_timeout(),
             Self::Compaction(bundle) => bundle.cleanup_timeout(),
             Self::Traces(bundle) => bundle.cleanup_timeout(),
+            Self::DecisionModels(bundle) => bundle.cleanup_timeout(),
             #[cfg(test)]
             Self::Probe(bundle) => bundle.cleanup_timeout(),
         }
@@ -347,7 +369,7 @@ impl InstalledComponents {
         session: &Session,
         resources: Option<&session::SessionBundleHandle>,
     ) -> Result<Self, InstallError> {
-        psa_api::completion::validate_completion_modes(&definition.bundles, &definition.hooks)
+        psa_api::validate_completion_modes(&definition.bundles, &definition.hooks)
             .map_err(|error| InstallError::new(error.to_string()))?;
         let child_templates = Self::load_child_templates(definition, resources).await?;
         let mut installer = Installer::default();

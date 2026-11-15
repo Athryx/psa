@@ -1,7 +1,7 @@
 use super::*;
 use crate::agents::{AgentId, ToolDefinitionExt};
 use llm_api::{
-    api::{Outcome, ProviderOpaqueData, Reasoning, StopReason, Usage},
+    api::{Outcome, ProviderData, Reasoning, StopReason, Usage},
     providers::{Effort, Model, ProviderType},
 };
 use std::time::Duration;
@@ -26,7 +26,7 @@ fn interrupted_incomplete_calls_replay_as_context_only_after_an_error_result() {
             tool_name: "noop".into(),
             arguments: "{".into(),
             metadata: HistoryItemMetadata {
-                item_status: Some("incomplete".into()),
+                item_status: Some(llm_api::api::ItemStatus::Incomplete),
                 ..Default::default()
             },
         }),
@@ -56,8 +56,8 @@ fn interrupted_incomplete_calls_replay_as_context_only_after_an_error_result() {
     // The original call/result remain visible for audit and orphan detection.
     assert_eq!(state.items().len(), 2);
     assert_eq!(
-        state.items()[0].metadata.item_status.as_deref(),
-        Some("incomplete")
+        state.items()[0].metadata.item_status,
+        Some(llm_api::api::ItemStatus::Incomplete)
     );
 }
 
@@ -146,9 +146,9 @@ fn thinking() -> EventType {
     EventType::Thinking(Thinking {
         contents: Reasoning {
             summary: vec!["reason".into()],
-            opaque_state: Some(ProviderOpaqueData {
+            opaque_state: Some(ProviderData {
                 provider: ProviderType::Openrouter,
-                data: serde_json::json!("encrypted"),
+                raw: serde_json::json!("encrypted"),
             }),
         },
         metadata: HistoryItemMetadata::default(),
@@ -312,9 +312,8 @@ fn preserves_rich_content_and_checks_snapshotted_tools() {
         content: vec![
             api::ContentBlock::Text(api::TextBlock {
                 text: "actual text".into(),
-                annotations: vec![api::Annotation {
+                annotations: vec![api::ProviderData {
                     provider: ProviderType::Openrouter,
-                    annotation_type: "citation".into(),
                     raw: serde_json::json!({"url":"https://example.test"}),
                 }],
             }),

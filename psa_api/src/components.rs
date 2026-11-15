@@ -104,6 +104,18 @@ pub enum BundleConfig {
     },
     /// Installs tools for listing psa sessions and exporting them as traces.
     Traces,
+    /// Installs the CodeMode functions for calling decision models, restricted to
+    /// the models configured here and, optionally, the session's decision model.
+    DecisionModels {
+        /// Also allow the session's decision model, which follows session updates.
+        /// Defaults to false.
+        #[serde(default)]
+        include_global: bool,
+        /// Decision models allowed regardless of the session, as `provider/api_name`
+        /// slugs. Each must be a decision model in the catalog. Defaults to empty.
+        #[serde(default)]
+        models: Vec<String>,
+    },
     /// Summarizes older context before inference once it nears the context window,
     /// and handles the manual `Compact` command, using a hidden summarizer agent.
     Compaction {
@@ -133,6 +145,7 @@ impl BundleConfig {
             Self::TypedResult { .. } => BundleId::TypedResult,
             Self::Compaction { .. } => BundleId::Compaction,
             Self::Traces => BundleId::Traces,
+            Self::DecisionModels { .. } => BundleId::DecisionModels,
         }
     }
 
@@ -218,6 +231,13 @@ mod tests {
             (BundleConfig::Subagents, BundleId::Subagents),
             (BundleConfig::Traces, BundleId::Traces),
             (
+                BundleConfig::DecisionModels {
+                    include_global: true,
+                    models: vec!["openrouter/vendor/decider".into()],
+                },
+                BundleId::DecisionModels,
+            ),
+            (
                 BundleConfig::TypedResult {
                     schema: serde_json::json!({"type": "object"}).into(),
                     max_retries: crate::DEFAULT_RESULT_RETRIES,
@@ -252,6 +272,18 @@ mod tests {
             let wire = serde_json::to_value(&config).unwrap();
             assert_eq!(serde_json::from_value::<HookConfig>(wire).unwrap(), config);
         }
+    }
+
+    #[test]
+    fn decision_models_bundle_defaults_to_nothing_allowed() {
+        let config: BundleConfig = serde_json::from_value(json!({"DecisionModels": {}})).unwrap();
+        assert_eq!(
+            config,
+            BundleConfig::DecisionModels {
+                include_global: false,
+                models: Vec::new(),
+            }
+        );
     }
 
     #[test]

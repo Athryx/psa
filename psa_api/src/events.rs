@@ -2,7 +2,7 @@
 
 use crate::{AgentId, AgentResult, AgentState, ToolId};
 use llm_api::api::{
-    ContentBlock, HistoryItem, HistoryItemMetadata, Outcome, ProviderMetadata, Reasoning,
+    ContentBlock, HistoryItem, HistoryItemMetadata, Outcome, ProviderFields, Reasoning,
     RequestConfig, TextBlock, ToolDefinition as ApiToolDefinition, Usage,
 };
 use llm_api::providers::ModelConfig;
@@ -147,6 +147,11 @@ pub enum EventType {
     InferenceResultEnd(
         /// Terminal outcome, usage, timing, and provider metadata.
         InferenceResultEnd,
+    ),
+    /// Records a decision-model call. Not part of the model's context.
+    DecisionCall(
+        /// Questions, headline answers, usage, and timing.
+        crate::DecisionCall,
     ),
 }
 
@@ -371,5 +376,5 @@ pub struct InferenceResultEnd {
     /// Provider response identifier, when supplied.
     pub response_id: Option<String>,
     /// Additional response-level metadata supplied by the provider.
-    pub provider_metadata: ProviderMetadata,
+    pub provider_metadata: ProviderFields,
 }

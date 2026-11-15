@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT p.event_pk, p.inference_id, p.outcome, p.stop_reason, p.failure, p.request_time_us, p.response_id, p.provider_metadata, p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.reasoning_tokens, p.usage_details FROM event_inference_result_end p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+  "query": "SELECT p.event_pk, p.inference_id, p.outcome, p.stop_reason, p.failure, p.request_time_us, p.response_id, p.provider_metadata, p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.cache_write_tokens, p.reasoning_tokens, p.cost, p.usage_details FROM event_inference_result_end p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
   "describe": {
     "columns": [
       {
@@ -136,8 +136,19 @@
         }
       },
       {
-        "name": "reasoning_tokens",
+        "name": "cache_write_tokens",
         "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "cache_write_tokens"
+          }
+        }
+      },
+      {
+        "name": "reasoning_tokens",
+        "ordinal": 13,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -147,8 +158,19 @@
         }
       },
       {
+        "name": "cost",
+        "ordinal": 14,
+        "type_info": "Float",
+        "origin": {
+          "Table": {
+            "table": "event_inference_result_end",
+            "name": "cost"
+          }
+        }
+      },
+      {
         "name": "usage_details",
-        "ordinal": 13,
+        "ordinal": 15,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -175,8 +197,10 @@
       true,
       true,
       true,
+      true,
+      true,
       false
     ]
   },
-  "hash": "ebbc172a7a8dbb673c40a6f51af9ffab31675aacebf3c255e1f3e93a81a04b0a"
+  "hash": "832d58f16a1cbf10415751a177beda3b9905858b50d60f7c7ea11e5340047172"
 }

@@ -79,6 +79,33 @@ impl Sessions {
         self.catalog.as_ref()
     }
 
+    /// A session decision model must be a decision model in the catalog; chat
+    /// models cannot answer decision requests. Without a catalog nothing can be
+    /// checked, so the model is accepted.
+    async fn validate_decision_model(
+        &self,
+        model: Option<&llm_api::providers::Model>,
+    ) -> Result<(), RuntimeError> {
+        let (Some(model), Some(catalog)) = (model, &self.catalog) else {
+            return Ok(());
+        };
+        let info = catalog
+            .model_info(model)
+            .await
+            .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
+        match info {
+            Some(info) if info.kind == api::ModelKind::Decision => Ok(()),
+            Some(_) => Err(RuntimeError::Invalid(format!(
+                "{} is a chat model, not a decision model",
+                model.api_name
+            ))),
+            None => Err(RuntimeError::Invalid(format!(
+                "{} is not in the model catalog",
+                model.api_name
+            ))),
+        }
+    }
+
     pub(crate) fn client_queries(&self) -> &ClientQueriesHandle {
         &self.queries
     }
@@ -142,6 +169,8 @@ impl Sessions {
         let model_config = request
             .model_config
             .unwrap_or_else(|| self.default_model_config.clone());
+        self.validate_decision_model(request.decision_model.as_ref())
+            .await?;
         let project = self
             .discover_session_project(request.probe_id, &request.working_directory)
             .await?;
@@ -154,6 +183,7 @@ impl Sessions {
                 probe_id: request.probe_id,
                 project_id: request.project_id,
                 model_config,
+                decision_model: request.decision_model,
             })
             .await?;
         if let Some(project) = project {
@@ -193,6 +223,8 @@ impl Sessions {
         request: api::UpdateSession,
     ) -> Result<sessions::Session, RuntimeError> {
         let _guard = self.configuration_gate.lock().await;
+        self.validate_decision_model(request.decision_model.as_ref())
+            .await?;
         let project = if let Some(cwd) = &request.working_directory {
             let session = self.get_session(id).await?;
             Some(self.discover_session_project(session.probe_id, cwd).await?)
@@ -210,6 +242,7 @@ impl Sessions {
                     name: request.name,
                     working_directory: request.working_directory,
                     model_config: request.model_config,
+                    decision_model: request.decision_model,
                 },
             )
             .await?;
@@ -236,6 +269,8 @@ impl Sessions {
         request: api::ForkSession,
     ) -> Result<sessions::ForkedSession, RuntimeError> {
         let _guard = self.configuration_gate.lock().await;
+        self.validate_decision_model(request.metadata.decision_model.as_ref())
+            .await?;
         let project = if let Some(cwd) = &request.metadata.working_directory {
             let source = self.get_session(id).await?;
             self.discover_session_project(source.probe_id, cwd).await?
@@ -263,6 +298,7 @@ impl Sessions {
                         name: request.metadata.name,
                         working_directory: request.metadata.working_directory,
                         model_config: request.metadata.model_config,
+                        decision_model: request.metadata.decision_model,
                     },
                 },
             )
@@ -580,6 +616,7 @@ mod tests {
         pub(super) async fn create_session(&self) -> sessions::Session {
             self.sessions
                 .create_session(api::CreateSession {
+                    decision_model: None,
                     name: "test".into(),
                     working_directory: "/work".into(),
                     probe_id: api::ProbeId(api::probes::Uuid::nil()),
@@ -988,6 +1025,7 @@ mod tests {
             fixture
                 .sessions
                 .create_session(api::CreateSession {
+                    decision_model: None,
                     name: "missing probe".into(),
                     working_directory: "/work".into(),
                     probe_id: api::ProbeId(api::probes::Uuid::new_v4()),
