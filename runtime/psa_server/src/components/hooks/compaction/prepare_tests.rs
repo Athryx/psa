@@ -3,7 +3,7 @@ use llm_api::{
     api::{ImageBlock, MediaSource, Reasoning, RequestConfig, StopReason},
     providers::{Effort, Model, ProviderType},
 };
-use psa_api::{AgentId, ToolId, events::*};
+use psa::api::{AgentId, ToolId, events::*};
 use std::time::Duration;
 
 fn events(kinds: Vec<EventType>) -> Vec<Event> {
@@ -411,7 +411,7 @@ fn snapshots_and_control_are_not_serialized_or_retained_but_model_changes_are() 
             error: false,
             message: "log".into(),
         }),
-        EventType::Result(psa_api::AgentResult::Text("artifact".into())),
+        EventType::Result(psa::api::AgentResult::Text("artifact".into())),
         message(MessageType::Agent, "answer"),
     ]);
     // Keep from the second user message, including its subsequent model transition.
@@ -528,12 +528,12 @@ fn native_compaction_is_not_silently_replaced_by_a_text_summary() {
 
 #[test]
 fn subagent_attribution_is_preserved_in_the_transcript_and_estimate() {
-    let mut report = psa_api::events::Message::text(MessageType::Subagent, "report");
-    report.source = Some(psa_api::events::AgentMessageLink {
+    let mut report = psa::api::events::Message::text(MessageType::Subagent, "report");
+    report.source = Some(psa::api::events::AgentMessageLink {
         request_id: "r".into(),
-        sender: psa_api::AgentId(2),
+        sender: psa::api::AgentId(2),
         sender_name: "worker".into(),
-        recipient: psa_api::AgentId(1),
+        recipient: psa::api::AgentId(1),
         recipient_name: "recipient".into(),
     });
     let transcript = events(vec![EventType::Message(report)]);

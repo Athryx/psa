@@ -9,7 +9,7 @@ use crate::{
     prompts,
 };
 use llm_api::api::ToolDefinition;
-use psa_api::AgentState;
+use psa::api::AgentState;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::time::Duration;

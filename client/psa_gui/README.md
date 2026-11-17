@@ -110,4 +110,4 @@ Run headless checks with `cargo test -p psa_gui` and browser-controller checks w
 root with a fake platform, transcript HTML escaping, bounded attachment fallbacks,
 split placement/drag geometry, server-scoped unavailable restored targets, and
 draft/preview promotion. State/recovery reducers have further
-tests in `client_shared`; backend protocol tests live with `psa_api`/`psa_server`.
+tests in `client_shared`; backend protocol tests live with `psa`/`psa_server`.

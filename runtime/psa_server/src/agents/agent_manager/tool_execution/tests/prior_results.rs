@@ -168,7 +168,7 @@ async fn prior_results_pages_mixed_history_with_positive_negative_and_frozen_ind
         }
     }
     events.push(NewEvent::new(EventType::Result(
-        psa_api::AgentResult::Text("durable agent artifact is not a codemode result".into()),
+        psa::api::AgentResult::Text("durable agent artifact is not a codemode result".into()),
     )));
     events.push(status_event(AgentState::Idle));
     events.push(status_event(AgentState::Running));

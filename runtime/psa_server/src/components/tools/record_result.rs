@@ -6,7 +6,7 @@ use crate::{
     prompts,
 };
 use llm_api::api::ToolDefinition;
-use psa_api::{AgentResult, events::EventType};
+use psa::api::{AgentResult, events::EventType};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};

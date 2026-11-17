@@ -1,6 +1,6 @@
 //! Registered skills and skill uploads.
 
-use crate::{ConfigId, ProbeId};
+use crate::api::{ConfigId, ProbeId};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

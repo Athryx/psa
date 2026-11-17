@@ -12,7 +12,7 @@ use crate::{
 };
 use actors::{Reply, UnboundedMailbox, UnboundedMailboxHandle};
 use futures_util::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
-use psa_api::{AgentId, SessionId, probes::Uuid};
+use psa::api::{AgentId, SessionId, probes::Uuid};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
@@ -294,7 +294,7 @@ impl SubagentCoordinator {
 
     pub(crate) async fn load_child_templates(
         &self,
-        ids: &[psa_api::AgentDefinitionId],
+        ids: &[psa::api::AgentDefinitionId],
     ) -> Result<Vec<super::ChildTemplate>, String> {
         super::templates::load_child_templates(&self.sessions, ids).await
     }

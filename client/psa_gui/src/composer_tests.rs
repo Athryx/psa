@@ -70,7 +70,7 @@ fn width_fixture() -> Element {
         id: ViewId(agent_id),
         target: TranscriptTarget {
             session_id: SessionId(1),
-            agent_id: psa_api::AgentId(agent_id),
+            agent_id: psa::api::AgentId(agent_id),
         },
         kind: TabKind::Transcript,
         preview: false,
@@ -106,7 +106,7 @@ fn configured_width_styles_transcripts_and_both_composers() {
 fn composer_fixture() -> Element {
     let target = TranscriptTarget {
         session_id: SessionId(1),
-        agent_id: psa_api::AgentId(2),
+        agent_id: psa::api::AgentId(2),
     };
     let ui = use_signal(|| {
         let mut state = Ui::new(DesktopSettings::default());

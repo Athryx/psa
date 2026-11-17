@@ -12,7 +12,7 @@ use axum::{
     routing::get,
 };
 use futures_util::{SinkExt, StreamExt, future::ready};
-use psa_api::{
+use psa::api::{
     ProbeId,
     probes::{
         Command, ConnectProbe, ContainerStatus, Event, Operation, PROTOCOL_VERSION, SandboxRequest,
@@ -235,7 +235,7 @@ impl ProbeHandle {
     pub async fn list_dir(
         &self,
         path: impl Into<std::path::PathBuf>,
-    ) -> Result<Vec<psa_api::probes::DirectoryEntry>, ProbeError> {
+    ) -> Result<Vec<psa::api::probes::DirectoryEntry>, ProbeError> {
         let mut call = self
             .request(Operation::ListDir { path: path.into() })
             .await?;
@@ -290,23 +290,23 @@ impl ProbeHandle {
 /// Probe discovery belongs to the client-authenticated API.
 pub fn client_router() -> Router<AppState> {
     Router::new()
-        .route(psa_api::routes::PROBES, get(list_probes))
-        .route(psa_api::routes::PROBE, get(get_probe))
+        .route(psa::api::routes::PROBES, get(list_probes))
+        .route(psa::api::routes::PROBE, get(get_probe))
         .route(
-            psa_api::routes::PROBE_DIRECTORIES,
+            psa::api::routes::PROBE_DIRECTORIES,
             get(list_probe_directory),
         )
 }
 
 /// Probe transport authenticates independently of the client API.
 pub fn connection_router() -> Router<AppState> {
-    Router::new().route(psa_api::routes::PROBES_CONNECT, get(connect_probe))
+    Router::new().route(psa::api::routes::PROBES_CONNECT, get(connect_probe))
 }
 
 fn api_error(status: StatusCode, code: &str, message: &str) -> Response {
     (
         status,
-        Json(psa_api::ApiError {
+        Json(psa::api::ApiError {
             code: code.into(),
             message: message.into(),
         }),
@@ -316,7 +316,7 @@ fn api_error(status: StatusCode, code: &str, message: &str) -> Response {
 
 async fn list_probes(
     State(state): State<AppState>,
-) -> Result<Json<Vec<psa_api::Probe>>, crate::http::HttpError> {
+) -> Result<Json<Vec<psa::api::Probe>>, crate::http::HttpError> {
     let mut cursor = state.database.cursor().await?;
     let mut probes = cursor.list_probes().await?;
     cursor.rollback().await?;
@@ -330,7 +330,7 @@ async fn list_probes(
 async fn get_probe(
     State(state): State<AppState>,
     crate::http::ApiPath(id): crate::http::ApiPath<ProbeId>,
-) -> Result<Json<psa_api::Probe>, crate::http::HttpError> {
+) -> Result<Json<psa::api::Probe>, crate::http::HttpError> {
     let mut cursor = state.database.cursor().await?;
     let mut probe = cursor.get_probe(id).await?;
     cursor.rollback().await?;
@@ -348,7 +348,7 @@ async fn list_probe_directory(
     State(state): State<AppState>,
     crate::http::ApiPath(id): crate::http::ApiPath<ProbeId>,
     crate::http::ApiQuery(query): crate::http::ApiQuery<ListDirectoryQuery>,
-) -> Result<Json<Vec<psa_api::probes::DirectoryEntry>>, Response> {
+) -> Result<Json<Vec<psa::api::probes::DirectoryEntry>>, Response> {
     if !query.path.starts_with('/') || query.path.contains('\0') {
         return Err(api_error(
             StatusCode::BAD_REQUEST,
@@ -469,7 +469,7 @@ async fn connect_probe(
 async fn handle_probe_connection(
     socket: WebSocket,
     state: AppState,
-    metadata: psa_api::ProbeMetadata,
+    metadata: psa::api::ProbeMetadata,
     token: u64,
 ) {
     let id = metadata.id;
@@ -516,7 +516,7 @@ fn decode_socket_message(message: WsMessage) -> Frame {
 
 async fn register_probe(
     database: &Database,
-    metadata: &psa_api::ProbeMetadata,
+    metadata: &psa::api::ProbeMetadata,
 ) -> Result<(), crate::db::DbError> {
     let mut cursor = database.cursor().await?;
     cursor.upsert_probe(metadata).await?;

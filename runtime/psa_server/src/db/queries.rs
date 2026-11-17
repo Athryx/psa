@@ -9,7 +9,7 @@ use super::{
 use crate::db::EventRange;
 use crate::{agents::AgentId, sessions::SessionId};
 use llm_api::{api::Usage, providers::Model};
-use psa_api::{DecisionCall, EventEnvelope, ModelUsage, ResultRecord, events::*};
+use psa::api::{DecisionCall, EventEnvelope, ModelUsage, ResultRecord, events::*};
 use sqlx::{Row, SqliteConnection, sqlite::SqliteRow};
 use std::collections::BTreeMap;
 
@@ -103,7 +103,7 @@ impl DatabaseCursor {
         &mut self,
         session: SessionId,
         agent: AgentId,
-    ) -> Result<psa_api::AgentContextState, DbError> {
+    ) -> Result<psa::api::AgentContextState, DbError> {
         let metadata = self.require_agent_session(session, agent).await?;
         let mut markers = Vec::new();
         for kind in ["new_context", "model", "compaction", "inference_end"] {
@@ -112,7 +112,7 @@ impl DatabaseCursor {
             }
         }
         markers.sort_unstable();
-        let mut state = psa_api::AgentContextState::default();
+        let mut state = psa::api::AgentContextState::default();
         for id in markers {
             let events = self
                 .load_events(

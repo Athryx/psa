@@ -7,7 +7,7 @@ use llm_api::{
     api::{ContentBlock, Outcome, Usage},
     providers::ModelConfig,
 };
-use psa_api::events::{CompactionSummary, Event, EventType, MessageType};
+use psa::api::events::{CompactionSummary, Event, EventType, MessageType};
 use std::collections::{BTreeSet, HashSet};
 
 #[derive(Debug)]
@@ -393,7 +393,7 @@ fn text_content(content: &[ContentBlock], separator: &str) -> String {
         .join(separator)
 }
 
-fn subagent_prefix(message: &psa_api::events::Message) -> String {
+fn subagent_prefix(message: &psa::api::events::Message) -> String {
     match &message.source {
         Some(source) => crate::prompts::agent_message_header(&source.sender_name),
         None => String::new(),

@@ -1,6 +1,6 @@
 //! Event pages and live server-sent streams for transcripts and session summaries.
 
-use crate::{
+use crate::api::{
     Agent, AgentId, ClientQueryId, ClientQueryRequest, Session, SessionId,
     events::{Event, EventType},
 };

@@ -13,7 +13,7 @@ Provider discovery and model metadata are available through `/providers` and
 `/models`. The server stores Pi-derived chat catalogs in SQLite, refreshes them
 in the background every four hours, and supports forced refresh, persistent pins,
 and filtering by configured credentials. See
-[`../../psa_api/API_OVERVIEW.md`](../../psa_api/API_OVERVIEW.md#providers-and-models)
+[`../../lib/psa/API_OVERVIEW.md`](../../lib/psa/API_OVERVIEW.md#providers-and-models)
 for routes, metadata fields, and catalog-aware reasoning behavior. A fresh database
 has no models until its first successful sync; no baseline catalog is bundled.
 
@@ -74,7 +74,7 @@ never modified.
 `default_agent_name` is a client suggestion, not an agent registration or creation policy.
 It defaults to `"default"` when omitted, including in existing files. Authenticated
 `GET /config` returns this client-safe option; use `Client::get_config()` from
-`psa_api`. Changes take effect after restarting the server.
+`psa`. Changes take effect after restarting the server.
 
 `[session_defaults]` provides the model for new sessions that omit `model_config`
 or send null. Models are written as provider/API-name slugs, such as
@@ -151,13 +151,13 @@ automatically reloaded; restart or a subsequent successful credential update loa
 Codex takes a ChatGPT Codex access token, not an OpenAI platform API key; configured
 status does not verify that credentials work.
 
-`psa_api` provides shared request/response types, route definitions, and an async
+`psa` provides shared request/response types, route definitions, and an async
 `Client`. Session views include runtime-derived `busy`; agent views include
 lifecycle state and cumulative usage. Requests are accepted into bounded queues,
 not necessarily persisted or executed at the time HTTP 202 is returned.
 
 ```rust,no_run
-use psa_api::{Client, CreateSession, CreateAgent, AgentConfigInput, AgentRequest,
+use psa::api::{Client, CreateSession, CreateAgent, AgentConfigInput, AgentRequest,
     ConfigGroup, ConfigId, HookConfig, HookOverrides, IncludedItems, MessageDelivery, ModelSelection,
     ProjectId};
 use llm_api::{api::{ContentBlock, TextBlock}, providers::{Effort, Model, ModelConfig, ProviderType}};
@@ -180,7 +180,7 @@ let config_id = ConfigId { config_group: ConfigGroup::Custom("examples".into()),
 let mut config = AgentConfigInput::new(config_id.clone(), vec![ModelSelection::Global]);
 config.description = "Example assistant".into();
 config.selectable = true;
-config.bundles = Some(vec![psa_api::BundleConfig::FileTools { read_only: false }]); // Replace defaults.
+config.bundles = Some(vec![psa::api::BundleConfig::FileTools { read_only: false }]); // Replace defaults.
 config.hooks = HookOverrides {
     agent_create: Some(vec![
         HookConfig::DefaultStartup, HookConfig::ToolDefinitions, HookConfig::Cwd, HookConfig::Skills,
@@ -207,7 +207,7 @@ client.submit_request(session.id, agent.id, &AgentRequest::Message {
 # }
 ```
 
-Routes are defined in `psa_api::routes`: batch upsert/list/lookup agent configs,
+Routes are defined in `psa::api::routes`: batch upsert/list/lookup agent configs,
 read immutable agent snapshots, upload/list skills, create/list/get/update/fork
 sessions, create/list/get agents, submit requests, and query session or agent events. Event
 GETs return paged JSON with `Accept: application/json` (the default) or SSE with
@@ -647,8 +647,8 @@ status. Operations are never automatically retried.
 lookup/list and snapshot reads, skill upload/list, session create/query/update/fork,
 configured agent create/query, request submission, steering, resume, interrupt,
 and busy queries. `Runtime::handle` and `AgentContext::sessions()` expose it.
-Registration uses `psa_api::AgentConfigInput`, normalized configs use
-`psa_api::AgentConfig`, and executable snapshots use `psa_api::AgentDefinition`.
+Registration uses `psa::api::AgentConfigInput`, normalized configs use
+`psa::api::AgentConfig`, and executable snapshots use `psa::api::AgentDefinition`.
 Session/agent operations
 return server-native `Session`, `Agent`, and `ForkedSession` values, including
 internal event/position metadata; HTTP handlers convert these to wire types and
@@ -697,7 +697,7 @@ use psa_server::{
     db::Database,
     sessions::{NewSession, ForkPoint, SessionFork, SessionUpdate},
 };
-use psa_api::events::{EventId, EventType, Message, MessageType};
+use psa::api::events::{EventId, EventType, Message, MessageType};
 use psa_server::db::{EventRange, NewEvent};
 use llm_api::{api::RequestConfig, providers::{Effort, Model, ModelConfig, ProviderType}};
 
@@ -717,7 +717,7 @@ let session = cursor.create_session(NewSession {
     decision_model: None,
 }).await?;
 // Low-level cursor registration takes normalized configs, not server-default input.
-let config: psa_api::AgentConfig = serde_json::from_value(serde_json::json!({
+let config: psa::api::AgentConfig = serde_json::from_value(serde_json::json!({
     "config_id": {"config_group": {"Custom": "examples"}, "name": "manual-replay"},
     "models": ["Global"]
 }))?;

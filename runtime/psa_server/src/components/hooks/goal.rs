@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use llm_api::api::{Outcome, StopReason};
-use psa_api::events::{EventType, Message, MessageType};
+use psa::api::events::{EventType, Message, MessageType};
 use std::time::Duration;
 
 pub struct GoalHook {
@@ -158,7 +158,7 @@ mod tests {
             sessions::NewSession,
             test_support as support,
         };
-        use psa_api::events::{InferenceResultEnd, InferenceResultStart};
+        use psa::api::events::{InferenceResultEnd, InferenceResultStart};
         let directory = tempfile::tempdir().unwrap();
         let database = Database::open(directory.path().join("goal-hook.sqlite3"))
             .await
@@ -252,7 +252,7 @@ mod tests {
                 let definition = cursor
                     .create_agent_definition(crate::db::CreateAgentDefinition {
                         name,
-                        bundles: vec![psa_api::BundleConfig::Goal { interactive_only }],
+                        bundles: vec![psa::api::BundleConfig::Goal { interactive_only }],
                         ..Default::default()
                     })
                     .await
@@ -308,7 +308,7 @@ mod tests {
                     let output = components
                         .tools
                         .iter()
-                        .find(|tool| tool.id() == psa_api::ToolId::SetGoal)
+                        .find(|tool| tool.id() == psa::api::ToolId::SetGoal)
                         .unwrap()
                         .execute(
                             serde_json::json!({"goal":"prove the goal"}),
@@ -322,7 +322,7 @@ mod tests {
                         let output = components
                             .tools
                             .iter()
-                            .find(|tool| tool.id() == psa_api::ToolId::SetGoalStatus)
+                            .find(|tool| tool.id() == psa::api::ToolId::SetGoalStatus)
                             .unwrap()
                             .execute(
                                 serde_json::json!({"status":"completed", "reason":"verified"}),
@@ -405,7 +405,7 @@ mod tests {
                 assert_eq!(results.len(), usize::from(expected == AgentState::Idle));
                 if let Some(result) = results.first() {
                     assert!(
-                        matches!(&result.kind, EventType::Result(psa_api::AgentResult::Text(text)) if text == "answer")
+                        matches!(&result.kind, EventType::Result(psa::api::AgentResult::Text(text)) if text == "answer")
                     );
                     assert!(events.windows(2).any(|pair| {
                         pair[0].id == result.id

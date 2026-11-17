@@ -3,7 +3,7 @@ use nix::{
     sys::signal::{Signal, killpg},
     unistd::Pid,
 };
-use psa_api::probes::{
+use psa::api::probes::{
     CHUNK_SIZE, Command, DirectoryEntry, Event, ExitStatus, Operation, SandboxRequest, Stdio,
 };
 use psa_shared::probe_transport::{Call, CallSender};

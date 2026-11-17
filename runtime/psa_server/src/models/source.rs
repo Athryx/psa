@@ -1,7 +1,7 @@
 //! Pi catalog transport and normalization; upstream URLs and headers are never imported.
 use super::{CatalogError, ProviderSyncState};
 use llm_api::providers::{Effort, Model, ProviderType};
-use psa_api::{ModelCost, ModelCostRates, ModelCostTier, ModelInfo, ModelKind, ReasoningOption};
+use psa::api::{ModelCost, ModelCostRates, ModelCostTier, ModelInfo, ModelKind, ReasoningOption};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::HashMap, time::Duration};

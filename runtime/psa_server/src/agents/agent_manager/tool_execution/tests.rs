@@ -190,7 +190,7 @@ impl Fixture {
             runtime: runtime.handle.clone(),
             accepting: Arc::new(AtomicBool::new(true)),
             client_key: "test-client-key".into(),
-            client_config: psa_api::ClientConfig {
+            client_config: psa::api::ClientConfig {
                 default_agent_name: "root".into(),
                 default_sandbox_image: None,
             },
@@ -242,7 +242,7 @@ impl Fixture {
                     subagent_parent_id: None,
                     interactive: false,
                     hidden: false,
-                    definition_id: psa_api::AgentDefinitionId(1),
+                    definition_id: psa::api::AgentDefinitionId(1),
                     name: "test".into(),
                 },
             )
@@ -266,7 +266,7 @@ impl Fixture {
         ];
         for tool in &tools {
             events.push(NewEvent::new(EventType::ToolDefinition(
-                psa_api::events::ToolDefinition {
+                psa::api::events::ToolDefinition {
                     id: tool.id(),
                     definition: tool.tool_definition(),
                 },
@@ -578,7 +578,7 @@ async fn invalid_invocation_batch_replies_with_error_and_sibling_continues() {
     }
     let mut committed = Vec::new();
     while let Ok(message) = stream.try_recv() {
-        if let psa_api::StreamMessage::Committed { event, .. } = message {
+        if let psa::api::StreamMessage::Committed { event, .. } = message {
             committed.push(event.event.kind);
         }
     }

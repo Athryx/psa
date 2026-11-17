@@ -9,7 +9,7 @@ use crate::{
         codemode_functions::{CodeModeEntry, CodeModeFunction, CodeModeListing},
     },
 };
-use psa_api::events::{EventType, Message};
+use psa::api::events::{EventType, Message};
 use std::{collections::BTreeSet, time::Duration};
 
 pub struct CodeModeFunctionsHook;

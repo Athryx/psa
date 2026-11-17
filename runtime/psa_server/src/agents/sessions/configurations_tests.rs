@@ -1,6 +1,6 @@
 use super::select_model;
 use llm_api::providers::{Effort, Model, ModelConfig, ProviderType};
-use psa_api::{
+use psa::api::{
     AgentConfig, AgentEffort, AgentModel, ConfigGroup, ConfigId, EffortSelection, HookConfigs,
     IncludedItems, ModelSelection,
 };

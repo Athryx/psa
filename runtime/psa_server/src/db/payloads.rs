@@ -7,7 +7,7 @@ use llm_api::{
     api::{self, Outcome, Usage},
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
-use psa_api::events::*;
+use psa::api::events::*;
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::SqliteConnection;
 use std::{collections::HashMap, time::Duration};
@@ -143,7 +143,7 @@ pub(super) async fn insert_payload(
     agent_id: i64,
     event: &EventType,
 ) -> Result<(), DbError> {
-    let owner = psa_api::AgentId(decode_integer(agent_id)?);
+    let owner = psa::api::AgentId(decode_integer(agent_id)?);
     match event {
         EventType::Result(value) => {
             let value = serialize_json(value)?;
@@ -480,7 +480,7 @@ pub(super) async fn load_payloads(
     lower: i64,
     upper: i64,
 ) -> Result<HashMap<i64, EventType>, DbError> {
-    let owner = psa_api::AgentId(decode_integer(agent_id)?);
+    let owner = psa::api::AgentId(decode_integer(agent_id)?);
     let mut payloads = HashMap::new();
     macro_rules! load {
         ($query:literal, |$r:ident| $event:expr) => {
@@ -536,7 +536,7 @@ pub(super) async fn load_payloads(
                 .map(|request_id| {
                     Ok::<_, DbError>(AgentMessageLink {
                         request_id,
-                        sender: psa_api::AgentId(decode_integer(
+                        sender: psa::api::AgentId(decode_integer(
                             r.source_agent_id
                                 .ok_or_else(|| invalid("subagent sender id"))?,
                         )?),
@@ -634,7 +634,7 @@ pub(super) async fn load_payloads(
                         request_id,
                         sender: owner,
                         sender_name,
-                        recipient: psa_api::AgentId(decode_integer(recipient)?),
+                        recipient: psa::api::AgentId(decode_integer(recipient)?),
                         recipient_name,
                     })
                 }

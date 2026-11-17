@@ -5,7 +5,7 @@
 //! result's client-only delivery field, so both sides are linked by ID rather
 //! than by content.
 use crate::{RowId, Transcript};
-use psa_api::events::{EventType, MessageType};
+use psa::api::events::{EventType, MessageType};
 
 /// Where to reveal a message in another agent's transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,7 +73,7 @@ fn find_row<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use psa_api::{
+    use psa::api::{
         AgentId, PendingEvent, SessionId, StreamMessage,
         events::{AgentMessageLink, Message, ToolCall, ToolResult},
     };

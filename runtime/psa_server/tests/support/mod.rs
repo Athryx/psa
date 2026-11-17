@@ -1,4 +1,4 @@
-use psa_api::{ProbeId, ProbeMetadata, probes::Uuid};
+use psa::api::{ProbeId, ProbeMetadata, probes::Uuid};
 use psa_server::db::Database;
 
 pub fn probe_metadata() -> ProbeMetadata {
@@ -26,18 +26,18 @@ pub fn model_config() -> llm_api::providers::ModelConfig {
 
 pub async fn create_agent_definition(
     cursor: &mut psa_server::db::DatabaseCursor,
-) -> psa_api::AgentDefinitionId {
+) -> psa::api::AgentDefinitionId {
     cursor
         .create_agent_definition(psa_server::db::CreateAgentDefinition {
             name: "default".into(),
-            bundles: vec![psa_api::BundleConfig::Noop],
-            hooks: psa_api::HookConfigs {
+            bundles: vec![psa::api::BundleConfig::Noop],
+            hooks: psa::api::HookConfigs {
                 agent_create: vec![
-                    psa_api::HookConfig::DefaultStartup,
-                    psa_api::HookConfig::ToolDefinitions,
+                    psa::api::HookConfig::DefaultStartup,
+                    psa::api::HookConfig::ToolDefinitions,
                 ],
-                session_update: vec![psa_api::HookConfig::SessionModelUpdate],
-                after_request: vec![psa_api::HookConfig::StopWithoutTools],
+                session_update: vec![psa::api::HookConfig::SessionModelUpdate],
+                after_request: vec![psa::api::HookConfig::StopWithoutTools],
                 ..Default::default()
             },
             ..Default::default()

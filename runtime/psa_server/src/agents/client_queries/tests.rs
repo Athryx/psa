@@ -1,5 +1,5 @@
 use super::*;
-use psa_api::{AskQuestionRequest, AskQuestionResponse, ClientAnswer, ClientQuestion};
+use psa::api::{AskQuestionRequest, AskQuestionResponse, ClientAnswer, ClientQuestion};
 use tokio::sync::broadcast;
 
 const SESSION: SessionId = SessionId(1);

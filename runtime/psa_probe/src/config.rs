@@ -1,5 +1,5 @@
 use clap::Args;
-use psa_api::{ProbeId, ProbeMetadata, probes::Uuid};
+use psa::api::{ProbeId, ProbeMetadata, probes::Uuid};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
@@ -196,7 +196,7 @@ fn valid_home_dir(value: Option<std::ffi::OsString>) -> Option<String> {
 
 fn parse_server_url(value: &str) -> Result<String, ConfigError> {
     // Parse URLs through the same URL type used by the websocket handshake.
-    let url = psa_api::probes::parse_connect_url(value).map_err(|_| {
+    let url = psa::api::probes::parse_connect_url(value).map_err(|_| {
         ConfigError::Invalid(
             "server_url must be an HTTP(S) or WS(S) URL without credentials, query, or fragment",
         )

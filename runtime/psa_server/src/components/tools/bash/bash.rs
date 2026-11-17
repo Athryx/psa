@@ -11,7 +11,7 @@ use crate::{
     prompts,
 };
 use llm_api::api::ToolDefinition;
-use psa_api::probes::Command;
+use psa::api::probes::Command;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;

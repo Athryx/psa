@@ -1,4 +1,4 @@
-use psa_api::{AgentId, SessionId};
+use psa::api::{AgentId, SessionId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

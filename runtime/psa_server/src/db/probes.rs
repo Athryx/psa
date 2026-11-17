@@ -1,5 +1,5 @@
 use super::{DatabaseCursor, DbError, schema::ProbeRow};
-use psa_api::{Probe, ProbeId, ProbeMetadata};
+use psa::api::{Probe, ProbeId, ProbeMetadata};
 use time::OffsetDateTime;
 
 impl DatabaseCursor {
@@ -74,7 +74,7 @@ mod tests {
 
     fn metadata(host: bool) -> ProbeMetadata {
         ProbeMetadata {
-            id: ProbeId(psa_api::probes::Uuid::new_v4()),
+            id: ProbeId(psa::api::probes::Uuid::new_v4()),
             hostname: "probe".into(),
             os: "linux".into(),
             architecture: "x86_64".into(),
@@ -211,7 +211,7 @@ mod tests {
         let database = Database::open(directory.path().join("probe.sqlite3"))
             .await
             .unwrap();
-        let id = ProbeId(psa_api::probes::Uuid::new_v4());
+        let id = ProbeId(psa::api::probes::Uuid::new_v4());
         let mut metadata = ProbeMetadata {
             id,
             hostname: "first".into(),

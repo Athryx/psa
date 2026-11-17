@@ -1,5 +1,5 @@
 //! Async HTTP/SSE client, transport errors, and probe connection URL parsing.
-use crate::{
+use crate::api::{
     Agent, AgentConfigInput, AgentConfigStatus, AgentDefinitionId, AgentId, AgentRequest,
     AgentResult, ClientQueryId, ClientQueryResponse, ConfigId, CreateAgent, CreateSession,
     EventsPage, EventsQuery, ForkSession, ForkedSession, NewSkill, ProjectId, RequestAccepted,
@@ -64,7 +64,7 @@ pub struct GlobalStreamEvent {
     /// Ephemeral revision, not a durable replay cursor.
     pub id: String,
     /// Global protocol notification.
-    pub message: crate::GlobalStreamMessage,
+    pub message: crate::api::GlobalStreamMessage,
 }
 /// Global summary feed; EOF/resync requires a fresh bootstrap.
 pub type GlobalEventStream =
@@ -160,21 +160,21 @@ impl Client {
     }
 
     /// Fetch the server's client-safe configuration.
-    pub async fn get_config(&self) -> Result<crate::ClientConfig, ClientError> {
+    pub async fn get_config(&self) -> Result<crate::api::ClientConfig, ClientError> {
         self.get(routes::CONFIG, &()).await
     }
 
     /// List supported providers and whether each has configured credentials.
     /// This does not validate credentials or model access.
-    pub async fn list_providers(&self) -> Result<Vec<crate::ProviderInfo>, ClientError> {
+    pub async fn list_providers(&self) -> Result<Vec<crate::api::ProviderInfo>, ClientError> {
         self.get(routes::PROVIDERS, &()).await
     }
 
     /// Set or remove a provider credential. Returns only its configured status.
     pub async fn set_provider_credential(
         &self,
-        request: &crate::SetProviderCredential,
-    ) -> Result<crate::ProviderInfo, ClientError> {
+        request: &crate::api::SetProviderCredential,
+    ) -> Result<crate::api::ProviderInfo, ClientError> {
         self.send(Method::PUT, routes::PROVIDER_CREDENTIAL, request)
             .await
     }
@@ -183,8 +183,8 @@ impl Client {
     /// Reads cached metadata; does not trigger a catalog refresh.
     pub async fn list_models(
         &self,
-        query: &crate::ListModels,
-    ) -> Result<Vec<crate::ModelInfo>, ClientError> {
+        query: &crate::api::ListModels,
+    ) -> Result<Vec<crate::api::ModelInfo>, ClientError> {
         self.get(routes::MODELS, query).await
     }
 
@@ -193,10 +193,10 @@ impl Client {
     pub async fn get_model(
         &self,
         model: &llm_api::providers::Model,
-    ) -> Result<crate::ModelInfo, ClientError> {
+    ) -> Result<crate::api::ModelInfo, ClientError> {
         self.get(
             routes::MODEL_LOOKUP,
-            &crate::ModelLookup {
+            &crate::api::ModelLookup {
                 provider: model.provider,
                 model: model.api_name.clone(),
             },
@@ -208,8 +208,8 @@ impl Client {
     /// Pinning an unknown model returns HTTP 404; unpinning one returns `None`.
     pub async fn set_model_pinned(
         &self,
-        request: &crate::PinModel,
-    ) -> Result<Option<crate::ModelInfo>, ClientError> {
+        request: &crate::api::PinModel,
+    ) -> Result<Option<crate::api::ModelInfo>, ClientError> {
         self.send(Method::PUT, routes::MODEL_PIN, request).await
     }
 
@@ -217,19 +217,25 @@ impl Client {
     /// Waits for every requested refresh; returns an API error if any fails.
     /// Successful provider updates are retained even if another provider fails.
     /// Success has no response body.
-    pub async fn resync_models(&self, request: &crate::ResyncModels) -> Result<(), ClientError> {
+    pub async fn resync_models(
+        &self,
+        request: &crate::api::ResyncModels,
+    ) -> Result<(), ClientError> {
         self.send_no_content(Method::POST, routes::MODELS_RESYNC, request)
             .await
     }
 
     /// List registered probes, including disconnected probes and live activity state.
-    pub async fn list_probes(&self) -> Result<Vec<crate::Probe>, ClientError> {
+    pub async fn list_probes(&self) -> Result<Vec<crate::api::Probe>, ClientError> {
         self.get(routes::PROBES, &()).await
     }
 
     /// Fetch a registered probe by ID, including its live activity state.
     /// Returns HTTP 404 if the probe is unknown.
-    pub async fn get_probe(&self, id: crate::ProbeId) -> Result<crate::Probe, ClientError> {
+    pub async fn get_probe(
+        &self,
+        id: crate::api::ProbeId,
+    ) -> Result<crate::api::Probe, ClientError> {
         self.get(&routes::probe_path(routes::PROBE, id), &()).await
     }
 
@@ -237,9 +243,9 @@ impl Client {
     /// Paths are passed unchanged; entry metadata does not follow symlinks.
     pub async fn list_probe_directory(
         &self,
-        id: crate::ProbeId,
+        id: crate::api::ProbeId,
         path: &str,
-    ) -> Result<Vec<crate::probes::DirectoryEntry>, ClientError> {
+    ) -> Result<Vec<crate::api::probes::DirectoryEntry>, ClientError> {
         self.get(
             &routes::probe_path(routes::PROBE_DIRECTORIES, id),
             &[("path", path)],
@@ -250,14 +256,17 @@ impl Client {
     /// List sandboxes with their container state, optionally for one manager probe.
     pub async fn list_sandboxes(
         &self,
-        manager_id: Option<crate::ProbeId>,
-    ) -> Result<Vec<crate::Sandbox>, ClientError> {
-        self.get(routes::SANDBOXES, &crate::ListSandboxes { manager_id })
+        manager_id: Option<crate::api::ProbeId>,
+    ) -> Result<Vec<crate::api::Sandbox>, ClientError> {
+        self.get(routes::SANDBOXES, &crate::api::ListSandboxes { manager_id })
             .await
     }
 
     /// Fetch one sandbox by its nested probe ID.
-    pub async fn get_sandbox(&self, id: crate::ProbeId) -> Result<crate::Sandbox, ClientError> {
+    pub async fn get_sandbox(
+        &self,
+        id: crate::api::ProbeId,
+    ) -> Result<crate::api::Sandbox, ClientError> {
         self.get(&routes::probe_path(routes::SANDBOX, id), &())
             .await
     }
@@ -266,27 +275,33 @@ impl Client {
     /// The image defaults to the server's configured sandbox image.
     pub async fn create_sandbox(
         &self,
-        manager_id: crate::ProbeId,
-        request: &crate::CreateSandbox,
-    ) -> Result<crate::Sandbox, ClientError> {
+        manager_id: crate::api::ProbeId,
+        request: &crate::api::CreateSandbox,
+    ) -> Result<crate::api::Sandbox, ClientError> {
         let path = routes::probe_path(routes::PROBE_SANDBOXES, manager_id);
         self.send(Method::POST, &path, request).await
     }
 
     /// Start a sandbox container; fails with `manager_offline` if its manager is disconnected.
-    pub async fn start_sandbox(&self, id: crate::ProbeId) -> Result<crate::Sandbox, ClientError> {
+    pub async fn start_sandbox(
+        &self,
+        id: crate::api::ProbeId,
+    ) -> Result<crate::api::Sandbox, ClientError> {
         let path = routes::probe_path(routes::SANDBOX_START, id);
         self.send(Method::POST, &path, &()).await
     }
 
     /// Stop a sandbox container; fails with `manager_offline` if its manager is disconnected.
-    pub async fn stop_sandbox(&self, id: crate::ProbeId) -> Result<crate::Sandbox, ClientError> {
+    pub async fn stop_sandbox(
+        &self,
+        id: crate::api::ProbeId,
+    ) -> Result<crate::api::Sandbox, ClientError> {
         let path = routes::probe_path(routes::SANDBOX_STOP, id);
         self.send(Method::POST, &path, &()).await
     }
 
     /// Remove a sandbox container and its record; sessions on its probe remain.
-    pub async fn delete_sandbox(&self, id: crate::ProbeId) -> Result<(), ClientError> {
+    pub async fn delete_sandbox(&self, id: crate::api::ProbeId) -> Result<(), ClientError> {
         let response = self
             .request(Method::DELETE, &routes::probe_path(routes::SANDBOX, id))
             .send()
@@ -297,7 +312,7 @@ impl Client {
 
     /// Atomically create or replace named configurations and return their statuses.
     /// Omitted component lists inherit server defaults; explicit lists replace them.
-    /// Passing normalized [`crate::AgentConfig`] values keeps all lists explicit.
+    /// Passing normalized [`crate::api::AgentConfig`] values keeps all lists explicit.
     pub async fn upsert_agent_configs<I: Clone + Into<AgentConfigInput>>(
         &self,
         configs: &[I],
@@ -345,7 +360,7 @@ impl Client {
     /// directory of each listed session, finding a session's directory on
     /// first use. Waits for the rescan; success has no response body.
     pub async fn refresh_configs(&self, session_ids: &[SessionId]) -> Result<(), ClientError> {
-        let request = crate::RefreshConfigs {
+        let request = crate::api::RefreshConfigs {
             session_ids: session_ids.to_vec(),
         };
         self.send_no_content(Method::POST, routes::CONFIGS_REFRESH, &request)
@@ -445,7 +460,7 @@ impl Client {
         &self,
         session: SessionId,
         agent: AgentId,
-    ) -> Result<crate::AgentContextState, ClientError> {
+    ) -> Result<crate::api::AgentContextState, ClientError> {
         self.get(
             &routes::agent_path(routes::AGENT_CONTEXT_STATE, session, agent),
             &(),
@@ -459,7 +474,7 @@ impl Client {
         &self,
         session: SessionId,
         agent: AgentId,
-    ) -> Result<Vec<crate::ModelUsage>, ClientError> {
+    ) -> Result<Vec<crate::api::ModelUsage>, ClientError> {
         self.get(
             &routes::agent_path(routes::AGENT_USAGE, session, agent),
             &(),
@@ -499,7 +514,7 @@ impl Client {
         &self,
         session: SessionId,
         agent: AgentId,
-        delivery: crate::MessageDelivery,
+        delivery: crate::api::MessageDelivery,
         content: Vec<llm_api::api::ContentBlock>,
     ) -> Result<RequestAccepted, ClientError> {
         let request = AgentRequest::Message {
@@ -518,13 +533,13 @@ impl Client {
         &self,
         session: SessionId,
         agent: AgentId,
-        delivery: crate::CommandDelivery,
-        command: crate::AgentCommand,
-    ) -> Result<crate::CommandResult, ClientError> {
+        delivery: crate::api::CommandDelivery,
+        command: crate::api::AgentCommand,
+    ) -> Result<crate::api::CommandResult, ClientError> {
         self.send(
             Method::POST,
             &routes::agent_path(routes::COMMANDS, session, agent),
-            &crate::RunCommand { delivery, command },
+            &crate::api::RunCommand { delivery, command },
         )
         .await
     }
@@ -534,7 +549,7 @@ impl Client {
         &self,
         session: SessionId,
         agent: AgentId,
-        record: crate::events::CommandRecord,
+        record: crate::api::events::CommandRecord,
     ) -> Result<RequestAccepted, ClientError> {
         self.submit_request(session, agent, &AgentRequest::RecordCommand(record))
             .await
@@ -620,7 +635,7 @@ impl Client {
     /// pages. Reconnect/overflow requires clearing the old bootstrap and reloading.
     pub async fn stream_global_events(
         &self,
-        query: &crate::GlobalEventsQuery,
+        query: &crate::api::GlobalEventsQuery,
         last_event_id: Option<&str>,
     ) -> Result<GlobalEventStream, ClientError> {
         let request = self

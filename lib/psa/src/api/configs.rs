@@ -1,6 +1,6 @@
 //! Named, mutable agent configurations and their registration input.
 
-use crate::{BundleConfig, HookConfig, HookConfigs, ProbeId, SessionId};
+use crate::api::{BundleConfig, HookConfig, HookConfigs, ProbeId, SessionId};
 use llm_api::providers::{Effort, Model};
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +24,7 @@ pub enum ConfigGroup {
     Global,
     /// Probe-local namespace discovered from an `.agents` directory, found by
     /// walking up from a session's working directory. Unrelated to
-    /// [`crate::ProjectId`], which only labels sessions.
+    /// [`crate::api::ProjectId`], which only labels sessions.
     AgentsDir {
         /// Absolute `.agents` directory path.
         path: String,
@@ -265,7 +265,7 @@ pub struct RefreshConfigs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CreateAgent, NewSkill};
+    use crate::api::{CreateAgent, NewSkill};
     use serde_json::json;
 
     #[test]

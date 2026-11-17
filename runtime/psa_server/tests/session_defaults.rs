@@ -1,7 +1,7 @@
 mod support;
 
 use llm_api::providers::{Effort, Model, ModelConfig, ProviderType};
-use psa_api::{Client, CreateSession, ForkPoint, ForkSession, Session, UpdateSession};
+use psa::api::{Client, CreateSession, ForkPoint, ForkSession, Session, UpdateSession};
 use psa_server::{
     config_registry::ConfigRegistry, db::Database, models::CatalogSource, probes::ProbeRegistry,
     providers::ProviderRegistry,

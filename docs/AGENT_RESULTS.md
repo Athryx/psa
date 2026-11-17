@@ -88,7 +88,7 @@ results newest first. The limit defaults to one. Retrieval includes the full
 logical fork history, respecting each fork checkpoint, rather than only events
 physically stored under the viewed agent.
 
-`psa_api::results` exposes `ResultRecord<T = AgentResult>`, retaining:
+`psa::api::results` exposes `ResultRecord<T = AgentResult>`, retaining:
 
 - `session_id` and `agent_id`: the viewed session and agent.
 - `event_id`: the event sequence in that agent's logical lineage.

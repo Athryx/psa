@@ -45,10 +45,14 @@ async fn cache_writes_count_only_reported_values() {
         .unwrap();
     assert_eq!(updated.new_usage.unwrap().cache_write_tokens, Some(8));
     assert_eq!(
-        super::super::queries::usage_at(cursor.connection(), agent.id, psa_api::events::EventId(2))
-            .await
-            .unwrap()
-            .cache_write_tokens,
+        super::super::queries::usage_at(
+            cursor.connection(),
+            agent.id,
+            psa::api::events::EventId(2)
+        )
+        .await
+        .unwrap()
+        .cache_write_tokens,
         Some(8)
     );
 
@@ -318,9 +322,13 @@ async fn unreported_compaction_usage_keeps_totals_known_and_poisoned_totals_are_
     assert_eq!(usage.input_tokens, Some(8));
     assert_eq!(usage.total_tokens, Some(8));
     assert_eq!(
-        super::super::queries::usage_at(cursor.connection(), agent.id, psa_api::events::EventId(4))
-            .await
-            .unwrap(),
+        super::super::queries::usage_at(
+            cursor.connection(),
+            agent.id,
+            psa::api::events::EventId(4)
+        )
+        .await
+        .unwrap(),
         usage
     );
 
@@ -348,7 +356,7 @@ async fn unreported_compaction_usage_keeps_totals_known_and_poisoned_totals_are_
 async fn model_usage_groups_inference_and_decision_calls_by_model() {
     use llm_api::api::decisions::{DecisionRequest, DecisionResponse};
     use llm_api::providers::{Effort, Model, ModelConfig, ProviderType};
-    use psa_api::DecisionCall;
+    use psa::api::DecisionCall;
 
     let (_dir, db, session, agent) = fixture().await;
     let model = |name: &str| Model::new(ProviderType::Openrouter, name).unwrap();

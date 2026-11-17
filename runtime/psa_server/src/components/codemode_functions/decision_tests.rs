@@ -19,7 +19,7 @@ use llm_api::{
     api::decisions::Decisions,
     providers::{Model, ProviderType},
 };
-use psa_api::events::EventType;
+use psa::api::events::EventType;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use tokio::{
@@ -132,7 +132,7 @@ async fn with_context<T>(test: impl AsyncFnOnce(&mut AgentContext<'_>) -> T) -> 
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "decisions".into(),
             },
         )
@@ -192,7 +192,7 @@ fn response_body(cost: f64) -> serde_json::Value {
     })
 }
 
-async fn recorded_calls(context: &AgentContext<'_>) -> Vec<psa_api::DecisionCall> {
+async fn recorded_calls(context: &AgentContext<'_>) -> Vec<psa::api::DecisionCall> {
     context
         .load_all_events()
         .await

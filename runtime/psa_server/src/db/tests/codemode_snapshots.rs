@@ -77,7 +77,7 @@ async fn snapshots_follow_fork_lineage_and_never_enter_public_events() {
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "unrelated".into(),
             },
         )

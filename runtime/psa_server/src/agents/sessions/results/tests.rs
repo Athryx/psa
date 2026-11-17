@@ -5,7 +5,7 @@ use crate::agents::{
     sessions::tests::{Fixture, create_agent_request},
 };
 use crate::db::NewEvent;
-use psa_api::{AgentResult, ForkPoint, ForkSession};
+use psa::api::{AgentResult, ForkPoint, ForkSession};
 use std::{
     future::Future,
     pin::Pin,

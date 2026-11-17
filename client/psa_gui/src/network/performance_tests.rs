@@ -51,8 +51,8 @@ fn pending(agent: u64, revision: u64) -> PendingEvent {
         revision,
         session_id: SessionId(1),
         agent_id: AgentId(agent),
-        kind: psa_api::events::EventType::Message(psa_api::events::Message::text(
-            psa_api::events::MessageType::Agent,
+        kind: psa::api::events::EventType::Message(psa::api::events::Message::text(
+            psa::api::events::MessageType::Agent,
             revision.to_string(),
         )),
     }

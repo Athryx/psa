@@ -1,5 +1,5 @@
 use super::*;
-use psa_api::events::{EventType, StatusChange};
+use psa::api::events::{EventType, StatusChange};
 use std::{collections::HashMap, rc::Rc};
 
 #[derive(Props, Clone)]
@@ -78,10 +78,10 @@ fn interrupted_status_is_always_visible_as_error() {
 
 #[test]
 fn commands_render_as_right_aligned_command_rows() {
-    let kind = EventType::Command(psa_api::events::CommandRecord {
+    let kind = EventType::Command(psa::api::events::CommandRecord {
         name: "compact".into(),
         args: "tests".into(),
-        outcome: psa_api::CommandOutcome::Succeeded,
+        outcome: psa::api::CommandOutcome::Succeeded,
         output: None,
     });
     let html = dioxus_ssr::render_element(
@@ -94,15 +94,15 @@ fn commands_render_as_right_aligned_command_rows() {
 
 #[test]
 fn received_messages_are_collapsed_rows_naming_the_sender() {
-    let kind = EventType::Message(psa_api::events::Message {
-        source: Some(psa_api::events::AgentMessageLink {
+    let kind = EventType::Message(psa::api::events::Message {
+        source: Some(psa::api::events::AgentMessageLink {
             request_id: "r1".into(),
             sender: AgentId(7),
             sender_name: "researcher".into(),
             recipient: AgentId(1),
             recipient_name: "recipient".into(),
         }),
-        ..psa_api::events::Message::text(psa_api::events::MessageType::Subagent, "found it\nmore")
+        ..psa::api::events::Message::text(psa::api::events::MessageType::Subagent, "found it\nmore")
     });
     let html = dioxus_ssr::render_element(
         rsx! { AppearanceRoot { kind, hide_results: true, hide_statuses: true } },
@@ -117,15 +117,15 @@ fn linked_row_root() -> Element {
     let ui = use_signal(|| Ui::new(DesktopSettings::default()));
     use_context_provider(|| ui);
     let payload = use_hook(|| {
-        let message = psa_api::events::Message {
-            source: Some(psa_api::events::AgentMessageLink {
+        let message = psa::api::events::Message {
+            source: Some(psa::api::events::AgentMessageLink {
                 request_id: "r1".into(),
                 sender: AgentId(7),
                 sender_name: "researcher".into(),
                 recipient: AgentId(1),
                 recipient_name: "recipient".into(),
             }),
-            ..psa_api::events::Message::text(psa_api::events::MessageType::Subagent, "found it")
+            ..psa::api::events::Message::text(psa::api::events::MessageType::Subagent, "found it")
         };
         let envelope: EventEnvelope = serde_json::from_value(serde_json::json!({
             "session_id": 3, "agent_id": 1, "position": 1,

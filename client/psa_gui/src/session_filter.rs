@@ -10,7 +10,7 @@ use crate::{
     views::{probe_label, probe_status_class},
 };
 use dioxus::prelude::*;
-use psa_api::{ProbeId, ProjectId, SessionFilter};
+use psa::api::{ProbeId, ProjectId, SessionFilter};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ProbeOption {
@@ -322,7 +322,7 @@ mod tests {
     use super::*;
 
     fn id(n: u128) -> ProbeId {
-        ProbeId(psa_api::probes::Uuid::from_u128(n))
+        ProbeId(psa::api::probes::Uuid::from_u128(n))
     }
 
     fn option(n: u128, label: &str) -> ProbeOption {

@@ -4,7 +4,7 @@
 //! create_agent schema, its validation, and the identity prompt agree.
 
 use crate::agents::sessions::Sessions;
-use psa_api::{AgentDefinitionId, EffortSelection, ModelSelection};
+use psa::api::{AgentDefinitionId, EffortSelection, ModelSelection};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

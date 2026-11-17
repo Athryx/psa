@@ -11,7 +11,7 @@ use crate::{
     probes::ProbeHandle,
     sessions::Session,
 };
-use psa_api::{EventEnvelope, events::*};
+use psa::api::{EventEnvelope, events::*};
 use psa_shared::probe_transport::ProbeError;
 
 #[cfg(test)]
@@ -40,7 +40,7 @@ enum ContextState<'a> {
 pub(crate) struct InvocationSnapshot {
     pub agent: Agent,
     pub session: Session,
-    pub definition: psa_api::AgentDefinition,
+    pub definition: psa::api::AgentDefinition,
     pub projection: std::sync::Arc<AgentProjection>,
     pub tools: std::sync::Arc<[crate::components::tools::ToolKind]>,
     pub codemode_functions: std::sync::Arc<[crate::components::codemode_functions::CodeModeEntry]>,
@@ -108,7 +108,7 @@ impl<'a> AgentContext<'a> {
         }
     }
 
-    pub fn definition(&self) -> &psa_api::AgentDefinition {
+    pub fn definition(&self) -> &psa::api::AgentDefinition {
         match &self.state {
             ContextState::Borrowed(state) => state.definition(),
             ContextState::Invocation(snapshot) => &snapshot.definition,
@@ -163,9 +163,9 @@ impl<'a> AgentContext<'a> {
     /// Available to lifecycle hooks even when the probe is offline.
     pub async fn query_client(
         &self,
-        query: psa_api::ClientQuery,
+        query: psa::api::ClientQuery,
         cancellation: &mut Cancellation,
-    ) -> Result<psa_api::ClientQueryResponse, ClientQueryError> {
+    ) -> Result<psa::api::ClientQueryResponse, ClientQueryError> {
         self.sessions
             .client_queries()
             .query(self.session().id, self.agent().id, query, cancellation)
@@ -220,7 +220,7 @@ impl<'a> AgentContext<'a> {
     /// Load this agent's newest durable result, following its complete logical history.
     pub async fn load_last_result(
         &self,
-    ) -> Result<Option<psa_api::ResultRecord>, super::session_manager::RuntimeError> {
+    ) -> Result<Option<psa::api::ResultRecord>, super::session_manager::RuntimeError> {
         self.sessions
             .load_last_result(self.session().id, self.agent().id)
             .await
@@ -230,7 +230,7 @@ impl<'a> AgentContext<'a> {
     pub async fn load_last_results(
         &self,
         limit: u32,
-    ) -> Result<Vec<psa_api::ResultRecord>, super::session_manager::RuntimeError> {
+    ) -> Result<Vec<psa::api::ResultRecord>, super::session_manager::RuntimeError> {
         self.sessions
             .load_last_results(self.session().id, self.agent().id, limit)
             .await

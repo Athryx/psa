@@ -273,8 +273,8 @@ async fn replay_and_recovery_do_not_install_worker_bundles() {
     let (_directory, database, agent) = create_agent_record(crate::db::CreateAgentDefinition {
         name: "duplicate file tool".into(),
         bundles: vec![
-            psa_api::BundleConfig::FileTools { read_only: false },
-            psa_api::BundleConfig::FileTools { read_only: true },
+            psa::api::BundleConfig::FileTools { read_only: false },
+            psa::api::BundleConfig::FileTools { read_only: true },
         ],
         ..Default::default()
     })

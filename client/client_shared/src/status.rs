@@ -1,7 +1,7 @@
 //! Per-agent status projected from a server snapshot and newer committed events.
 use crate::Transcript;
 use llm_api::providers::ModelConfig;
-use psa_api::ModelInfo;
+use psa::api::ModelInfo;
 
 #[derive(Debug, Clone, Default)]
 pub struct AgentStatus {
@@ -49,7 +49,7 @@ mod tests {
         api::{Outcome, StopReason, Usage},
         providers::{Effort, Model, ProviderType},
     };
-    use psa_api::{
+    use psa::api::{
         AgentContextState, AgentId, EventEnvelope, EventsPage, PendingEvent, SessionId,
         StreamMessage,
         events::{Event, EventId, EventType, InferenceResultEnd},
@@ -200,11 +200,11 @@ mod tests {
             model_config: Some(config("current")),
             context_tokens: Some(50),
         });
-        transcript.apply(psa_api::StreamMessage::Committed {
+        transcript.apply(psa::api::StreamMessage::Committed {
             event: event(3, EventType::Model(config("old"))),
             pending_id: None,
         });
-        transcript.apply(psa_api::StreamMessage::Committed {
+        transcript.apply(psa::api::StreamMessage::Committed {
             event: event(11, end(Some(99), None, None)),
             pending_id: None,
         });

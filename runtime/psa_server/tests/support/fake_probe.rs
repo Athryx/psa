@@ -1,5 +1,5 @@
 use futures_util::{SinkExt, StreamExt};
-use psa_api::{
+use psa::api::{
     ProbeId, SandboxState,
     probes::{ContainerStatus, DirectoryEntry, Event, Operation, PROTOCOL_VERSION, SandboxRequest},
 };
@@ -272,7 +272,7 @@ impl FakeFiles {
                 let _ = call
                     .sender
                     .finish(Event::Complete {
-                        status: Some(psa_api::probes::ExitStatus {
+                        status: Some(psa::api::probes::ExitStatus {
                             code: Some(if exists { 0 } else { 1 }),
                             signal: None,
                         }),

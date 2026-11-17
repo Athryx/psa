@@ -7,7 +7,7 @@ fn session() -> Session {
     Session {
         decision_model: None,
         id: SessionId(1),
-        probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+        probe_id: psa::api::ProbeId(psa::api::probes::Uuid::nil()),
         parent_id: None,
         first_position: 1,
         next_position: 1,

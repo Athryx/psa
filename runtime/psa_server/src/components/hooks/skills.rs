@@ -6,7 +6,7 @@ use crate::{
     probes::ProbeHandle,
     prompts::skills::{SkillDescription, format_skills},
 };
-use psa_api::{
+use psa::api::{
     events::{EventType, Log, Message},
     probes::Event,
 };

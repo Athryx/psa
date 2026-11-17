@@ -4,7 +4,7 @@ use crate::{
     agents::agent_context::AgentContext, components::cancellation::Cancellation, db::DbError,
     probes::ProbeHandle,
 };
-use psa_api::{
+use psa::api::{
     events::{EventType, Log, Message},
     probes::Event,
 };

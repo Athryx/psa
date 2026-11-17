@@ -77,8 +77,8 @@ fn HistoryFixture() -> Element {
                 revision: 1,
                 session_id: target.session_id,
                 agent_id: target.agent_id,
-                kind: psa_api::events::EventType::Message(psa_api::events::Message::text(
-                    psa_api::events::MessageType::Human,
+                kind: psa::api::events::EventType::Message(psa::api::events::Message::text(
+                    psa::api::events::MessageType::Human,
                     format!("history-item-{i:03}"),
                 )),
             };
@@ -153,8 +153,8 @@ fn EmptyHistoryFixture() -> Element {
             ui.write().transcripts.get_mut(&target).unwrap().apply(StreamMessage::Upsert {
                 pending: PendingEvent {
                     id: "new".into(), revision: 1, session_id: target.session_id, agent_id: target.agent_id,
-                    kind: psa_api::events::EventType::Message(psa_api::events::Message::text(
-                        psa_api::events::MessageType::Human, "new-live-row")),
+                    kind: psa::api::events::EventType::Message(psa::api::events::Message::text(
+                        psa::api::events::MessageType::Human, "new-live-row")),
                 },
             });
         }, "Add live row" }
@@ -268,7 +268,7 @@ fn fixture_pane(id: u64) -> TabGroup {
             id: ViewId(id),
             target: TranscriptTarget {
                 session_id: SessionId(id),
-                agent_id: psa_api::AgentId(id),
+                agent_id: psa::api::AgentId(id),
             },
             kind: TabKind::Transcript,
             preview: false,

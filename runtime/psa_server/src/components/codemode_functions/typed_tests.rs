@@ -87,7 +87,7 @@ async fn typed_bridge_validates_and_cancels_before_running() {
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "typed".into(),
             },
         )

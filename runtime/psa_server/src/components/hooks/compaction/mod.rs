@@ -15,7 +15,7 @@ use llm_api::{
     api::{ContentBlock, Outcome, StopReason},
     providers::ModelConfig,
 };
-use psa_api::{
+use psa::api::{
     AgentCommand, AgentDefinitionId, AgentResult, CommandOutcome, CommandResult, HookConfig,
     HookConfigs,
     events::{Compaction, CompactionSummary, Event, EventType, Log, MessageType},

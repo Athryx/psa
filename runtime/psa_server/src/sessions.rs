@@ -1,9 +1,9 @@
 use crate::agents::{Agent, AgentId};
-use psa_api::events::EventId;
+use psa::api::events::EventId;
 use std::path::PathBuf;
 use time::OffsetDateTime;
 
-pub use psa_api::SessionId;
+pub use psa::api::SessionId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
@@ -13,8 +13,8 @@ pub struct Session {
     pub next_position: u64,
     pub name: String,
     pub working_directory: PathBuf,
-    pub probe_id: psa_api::ProbeId,
-    pub project_id: Option<psa_api::ProjectId>,
+    pub probe_id: psa::api::ProbeId,
+    pub project_id: Option<psa::api::ProjectId>,
     pub model_config: llm_api::providers::ModelConfig,
     pub decision_model: Option<llm_api::providers::Model>,
     pub created_at: OffsetDateTime,
@@ -22,8 +22,8 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn into_api(self, busy: bool) -> psa_api::Session {
-        psa_api::Session {
+    pub fn into_api(self, busy: bool) -> psa::api::Session {
+        psa::api::Session {
             id: self.id,
             parent_id: self.parent_id,
             name: self.name,
@@ -43,8 +43,8 @@ impl Session {
 pub struct NewSession {
     pub name: String,
     pub working_directory: PathBuf,
-    pub probe_id: psa_api::ProbeId,
-    pub project_id: Option<psa_api::ProjectId>,
+    pub probe_id: psa::api::ProbeId,
+    pub project_id: Option<psa::api::ProjectId>,
     pub model_config: llm_api::providers::ModelConfig,
     pub decision_model: Option<llm_api::providers::Model>,
 }

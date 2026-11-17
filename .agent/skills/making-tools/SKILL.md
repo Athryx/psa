@@ -115,7 +115,7 @@ each concrete tool in its own file; typed invocation arguments and the execution
 macro are unchanged.
 
 - Put the bundle owner/assembly logic in `runtime/psa_server/src/components/bundles/<feature>.rs`.
-  Register its `BundleConfig` in `psa_api` and dispatch construction through
+  Register its `BundleConfig` in `psa` and dispatch construction through
   `BundleKind::from_config(&BundleConfig, Option<&SessionBundleHandle>)` in the
   server, returning `Result<Self, InstallError>`. The runtime supplies session
   resources, not serialized configuration arguments. `Subagents` requires those
@@ -275,7 +275,7 @@ to reach around their ownership or lifecycle rules.
 - `probe() -> Result<&ProbeHandle, ProbeError>`: the invocation's remote connection;
   it can be unavailable. Do not silently fall back to the server's filesystem.
 - `sessions() -> &Sessions`: async session/agent facade described below.
-- `query_client(query, &mut cancellation).await`: sends a typed `psa_api::ClientQuery`
+- `query_client(query, &mut cancellation).await`: sends a typed `psa::api::ClientQuery`
   scoped to the invocation's session/agent and waits for `ClientQueryResponse`.
   The runtime owns pending requests; clients receive them through existing SSE
   streams and respond through the query-response endpoint. No connected client,
@@ -333,7 +333,7 @@ entries; file/archive/process operations return streaming calls. Paths must be
 absolute UTF-8 paths on the PROBE. Resolve relative tool paths against
 `context.session().working_directory`, never the server process working directory.
 
-`psa_api::probes::Command` builds process requests (program, arguments, cwd,
+`psa::api::probes::Command` builds process requests (program, arguments, cwd,
 environment, and stdio). Streaming `Call` exposes `sender.write(0, bytes)`,
 `sender.close_stdin()`, `next_event()`, `signal()`, `kill()`, `wait()`, and
 `into_output()`. Data events identify streams (stdout=1, stderr=2). Respect flow

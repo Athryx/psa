@@ -2,7 +2,7 @@
 
 Status: initial desktop client and API implementation added. This document records
 its design and agreed scope; see `client/psa_desktop/README.md` for running it and
-`psa_api/API_OVERVIEW.md` for the concrete endpoint contracts.
+`lib/psa/API_OVERVIEW.md` for the concrete endpoint contracts.
 
 The desktop WebView renderer is enabled with `--features native`, keeping ordinary
 workspace tests independent of native GUI development libraries. Web/mobile/TUI
@@ -20,7 +20,7 @@ client/
   psa_desktop/     # Executable, desktop platform implementation, local persistence
 ```
 
-`psa_api` remains the thin HTTP/SSE client and wire types. Future `psa_web` and
+`psa` remains the thin HTTP/SSE client and wire types. Future `psa_web` and
 `psa_mobile` implement the same GUI platform interface. A future `psa_tui` uses
 `client_shared`, not `psa_gui`.
 
@@ -181,7 +181,7 @@ directory convention as server/probe. On Linux this defaults to
 Initial settings: API URL, API client key, model favorites management, and basic
 UI preferences. Store connection settings, UI preferences, and restored workspace
 state in `desktop.toml`. Favorites use the selected server's existing persisted
-model pins; the settings screen edits those through `psa_api`, not an independent
+model pins; the settings screen edits those through `psa`, not an independent
 local favorites list. Keep desktop settings separate from `config.toml`,
 `probe.toml`, and `auth.toml`; never copy provider credentials into desktop config.
 
@@ -268,7 +268,7 @@ and reference-count subscriptions for open views of a session; the global summar
 feed updates sidebar metadata without loading unopened transcripts. Test initial
 fetch races, paging during updates, reconnects, and out-of-order HTTP responses.
 
-Relevant sources: `psa_api/src/{types,events,models,client,routes}.rs`,
+Relevant sources: `lib/psa/src/api/{types,events,models,client,routes}.rs`,
 `runtime/psa_server/src/db/{events,sessions,agents}.rs`,
 `runtime/psa_server/src/agents/{publication,sessions/configurations}.rs`, and
 `runtime/psa_server/src/components/hooks/session_model_update.rs`.

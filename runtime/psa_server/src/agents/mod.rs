@@ -2,10 +2,10 @@
 
 use crate::{agents::agent_projection::ProjectionError, db::DbError, sessions::SessionId};
 use llm_api::api::Usage;
-use psa_api::events::{EventId, ToolDefinition};
+use psa::api::events::{EventId, ToolDefinition};
 use time::OffsetDateTime;
 
-pub use psa_api::{AgentDefinition, AgentDefinitionId, AgentId, AgentState};
+pub use psa::api::{AgentDefinition, AgentDefinitionId, AgentId, AgentState};
 
 pub mod agent_context;
 pub mod agent_manager;
@@ -50,7 +50,7 @@ pub struct Agent {
     pub updated_at: OffsetDateTime,
 }
 
-impl From<Agent> for psa_api::Agent {
+impl From<Agent> for psa::api::Agent {
     fn from(agent: Agent) -> Self {
         Self {
             id: agent.id,

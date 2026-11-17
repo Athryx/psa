@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 dioxus = { version = "=0.7.10", default-features = false, features = ["macro", "html", "signals", "hooks", "document"] }
 client_shared = { path = "../client_shared" }
-psa_api = { path = "../../psa_api" }
+psa = { path = "../../lib/psa" }
 llm_api = { path = "../../lib/llm_api" }
 futures-util = "0.3"
 pulldown-cmark = { version = "0.13", default-features = false }

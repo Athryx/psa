@@ -32,7 +32,7 @@ pub use decision_models::DecisionModelsBundle;
 pub use file_tools::FileToolsBundle;
 pub use goal::GoalBundle;
 pub use noop::NoopBundle;
-pub use psa_api::BundleConfig;
+pub use psa::api::BundleConfig;
 pub use subagents::SubagentsBundle;
 pub use traces::TracesBundle;
 pub use typed_result::TypedResultBundle;
@@ -329,10 +329,10 @@ impl Installer {
 /// that installs its handler, instead of queueing work nobody would execute.
 pub fn require_command_support(
     definition: &AgentDefinition,
-    command: &psa_api::AgentCommand,
+    command: &psa::api::AgentCommand,
 ) -> Result<(), String> {
     let (name, bundle) = match command {
-        psa_api::AgentCommand::Compact { .. } => ("Compact", psa_api::BundleId::Compaction),
+        psa::api::AgentCommand::Compact { .. } => ("Compact", psa::api::BundleId::Compaction),
     };
     if definition
         .bundles
@@ -369,7 +369,7 @@ impl InstalledComponents {
         session: &Session,
         resources: Option<&session::SessionBundleHandle>,
     ) -> Result<Self, InstallError> {
-        psa_api::validate_completion_modes(&definition.bundles, &definition.hooks)
+        psa::api::validate_completion_modes(&definition.bundles, &definition.hooks)
             .map_err(|error| InstallError::new(error.to_string()))?;
         let child_templates = Self::load_child_templates(definition, resources).await?;
         let mut installer = Installer::default();

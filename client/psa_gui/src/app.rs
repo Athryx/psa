@@ -5,7 +5,7 @@ use crate::{
 };
 use client_shared::*;
 use dioxus::{core::Task, document, prelude::*};
-use psa_api::*;
+use psa::api::*;
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},

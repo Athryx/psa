@@ -39,7 +39,7 @@ async fn autostart_connects_with_custom_server_config_and_stops() {
                     .send()
                     .await
                 {
-                    if let Ok(probes) = response.json::<Vec<psa_api::Probe>>().await {
+                    if let Ok(probes) = response.json::<Vec<psa::api::Probe>>().await {
                         if probes
                             .iter()
                             .any(|probe| probe.is_active && probe.metadata.host)

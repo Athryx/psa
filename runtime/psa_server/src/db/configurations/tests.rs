@@ -248,7 +248,7 @@ async fn hook_prompt_payload_roundtrips_and_changes_snapshot_identity() {
     let (directory, db) = database().await;
     let mut cursor = db.cursor().await.unwrap();
     let mut initial = config("prompt-payload", &[]);
-    initial.hooks.agent_create = vec![psa_api::HookConfig::ExtraSystemPrompt {
+    initial.hooks.agent_create = vec![psa::api::HookConfig::ExtraSystemPrompt {
         prompt: "  Original instructions.\n<literal> & text\n".into(),
     }];
     cursor
@@ -268,7 +268,7 @@ async fn hook_prompt_payload_roundtrips_and_changes_snapshot_identity() {
     assert_eq!(first.config.hooks, initial.hooks);
 
     let mut changed = initial.clone();
-    changed.hooks.agent_create = vec![psa_api::HookConfig::ExtraSystemPrompt {
+    changed.hooks.agent_create = vec![psa::api::HookConfig::ExtraSystemPrompt {
         prompt: "Different instructions.".into(),
     }];
     cursor
@@ -467,7 +467,7 @@ async fn deferred_project_discovery_distinguishes_unknown_from_known_absent() {
     let (_dir, db) = database().await;
     crate::test_support::register_probe(&db).await;
     let mut cursor = db.cursor().await.unwrap();
-    let probe_id = psa_api::ProbeId(psa_api::probes::Uuid::nil());
+    let probe_id = psa::api::ProbeId(psa::api::probes::Uuid::nil());
     let session = cursor
         .create_session(crate::sessions::NewSession {
             decision_model: None,

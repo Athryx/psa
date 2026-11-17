@@ -1,6 +1,6 @@
 use super::{ConfigRegistry, DiscoveryError, skills::parse_skill};
 use crate::db::SkillRegistration;
-use psa_api::{NewSkill, SkillLocation};
+use psa::api::{NewSkill, SkillLocation};
 use sha2::{Digest, Sha256};
 use std::{
     io::Cursor,
@@ -290,8 +290,8 @@ mod tests {
             .append_data(&mut header, "SKILL.md", &bytes[..])
             .unwrap();
         let upload = NewSkill {
-            config_id: psa_api::ConfigId {
-                config_group: psa_api::ConfigGroup::Custom("api".into()),
+            config_id: psa::api::ConfigId {
+                config_group: psa::api::ConfigGroup::Custom("api".into()),
                 name: "example".into(),
             },
             tar_data: archive.into_inner().unwrap(),

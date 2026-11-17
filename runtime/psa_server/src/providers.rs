@@ -162,8 +162,8 @@ impl ProviderRegistry {
     /// Persist and publish a complete validated snapshot while holding the shared file lock.
     pub async fn set_credential(
         &self,
-        request: psa_api::SetProviderCredential,
-    ) -> Result<psa_api::ProviderInfo, AuthError> {
+        request: psa::api::SetProviderCredential,
+    ) -> Result<psa::api::ProviderInfo, AuthError> {
         let path = self.auth_path.as_ref().ok_or(AuthError::Unavailable)?;
         if let Some(credential) = &request.credential {
             if credential.trim().is_empty()
@@ -214,7 +214,7 @@ impl ProviderRegistry {
             .read()
             .expect("provider registry lock poisoned")
             .clone();
-        Ok(psa_api::ProviderInfo {
+        Ok(psa::api::ProviderInfo {
             id: request.provider,
             authed: self.provider(request.provider).is_some(),
         })
@@ -268,7 +268,7 @@ mod tests {
             .unwrap()
             .with_auth_path(path.clone());
         let other = registry.clone();
-        let set = |provider, credential: Option<&str>| psa_api::SetProviderCredential {
+        let set = |provider, credential: Option<&str>| psa::api::SetProviderCredential {
             provider,
             credential: credential.map(str::to_owned),
         };
@@ -327,7 +327,7 @@ mod tests {
             Provider::new(ProviderType::Openrouter, "original").unwrap(),
         ])
         .with_auth_path(path.clone());
-        let request = psa_api::SetProviderCredential {
+        let request = psa::api::SetProviderCredential {
             provider: ProviderType::Openrouter,
             credential: None,
         };
@@ -346,7 +346,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("auth.toml");
         let registry = ProviderRegistry::default().with_auth_path(path.clone());
-        let set = |provider| psa_api::SetProviderCredential {
+        let set = |provider| psa::api::SetProviderCredential {
             provider,
             credential: Some("valid-key".into()),
         };

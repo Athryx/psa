@@ -2,8 +2,8 @@
 
 ## Implemented API and identity
 
-The configuration API is implemented in `psa_api/src/configs.rs` and `psa_api/src/definitions.rs`, with HTTP
-routes in `runtime/psa_server/src/http.rs` and a thin `psa_api::Client`. Discovery is in
+The configuration API is implemented in `lib/psa/src/api/configs.rs` and `lib/psa/src/api/definitions.rs`, with HTTP
+routes in `runtime/psa_server/src/http.rs` and a thin `psa::api::Client`. Discovery is in
 `runtime/psa_server/src/config_registry`; registration and immutable graph resolution are
 in `runtime/psa_server/src/db/configurations.rs`.
 

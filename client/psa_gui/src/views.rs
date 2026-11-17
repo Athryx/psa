@@ -6,7 +6,7 @@ use llm_api::providers::ProviderType;
 #[cfg(test)]
 pub(crate) use crate::transcript_view::EventRow;
 use crate::transcript_view::TranscriptView;
-use psa_api::*;
+use psa::api::*;
 
 #[cfg(test)]
 #[path = "tab_spinner_tests.rs"]

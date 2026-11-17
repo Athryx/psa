@@ -1,7 +1,7 @@
 //! Wire types shared by the PSA server, its clients and probes, and an async
 //! HTTP/SSE [`Client`].
 //!
-//! Most types are re-exported at the crate root. Three modules stay namespaced:
+//! Most types are re-exported at this module's root. Three modules stay namespaced:
 //! [`events`] (transcript events), [`probes`] (the server/probe protocol), and
 //! [`routes`] (HTTP route templates).
 

@@ -1,6 +1,6 @@
 use super::*;
 use crate::{agents::NewAgent, components::cancellation::Cancellation, sessions::NewSession};
-use psa_api::events::Message;
+use psa::api::events::Message;
 use std::time::Duration;
 
 struct Fixture {
@@ -15,7 +15,7 @@ impl Fixture {
         Self::with_bundles(Vec::new()).await
     }
 
-    async fn with_bundles(bundles: Vec<psa_api::BundleConfig>) -> Self {
+    async fn with_bundles(bundles: Vec<psa::api::BundleConfig>) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let db = Database::open(directory.path().join("signals.sqlite3"))
             .await
@@ -162,7 +162,7 @@ impl Fixture {
     }
 
     async fn save_inference(&self, outcome: llm_api::api::Outcome) {
-        use psa_api::events::{InferenceResultEnd, InferenceResultStart};
+        use psa::api::events::{InferenceResultEnd, InferenceResultStart};
         let mut cursor = self.manager.db.cursor().await.unwrap();
         let id = cursor.get_agent(self.agent).await.unwrap().next_event_id.0;
         cursor
@@ -243,7 +243,7 @@ async fn steering_is_level_triggered_notify_only_and_excludes_queue() {
 
 #[tokio::test]
 async fn commands_are_not_steering_and_run_without_starting_runs() {
-    let mut fixture = Fixture::with_bundles(vec![psa_api::BundleConfig::Compaction {
+    let mut fixture = Fixture::with_bundles(vec![psa::api::BundleConfig::Compaction {
         reserve_tokens: 0,
         keep_recent_tokens: 0,
         context_window: None,
@@ -262,7 +262,7 @@ async fn commands_are_not_steering_and_run_without_starting_runs() {
             .submit_command(
                 fixture.session,
                 fixture.agent,
-                psa_api::RunCommand {
+                psa::api::RunCommand {
                     delivery,
                     command: AgentCommand::Compact { instructions: None },
                 },
@@ -299,7 +299,7 @@ async fn commands_require_their_bundle() {
         .submit_command(
             fixture.session,
             fixture.agent,
-            psa_api::RunCommand {
+            psa::api::RunCommand {
                 delivery: CommandDelivery::Steer,
                 command: AgentCommand::Compact { instructions: None },
             },
@@ -451,7 +451,7 @@ async fn logical_runs_keep_running_steering_but_restart_at_idle_or_interrupted_b
         .add_events(
             fixture.agent,
             &[NewEvent::new(EventType::StatusChange(
-                psa_api::events::StatusChange {
+                psa::api::events::StatusChange {
                     new_status: AgentState::Interrupted,
                     reason: None,
                 },
@@ -634,7 +634,7 @@ async fn subagent_steering_resolves_sender_and_shares_level_triggered_waits() {
             fixture.session,
             fixture.agent,
             AgentRequest::Message {
-                delivery: psa_api::MessageDelivery::Steer,
+                delivery: psa::api::MessageDelivery::Steer,
                 source: Some(fixture.agent),
                 content: crate::prompts::text("hello"),
             },
@@ -675,7 +675,7 @@ async fn subagent_steering_rejects_missing_and_cross_session_senders() {
                 fixture.session,
                 fixture.agent,
                 AgentRequest::Message {
-                    delivery: psa_api::MessageDelivery::Steer,
+                    delivery: psa::api::MessageDelivery::Steer,
                     source: Some(source),
                     content: crate::prompts::text("hello"),
                 },
@@ -691,7 +691,7 @@ async fn background_reports_cannot_restart_parent_even_if_interrupted_after_acce
     let mut fixture = Fixture::new().await;
     fixture.add_worker();
     let request = AgentRequest::Message {
-        delivery: psa_api::MessageDelivery::Steer,
+        delivery: psa::api::MessageDelivery::Steer,
         source: None,
         content: crate::prompts::text("report"),
     };
@@ -711,7 +711,7 @@ async fn background_reports_cannot_restart_parent_even_if_interrupted_after_acce
         .add_events(
             fixture.agent,
             &[NewEvent::new(EventType::StatusChange(
-                psa_api::events::StatusChange {
+                psa::api::events::StatusChange {
                     new_status: AgentState::Interrupted,
                     reason: None,
                 },
@@ -748,7 +748,7 @@ async fn background_reports_cannot_restart_parent_even_if_interrupted_after_acce
 #[tokio::test]
 async fn completion_hook_reports_children_without_bundle_and_preserves_outcomes() {
     use crate::components::hooks::subagent_completion::SubagentCompletion;
-    let mut fixture = Fixture::with_bundles(vec![psa_api::BundleConfig::Subagents]).await;
+    let mut fixture = Fixture::with_bundles(vec![psa::api::BundleConfig::Subagents]).await;
     let mut cursor = fixture.manager.db.cursor().await.unwrap();
     let definition = cursor
         .create_agent_definition(crate::db::CreateAgentDefinition {
@@ -833,7 +833,7 @@ async fn completion_hook_reports_children_without_bundle_and_preserves_outcomes(
 
 #[tokio::test]
 async fn starting_plain_child_restores_parent_bundle_lifecycle_callbacks() {
-    let mut fixture = Fixture::with_bundles(vec![psa_api::BundleConfig::Subagents]).await;
+    let mut fixture = Fixture::with_bundles(vec![psa::api::BundleConfig::Subagents]).await;
     let mut cursor = fixture.manager.db.cursor().await.unwrap();
     let definition = cursor
         .create_agent_definition(crate::db::CreateAgentDefinition {

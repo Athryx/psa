@@ -1,6 +1,6 @@
 use super::*;
 use crate::db::{EventRange, NewEvent};
-use psa_api::AgentResult;
+use psa::api::AgentResult;
 
 fn completion(value: AgentResult) -> [NewEvent; 3] {
     [
@@ -256,11 +256,11 @@ async fn recovery_of_a_structured_result_fork_acknowledges_only_its_producer_and
             .create_agent_definition(crate::db::CreateAgentDefinition {
                 name: "typed checkpoint".into(),
                 bundles: vec![
-                    psa_api::BundleConfig::TypedResult {
+                    psa::api::BundleConfig::TypedResult {
                         schema: schema.into(),
                         max_retries: 3,
                     },
-                    psa_api::BundleConfig::Noop,
+                    psa::api::BundleConfig::Noop,
                 ],
                 ..Default::default()
             })
@@ -290,7 +290,7 @@ async fn recovery_of_a_structured_result_fork_acknowledges_only_its_producer_and
             .iter()
             .find(|tool| tool.id() == ToolId::RecordResult)
             .unwrap();
-        let record_metadata = psa_api::events::ToolDefinition {
+        let record_metadata = psa::api::events::ToolDefinition {
             id: ToolId::RecordResult,
             definition: record_tool.tool_definition(),
         };

@@ -6,7 +6,7 @@ use crate::{
     agents::{agent_context::AgentContext, session_manager::RuntimeError},
     components::cancellation::Cancellation,
 };
-use psa_api::events::{EventType, Message};
+use psa::api::events::{EventType, Message};
 use std::{sync::Arc, time::Duration};
 
 pub struct SubagentIdentity {
@@ -91,7 +91,7 @@ impl Hook for SubagentIdentity {
 mod tests {
     use super::*;
     use crate::components::bundles::subagents::templates::ModelChoice;
-    use psa_api::{AgentDefinitionId, ModelSelection};
+    use psa::api::{AgentDefinitionId, ModelSelection};
 
     #[test]
     fn identity_uses_names_and_plain_template_descriptions() {

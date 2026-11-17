@@ -1,6 +1,6 @@
 //! Immutable agent definition snapshots and their model policy.
 
-use crate::{AgentConfig, BundleConfig, HookConfigs, SkillId};
+use crate::api::{AgentConfig, BundleConfig, HookConfigs, SkillId};
 use llm_api::providers::{Effort, Model, ModelConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

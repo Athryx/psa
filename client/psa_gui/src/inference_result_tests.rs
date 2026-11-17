@@ -3,7 +3,7 @@ use llm_api::{
     Error,
     api::{Outcome, StopReason, Usage},
 };
-use psa_api::events::{EventType, InferenceResultEnd};
+use psa::api::events::{EventType, InferenceResultEnd};
 use std::{collections::HashMap, rc::Rc, time::Duration};
 
 fn render_outcome(outcome: Outcome) -> String {

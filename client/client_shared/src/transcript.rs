@@ -1,5 +1,5 @@
-use psa_api::events::{EventType, MessageType, ToolCall, ToolResult};
-use psa_api::{
+use psa::api::events::{EventType, MessageType, ToolCall, ToolResult};
+use psa::api::{
     Agent, AgentContextState, AgentId, ClientQueryId, ClientQueryRequest, EventEnvelope,
     EventsPage, PendingEvent, Session, SessionId, StreamMessage,
 };
@@ -88,7 +88,7 @@ impl PartialEq for RowPayload {
 impl Eq for RowPayload {}
 
 /// A successful inference has nothing to report; it only bounds a model turn.
-pub fn is_successful_inference(end: &psa_api::events::InferenceResultEnd) -> bool {
+pub fn is_successful_inference(end: &psa::api::events::InferenceResultEnd) -> bool {
     matches!(
         end.outcome,
         llm_api::api::Outcome::Completed { .. } | llm_api::api::Outcome::InProgress
@@ -305,10 +305,10 @@ impl Transcript {
             {
                 Some(1)
             }
-            EventType::Result(psa_api::AgentResult::Text(_)) => Some(2),
+            EventType::Result(psa::api::AgentResult::Text(_)) => Some(2),
             EventType::Result(_) => Some(0),
             EventType::StatusChange(status)
-                if status.new_status == psa_api::AgentState::Interrupted =>
+                if status.new_status == psa::api::AgentState::Interrupted =>
             {
                 Some(0)
             }
@@ -919,7 +919,7 @@ impl Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use psa_api::events::{Event, EventId, Message};
+    use psa::api::events::{Event, EventId, Message};
     fn pending(revision: u64) -> PendingEvent {
         PendingEvent {
             id: "p".into(),
@@ -999,8 +999,8 @@ mod tests {
         for id in 1..=1000 {
             let mut next = event(id);
             if id > 10 {
-                next.event.kind = EventType::StatusChange(psa_api::events::StatusChange {
-                    new_status: psa_api::AgentState::Idle,
+                next.event.kind = EventType::StatusChange(psa::api::events::StatusChange {
+                    new_status: psa::api::AgentState::Idle,
                     reason: None,
                 });
             }
@@ -1208,8 +1208,8 @@ mod tests {
         });
         assert_eq!(transcript.display_count(&preferences), 1);
         provisional.revision = 2;
-        provisional.kind = EventType::StatusChange(psa_api::events::StatusChange {
-            new_status: psa_api::AgentState::Idle,
+        provisional.kind = EventType::StatusChange(psa::api::events::StatusChange {
+            new_status: psa::api::AgentState::Idle,
             reason: None,
         });
         transcript.apply(StreamMessage::Upsert {
@@ -1305,7 +1305,7 @@ mod tests {
 
     fn inference_end(id: u64, outcome: llm_api::api::Outcome) -> EventEnvelope {
         let mut next = event(id);
-        next.event.kind = EventType::InferenceResultEnd(psa_api::events::InferenceResultEnd {
+        next.event.kind = EventType::InferenceResultEnd(psa::api::events::InferenceResultEnd {
             id,
             outcome,
             usage: Default::default(),
@@ -1386,7 +1386,7 @@ mod tests {
 
     fn inference_start(id: u64) -> EventEnvelope {
         let mut next = event(id);
-        next.event.kind = EventType::InferenceResultStart(psa_api::events::InferenceResultStart {
+        next.event.kind = EventType::InferenceResultStart(psa::api::events::InferenceResultStart {
             id,
             model_config: llm_api::providers::ModelConfig {
                 model: llm_api::providers::Model::new(

@@ -6,7 +6,7 @@ use crate::{
         hooks::{Hook, HookError},
     },
 };
-use psa_api::{ProbeId, events::StatusChange, probes::Uuid};
+use psa::api::{ProbeId, events::StatusChange, probes::Uuid};
 use std::{
     sync::{LazyLock, Mutex},
     time::Duration,
@@ -138,7 +138,7 @@ impl Fixture {
 
     async fn create_session(&self, sessions: &Sessions) -> Session {
         sessions
-            .create_session(psa_api::CreateSession {
+            .create_session(psa::api::CreateSession {
                 decision_model: None,
                 model_config: Some(crate::test_support::model_config()),
                 name: "original".into(),
@@ -222,7 +222,7 @@ fn agent_request() -> crate::agents::NewAgent {
         interactive: false,
         hidden: false,
         name: "agent".into(),
-        definition_id: psa_api::AgentDefinitionId(1),
+        definition_id: psa::api::AgentDefinitionId(1),
     }
 }
 
@@ -231,7 +231,7 @@ async fn rename(sessions: &Sessions, session: SessionId, name: &str) {
         WAIT,
         sessions.update_session(
             session,
-            psa_api::UpdateSession {
+            psa::api::UpdateSession {
                 name: Some(name.into()),
                 working_directory: Some(format!("/{name}").into()),
                 ..Default::default()
@@ -270,18 +270,18 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
     let definition = runtime
         .handle
         .update_agent_definition(
-            psa_api::AgentDefinitionId(1),
+            psa::api::AgentDefinitionId(1),
             crate::db::CreateAgentDefinition {
                 name: "explicit".into(),
                 model: explicit_model.clone().into(),
-                bundles: vec![psa_api::BundleConfig::Noop],
-                hooks: psa_api::HookConfigs {
+                bundles: vec![psa::api::BundleConfig::Noop],
+                hooks: psa::api::HookConfigs {
                     agent_create: vec![
-                        psa_api::HookConfig::DefaultStartup,
-                        psa_api::HookConfig::ToolDefinitions,
+                        psa::api::HookConfig::DefaultStartup,
+                        psa::api::HookConfig::ToolDefinitions,
                     ],
-                    session_update: vec![psa_api::HookConfig::SessionModelUpdate],
-                    after_request: vec![psa_api::HookConfig::StopWithoutTools],
+                    session_update: vec![psa::api::HookConfig::SessionModelUpdate],
+                    after_request: vec![psa::api::HookConfig::StopWithoutTools],
                     ..Default::default()
                 },
                 ..Default::default()
@@ -325,7 +325,7 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
         assert!(matches!(events[0].kind, EventType::NewContext));
         assert!(matches!(&events[1].kind, EventType::Model(model) if model == expected));
         assert!(
-            matches!(&events[2].kind, EventType::Message(message) if message.message_type == psa_api::events::MessageType::System)
+            matches!(&events[2].kind, EventType::Message(message) if message.message_type == psa::api::events::MessageType::System)
         );
         assert!(matches!(events[3].kind, EventType::ToolDefinition(_)));
     }
@@ -341,7 +341,7 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
         .handle
         .update_session(
             session.id,
-            psa_api::UpdateSession {
+            psa::api::UpdateSession {
                 model_config: Some(updated_model.clone()),
                 ..Default::default()
             },
@@ -367,7 +367,7 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
         .handle
         .update_session(
             session.id,
-            psa_api::UpdateSession {
+            psa::api::UpdateSession {
                 name: Some("renamed without changing model".into()),
                 model_config: Some(updated_model.clone()),
                 ..Default::default()
@@ -466,16 +466,16 @@ async fn subagent_identity_is_created_once_and_preserved_on_reload_restart_and_f
     let definition = runtime
         .handle
         .update_agent_definition(
-            psa_api::AgentDefinitionId(1),
+            psa::api::AgentDefinitionId(1),
             crate::db::CreateAgentDefinition {
                 name: "subagents".into(),
-                bundles: vec![psa_api::BundleConfig::Subagents],
-                hooks: psa_api::HookConfigs {
+                bundles: vec![psa::api::BundleConfig::Subagents],
+                hooks: psa::api::HookConfigs {
                     agent_create: vec![
-                        psa_api::HookConfig::DefaultStartup,
-                        psa_api::HookConfig::ToolDefinitions,
+                        psa::api::HookConfig::DefaultStartup,
+                        psa::api::HookConfig::ToolDefinitions,
                     ],
-                    after_request: vec![psa_api::HookConfig::StopWithoutTools],
+                    after_request: vec![psa::api::HookConfig::StopWithoutTools],
                     ..Default::default()
                 },
                 ..Default::default()
@@ -558,9 +558,9 @@ async fn subagent_identity_is_created_once_and_preserved_on_reload_restart_and_f
         .handle
         .fork_session(
             session.id,
-            psa_api::ForkSession {
-                point: psa_api::ForkPoint::Head,
-                metadata: psa_api::UpdateSession::default(),
+            psa::api::ForkSession {
+                point: psa::api::ForkPoint::Head,
+                metadata: psa::api::UpdateSession::default(),
             },
         )
         .await
@@ -603,9 +603,9 @@ async fn fork_runs_creation_only_for_the_new_child_agent() {
         .handle
         .fork_session(
             session.id,
-            psa_api::ForkSession {
-                point: psa_api::ForkPoint::Head,
-                metadata: psa_api::UpdateSession {
+            psa::api::ForkSession {
+                point: psa::api::ForkPoint::Head,
+                metadata: psa::api::UpdateSession {
                     name: Some("child".into()),
                     ..Default::default()
                 },

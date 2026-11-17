@@ -1,5 +1,5 @@
 use super::*;
-use psa_api::{CreateAgent, CreateSession, ForkPoint, ForkSession, UpdateSession};
+use psa::api::{CreateAgent, CreateSession, ForkPoint, ForkSession, UpdateSession};
 
 fn upload(version: &str) -> NewSkill {
     let mut archive = tar::Builder::new(Vec::new());
@@ -121,7 +121,7 @@ async fn assert_configured_creation(host: bool) {
         subagent_parent_id: None,
         interactive: false,
         hidden: false,
-        model: Some(psa_api::ModelSelection::Global),
+        model: Some(psa::api::ModelSelection::Global),
     };
     harness.client.refresh_configs(&[session.id]).await.unwrap();
     let listed = harness.client.list_skills().await.unwrap();

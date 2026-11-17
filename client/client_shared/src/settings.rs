@@ -24,8 +24,8 @@ impl std::fmt::Debug for ConnectionSettings {
     }
 }
 impl ConnectionSettings {
-    pub fn client(&self) -> Result<psa_api::Client, psa_api::ClientError> {
-        psa_api::Client::new(&self.api_url, &self.client_key)
+    pub fn client(&self) -> Result<psa::api::Client, psa::api::ClientError> {
+        psa::api::Client::new(&self.api_url, &self.client_key)
     }
     /// API endpoint is the persistence identity; client keys never enter identity or logs.
     pub fn server_identity(&self) -> String {
@@ -138,7 +138,7 @@ pub struct ServerWorkspace {
     pub sidebar: SidebarState,
     /// Probe and project selections of the session list; name searches are not saved.
     #[serde(with = "saved_session_filter")]
-    pub session_filter: psa_api::SessionFilter,
+    pub session_filter: psa::api::SessionFilter,
     pub last_viewed_agents: Vec<TranscriptTarget>,
 }
 impl ServerWorkspace {
@@ -151,7 +151,7 @@ impl ServerWorkspace {
 /// TOML arrays cannot hold `None`, so the global project choice is saved as a
 /// separate flag. Older files without it load as not selecting global.
 mod saved_session_filter {
-    use psa_api::{ProbeId, ProjectId, SessionFilter};
+    use psa::api::{ProbeId, ProjectId, SessionFilter};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     #[derive(Default, Serialize, Deserialize)]

@@ -1,5 +1,5 @@
 use super::{BashError, ProbeHandle};
-use psa_api::probes::{Command, Event, ExitStatus};
+use psa::api::probes::{Command, Event, ExitStatus};
 use psa_shared::probe_transport::Call;
 use std::{
     path::{Path, PathBuf},

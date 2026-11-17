@@ -1,7 +1,7 @@
 use super::{Tool, ToolOutput, ToolSystemPrompt, typed_tool_execute};
 use crate::{agents::agent_context::AgentContext, components::cancellation::Cancellation, prompts};
 use llm_api::api::ToolDefinition;
-use psa_api::SessionId;
+use psa::api::SessionId;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::time::Duration;

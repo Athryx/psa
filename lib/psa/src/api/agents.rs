@@ -1,6 +1,6 @@
 //! Agents, their usage, and requests submitted to them.
 
-use crate::{
+use crate::api::{
     AgentDefinitionId, ConfigId, ModelSelection, SessionId,
     events::{Event, EventId, EventType},
 };
@@ -243,7 +243,7 @@ pub enum AgentRequest {
     /// Record a client-side slash command that has already finished. It is
     /// steered: recorded at the agent's next boundary, even during a run.
     /// Agent commands are run and recorded with [`RunCommand`] instead.
-    RecordCommand(crate::events::CommandRecord),
+    RecordCommand(crate::api::events::CommandRecord),
 }
 
 /// Acknowledgment that an asynchronous agent request was accepted.

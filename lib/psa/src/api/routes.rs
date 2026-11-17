@@ -1,5 +1,5 @@
 //! Shared HTTP route templates and numeric/UUID path substitution helpers.
-use crate::{AgentDefinitionId, AgentId, ClientQueryId, SessionId};
+use crate::api::{AgentDefinitionId, AgentId, ClientQueryId, SessionId};
 
 /// GET client-safe server configuration.
 pub const CONFIG: &str = "/config";
@@ -105,6 +105,6 @@ pub fn client_query_response_path(
 }
 
 /// Substitute the probe ID in a probe or sandbox route template.
-pub fn probe_path(route: &str, id: crate::ProbeId) -> String {
+pub fn probe_path(route: &str, id: crate::api::ProbeId) -> String {
     route.replace("{probe_id}", &id.to_string())
 }

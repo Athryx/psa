@@ -42,10 +42,10 @@ impl ReconnectBackoff {
     }
 }
 /// Retry only subscription/read operations. Never retry ambiguous message submissions.
-pub fn can_retry_connection(error: &psa_api::ClientError) -> bool {
+pub fn can_retry_connection(error: &psa::api::ClientError) -> bool {
     match error {
-        psa_api::ClientError::Http(_) | psa_api::ClientError::Stream(_) => true,
-        psa_api::ClientError::Api { status, .. } => {
+        psa::api::ClientError::Http(_) | psa::api::ClientError::Stream(_) => true,
+        psa::api::ClientError::Api { status, .. } => {
             *status == 408 || *status == 429 || *status >= 500
         }
         _ => false,

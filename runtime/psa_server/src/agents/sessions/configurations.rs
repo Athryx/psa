@@ -1,6 +1,6 @@
 //! Named configuration refresh, materialization, and creation-time snapshots.
 use super::*;
-use psa_api::{
+use psa::api::{
     AgentConfig, AgentEffort, AgentModel, ConfigGroup, ConfigId, EffortSelection, ModelSelection,
 };
 use std::{collections::HashMap, path::Path};

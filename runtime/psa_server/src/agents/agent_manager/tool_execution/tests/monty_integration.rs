@@ -695,7 +695,7 @@ async fn real_worker_shares_bash_sessions_in_both_directions() {
         runtime: fixture.runtime.handle.clone(),
         accepting: Arc::new(AtomicBool::new(true)),
         client_key: "test-client-key".into(),
-        client_config: psa_api::ClientConfig {
+        client_config: psa::api::ClientConfig {
             default_agent_name: "root".into(),
             default_sandbox_image: None,
         },
@@ -711,7 +711,7 @@ async fn real_worker_shares_bash_sessions_in_both_directions() {
             .unwrap();
     });
     let mut metadata = support::probe_metadata();
-    metadata.id = psa_api::ProbeId(psa_api::probes::Uuid::new_v4());
+    metadata.id = psa::api::ProbeId(psa::api::probes::Uuid::new_v4());
     metadata.data_dir = fixture._directory.path().join("real-probe");
     let probe_id = metadata.id;
     let config = psa_probe::config::ResolvedConfig {
@@ -741,9 +741,9 @@ async fn real_worker_shares_bash_sessions_in_both_directions() {
     state.session.working_directory = fixture._directory.path().to_owned();
     let mut definition = state.definition.clone();
     definition.bundles = vec![
-        psa_api::BundleConfig::Bash,
-        psa_api::BundleConfig::FileTools { read_only: true },
-        psa_api::BundleConfig::CodeMode,
+        psa::api::BundleConfig::Bash,
+        psa::api::BundleConfig::FileTools { read_only: true },
+        psa::api::BundleConfig::CodeMode,
     ];
     let installed = crate::components::bundles::InstalledComponents::install(
         &definition,
@@ -756,10 +756,12 @@ async fn real_worker_shares_bash_sessions_in_both_directions() {
         .tools
         .iter()
         .map(|tool| {
-            NewEvent::new(EventType::ToolDefinition(psa_api::events::ToolDefinition {
-                id: tool.id(),
-                definition: tool.tool_definition(),
-            }))
+            NewEvent::new(EventType::ToolDefinition(
+                psa::api::events::ToolDefinition {
+                    id: tool.id(),
+                    definition: tool.tool_definition(),
+                },
+            ))
         })
         .collect::<Vec<_>>();
     state.persist_events(&definitions).await.unwrap();

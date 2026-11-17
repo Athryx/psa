@@ -5,7 +5,7 @@ use crate::{
     prompts,
 };
 use llm_api::api::ToolDefinition;
-use psa_api::{AskQuestionRequest, ClientQuery, ClientQueryResponse};
+use psa::api::{AskQuestionRequest, ClientQuery, ClientQueryResponse};
 use std::time::Duration;
 
 const MAX_OUTPUT_BYTES: usize = 50 * 1024;
@@ -83,7 +83,7 @@ fn format_query_result(result: Result<ClientQueryResponse, ClientQueryError>) ->
 mod tests {
     use super::*;
     use llm_api::api::{ContentBlock, parse_tool_arguments};
-    use psa_api::{AskQuestionResponse, ClientAnswer};
+    use psa::api::{AskQuestionResponse, ClientAnswer};
     use serde_json::json;
 
     fn output_text(output: &ToolOutput) -> &str {

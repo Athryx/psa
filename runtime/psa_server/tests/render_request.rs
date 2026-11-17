@@ -9,7 +9,7 @@ use llm_api::{
     },
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
-use psa_api::events::*;
+use psa::api::events::*;
 use psa_server::db::{EventRange, NewEvent};
 use psa_server::{
     agents::NewAgent, agents::agent_projection::AgentProjection, db::Database, sessions::NewSession,
@@ -44,7 +44,7 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
             .create_session(NewSession {
                 decision_model: None,
                 model_config: support::model_config(),
-                probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+                probe_id: psa::api::ProbeId(psa::api::probes::Uuid::nil()),
                 project_id: None,
                 name: "test".into(),
                 working_directory: "/work".into(),
@@ -58,7 +58,7 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
                     subagent_parent_id: None,
                     interactive: false,
                     hidden: false,
-                    definition_id: psa_api::AgentDefinitionId(1),
+                    definition_id: psa::api::AgentDefinitionId(1),
                     name: "main".into(),
                 },
             )

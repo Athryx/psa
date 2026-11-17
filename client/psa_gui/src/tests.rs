@@ -1,6 +1,6 @@
 use super::*;
 use client_shared::*;
-use psa_api::{
+use psa::api::{
     AgentId, SessionId,
     events::{EventType, Message, MessageType},
 };
@@ -72,7 +72,7 @@ fn folder_create_test_root() -> Element {
         state
     });
     use_context_provider(|| ui);
-    let probe = psa_api::ProbeId("00000000-0000-0000-0000-000000000000".parse().unwrap());
+    let probe = psa::api::ProbeId("00000000-0000-0000-0000-000000000000".parse().unwrap());
     let target = crate::creation::CreationTarget {
         probe,
         directory: "/work/project".into(),
@@ -116,7 +116,7 @@ fn transient_folder_test_root() -> Element {
         let mut state = crate::app::Ui::new(DesktopSettings::default());
         state.connection = "Connected".into();
         state.creation_target = Some(crate::creation::CreationTarget {
-            probe: psa_api::ProbeId("00000000-0000-0000-0000-000000000000".parse().unwrap()),
+            probe: psa::api::ProbeId("00000000-0000-0000-0000-000000000000".parse().unwrap()),
             directory: "/remote/new".into(),
         });
         state
@@ -138,7 +138,7 @@ fn selected_unloaded_directory_is_a_transient_inline_folder() {
 #[test]
 fn pending_creation_cannot_be_retargeted() {
     let mut ui = crate::app::Ui::new(DesktopSettings::default());
-    let probe = psa_api::ProbeId("00000000-0000-0000-0000-000000000000".parse().unwrap());
+    let probe = psa::api::ProbeId("00000000-0000-0000-0000-000000000000".parse().unwrap());
     let first = crate::creation::CreationTarget {
         probe,
         directory: "/one".into(),
@@ -769,11 +769,11 @@ fn provider_cards_test_root() -> Element {
     use_context_provider(|| ui);
     let providers = use_signal(|| {
         vec![
-            psa_api::ProviderInfo {
+            psa::api::ProviderInfo {
                 id: ProviderType::Openrouter,
                 authed: true,
             },
-            psa_api::ProviderInfo {
+            psa::api::ProviderInfo {
                 id: ProviderType::OpenAiCodex,
                 authed: false,
             },

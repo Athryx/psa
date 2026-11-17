@@ -7,7 +7,7 @@ use crate::{
     },
 };
 use llm_api::api::Usage;
-use psa_api::{AgentDefinitionId, AgentId, SessionId, events::EventId};
+use psa::api::{AgentDefinitionId, AgentId, SessionId, events::EventId};
 use std::sync::atomic::Ordering;
 use time::OffsetDateTime;
 
@@ -259,8 +259,8 @@ fn removed_tools_fields_are_rejected_even_when_empty() {
             .is_err()
         );
         let config = serde_json::json!({"config_id":{"config_group":"Global","name":"legacy"},"models":["Global"],"tools":tools});
-        assert!(serde_json::from_value::<psa_api::AgentConfig>(config.clone()).is_err());
-        assert!(serde_json::from_value::<psa_api::AgentConfigInput>(config).is_err());
+        assert!(serde_json::from_value::<psa::api::AgentConfig>(config.clone()).is_err());
+        assert!(serde_json::from_value::<psa::api::AgentConfigInput>(config).is_err());
     }
 }
 

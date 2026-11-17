@@ -153,12 +153,12 @@ impl SandboxAction {
 
 /// Transcript label for a recorded command: the command line, with the outcome
 /// and output on following lines when it did not simply succeed.
-pub fn describe_command(command: &psa_api::events::CommandRecord) -> String {
+pub fn describe_command(command: &psa::api::events::CommandRecord) -> String {
     let mut text = command.command_line();
     match command.outcome {
-        psa_api::CommandOutcome::Succeeded => {}
-        psa_api::CommandOutcome::Failed => text.push_str("\nFailed"),
-        psa_api::CommandOutcome::Interrupted => text.push_str("\nInterrupted"),
+        psa::api::CommandOutcome::Succeeded => {}
+        psa::api::CommandOutcome::Failed => text.push_str("\nFailed"),
+        psa::api::CommandOutcome::Interrupted => text.push_str("\nInterrupted"),
     }
     if let Some(output) = &command.output {
         text = format!("{text}\n{output}");
@@ -346,10 +346,10 @@ mod tests {
                 arguments: "try another approach".into(),
             }
         );
-        let record = psa_api::events::CommandRecord {
+        let record = psa::api::events::CommandRecord {
             name: "compact".into(),
             args: "tests".into(),
-            outcome: psa_api::CommandOutcome::Failed,
+            outcome: psa::api::CommandOutcome::Failed,
             output: Some("no summary".into()),
         };
         assert_eq!(

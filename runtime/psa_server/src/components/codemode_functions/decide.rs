@@ -17,7 +17,7 @@ use llm_api::{
     },
     providers::Model,
 };
-use psa_api::{DecisionCall, events::EventType};
+use psa::api::{DecisionCall, events::EventType};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};

@@ -9,7 +9,7 @@ use crate::{
 };
 use agent_trace::store::SESSION_FILE;
 use llm_api::api::ToolDefinition;
-use psa_api::SessionId;
+use psa::api::SessionId;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::{path::Path, time::Duration};

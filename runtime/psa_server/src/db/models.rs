@@ -2,7 +2,7 @@
 use super::{DatabaseCursor, DbError};
 use crate::models::ProviderSyncState;
 use llm_api::providers::{Model, ProviderType};
-use psa_api::ModelInfo;
+use psa::api::ModelInfo;
 use sqlx::{Row, sqlite::SqliteRow};
 
 impl DatabaseCursor {

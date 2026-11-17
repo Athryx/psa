@@ -29,7 +29,7 @@ async fn persisted_model_updates_live_request_projection_and_survives_reload() {
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "agent".into(),
             },
         )
@@ -113,7 +113,7 @@ async fn repeated_status_changes_are_omitted_using_prior_transitions_in_the_batc
         .create_session(NewSession {
             decision_model: None,
             model_config: crate::test_support::model_config(),
-            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            probe_id: psa::api::ProbeId(psa::api::probes::Uuid::nil()),
             project_id: None,
             name: "test".into(),
             working_directory: "/work".into(),
@@ -127,7 +127,7 @@ async fn repeated_status_changes_are_omitted_using_prior_transitions_in_the_batc
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "test".into(),
             },
         )
@@ -202,7 +202,7 @@ async fn repeated_status_changes_are_omitted_using_prior_transitions_in_the_batc
 
     let mut committed = Vec::new();
     while let Ok(message) = published.try_recv() {
-        if let psa_api::StreamMessage::Committed { event, .. } = message {
+        if let psa::api::StreamMessage::Committed { event, .. } = message {
             committed.push((event.position, event.event.id.0));
         }
     }
@@ -234,7 +234,7 @@ async fn cancelled_persistence_finishes_before_the_next_append() {
         .create_session(NewSession {
             decision_model: None,
             model_config: crate::test_support::model_config(),
-            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            probe_id: psa::api::ProbeId(psa::api::probes::Uuid::nil()),
             project_id: None,
             name: "test".into(),
             working_directory: "/work".into(),
@@ -248,7 +248,7 @@ async fn cancelled_persistence_finishes_before_the_next_append() {
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "test".into(),
             },
         )
@@ -333,7 +333,7 @@ async fn cancelled_persistence_finishes_before_the_next_append() {
 
     let mut committed = Vec::new();
     while let Ok(message) = published.try_recv() {
-        if let psa_api::StreamMessage::Committed { event, .. } = message {
+        if let psa::api::StreamMessage::Committed { event, .. } = message {
             committed.push((event.position, event.event.id.0));
         }
     }
@@ -358,7 +358,7 @@ async fn committed_calls_get_not_run_results_when_interrupted_before_execution()
         .create_session(NewSession {
             decision_model: None,
             model_config: crate::test_support::model_config(),
-            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            probe_id: psa::api::ProbeId(psa::api::probes::Uuid::nil()),
             project_id: None,
             name: "test".into(),
             working_directory: "/work".into(),
@@ -372,7 +372,7 @@ async fn committed_calls_get_not_run_results_when_interrupted_before_execution()
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "test".into(),
             },
         )

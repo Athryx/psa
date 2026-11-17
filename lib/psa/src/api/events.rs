@@ -1,6 +1,6 @@
 //! Immutable transcript events. Sequence numbers are local to an agent lineage.
 
-use crate::{AgentId, AgentResult, AgentState, ToolId};
+use crate::api::{AgentId, AgentResult, AgentState, ToolId};
 use llm_api::api::{
     ContentBlock, HistoryItem, HistoryItemMetadata, Outcome, ProviderFields, Reasoning,
     RequestConfig, TextBlock, ToolDefinition as ApiToolDefinition, Usage,
@@ -64,7 +64,7 @@ pub enum EventType {
     /// Ends a recorded inference result with outcome and usage.
     InferenceResultEnd(InferenceResultEnd),
     /// Records a decision-model call. Not part of the model's context.
-    DecisionCall(crate::DecisionCall),
+    DecisionCall(crate::api::DecisionCall),
 }
 
 /// Origin or role of a transcript message.
@@ -249,7 +249,7 @@ pub struct Log {
 
 /// A slash command as the user typed it, recorded once it finished. Server
 /// commands are recorded by the worker that ran them; client-only commands are
-/// recorded through [`crate::AgentRequest::RecordCommand`].
+/// recorded through [`crate::api::AgentRequest::RecordCommand`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommandRecord {
@@ -258,7 +258,7 @@ pub struct CommandRecord {
     /// Everything after the name, trimmed; empty when there were no arguments.
     pub args: String,
     /// How the command ended.
-    pub outcome: crate::CommandOutcome,
+    pub outcome: crate::api::CommandOutcome,
     /// Text the command reported, such as a failure reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
@@ -266,7 +266,7 @@ pub struct CommandRecord {
 
 impl CommandRecord {
     /// The record of a typed agent command that finished with `result`.
-    pub fn new(command: &crate::AgentCommand, result: crate::CommandResult) -> Self {
+    pub fn new(command: &crate::api::AgentCommand, result: crate::api::CommandResult) -> Self {
         Self {
             name: command.name().into(),
             args: command.args(),

@@ -6,8 +6,8 @@ use crate::{
     db::{AddEventResult, Database, DbError, EventBatchItem},
     sessions::SessionId,
 };
-use psa_api::events::*;
-use psa_api::{ClientQueryId, ClientQueryRequest, EventEnvelope, PendingEvent, StreamMessage};
+use psa::api::events::*;
+use psa::api::{ClientQueryId, ClientQueryRequest, EventEnvelope, PendingEvent, StreamMessage};
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -28,7 +28,7 @@ pub struct PublicationState {
     /// Metadata writers read it under this gate to avoid publishing stale busy state.
     busy_sessions: HashSet<SessionId>,
     sender: broadcast::Sender<StreamMessage>,
-    global_sender: broadcast::Sender<psa_api::GlobalStreamMessage>,
+    global_sender: broadcast::Sender<psa::api::GlobalStreamMessage>,
     revision: std::sync::atomic::AtomicU64,
 }
 
@@ -208,7 +208,7 @@ impl PublicationState {
         self.revision.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn subscribe_global(&self) -> broadcast::Receiver<psa_api::GlobalStreamMessage> {
+    pub fn subscribe_global(&self) -> broadcast::Receiver<psa::api::GlobalStreamMessage> {
         self.global_sender.subscribe()
     }
 
@@ -221,7 +221,7 @@ impl PublicationState {
                     + 1;
                 let _ = self
                     .global_sender
-                    .send(psa_api::GlobalStreamMessage::SessionUpdated {
+                    .send(psa::api::GlobalStreamMessage::SessionUpdated {
                         revision,
                         session: session.clone(),
                     });
@@ -229,7 +229,7 @@ impl PublicationState {
             StreamMessage::ResyncRequired => {
                 let _ = self
                     .global_sender
-                    .send(psa_api::GlobalStreamMessage::ResyncRequired);
+                    .send(psa::api::GlobalStreamMessage::ResyncRequired);
             }
             _ => {}
         }

@@ -16,7 +16,7 @@ use llm_api::{
     api::Usage,
     providers::{Effort, Model, ModelConfig},
 };
-use psa_api::*;
+use psa::api::*;
 
 #[cfg(test)]
 use crate::transcript_view::TranscriptView;

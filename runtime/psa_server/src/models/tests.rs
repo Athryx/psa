@@ -225,7 +225,7 @@ async fn credential_updates_are_visible_across_catalog_views() {
     for (credential, expected) in [(Some("secret".to_owned()), true), (None, false)] {
         runtime
             .handle
-            .set_provider_credential(psa_api::SetProviderCredential {
+            .set_provider_credential(psa::api::SetProviderCredential {
                 provider: ProviderType::Openrouter,
                 credential,
             })

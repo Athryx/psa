@@ -29,7 +29,7 @@ use llm_api::api::{
     self, ApiProvider, HistoryItem, HistoryItemKind, ModelResponse, ModelTurnStream, Outcome,
     RequestConfig,
 };
-use psa_api::events::*;
+use psa::api::events::*;
 use std::{panic::AssertUnwindSafe, sync::Arc, time::Instant};
 use tokio::{sync::Mutex, task::JoinHandle};
 
@@ -38,8 +38,8 @@ pub(crate) mod tool_execution;
 type PersistenceResult = Result<(AddEventResult, AgentProjection), AgentError>;
 type PendingPersistence = JoinHandle<PersistenceResult>;
 
-pub use psa_api::{AgentState, MessageDelivery};
-use psa_api::{CommandOutcome, CommandResult};
+pub use psa::api::{AgentState, MessageDelivery};
+use psa::api::{CommandOutcome, CommandResult};
 
 #[actors::mailbox(client = AgentClient, unbounded)]
 pub enum AgentManagerMessage {
@@ -54,7 +54,7 @@ pub struct AgentManagerState {
     agent: Agent,
     context: AgentProjection,
     session: Session,
-    definition: psa_api::AgentDefinition,
+    definition: psa::api::AgentDefinition,
     tools: Arc<[ToolKind]>,
     codemode_functions: Arc<[CodeModeEntry]>,
     components: Option<Arc<Mutex<InstalledComponents>>>,
@@ -81,7 +81,7 @@ impl AgentManagerState {
         &self.session
     }
 
-    pub fn definition(&self) -> &psa_api::AgentDefinition {
+    pub fn definition(&self) -> &psa::api::AgentDefinition {
         &self.definition
     }
 

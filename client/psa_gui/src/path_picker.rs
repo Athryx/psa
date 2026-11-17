@@ -6,7 +6,7 @@ use crate::{
     network,
 };
 use dioxus::prelude::*;
-use psa_api::{ProbeId, probes::DirectoryEntry};
+use psa::api::{ProbeId, probes::DirectoryEntry};
 
 pub(crate) fn parent_directory(path: &str) -> String {
     std::path::Path::new(path)

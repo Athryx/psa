@@ -82,13 +82,13 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
     assert_eq!(
         config.agent_defaults.bundles,
         vec![
-            psa_api::BundleConfig::FileTools { read_only: false },
-            psa_api::BundleConfig::Bash,
-            psa_api::BundleConfig::Subagents,
-            psa_api::BundleConfig::Goal {
+            psa::api::BundleConfig::FileTools { read_only: false },
+            psa::api::BundleConfig::Bash,
+            psa::api::BundleConfig::Subagents,
+            psa::api::BundleConfig::Goal {
                 interactive_only: true,
             },
-            psa_api::BundleConfig::Compaction {
+            psa::api::BundleConfig::Compaction {
                 reserve_tokens: 16384,
                 keep_recent_tokens: 20000,
                 context_window: None,
@@ -98,14 +98,14 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
     assert_eq!(
         config.agent_defaults.hooks.agent_create,
         vec![
-            psa_api::HookConfig::DefaultStartup,
-            psa_api::HookConfig::ToolDefinitions,
-            psa_api::HookConfig::Skills,
+            psa::api::HookConfig::DefaultStartup,
+            psa::api::HookConfig::ToolDefinitions,
+            psa::api::HookConfig::Skills,
         ]
     );
     assert_eq!(
         config.agent_defaults.hooks.session_update,
-        vec![psa_api::HookConfig::SessionModelUpdate]
+        vec![psa::api::HookConfig::SessionModelUpdate]
     );
     assert!(config.agent_defaults.hooks.before_request.is_empty());
     assert!(config.agent_defaults.hooks.after_request.is_empty());
@@ -306,20 +306,20 @@ async fn config_parses_agent_defaults_and_preserves_explicit_empty_lists() {
     assert_eq!(
         defaults.bundles,
         vec![
-            psa_api::BundleConfig::FileTools { read_only: false },
-            psa_api::BundleConfig::Bash
+            psa::api::BundleConfig::FileTools { read_only: false },
+            psa::api::BundleConfig::Bash
         ]
     );
     assert_eq!(
         defaults.hooks.agent_create,
         vec![
-            psa_api::HookConfig::DefaultStartup,
-            psa_api::HookConfig::Skills
+            psa::api::HookConfig::DefaultStartup,
+            psa::api::HookConfig::Skills
         ]
     );
     assert_eq!(
         defaults.hooks.before_request,
-        vec![psa_api::HookConfig::Noop]
+        vec![psa::api::HookConfig::Noop]
     );
     assert!(defaults.hooks.session_update.is_empty());
     assert!(defaults.hooks.after_request.is_empty());

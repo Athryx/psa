@@ -1,7 +1,7 @@
 use super::*;
 use crate::agents::client_queries::ClientQueryError;
 use futures_util::StreamExt;
-use psa_api::{
+use psa::api::{
     AskQuestionRequest, AskQuestionResponse, ClientAnswer, ClientError, ClientQuery, ClientQueryId,
     ClientQueryRequest, ClientQueryResponse, ClientQuestion, EventStream, EventsQuery,
 };
@@ -275,7 +275,7 @@ async fn context_client_query_roundtrip_survives_sse_reconnect_and_validates_res
         .unwrap();
     assert_eq!(snapshot_queries(&mut stream).await, [query.clone()]);
     let response_path =
-        psa_api::routes::client_query_response_path(agent.session_id, agent.id, query.id);
+        psa::api::routes::client_query_response_path(agent.session_id, agent.id, query.id);
     for body in [
         serde_json::json!({"type": "ask_question", "payload": {"answers": ["PRIVATE_ANSWER"]}})
             .to_string(),
@@ -290,7 +290,7 @@ async fn context_client_query_roundtrip_survives_sse_reconnect_and_validates_res
             .await
             .unwrap();
         assert_eq!(rejected.status(), reqwest::StatusCode::BAD_REQUEST);
-        let error = rejected.json::<psa_api::ApiError>().await.unwrap();
+        let error = rejected.json::<psa::api::ApiError>().await.unwrap();
         assert_eq!(error.code, "invalid_input");
         assert_eq!(error.message, "invalid client query response body");
         assert!(!error.message.contains("PRIVATE_ANSWER"));
@@ -310,7 +310,7 @@ async fn context_client_query_roundtrip_survives_sse_reconnect_and_validates_res
             .client
             .respond_to_client_query(
                 agent.session_id,
-                psa_api::AgentId(agent.id.0 + 100),
+                psa::api::AgentId(agent.id.0 + 100),
                 query.id,
                 &answer()
             )
@@ -389,7 +389,7 @@ async fn context_query_snapshots_are_scoped_and_cancellation_removes_the_query()
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "sibling".into(),
             },
         )

@@ -299,8 +299,8 @@ mod tests {
         let platform = DesktopPlatform::new(path.clone());
         let mut settings = DesktopSettings::default();
         let filter = &mut settings.active_profile_mut().workspace.session_filter;
-        filter.project_ids = vec![None, Some(psa_api::ProjectId("examples".into()))];
-        filter.probe_ids = vec![psa_api::ProbeId(psa_api::probes::Uuid::from_u128(7))];
+        filter.project_ids = vec![None, Some(psa::api::ProjectId("examples".into()))];
+        filter.probe_ids = vec![psa::api::ProbeId(psa::api::probes::Uuid::from_u128(7))];
 
         platform.save(&settings).await.unwrap();
 

@@ -3,7 +3,7 @@
 use client_shared::*;
 use dioxus::prelude::*;
 use llm_api::api::ContentBlock;
-use psa_api::events::EventType;
+use psa::api::events::EventType;
 
 /// Older turns stay reachable by scrolling; the overlay itself stays bounded.
 const MAX_ENTRIES: usize = 200;
@@ -125,8 +125,8 @@ pub(crate) fn MessageNavigator(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use psa_api::events::{Message, MessageType};
-    use psa_api::{AgentId, PendingEvent, SessionId, StreamMessage};
+    use psa::api::events::{Message, MessageType};
+    use psa::api::{AgentId, PendingEvent, SessionId, StreamMessage};
 
     fn pending(id: usize, kind: EventType) -> PendingEvent {
         PendingEvent {

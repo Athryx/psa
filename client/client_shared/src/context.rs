@@ -5,7 +5,7 @@
 //! reported total, so shares are estimates rather than token counts.
 use llm_api::api::{ContentBlock, HistoryItem, Usage};
 use llm_api::providers::ModelConfig;
-use psa_api::events::{CompactionSummary, Event, EventType, MessageType};
+use psa::api::events::{CompactionSummary, Event, EventType, MessageType};
 use std::collections::HashMap;
 
 /// Assumed weight of an attachment whose token cost is not derivable from text.
@@ -497,8 +497,8 @@ mod tests {
     use super::*;
     use llm_api::api::{Outcome, Reasoning, RequestConfig, StopReason};
     use llm_api::providers::{Effort, Model, ProviderType};
-    use psa_api::AgentId;
-    use psa_api::events::{
+    use psa::api::AgentId;
+    use psa::api::events::{
         EventId, InferenceResultEnd, InferenceResultStart, Message, Thinking, ToolCall, ToolResult,
     };
 

@@ -3,7 +3,7 @@ use crate::{
     agents::agent_context::AgentContext, components::cancellation::Cancellation, db::DbError,
 };
 use actors::{Mailbox, MailboxHandle, Reply};
-use psa_api::events::{Event, EventType, Log};
+use psa::api::events::{Event, EventType, Log};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::{
@@ -450,8 +450,8 @@ mod tests {
         let mut second = apply(&first, GoalOperation::Set("fork".into()));
         second.generation = 1;
         let event = |new: NewEvent| Event {
-            id: psa_api::events::EventId(1),
-            source_agent_id: psa_api::AgentId(1),
+            id: psa::api::events::EventId(1),
+            source_agent_id: psa::api::AgentId(1),
             timestamp: new.timestamp,
             kind: new.kind,
         };

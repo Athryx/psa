@@ -15,7 +15,7 @@ use llm_api::{
     api::{ContentBlock, MediaSource, Outcome, StopReason},
     providers::ModelConfig,
 };
-use psa_api::{
+use psa::api::{
     AgentState, SessionId,
     events::{CompactionSummary, Event, EventId, EventType, MessageType},
 };
@@ -316,8 +316,8 @@ impl Converter<'_> {
             EventType::StatusChange(change) => self.apply_status(t, change),
             EventType::Result(result) => {
                 let text = match result {
-                    psa_api::AgentResult::Text(text) => text.clone(),
-                    psa_api::AgentResult::Json(value) => value.to_string(),
+                    psa::api::AgentResult::Text(text) => text.clone(),
+                    psa::api::AgentResult::Json(value) => value.to_string(),
                 };
                 self.push(
                     t,
@@ -353,7 +353,7 @@ impl Converter<'_> {
     }
 
     /// A run ends when the agent leaves `Running`.
-    fn apply_status(&mut self, t: OffsetDateTime, change: &psa_api::events::StatusChange) {
+    fn apply_status(&mut self, t: OffsetDateTime, change: &psa::api::events::StatusChange) {
         if change.new_status == AgentState::Running {
             self.run_started = Some(t);
             return;
@@ -423,9 +423,9 @@ fn stop_reason_name(reason: &StopReason) -> String {
 }
 
 /// The command line, then the outcome when it did not succeed, then any output.
-fn describe_command(command: &psa_api::events::CommandRecord) -> String {
+fn describe_command(command: &psa::api::events::CommandRecord) -> String {
     let mut text = command.command_line();
-    if command.outcome != psa_api::CommandOutcome::Succeeded {
+    if command.outcome != psa::api::CommandOutcome::Succeeded {
         text = format!("{text} ({:?})", command.outcome);
     }
     if let Some(output) = &command.output {
@@ -441,7 +441,7 @@ mod tests {
         api::{RequestConfig, TextBlock, Usage},
         providers::{Effort, Model, ProviderType},
     };
-    use psa_api::{
+    use psa::api::{
         AgentDefinitionId, AgentId,
         events::{
             AgentMessageLink, InferenceResultEnd, InferenceResultStart, Message, StatusChange,
@@ -628,7 +628,7 @@ mod tests {
             event(
                 9,
                 10,
-                EventType::Compaction(psa_api::events::Compaction {
+                EventType::Compaction(psa::api::events::Compaction {
                     summary: CompactionSummary::Text("summary".into()),
                     usage: Usage::default(),
                 }),

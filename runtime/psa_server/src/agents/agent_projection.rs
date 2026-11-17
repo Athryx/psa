@@ -8,7 +8,7 @@ use llm_api::{
     },
     providers::ModelConfig,
 };
-use psa_api::events::*;
+use psa::api::events::*;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, thiserror::Error)]
@@ -283,7 +283,7 @@ impl AgentProjection {
                 self.status = AgentState::Idle;
                 self.status_reason = None;
                 self.completed_result = true;
-                self.result_producer_call_id = if matches!(result, psa_api::AgentResult::Json(_)) {
+                self.result_producer_call_id = if matches!(result, psa::api::AgentResult::Json(_)) {
                     self.pending_result_producer()
                 } else {
                     None
@@ -453,7 +453,7 @@ fn invalid(message: &str) -> ProjectionError {
     ProjectionError::InvalidTranscript(message.into())
 }
 
-fn build_message_content(message: &psa_api::events::Message) -> Vec<api::ContentBlock> {
+fn build_message_content(message: &psa::api::events::Message) -> Vec<api::ContentBlock> {
     let mut content = Vec::new();
     if let Some(source) = &message.source {
         content.extend(crate::prompts::text(crate::prompts::agent_message_header(

@@ -5,7 +5,7 @@ use super::{
     schema::{decode_integer, encode_integer},
 };
 use crate::components::bundles::validate_completion_config;
-use psa_api::*;
+use psa::api::*;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::{

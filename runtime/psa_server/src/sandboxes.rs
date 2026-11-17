@@ -15,7 +15,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use psa_api::{
+use psa::api::{
     CreateSandbox, ListSandboxes, Probe, ProbeId, Sandbox, SandboxState, is_valid_sandbox_name,
     probes::{ContainerStatus, SandboxRequest, SandboxSpec, Uuid},
     routes,
@@ -78,7 +78,7 @@ impl IntoResponse for SandboxError {
             }
             Self::Probe(_) => (StatusCode::BAD_GATEWAY, "probe_error"),
         };
-        let body = psa_api::ApiError {
+        let body = psa::api::ApiError {
             code: code.into(),
             message: self.to_string(),
         };

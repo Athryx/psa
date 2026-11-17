@@ -3,7 +3,7 @@
 use super::publication::{Publication, PublicationState};
 use crate::components::cancellation::Cancellation;
 use actors::{Reply, UnboundedMailbox, UnboundedMailboxHandle};
-use psa_api::{
+use psa::api::{
     AgentId, ClientQuery, ClientQueryId, ClientQueryRequest, ClientQueryResponse, SessionId,
     StreamMessage,
 };

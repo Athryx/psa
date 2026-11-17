@@ -5,7 +5,7 @@ use super::{
 use crate::components::tools::bash::output::OutputAccumulator;
 use actors::{Mailbox, Reply, UnboundedMailboxHandle};
 use futures_util::{FutureExt, future::BoxFuture};
-use psa_api::probes::{Command, Event};
+use psa::api::probes::{Command, Event};
 use psa_shared::probe_transport::Call;
 use std::{path::PathBuf, time::Duration};
 use tokio::time::Instant;

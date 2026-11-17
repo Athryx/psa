@@ -1,7 +1,9 @@
 //! Completion-policy validation for agent configuration boundaries.
 
 use super::typed_result::{ResultSchema, ResultSchemaError};
-use psa_api::{BundleConfig, CompletionConfigurationError, HookConfigs, validate_completion_modes};
+use psa::api::{
+    BundleConfig, CompletionConfigurationError, HookConfigs, validate_completion_modes,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CompletionConfigError {
@@ -31,7 +33,7 @@ pub fn validate_completion_config(
 mod tests {
     use super::*;
     use llm_api::api::ToolSchema;
-    use psa_api::HookConfig;
+    use psa::api::HookConfig;
     use serde_json::json;
 
     fn typed(schema: serde_json::Value) -> BundleConfig {

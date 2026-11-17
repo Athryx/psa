@@ -18,7 +18,7 @@ use axum::{
     },
     routing::{get, post},
 };
-use psa_api::{self as api, AgentId, SessionId, events::*, routes};
+use psa::api::{self as api, AgentId, SessionId, events::*, routes};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -1423,7 +1423,7 @@ mod tests {
             client
                 .get_resolved_agent_config(api::AgentDefinitionId(999_999))
                 .await,
-            Err(psa_api::ClientError::Api { status: 404, .. })
+            Err(psa::api::ClientError::Api { status: 404, .. })
         ));
         assert!(client.list_skills().await.unwrap().is_empty());
 
@@ -1524,7 +1524,7 @@ mod tests {
         let session = cursor
             .create_session(sessions::NewSession {
                 decision_model: None,
-                probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+                probe_id: psa::api::ProbeId(psa::api::probes::Uuid::nil()),
                 project_id: None,
                 name: "test".into(),
                 working_directory: "/work".into(),
@@ -1729,8 +1729,8 @@ mod tests {
                 "not_found",
             ),
             (
-                RuntimeError::Database(DbError::ProbeNotFound(psa_api::ProbeId(
-                    psa_api::probes::Uuid::nil(),
+                RuntimeError::Database(DbError::ProbeNotFound(psa::api::ProbeId(
+                    psa::api::probes::Uuid::nil(),
                 ))),
                 StatusCode::NOT_FOUND,
                 "not_found",

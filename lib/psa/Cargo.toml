@@ -1,10 +1,10 @@
 [package]
-name = "psa_api"
+name = "psa"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-llm_api = { path = "../lib/llm_api" }
+llm_api = { path = "../llm_api" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "1"

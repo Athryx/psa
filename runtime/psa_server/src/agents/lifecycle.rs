@@ -1,6 +1,6 @@
 //! Internal logical agent-run notifications, independent of worker generations.
 
-use psa_api::{AgentId, SessionId};
+use psa::api::{AgentId, SessionId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentRunOutcome {

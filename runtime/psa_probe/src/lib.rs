@@ -6,7 +6,7 @@ pub mod tools;
 
 use config::ResolvedConfig;
 use futures_util::{SinkExt, StreamExt, future::ready};
-use psa_api::probes::PROTOCOL_VERSION;
+use psa::api::probes::PROTOCOL_VERSION;
 use psa_shared::probe_transport::{Frame, spawn_connection};
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use tokio::net::TcpStream;
@@ -81,7 +81,7 @@ pub async fn run(
         }
 
         // UUID randomness supplies jitter without another random-number dependency.
-        let random = psa_api::probes::Uuid::new_v4().as_u128() as u64;
+        let random = psa::api::probes::Uuid::new_v4().as_u128() as u64;
         let pause = Duration::from_millis((delay * 1000 + random % (delay * 1000 + 1)).min(30_000));
         tokio::select! {
             _ = &mut shutdown => return Ok(()),

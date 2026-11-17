@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 actors = { path = "../../lib/actors" }
-psa_api = { path = "../../psa_api" }
+psa = { path = "../../lib/psa" }
 futures-util = { version = "0.3", features = ["sink"] }
 serde_json = "1"
 thiserror = "2"

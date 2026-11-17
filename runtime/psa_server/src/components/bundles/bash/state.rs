@@ -103,7 +103,7 @@ impl PollRequest {
 pub(super) enum Message {
     Start {
         probe: ProbeHandle,
-        command: psa_api::probes::Command,
+        command: psa::api::probes::Command,
         name: Option<String>,
         collect: Collect,
         reply: Response,
@@ -221,7 +221,7 @@ impl BashHandle {
     pub async fn execute(
         &self,
         probe: ProbeHandle,
-        command: psa_api::probes::Command,
+        command: psa::api::probes::Command,
         session_name: Option<String>,
         yield_time: Duration,
         cancellation: Cancellation,

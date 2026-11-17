@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 use llm_api::providers::{Effort, Model, ModelConfig, ProviderType};
-use psa_api::{AgentConfig, AgentConfigInput, BundleConfig, HookConfigs, HookOverrides};
+use psa::api::{AgentConfig, AgentConfigInput, BundleConfig, HookConfigs, HookOverrides};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     net::SocketAddr,
@@ -386,7 +386,7 @@ impl AgentDefaults {
 #[cfg(test)]
 mod agent_defaults_tests {
     use super::*;
-    use psa_api::{ConfigGroup, ConfigId, HookConfig, ModelSelection};
+    use psa::api::{ConfigGroup, ConfigId, HookConfig, ModelSelection};
     use serde_json::json;
 
     fn defaults() -> AgentDefaults {

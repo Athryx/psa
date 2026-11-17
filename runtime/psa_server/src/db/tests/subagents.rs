@@ -5,7 +5,7 @@ use crate::db::NewEvent;
 fn child(parent: AgentId, name: &str) -> NewAgent {
     NewAgent {
         subagent_parent_id: Some(parent),
-        definition_id: psa_api::AgentDefinitionId(1),
+        definition_id: psa::api::AgentDefinitionId(1),
         name: name.into(),
         interactive: false,
         hidden: false,
@@ -144,7 +144,7 @@ async fn concurrent_child_creation_reserves_names_in_the_creation_transaction() 
 #[tokio::test]
 async fn subagent_messages_persist_source_and_replay_as_attributed_user_messages() {
     let (directory, db, _session, root) = fixture().await;
-    let source = psa_api::events::AgentMessageLink {
+    let source = psa::api::events::AgentMessageLink {
         request_id: "request-1".into(),
         sender: root.id,
         sender_name: "researcher".into(),

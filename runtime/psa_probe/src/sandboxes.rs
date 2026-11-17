@@ -1,5 +1,5 @@
 //! Docker sandbox containers running nested probes, managed through the `docker` CLI.
-use psa_api::{
+use psa::api::{
     Mount, ProbeId, SandboxState,
     probes::{ContainerStatus, SandboxRequest, SandboxSpec},
 };
@@ -206,7 +206,7 @@ fn parse_status_line(line: &str) -> Option<ContainerStatus> {
 }
 
 fn validate_spec(spec: &SandboxSpec) -> Result<()> {
-    if !psa_api::is_valid_sandbox_name(&spec.name) {
+    if !psa::api::is_valid_sandbox_name(&spec.name) {
         return Err(invalid(
             "sandbox name must be 1-64 ASCII letters, digits, '-', '_' or '.'",
         ));
@@ -279,7 +279,7 @@ fn invalid(message: &str) -> Box<dyn std::error::Error + Send + Sync> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use psa_api::probes::Uuid;
+    use psa::api::probes::Uuid;
 
     fn manager() -> SandboxManager {
         SandboxManager {

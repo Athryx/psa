@@ -7,7 +7,7 @@ members = [
     "lib/actors",
     "lib/actors_macros",
     "lib/llm_api",
-    "psa_api",
+    "lib/psa",
     "runtime/psa_shared",
     "runtime/psa_server",
     "runtime/psa_probe",

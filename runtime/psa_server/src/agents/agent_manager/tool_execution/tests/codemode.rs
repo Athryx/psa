@@ -123,7 +123,7 @@ async fn mixed_batch_commits_public_and_private_events() {
     assert_eq!(state.agent.next_event_id.0, previous.0 + 1);
     let mut committed = 0;
     while let Ok(message) = subscriber.try_recv() {
-        if let psa_api::StreamMessage::Committed { event, .. } = message {
+        if let psa::api::StreamMessage::Committed { event, .. } = message {
             committed += 1;
             assert!(matches!(event.event.kind, EventType::ToolResult(_)));
         }

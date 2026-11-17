@@ -2,7 +2,7 @@ use crate::app::Ui;
 use client_shared::*;
 use dioxus::prelude::*;
 use futures_util::StreamExt;
-use psa_api::*;
+use psa::api::*;
 use std::collections::HashMap;
 use tokio::time::{Duration, Instant};
 
@@ -1041,9 +1041,9 @@ fn message_is_immediate(message: &StreamMessage) -> bool {
         StreamMessage::Upsert { .. } => false,
         StreamMessage::Committed { event, .. } => matches!(
             event.event.kind,
-            psa_api::events::EventType::StatusChange(_)
-                | psa_api::events::EventType::InferenceResultStart(_)
-                | psa_api::events::EventType::InferenceResultEnd(_)
+            psa::api::events::EventType::StatusChange(_)
+                | psa::api::events::EventType::InferenceResultStart(_)
+                | psa::api::events::EventType::InferenceResultEnd(_)
         ),
         _ => true,
     }
@@ -1232,7 +1232,7 @@ pub async fn load_context_events(
     ui: Signal<Ui>,
     target: TranscriptTarget,
     turn: u64,
-) -> Result<Vec<psa_api::events::Event>, String> {
+) -> Result<Vec<psa::api::events::Event>, String> {
     const PAGE_LIMIT: u32 = 10_000;
     let generation = ui.peek().generation;
     let api = client(ui).map_err(|_| "Not connected to a server".to_owned())?;
@@ -1286,7 +1286,7 @@ fn turn_ends(page: &EventsPage) -> impl Iterator<Item = u64> + '_ {
         .filter(|envelope| {
             matches!(
                 envelope.event.kind,
-                psa_api::events::EventType::InferenceResultEnd(_)
+                psa::api::events::EventType::InferenceResultEnd(_)
             )
         })
         .map(|envelope| envelope.event.id.0)
@@ -1665,7 +1665,7 @@ async fn submit_captured(
         AgentRequest::Message {
             source: None,
             delivery: MessageDelivery::Steer,
-            content: psa_api::events::Message::text(psa_api::events::MessageType::Human, content)
+            content: psa::api::events::Message::text(psa::api::events::MessageType::Human, content)
                 .content,
         }
     };
@@ -2032,7 +2032,7 @@ mod history_tests {
 #[cfg(test)]
 mod adjacent_turn_tests {
     use super::*;
-    use psa_api::events::{EventType, InferenceResultEnd, Message, MessageType};
+    use psa::api::events::{EventType, InferenceResultEnd, Message, MessageType};
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -2507,7 +2507,7 @@ mod draft_root_tests {
 /// Agents can only run chat models; decision models are called from CodeMode.
 fn chat_models_query() -> ListModels {
     ListModels {
-        kind: Some(psa_api::ModelKind::Chat),
+        kind: Some(psa::api::ModelKind::Chat),
         ..ListModels::default()
     }
 }

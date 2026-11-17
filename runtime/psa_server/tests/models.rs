@@ -12,7 +12,7 @@ use llm_api::{
     api::{OpenAiCompletions, OpenAiCompletionsConfig, Provider, ReasoningOverride},
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
-use psa_api::{self as api, events::EventType};
+use psa::api::{self as api, events::EventType};
 use psa_server::db::EventRange;
 use psa_server::{db::Database, models::CatalogSource, providers::ProviderRegistry};
 use serde_json::{Value, json};

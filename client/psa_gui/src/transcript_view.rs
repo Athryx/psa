@@ -12,7 +12,7 @@ use crate::{
 use client_shared::*;
 use dioxus::prelude::*;
 use llm_api::api::ContentBlock;
-use psa_api::*;
+use psa::api::*;
 #[cfg(test)]
 use std::collections::HashMap;
 use std::{cell::RefCell, collections::HashSet, rc::Rc};
@@ -550,7 +550,7 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
         .rows
         .iter()
         .filter_map(|payload| {
-            if let psa_api::events::EventType::ToolCall(call) = payload.kind() {
+            if let psa::api::events::EventType::ToolCall(call) = payload.kind() {
                 Some((payload.agent_id(), call.call_id.clone()))
             } else {
                 None
@@ -558,7 +558,7 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
         })
         .collect();
     let visible: Vec<_> = current.rows.iter().enumerate().filter(|(_, payload)| {
-        !matches!(payload.kind(), psa_api::events::EventType::ToolResult(result) if call_ids.contains(&(payload.agent_id(), result.call_id.clone())))
+        !matches!(payload.kind(), psa::api::events::EventType::ToolResult(result) if call_ids.contains(&(payload.agent_id(), result.call_id.clone())))
             && row_is_visible(payload.kind(), &preferences)
     }).collect();
     let row_preferences = RowPreferences::from(&preferences);
@@ -574,10 +574,10 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
         .map(|((offset, payload), layout)| {
             // A tool call carries its result, and a turn's start its end.
             let result = match payload.kind() {
-                psa_api::events::EventType::ToolCall(call) => {
+                psa::api::events::EventType::ToolCall(call) => {
                     transcript.and_then(|t| t.tool_result(payload.agent_id(), &call.call_id))
                 }
-                psa_api::events::EventType::InferenceResultStart(_) => {
+                psa::api::events::EventType::InferenceResultStart(_) => {
                     transcript.and_then(|t| t.inference_end(&payload.id()))
                 }
                 _ => None,
@@ -809,8 +809,8 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
     }
 }
 
-fn row_is_visible(kind: &psa_api::events::EventType, preferences: &UiPreferences) -> bool {
-    use psa_api::events::EventType;
+fn row_is_visible(kind: &psa::api::events::EventType, preferences: &UiPreferences) -> bool {
+    use psa::api::events::EventType;
     match kind {
         EventType::Message(_)
         | EventType::Log(_)
@@ -885,10 +885,10 @@ enum GroupKey<'a> {
 }
 
 fn group_key<'a>(
-    kind: &'a psa_api::events::EventType,
+    kind: &'a psa::api::events::EventType,
     preferences: &RowPreferences,
 ) -> Option<GroupKey<'a>> {
-    use psa_api::events::{EventType, MessageType};
+    use psa::api::events::{EventType, MessageType};
     match kind {
         EventType::Message(message) if message.message_type == MessageType::System => {
             Some(GroupKey::SystemPrompt)
@@ -902,15 +902,15 @@ fn group_key<'a>(
 }
 
 /// Rows drawn as one expandable line, which sit closer together than messages.
-fn is_compact_row(kind: &psa_api::events::EventType, preferences: &RowPreferences) -> bool {
-    use psa_api::events::EventType;
+fn is_compact_row(kind: &psa::api::events::EventType, preferences: &RowPreferences) -> bool {
+    use psa::api::events::EventType;
     match kind {
         EventType::ToolResult(_)
         | EventType::Compaction(_)
         | EventType::ProviderItem(_)
         | EventType::Result(_) => true,
         EventType::Message(message)
-            if message.message_type == psa_api::events::MessageType::Subagent =>
+            if message.message_type == psa::api::events::MessageType::Subagent =>
         {
             true
         }
@@ -961,13 +961,13 @@ impl RowLayout {
 
 /// Lay out the mounted rows only: a run cut by the window edge simply restarts.
 fn layout_rows<'a>(
-    rows: impl Iterator<Item = (AgentId, &'a psa_api::events::EventType)>,
+    rows: impl Iterator<Item = (AgentId, &'a psa::api::events::EventType)>,
     preferences: &RowPreferences,
 ) -> Vec<RowLayout> {
     let rows: Vec<_> = rows
         .map(|(agent_id, kind)| {
             let key = group_key(kind, preferences).map(|key| (agent_id, key));
-            let divides = matches!(kind, psa_api::events::EventType::InferenceResultStart(_));
+            let divides = matches!(kind, psa::api::events::EventType::InferenceResultStart(_));
             (key, is_compact_row(kind, preferences), divides)
         })
         .collect();
@@ -1018,7 +1018,7 @@ fn CachedEventRow(
 enum EventKind {
     Payload(RowPayload),
     #[cfg(test)]
-    Owned(Shared<psa_api::events::EventType>),
+    Owned(Shared<psa::api::events::EventType>),
 }
 impl PartialEq for EventKind {
     fn eq(&self, other: &Self) -> bool {
@@ -1032,7 +1032,7 @@ impl PartialEq for EventKind {
     }
 }
 impl EventKind {
-    fn kind(&self) -> &psa_api::events::EventType {
+    fn kind(&self) -> &psa::api::events::EventType {
         match self {
             Self::Payload(payload) => payload.kind(),
             #[cfg(test)]
@@ -1069,9 +1069,9 @@ impl EventKind {
 #[cfg(test)]
 #[derive(Props, Clone)]
 pub(crate) struct EventRowProps {
-    kind: psa_api::events::EventType,
+    kind: psa::api::events::EventType,
     provisional: bool,
-    results: Rc<HashMap<String, psa_api::events::ToolResult>>,
+    results: Rc<HashMap<String, psa::api::events::ToolResult>>,
 }
 #[cfg(test)]
 impl PartialEq for EventRowProps {
@@ -1089,12 +1089,12 @@ pub(crate) fn EventRow(props: EventRowProps) -> Element {
         ui.map(|ui| ui.read().settings.preferences.clone())
             .unwrap_or_default()
     });
-    let result = if let psa_api::events::EventType::ToolCall(call) = &props.kind {
+    let result = if let psa::api::events::EventType::ToolCall(call) = &props.kind {
         props
             .results
             .get(&call.call_id)
             .cloned()
-            .map(psa_api::events::EventType::ToolResult)
+            .map(psa::api::events::EventType::ToolResult)
             .map(Shared::new)
             .map(EventKind::Owned)
     } else {
@@ -1308,7 +1308,7 @@ fn EventDetails(
 
 #[component]
 fn DetailBody(kind: EventKind, result: Option<EventKind>, mode: DetailMode) -> Element {
-    use psa_api::events::EventType;
+    use psa::api::events::EventType;
     match (mode, kind.kind()) {
         (DetailMode::System, EventType::Message(message)) => {
             rsx! { pre { "{blocks(&message.content)}" } }
@@ -1454,7 +1454,7 @@ fn TurnDivider(end: Option<EventKind>, turn: Option<TurnNumber>) -> Element {
     let context_turn = end.as_ref().and_then(EventKind::context_turn);
 
     let details = match end.as_ref().map(EventKind::kind) {
-        Some(psa_api::events::EventType::InferenceResultEnd(end)) => {
+        Some(psa::api::events::EventType::InferenceResultEnd(end)) => {
             let mut details = Vec::new();
             if let Some(tokens) = end.usage.input_tokens {
                 details.push(format!("{} context", format_tokens(tokens)));
@@ -1504,7 +1504,7 @@ fn EventContent(
     #[props(default)] group: GroupPosition,
     #[props(default)] turn: Option<TurnNumber>,
 ) -> Element {
-    use psa_api::events::EventType;
+    use psa::api::events::EventType;
     let provisional = provisional || kind.is_provisional();
     // A compact line: its label heads a run of like rows, or else the line itself.
     let compact = |mode, label: &str, class: &str, lazy, summary: Element| {
@@ -1525,7 +1525,7 @@ fn EventContent(
     };
     match kind.kind() {
         EventType::Message(message) => {
-            if matches!(message.message_type, psa_api::events::MessageType::System) {
+            if matches!(message.message_type, psa::api::events::MessageType::System) {
                 // The body stays unbuilt while collapsed; an undescribed prompt
                 // is told apart by its size alone.
                 let description = message.description.clone().unwrap_or_else(|| {
@@ -1550,7 +1550,7 @@ fn EventContent(
             if let Some(source) = message
                 .source
                 .clone()
-                .filter(|_| message.message_type == psa_api::events::MessageType::Subagent)
+                .filter(|_| message.message_type == psa::api::events::MessageType::Subagent)
             {
                 let sender = source.sender_name.clone();
                 let preview =
@@ -1574,8 +1574,8 @@ fn EventContent(
                     },
                 );
             }
-            let is_agent = matches!(message.message_type, psa_api::events::MessageType::Agent);
-            let is_human = matches!(message.message_type, psa_api::events::MessageType::Human);
+            let is_agent = matches!(message.message_type, psa::api::events::MessageType::Agent);
+            let is_human = matches!(message.message_type, psa::api::events::MessageType::Human);
             rsx! { article { class: if is_human { "message human-message" } else if is_agent { "message agent-message" } else { "message" },
                 if !is_human && !is_agent { div { class: "role", "{message.message_type:?}" } }
                 if provisional { span { class: "streaming-indicator", "Streaming" } }
@@ -1594,7 +1594,7 @@ fn EventContent(
         }
         EventType::Command(command) => {
             let text = client_shared::describe_command(command);
-            let class = if command.outcome == psa_api::CommandOutcome::Succeeded {
+            let class = if command.outcome == psa::api::CommandOutcome::Succeeded {
                 "message command-message"
             } else {
                 "message command-message error"

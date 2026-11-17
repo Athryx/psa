@@ -1,5 +1,5 @@
 use crate::*;
-use psa_api::*;
+use psa::api::*;
 use serde_json::json;
 fn session(id: u64, path: &str) -> Session {
     serde_json::from_value(json!({"id":id,"parent_id":null,"name":format!("session{id}"),"working_directory":path,"probe_id":"00000000-0000-0000-0000-000000000001","model_config":{"model":"openrouter/test/model","effort":"Medium"},"busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"})).unwrap()
@@ -43,7 +43,7 @@ fn follow_is_view_local_and_tail_is_bounded() {
                 revision: 1,
                 session_id: SessionId(1),
                 agent_id: AgentId(2),
-                kind: psa_api::events::EventType::NewContext,
+                kind: psa::api::events::EventType::NewContext,
             },
         });
     }
@@ -467,7 +467,7 @@ fn query_removal_and_history_do_not_resurrect_answers() {
 }
 #[test]
 fn tool_results_correlate_by_agent_not_name_or_adjacency() {
-    use psa_api::events::*;
+    use psa::api::events::*;
     let mut t = Transcript::new(SessionId(1), None);
     for (position, agent_id, kind) in [
         (
@@ -514,8 +514,8 @@ fn tool_results_correlate_by_agent_not_name_or_adjacency() {
     );
 }
 
-fn probe_filter(probe: psa_api::ProbeId) -> psa_api::SessionFilter {
-    psa_api::SessionFilter {
+fn probe_filter(probe: psa::api::ProbeId) -> psa::api::SessionFilter {
+    psa::api::SessionFilter {
         probe_ids: vec![probe],
         ..Default::default()
     }

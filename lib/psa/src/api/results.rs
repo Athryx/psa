@@ -1,6 +1,6 @@
 //! Durable agent result artifacts and typed decoding that preserves provenance.
 
-use crate::{
+use crate::api::{
     AgentId, EventEnvelope, SessionId,
     events::{EventId, EventType},
 };
@@ -136,7 +136,7 @@ mod tests {
             session_id: SessionId(3),
             agent_id: AgentId(5),
             position: 11,
-            event: crate::events::Event {
+            event: crate::api::events::Event {
                 id: EventId(7),
                 source_agent_id: AgentId(2),
                 timestamp: OffsetDateTime::from_unix_timestamp(123).unwrap(),
@@ -238,38 +238,43 @@ mod tests {
 
     #[test]
     fn result_event_and_route_preserve_durable_artifact_identity() {
-        let event = crate::events::EventType::Result(AgentResult::Text("done".into()));
+        let event = crate::api::events::EventType::Result(AgentResult::Text("done".into()));
         let wire = json!({"Result": {"Text": "done"}});
         assert_eq!(serde_json::to_value(&event).unwrap(), wire);
-        let decoded: crate::events::EventType = serde_json::from_value(wire).unwrap();
-        let crate::events::EventType::Result(value) = decoded else {
+        let decoded: crate::api::events::EventType = serde_json::from_value(wire).unwrap();
+        let crate::api::events::EventType::Result(value) = decoded else {
             panic!("expected a result event");
         };
         assert_eq!(value, AgentResult::Text("done".into()));
         assert_eq!(
-            crate::routes::agent_path(crate::routes::AGENT_RESULTS, SessionId(3), AgentId(5)),
+            crate::api::routes::agent_path(
+                crate::api::routes::AGENT_RESULTS,
+                SessionId(3),
+                AgentId(5)
+            ),
             "/sessions/3/agents/5/results"
         );
     }
 
     #[test]
     fn result_event_filter_defaults_to_false_and_roundtrips() {
-        let defaults: crate::EventsQuery = serde_json::from_value(json!({})).unwrap();
+        let defaults: crate::api::EventsQuery = serde_json::from_value(json!({})).unwrap();
         assert!(!defaults.results_only);
-        assert!(!crate::EventsQuery::default().results_only);
-        let query: crate::EventsQuery =
+        assert!(!crate::api::EventsQuery::default().results_only);
+        let query: crate::api::EventsQuery =
             serde_json::from_value(json!({"results_only": true})).unwrap();
         assert!(query.results_only);
         assert_eq!(serde_json::to_value(query).unwrap()["results_only"], true);
         assert!(
-            serde_json::from_value::<crate::EventsQuery>(json!({"results_only": null})).is_err()
+            serde_json::from_value::<crate::api::EventsQuery>(json!({"results_only": null}))
+                .is_err()
         );
     }
 
     #[test]
     fn client_helpers_construct_raw_and_typed_result_futures_without_io() {
-        fn returns<T>(_: impl std::future::Future<Output = Result<T, crate::ClientError>>) {}
-        let client = crate::Client::new("http://example.invalid", "test-client-key").unwrap();
+        fn returns<T>(_: impl std::future::Future<Output = Result<T, crate::api::ClientError>>) {}
+        let client = crate::api::Client::new("http://example.invalid", "test-client-key").unwrap();
         let session = SessionId(3);
         let agent = AgentId(5);
         returns::<Vec<ResultRecord>>(client.list_results(session, agent, 5));

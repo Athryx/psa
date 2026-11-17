@@ -1,12 +1,12 @@
 # Event loop and client API
 
-Implemented in `psa_api` and `psa_server`; see `runtime/psa_server/README.md` for startup,
+Implemented in `psa` and `psa_server`; see `runtime/psa_server/README.md` for startup,
 credentials, routes, client usage, and storage/query semantics. Compaction remains
 unimplemented and pending requests remain memory-only as specified below.
 
 ## Scope
 
-Implement `psa_api/API_OVERVIEW.md`: session/agent HTTP operations, finite event
+Implement `lib/psa/API_OVERVIEW.md`: session/agent HTTP operations, finite event
 queries and SSE, an async Rust client, lazy agent workers, hooks, and cancellable
 tools. Keep database rows, credentials, queues, and task/channel types private to
 `psa_server`. Probe APIs, configurable agent definitions, and real compaction are
@@ -15,7 +15,7 @@ later work.
 ## Shared types and HTTP
 
 - Move IDs, `AgentState`, transcript payloads (`EventType` and its constituents),
-  and the data-only `ToolId` into `psa_api`. These contain model/content data, not
+  and the data-only `ToolId` into `psa`. These contain model/content data, not
   database or runtime machinery. Keep tool lookup/execution and convenience
   constructors needing the tool registry on the server. Re-export moved types
   from existing server modules where useful; do not maintain two event enums.
@@ -27,7 +27,7 @@ later work.
   provider credentials. Client message requests contain content, not arbitrary
   transcript events or provider replay metadata.
 - Define serializable requests, responses, query parameters, errors, and route
-  constants/builders in `psa_api`; use the same definitions in Axum and the client.
+  constants/builders in `psa`; use the same definitions in Axum and the client.
   IDs are transparent integers; timestamps have an explicit UTC wire encoding.
 
 | Method | Route | Operation |

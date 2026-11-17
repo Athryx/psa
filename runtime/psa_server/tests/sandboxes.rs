@@ -1,4 +1,4 @@
-use psa_api::{self as api, ClientError, CreateSandbox, Mount, SandboxState};
+use psa::api::{self as api, ClientError, CreateSandbox, Mount, SandboxState};
 use psa_server::{db::Database, probes::ProbeRegistry};
 use tokio::{net::TcpListener, sync::oneshot};
 

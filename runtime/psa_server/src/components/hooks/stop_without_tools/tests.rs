@@ -1,6 +1,6 @@
 use super::*;
 use llm_api::api::{Reasoning, RefusalBlock};
-use psa_api::{
+use psa::api::{
     AgentId,
     events::{EventId, Message, Thinking},
 };

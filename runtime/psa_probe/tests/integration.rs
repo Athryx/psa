@@ -1,4 +1,4 @@
-use psa_api::{
+use psa::api::{
     Client, ProbeId,
     probes::{Command, Event, ExitStatus, Uuid},
 };
@@ -28,7 +28,7 @@ struct Harness {
     client: Client,
     registry: ProbeRegistry,
     id: ProbeId,
-    metadata: psa_api::ProbeMetadata,
+    metadata: psa::api::ProbeMetadata,
     base: String,
     probe_stop: oneshot::Sender<()>,
     probe: tokio::task::JoinHandle<Result<(), psa_probe::ProbeError>>,
@@ -138,7 +138,7 @@ impl Harness {
     }
     fn request(&self, key: &str, version: u32) -> tungstenite::handshake::client::Request {
         let url =
-            reqwest::Url::parse(&psa_api::probes::parse_connect_url(&self.base).unwrap()).unwrap();
+            reqwest::Url::parse(&psa::api::probes::parse_connect_url(&self.base).unwrap()).unwrap();
         let mut url = url;
         url.query_pairs_mut()
             .append_pair("version", &version.to_string())
@@ -175,7 +175,7 @@ async fn probe_and_client_keys_are_isolated() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let harness = Harness::start().await;
         for key in ["bad-key", "test-client-key"] {
-            match connect_async(harness.request(key, psa_api::probes::PROTOCOL_VERSION)).await {
+            match connect_async(harness.request(key, psa::api::probes::PROTOCOL_VERSION)).await {
                 Err(tungstenite::Error::Http(response)) => {
                     assert_eq!(response.status().as_u16(), 401);
                 }
@@ -196,7 +196,7 @@ async fn probe_and_client_keys_are_isolated() {
         let probe_client = Client::new(&harness.base, "test-probe-key").unwrap();
         assert!(matches!(
             probe_client.list_probes().await,
-            Err(psa_api::ClientError::Api { status: 401, .. })
+            Err(psa::api::ClientError::Api { status: 401, .. })
         ));
         let health = reqwest::Client::new()
             .get(format!("{}/health", harness.base))
@@ -230,9 +230,9 @@ async fn registration_auth_sessions_and_reconnect() {
             harness.metadata.data_dir
         );
         for (key, version, expected) in [
-            ("bad-key", psa_api::probes::PROTOCOL_VERSION, 401),
+            ("bad-key", psa::api::probes::PROTOCOL_VERSION, 401),
             ("test-probe-key", 1, 400),
-            ("test-probe-key", psa_api::probes::PROTOCOL_VERSION, 409),
+            ("test-probe-key", psa::api::probes::PROTOCOL_VERSION, 409),
         ] {
             let result = connect_async(harness.request(key, version)).await;
             match result {
@@ -244,7 +244,7 @@ async fn registration_auth_sessions_and_reconnect() {
         }
         let session = harness
             .client
-            .create_session(&psa_api::CreateSession {
+            .create_session(&psa::api::CreateSession {
                 decision_model: None,
                 name: "remote".into(),
                 working_directory: harness.dir.path().to_owned(),
@@ -264,8 +264,8 @@ async fn registration_auth_sessions_and_reconnect() {
             .client
             .fork_session(
                 session.id,
-                &psa_api::ForkSession {
-                    point: psa_api::ForkPoint::Head,
+                &psa::api::ForkSession {
+                    point: psa::api::ForkPoint::Head,
                     metadata: Default::default(),
                 },
             )
@@ -275,7 +275,7 @@ async fn registration_auth_sessions_and_reconnect() {
         assert!(
             harness
                 .client
-                .create_session(&psa_api::CreateSession {
+                .create_session(&psa::api::CreateSession {
                     decision_model: None,
                     name: "bad".into(),
                     working_directory: "/tmp".into(),
@@ -302,7 +302,7 @@ async fn registration_auth_sessions_and_reconnect() {
 
 #[tokio::test]
 async fn startup_reads_remote_skill_metadata_from_configured_references() {
-    use psa_api::events::{EventType, MessageType};
+    use psa::api::events::{EventType, MessageType};
 
     tokio::time::timeout(Duration::from_secs(30), async {
         let harness = Harness::start().await;
@@ -332,7 +332,7 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
         }
         let session = harness
             .client
-            .create_session(&psa_api::CreateSession {
+            .create_session(&psa::api::CreateSession {
                 decision_model: None,
                 name: "skills".into(),
                 working_directory: cwd.clone(),
@@ -346,34 +346,34 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
             })
             .await
             .unwrap();
-        let config_id = psa_api::ConfigId {
-            config_group: psa_api::ConfigGroup::Custom("test".into()),
+        let config_id = psa::api::ConfigId {
+            config_group: psa::api::ConfigGroup::Custom("test".into()),
             name: "remote skills".into(),
         };
-        let project = psa_api::ConfigGroup::AgentsDir {
+        let project = psa::api::ConfigGroup::AgentsDir {
             path: cwd.join(".agents").to_str().unwrap().into(),
             probe_id: harness.id,
         };
-        harness.client.upsert_agent_configs(&[psa_api::AgentConfig {
+        harness.client.upsert_agent_configs(&[psa::api::AgentConfig {
             config_id: config_id.clone(),
             description: String::new(),
             selectable: true,
-            bundles: vec![psa_api::BundleConfig::Noop],
-            hooks: psa_api::HookConfigs {
+            bundles: vec![psa::api::BundleConfig::Noop],
+            hooks: psa::api::HookConfigs {
                 agent_create: vec![
-                    psa_api::HookConfig::DefaultStartup,
-                    psa_api::HookConfig::ToolDefinitions,
-                    psa_api::HookConfig::Cwd,
-                    psa_api::HookConfig::Skills,
+                    psa::api::HookConfig::DefaultStartup,
+                    psa::api::HookConfig::ToolDefinitions,
+                    psa::api::HookConfig::Cwd,
+                    psa::api::HookConfig::Skills,
                 ],
                 ..Default::default()
             },
-            models: vec![psa_api::ModelSelection::Global],
+            models: vec![psa::api::ModelSelection::Global],
             default: true,
             subagents: Default::default(),
-            skills: psa_api::IncludedItems {
+            skills: psa::api::IncludedItems {
                 groups: vec![],
-                items: ["review<&>", "direct", "hidden-skill"].into_iter().map(|name| psa_api::ConfigId {
+                items: ["review<&>", "direct", "hidden-skill"].into_iter().map(|name| psa::api::ConfigId {
                     config_group: project.clone(),
                     name: name.into(),
                 }).collect(),
@@ -383,7 +383,7 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
             .client
             .create_agent(
                 session.id,
-                &psa_api::CreateAgent {
+                &psa::api::CreateAgent {
                     subagent_parent_id: None,
                     interactive: false,
                     hidden: false,
@@ -399,7 +399,7 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
         }
         let page = harness
             .client
-            .list_events(session.id, Some(agent.id), &psa_api::EventsQuery::default())
+            .list_events(session.id, Some(agent.id), &psa::api::EventsQuery::default())
             .await
             .unwrap();
         let events: Vec<_> = page.events.iter().map(|event| &event.event.kind).collect();

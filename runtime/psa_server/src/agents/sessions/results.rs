@@ -6,7 +6,7 @@ use crate::db::EventRange;
 use crate::{
     agents::session_manager::EXECUTION_FAILURE_MESSAGE, components::cancellation::Cancellation,
 };
-use psa_api::{AgentId, AgentState, ResultRecord, SessionId, StreamMessage, events::*};
+use psa::api::{AgentId, AgentState, ResultRecord, SessionId, StreamMessage, events::*};
 use tokio::sync::broadcast;
 
 impl Sessions {

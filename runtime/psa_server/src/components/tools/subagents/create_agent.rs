@@ -226,7 +226,7 @@ mod tests {
     use super::*;
     use crate::components::bundles::subagents::templates::{ModelChoice, model_label};
     use llm_api::api::parse_tool_arguments;
-    use psa_api::{AgentDefinitionId, ModelSelection};
+    use psa::api::{AgentDefinitionId, ModelSelection};
     use serde_json::Value;
 
     fn template(name: &str, models: &[ModelSelection], default: bool) -> ChildTemplate {

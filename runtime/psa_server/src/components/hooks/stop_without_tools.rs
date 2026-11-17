@@ -5,7 +5,7 @@ use crate::{
     components::cancellation::Cancellation,
 };
 use llm_api::api::{ContentBlock, Outcome, StopReason};
-use psa_api::{
+use psa::api::{
     AgentResult,
     events::{Event, EventType, MessageType},
 };

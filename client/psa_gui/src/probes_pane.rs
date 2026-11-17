@@ -1,7 +1,7 @@
 //! Sidebar pane listing probes and the sandboxes each manager probe runs.
 use crate::{app::Ui, reactive::use_ui_subscription, views::probe_label};
 use dioxus::prelude::*;
-use psa_api::{Probe, ProbeId, Sandbox};
+use psa::api::{Probe, ProbeId, Sandbox};
 use std::collections::HashSet;
 
 #[component]

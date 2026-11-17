@@ -11,7 +11,7 @@ use crate::{
 #[cfg(test)]
 use actors::UnboundedMailbox;
 use llm_api::api::{self, HistoryItemKind, ToolDefinition};
-use psa_api::events::ToolResult as ToolResultEvent;
+use psa::api::events::ToolResult as ToolResultEvent;
 use std::time::Duration;
 
 mod ask_question;
@@ -80,7 +80,7 @@ macro_rules! typed_tool_execute {
 
 pub(crate) use typed_tool_execute;
 
-pub use psa_api::ToolId;
+pub use psa::api::ToolId;
 
 /// Tool output content, independent of call IDs and event metadata.
 pub type ToolResult = Vec<llm_api::api::ContentBlock>;
@@ -123,7 +123,7 @@ pub struct ToolOutput {
     /// Private events committed atomically with this tool result.
     pub(crate) private_events: Vec<crate::db::PrivateEvent>,
     /// Agent message this call delivered; client-facing only.
-    pub(crate) delivery: Option<psa_api::events::AgentMessageLink>,
+    pub(crate) delivery: Option<psa::api::events::AgentMessageLink>,
 }
 
 impl ToolOutput {

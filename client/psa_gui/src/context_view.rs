@@ -8,7 +8,7 @@ use crate::{
 };
 use client_shared::*;
 use dioxus::prelude::*;
-use psa_api::events::{CompactionSummary, EventType};
+use psa::api::events::{CompactionSummary, EventType};
 use std::{collections::HashSet, rc::Rc};
 
 /// Items listed at a time beneath the diagram, which itself covers every item.
@@ -532,8 +532,8 @@ mod tests {
         let ui = use_signal(|| Ui::new(DesktopSettings::default()));
         use_context_provider(|| ui);
         let target = TranscriptTarget {
-            session_id: psa_api::SessionId(1),
-            agent_id: psa_api::AgentId(1),
+            session_id: psa::api::SessionId(1),
+            agent_id: psa::api::AgentId(1),
         };
         rsx! { TurnStep { glyph: "→", label: "Next turn", destination, target } }
     }
@@ -572,7 +572,7 @@ mod tests {
 
     #[test]
     fn expanded_items_show_what_the_model_was_sent() {
-        use psa_api::events::{Message, MessageType, ToolResult};
+        use psa::api::events::{Message, MessageType, ToolResult};
 
         let html = render_expanded_item(EventType::Message(Message::text(
             MessageType::Human,

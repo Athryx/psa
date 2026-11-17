@@ -1,5 +1,5 @@
 //! Ephemeral runtime requests for client input, shared by HTTP and event streams.
-use crate::{AgentId, SessionId};
+use crate::api::{AgentId, SessionId};
 use serde::{Deserialize, Serialize};
 
 /// Unique identifier for a pending runtime client query.

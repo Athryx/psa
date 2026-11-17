@@ -8,7 +8,7 @@ use crate::{
     session_filter::{ProbeOption, build_probe_groups, build_probe_option, check_mark},
 };
 use dioxus::prelude::*;
-use psa_api::ProbeId;
+use psa::api::ProbeId;
 
 fn is_probe_online(state: &Ui, id: ProbeId) -> bool {
     state

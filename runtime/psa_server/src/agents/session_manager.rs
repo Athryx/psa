@@ -20,7 +20,7 @@ use crate::{
     sessions::{Session, SessionId},
 };
 use actors::Mailbox;
-use psa_api::{
+use psa::api::{
     AgentCommand, AgentRequest, CommandDelivery, CommandResult, MessageDelivery, RequestAccepted,
     StreamMessage,
     events::{AgentMessageLink, CommandRecord, EventId, EventType, Log, MessageType},
@@ -171,7 +171,7 @@ pub(crate) struct QueuedRequest {
     pub delivery: MessageDelivery,
     pub content: Vec<llm_api::api::ContentBlock>,
     pub message_type: MessageType,
-    pub source: Option<psa_api::events::AgentMessageLink>,
+    pub source: Option<psa::api::events::AgentMessageLink>,
     pub allow_restart: bool,
 }
 
@@ -282,7 +282,7 @@ pub(crate) enum ManagerCommand {
     RunCommand {
         session: SessionId,
         agent: AgentId,
-        request: psa_api::RunCommand,
+        request: psa::api::RunCommand,
         #[reply]
         reply: oneshot::Sender<Result<oneshot::Receiver<CommandResult>, RuntimeError>>,
     },
@@ -597,7 +597,7 @@ impl SessionManager {
         let mut cursor = self.db.cursor().await?;
         let snapshot = cursor.require_agent_session(session, agent).await?;
         cursor.rollback().await?;
-        let run_id = psa_api::probes::Uuid::new_v4().to_string();
+        let run_id = psa::api::probes::Uuid::new_v4().to_string();
         self.runs.insert(
             agent,
             ActiveRun {
@@ -687,8 +687,8 @@ impl SessionManager {
                     }
                     EventType::Result(result) => {
                         summary.final_text = Some(match result {
-                            psa_api::AgentResult::Text(text) => text,
-                            psa_api::AgentResult::Json(value) => value.to_string(),
+                            psa::api::AgentResult::Text(text) => text,
+                            psa::api::AgentResult::Json(value) => value.to_string(),
                         });
                         summary.inference_outcome = None;
                     }
@@ -953,7 +953,7 @@ impl SessionManager {
                     let _ = worker.controls.interrupt();
                 }
                 return Ok(RequestAccepted {
-                    request_id: psa_api::probes::Uuid::new_v4().to_string(),
+                    request_id: psa::api::probes::Uuid::new_v4().to_string(),
                 });
             }
         };
@@ -1008,7 +1008,7 @@ impl SessionManager {
         &mut self,
         session: SessionId,
         agent: AgentId,
-        request: psa_api::RunCommand,
+        request: psa::api::RunCommand,
     ) -> Result<oneshot::Receiver<CommandResult>, RuntimeError> {
         if self.shutting_down {
             return Err(RuntimeError::Unavailable);
@@ -1136,7 +1136,7 @@ impl SessionManager {
             .definition()
             .bundles
             .iter()
-            .any(|bundle| bundle.id() == psa_api::BundleId::Subagents);
+            .any(|bundle| bundle.id() == psa::api::BundleId::Subagents);
         if let Some(parent) = agent.subagent_parent_id {
             let parent = self.sessions.get_agent(agent.session_id, parent).await?;
             let definition = self
@@ -1146,7 +1146,7 @@ impl SessionManager {
             needs_subagents |= definition
                 .bundles
                 .iter()
-                .any(|bundle| bundle.id() == psa_api::BundleId::Subagents);
+                .any(|bundle| bundle.id() == psa::api::BundleId::Subagents);
         }
         let resources = needs_subagents.then(|| self.ensure_session_resources(agent.session_id));
 

@@ -2,7 +2,7 @@ use super::{
     DatabaseCursor, DbError,
     schema::{decode_integer, encode_integer},
 };
-use psa_api::{AgentDefinition, AgentDefinitionId, AgentModel, BundleConfig, HookConfigs};
+use psa::api::{AgentDefinition, AgentDefinitionId, AgentModel, BundleConfig, HookConfigs};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

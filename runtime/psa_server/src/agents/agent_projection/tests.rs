@@ -92,8 +92,8 @@ fn durable_results_complete_the_run_without_entering_model_history() {
         .prepare_request(RequestConfig::default())
         .unwrap();
     for value in [
-        psa_api::AgentResult::Text("artifact".into()),
-        psa_api::AgentResult::Json(serde_json::json!({"artifact":true})),
+        psa::api::AgentResult::Text("artifact".into()),
+        psa::api::AgentResult::Json(serde_json::json!({"artifact":true})),
     ] {
         let mut transcript = base.clone();
         transcript.push(EventType::Result(value));

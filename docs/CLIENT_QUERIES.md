@@ -7,8 +7,8 @@ pending-response registry:
 let response = context.query_client(query, &mut cancellation).await?;
 ```
 
-`query` is `psa_api::ClientQuery`, and the result is
-`Result<psa_api::ClientQueryResponse, ClientQueryError>`. Context supplies the
+`query` is `psa::api::ClientQuery`, and the result is
+`Result<psa::api::ClientQueryResponse, ClientQueryError>`. Context supplies the
 invocation's session and agent IDs. This capability also works in offline-probe
 lifecycle hooks. It does not require `Agent.interactive`; that field remains
 metadata rather than an implicit permission or UI-availability gate.
@@ -113,4 +113,4 @@ As with the rest of the HTTP API, this endpoint requires the server's
 `[psa].client_key` as a bearer token. It does not add per-client authorization or
 an exclusive-controller/claim protocol. Any authenticated client with access to
 the correctly scoped endpoint may submit the first valid answer.
-Wire examples and error codes are in `psa_api/API_OVERVIEW.md`.
+Wire examples and error codes are in `lib/psa/API_OVERVIEW.md`.

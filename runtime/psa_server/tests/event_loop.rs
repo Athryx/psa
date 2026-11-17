@@ -24,7 +24,7 @@ use llm_api::{
     api::{self, OpenAiCompletions, OpenAiCompletionsConfig, Provider},
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
-use psa_api::{self as wire, AgentRequest, AgentState, MessageDelivery, StreamMessage, events::*};
+use psa::api::{self as wire, AgentRequest, AgentState, MessageDelivery, StreamMessage, events::*};
 use psa_server::db::NewEvent;
 use psa_server::{
     agents::{
@@ -237,7 +237,7 @@ impl Harness {
 
         let client = wire::Client::new(&format!("http://{address}"), "test-client-key").unwrap();
         let mut default = agent_config("default");
-        default.bundles = vec![psa_api::BundleConfig::Noop];
+        default.bundles = vec![psa::api::BundleConfig::Noop];
         default.hooks = wire::HookConfigs {
             agent_create: vec![
                 wire::HookConfig::DefaultStartup,
@@ -281,7 +281,7 @@ impl Harness {
             .create_session(&wire::CreateSession {
                 decision_model: None,
                 model_config: Some(model()),
-                probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+                probe_id: psa::api::ProbeId(psa::api::probes::Uuid::nil()),
                 project_id: None,
                 name: "session".into(),
                 working_directory: "/work".into(),
@@ -540,7 +540,7 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
     let mut request = agent_config("custom");
     request.description = "An HTTP snapshot fixture".into();
     request.selectable = true;
-    request.bundles = vec![psa_api::BundleConfig::Noop];
+    request.bundles = vec![psa::api::BundleConfig::Noop];
     request.hooks = wire::HookConfigs {
         agent_create: vec![
             wire::HookConfig::Noop,
@@ -964,7 +964,7 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
     ] {
         let definition = harness
             .upsert_config(wire::AgentConfig {
-                bundles: vec![psa_api::BundleConfig::Noop],
+                bundles: vec![psa::api::BundleConfig::Noop],
                 hooks: wire::HookConfigs {
                     agent_create: hooks,
                     ..Default::default()
@@ -1502,7 +1502,7 @@ async fn http_tools_hooks_usage_streaming_and_reconnect() {
         .create_session(&wire::CreateSession {
             decision_model: None,
             model_config: Some(model()),
-            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            probe_id: psa::api::ProbeId(psa::api::probes::Uuid::nil()),
             project_id: None,
             name: "other".into(),
             working_directory: "/other".into(),
@@ -1656,7 +1656,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
         .create_session(NewSession {
             decision_model: None,
             model_config: model(),
-            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            probe_id: psa::api::ProbeId(psa::api::probes::Uuid::nil()),
             project_id: None,
             name: "root".into(),
             working_directory: "/work".into(),
@@ -1670,7 +1670,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "agent".into(),
             },
         )
@@ -1835,7 +1835,7 @@ async fn persistence_failure_does_not_mutate_worker_memory() {
         .create_session(NewSession {
             decision_model: None,
             model_config: model(),
-            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            probe_id: psa::api::ProbeId(psa::api::probes::Uuid::nil()),
             project_id: None,
             name: "root".into(),
             working_directory: "/work".into(),
@@ -1849,7 +1849,7 @@ async fn persistence_failure_does_not_mutate_worker_memory() {
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "agent".into(),
             },
         )

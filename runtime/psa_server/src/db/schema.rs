@@ -5,7 +5,7 @@ use crate::{
     agents::{Agent, AgentId, AgentState},
     sessions::{Session, SessionId},
 };
-use psa_api::events::EventId;
+use psa::api::events::EventId;
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 
@@ -26,7 +26,7 @@ pub(super) struct ProbeRow {
     pub last_connected_at: i64,
 }
 
-impl TryFrom<ProbeRow> for psa_api::Probe {
+impl TryFrom<ProbeRow> for psa::api::Probe {
     type Error = DbError;
 
     fn try_from(row: ProbeRow) -> Result<Self, DbError> {
@@ -79,11 +79,11 @@ impl TryFrom<SessionRow> for Session {
                 .as_deref()
                 .map(serde_json::from_str)
                 .transpose()?,
-            probe_id: psa_api::ProbeId(
-                psa_api::probes::Uuid::parse_str(&row.probe_id)
+            probe_id: psa::api::ProbeId(
+                psa::api::probes::Uuid::parse_str(&row.probe_id)
                     .map_err(|e| DbError::Corrupt(e.to_string()))?,
             ),
-            project_id: row.project_id.map(psa_api::ProjectId),
+            project_id: row.project_id.map(psa::api::ProjectId),
             created_at: decode_time(row.created_at_us)?,
             updated_at: decode_time(row.updated_at_us)?,
         })
@@ -114,7 +114,7 @@ impl TryFrom<AgentRow> for Agent {
         Ok(Self {
             id: AgentId(decode_integer(row.id)?),
             session_id: SessionId(decode_integer(row.session_id)?),
-            definition_id: psa_api::AgentDefinitionId(decode_integer(row.definition_id)?),
+            definition_id: psa::api::AgentDefinitionId(decode_integer(row.definition_id)?),
             parent_id: row
                 .parent_agent_id
                 .map(decode_integer)

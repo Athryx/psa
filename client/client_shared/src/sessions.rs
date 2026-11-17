@@ -1,4 +1,4 @@
-use psa_api::{GlobalStreamMessage, ProbeId, Session, SessionFilter, SessionId, SessionsPage};
+use psa::api::{GlobalStreamMessage, ProbeId, Session, SessionFilter, SessionId, SessionsPage};
 use std::{collections::HashMap, path::PathBuf};
 #[derive(Debug, Clone)]
 pub struct SessionGroup {

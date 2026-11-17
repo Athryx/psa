@@ -1,7 +1,7 @@
 use super::{Hook, HookError};
 use crate::db::NewEvent;
 use crate::{agents::agent_context::AgentContext, components::cancellation::Cancellation, prompts};
-use psa_api::events::{EventType, Message};
+use psa::api::events::{EventType, Message};
 use std::time::Duration;
 
 /// Initializes a new root agent from its pinned definition and session snapshot.

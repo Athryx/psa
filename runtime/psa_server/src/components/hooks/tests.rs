@@ -1,6 +1,6 @@
 use super::{HookKind, Hooks};
 use crate::components::tools::{Edit, Noop, Read, Tool, ToolKind, Write, tool_definition};
-use psa_api::{HookConfig, HookConfigs, ToolId};
+use psa::api::{HookConfig, HookConfigs, ToolId};
 
 #[test]
 fn hook_construction_preserves_configured_order_and_empty_lists() {

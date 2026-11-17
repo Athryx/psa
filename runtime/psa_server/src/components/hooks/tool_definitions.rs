@@ -9,7 +9,7 @@ use crate::{
     prompts,
 };
 use llm_api::api::ToolDefinition as ApiToolDefinition;
-use psa_api::{
+use psa::api::{
     ToolId,
     events::{EventType, Message, ToolDefinition},
 };

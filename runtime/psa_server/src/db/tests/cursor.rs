@@ -6,7 +6,7 @@ use crate::{
     sessions::{ForkPoint, NewSession, SessionFork, SessionUpdate},
 };
 use llm_api::api::{Outcome, Usage};
-use psa_api::events::*;
+use psa::api::events::*;
 use std::time::Duration;
 
 #[tokio::test]
@@ -17,7 +17,7 @@ async fn commit_persists_multiple_operations_together() {
         .create_session(NewSession {
             decision_model: None,
             model_config: crate::test_support::model_config(),
-            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            probe_id: psa::api::ProbeId(psa::api::probes::Uuid::nil()),
             project_id: None,
             name: "atomic setup".into(),
             working_directory: "/work".into(),
@@ -31,7 +31,7 @@ async fn commit_persists_multiple_operations_together() {
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "main".into(),
             },
         )
@@ -119,7 +119,7 @@ async fn explicit_rollback_and_drop_discard_all_cursor_changes() {
                     subagent_parent_id: None,
                     interactive: false,
                     hidden: false,
-                    definition_id: psa_api::AgentDefinitionId(1),
+                    definition_id: psa::api::AgentDefinitionId(1),
                     name: "uncommitted".into(),
                 },
             )

@@ -168,14 +168,14 @@ stdout and stderr through `next_event()`.
 ```rust,ignore
 let handle = registry.handle(probe_id).await?;
 let mut child = handle.spawn(
-    psa_api::probes::Command::new("rg", "/work").arg("TODO")
+    psa::api::probes::Command::new("rg", "/work").arg("TODO")
 ).await?;
 loop {
     let event = child.next_event().await?;
     match event {
-        psa_api::probes::Event::Data { stream: 1, bytes } => { /* stdout */ }
-        psa_api::probes::Event::Data { stream: 2, bytes } => { /* stderr */ }
-        psa_api::probes::Event::Complete { status } => break,
+        psa::api::probes::Event::Data { stream: 1, bytes } => { /* stdout */ }
+        psa::api::probes::Event::Data { stream: 2, bytes } => { /* stderr */ }
+        psa::api::probes::Event::Complete { status } => break,
         _ => {}
     }
 }

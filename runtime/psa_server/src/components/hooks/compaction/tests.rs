@@ -1,6 +1,6 @@
 use super::*;
 use crate::agents::agent_projection::AgentProjection;
-use psa_api::{
+use psa::api::{
     AgentId,
     events::{EventId, Message},
 };
@@ -20,7 +20,7 @@ fn events(kinds: Vec<EventType>) -> Vec<Event> {
 
 #[test]
 fn summaries_require_complete_nonempty_text_not_partial_results() {
-    use psa_api::events::InferenceResultEnd;
+    use psa::api::events::InferenceResultEnd;
     for (outcome, accepted) in [
         (
             Outcome::Completed {
@@ -68,13 +68,13 @@ fn summaries_require_complete_nonempty_text_not_partial_results() {
 #[test]
 fn replacement_replays_system_prompts_tools_summary_and_tail_without_old_context() {
     let model = crate::test_support::model_config();
-    let tool = crate::components::tools::tool_definition(psa_api::ToolId::Noop).unwrap();
+    let tool = crate::components::tools::tool_definition(psa::api::ToolId::Noop).unwrap();
     let original = events(vec![
         EventType::NewContext,
         EventType::Model(model.clone()),
         EventType::Message(Message::text(MessageType::System, "system one")),
-        EventType::ToolDefinition(psa_api::events::ToolDefinition {
-            id: psa_api::ToolId::Noop,
+        EventType::ToolDefinition(psa::api::events::ToolDefinition {
+            id: psa::api::ToolId::Noop,
             definition: tool,
         }),
         EventType::Message(Message::text(MessageType::Human, "old".repeat(100))),

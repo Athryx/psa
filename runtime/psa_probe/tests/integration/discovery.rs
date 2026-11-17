@@ -1,5 +1,5 @@
 use super::*;
-use psa_api::{ConfigGroup, ConfigId, NewSkill, Skill, SkillId, SkillLocation};
+use psa::api::{ConfigGroup, ConfigId, NewSkill, Skill, SkillId, SkillLocation};
 use psa_server::config_registry::ConfigRegistry;
 
 #[path = "discovery_lifecycle.rs"]

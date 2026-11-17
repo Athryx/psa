@@ -1,6 +1,6 @@
 use super::{DiscoveryError, normalize_absolute};
 use crate::probes::ProbeHandle;
-use psa_api::probes::{CHUNK_SIZE, Event};
+use psa::api::probes::{CHUNK_SIZE, Event};
 use psa_shared::probe_transport::CallSender;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};

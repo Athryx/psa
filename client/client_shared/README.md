@@ -1,6 +1,6 @@
 # client_shared
 
-UI-independent state for PSA clients. Depends on the thin `psa_api` client, not a
+UI-independent state for PSA clients. Depends on the thin `psa` client, not a
 UI framework or async runtime. The GUI owns cancellation and async subscription
 tasks; reducers have no blocking I/O.
 

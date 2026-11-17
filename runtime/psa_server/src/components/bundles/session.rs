@@ -8,7 +8,7 @@ use crate::agents::{
     lifecycle::{AgentLifecycleEvent, SessionLifecycleHook},
     sessions::Sessions,
 };
-use psa_api::SessionId;
+use psa::api::SessionId;
 
 #[derive(Clone)]
 pub struct SessionBundleHandle {

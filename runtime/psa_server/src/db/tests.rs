@@ -10,7 +10,7 @@ use llm_api::{
     api::{self, HistoryItem, HistoryItemKind, HistoryItemMetadata, Outcome, StopReason, Usage},
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
-use psa_api::events::*;
+use psa::api::events::*;
 use sqlx::SqlSafeStr;
 use std::time::Duration;
 
@@ -40,7 +40,7 @@ async fn fixture() -> (tempfile::TempDir, Database, Session, Agent) {
         .create_session(NewSession {
             decision_model: None,
             model_config: crate::test_support::model_config(),
-            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            probe_id: psa::api::ProbeId(psa::api::probes::Uuid::nil()),
             project_id: None,
             name: "test".into(),
             working_directory: "/work".into(),
@@ -54,7 +54,7 @@ async fn fixture() -> (tempfile::TempDir, Database, Session, Agent) {
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "main".into(),
             },
         )
@@ -488,7 +488,7 @@ async fn forks_inherit_state_at_the_selected_event_boundary() {
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "empty".into(),
             },
         )
@@ -627,7 +627,7 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "worker".into(),
             },
         )
@@ -640,7 +640,7 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "empty".into(),
             },
         )
@@ -659,7 +659,7 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "too late".into(),
             },
         )
@@ -807,7 +807,7 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
         .create_session(NewSession {
             decision_model: None,
             model_config: crate::test_support::model_config(),
-            probe_id: psa_api::ProbeId(psa_api::probes::Uuid::nil()),
+            probe_id: psa::api::ProbeId(psa::api::probes::Uuid::nil()),
             project_id: None,
             name: "blank".into(),
             working_directory: "/".into(),
@@ -843,7 +843,7 @@ async fn concurrent_writers_reserve_unique_positions_and_sequences() {
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "other".into(),
             },
         )

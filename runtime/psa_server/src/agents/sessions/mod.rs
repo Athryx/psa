@@ -14,7 +14,7 @@ use super::{
     session_manager::{ManagerClient, ManagerCommand, RuntimeError},
 };
 use crate::{components::cancellation::Cancellation, db::Database, sessions};
-use psa_api::{self as api, AgentId, SessionId};
+use psa::api::{self as api, AgentId, SessionId};
 
 mod configurations;
 mod results;
@@ -619,7 +619,7 @@ impl Sessions {
 mod tests {
     use super::*;
     use crate::{agents::session_manager::ManagerCommand, db::DbError};
-    use psa_api::events::{EventId, EventType, StatusChange};
+    use psa::api::events::{EventId, EventType, StatusChange};
     use std::time::Duration;
 
     pub(super) struct Fixture {

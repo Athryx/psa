@@ -1,7 +1,7 @@
 //! Remote filesystem plumbing shared by the file tools.
 
 use crate::{probes::ProbeHandle, prompts};
-use psa_api::{
+use psa::api::{
     ProbeId,
     probes::{Command, Event, Stdio},
 };

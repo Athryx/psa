@@ -5,7 +5,7 @@ use crate::{
     db::{Database, DbError},
     sessions::{ForkPoint, SessionFork, SessionUpdate},
 };
-use psa_api::{AgentDefinitionId, BundleConfig, HookConfig, HookConfigs};
+use psa::api::{AgentDefinitionId, BundleConfig, HookConfig, HookConfigs};
 
 #[tokio::test]
 async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
@@ -82,7 +82,7 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
     assert_eq!(next.version, 2);
     assert!(next.bundles.is_empty());
     assert!(next.hooks.agent_create.is_empty());
-    assert_eq!(next.model, psa_api::AgentModel::Global);
+    assert_eq!(next.model, psa::api::AgentModel::Global);
     assert!(next.hooks.before_request.is_empty());
     assert_eq!(
         serde_json::to_value(cursor.get_agent_definition(first.id).await.unwrap()).unwrap(),

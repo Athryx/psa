@@ -14,7 +14,7 @@ use crate::{
         ForkPoint, ForkedSession, NewSession, Session, SessionFork, SessionId, SessionUpdate,
     },
 };
-use psa_api::events::EventId;
+use psa::api::events::EventId;
 use sqlx::{Acquire, SqliteConnection};
 
 impl DatabaseCursor {
@@ -81,11 +81,11 @@ impl DatabaseCursor {
     }
 
     /// Summary keyset pages; runtime SQL avoids adding prepared-cache entries.
-    /// Filter semantics must stay identical to [`psa_api::SessionFilter::matches`]:
+    /// Filter semantics must stay identical to [`psa::api::SessionFilter::matches`]:
     /// SQLite's `lower` folds only ASCII, like the Rust comparison.
     pub async fn query_sessions(
         &mut self,
-        query: &psa_api::SessionsQuery,
+        query: &psa::api::SessionsQuery,
         before: Option<(i64, i64)>,
     ) -> Result<Vec<Session>, DbError> {
         use sqlx::Row;
@@ -134,13 +134,13 @@ impl DatabaseCursor {
     }
 
     /// Distinct projects of existing sessions, sorted.
-    pub async fn list_projects(&mut self) -> Result<Vec<psa_api::ProjectId>, DbError> {
+    pub async fn list_projects(&mut self) -> Result<Vec<psa::api::ProjectId>, DbError> {
         let rows = sqlx::query_scalar!(
             "SELECT DISTINCT project_id AS \"project_id!\" FROM sessions WHERE project_id IS NOT NULL ORDER BY project_id"
         )
         .fetch_all(self.connection())
         .await?;
-        Ok(rows.into_iter().map(psa_api::ProjectId).collect())
+        Ok(rows.into_iter().map(psa::api::ProjectId).collect())
     }
 
     pub async fn update_session(

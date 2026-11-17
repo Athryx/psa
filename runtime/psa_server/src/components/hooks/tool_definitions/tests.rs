@@ -1,7 +1,7 @@
 use super::*;
 use crate::components::tools::tool_definition;
 use llm_api::api::ContentBlock;
-use psa_api::events::MessageType;
+use psa::api::events::MessageType;
 
 fn system_text(event: &NewEvent) -> &str {
     let EventType::Message(message) = &event.kind else {

@@ -1,5 +1,5 @@
 use super::*;
-use psa_api::{HookConfig, HookConfigs};
+use psa::api::{HookConfig, HookConfigs};
 
 fn configured_defaults() -> AgentDefaults {
     AgentDefaults {

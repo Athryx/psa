@@ -1,5 +1,5 @@
 use super::{DatabaseCursor, DbError, schema::SandboxRow};
-use psa_api::{Mount, ProbeId};
+use psa::api::{Mount, ProbeId};
 use time::OffsetDateTime;
 
 /// Stored sandbox record; live state is merged in from the manager probe.
@@ -129,7 +129,7 @@ impl DatabaseCursor {
 mod tests {
     use super::*;
     use crate::db::Database;
-    use psa_api::{ProbeMetadata, probes::Uuid};
+    use psa::api::{ProbeMetadata, probes::Uuid};
 
     fn manager() -> ProbeMetadata {
         ProbeMetadata {

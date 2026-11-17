@@ -12,7 +12,7 @@ async fn hidden_round_trips_reloads_and_is_inherited_by_forks() {
                 session.id,
                 NewAgent {
                     subagent_parent_id: None,
-                    definition_id: psa_api::AgentDefinitionId(1),
+                    definition_id: psa::api::AgentDefinitionId(1),
                     name: format!("hidden-{hidden}"),
                     interactive: false,
                     hidden,

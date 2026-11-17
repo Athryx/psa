@@ -13,7 +13,7 @@ use crate::{
     sessions::NewSession,
 };
 use llm_api::api::ContentBlock;
-use psa_api::{AgentRequest, RequestAccepted};
+use psa::api::{AgentRequest, RequestAccepted};
 use std::{future::Future, pin::Pin};
 
 const WAIT: Duration = Duration::from_secs(2);

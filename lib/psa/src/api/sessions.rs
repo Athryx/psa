@@ -1,6 +1,6 @@
 //! Sessions, projects, forks, and session listing.
 
-use crate::{Agent, AgentId, events::EventId};
+use crate::api::{Agent, AgentId, events::EventId};
 use llm_api::providers::{Model, ModelConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ pub struct SessionId(pub u64);
 ///
 /// Sessions without a project are global, which is where interactive clients
 /// create sessions. API clients typically reuse the name of their
-/// [`crate::ConfigGroup::Custom`] namespace so sessions and configurations line up.
+/// [`crate::api::ConfigGroup::Custom`] namespace so sessions and configurations line up.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ProjectId(pub String);
@@ -55,7 +55,7 @@ pub struct Session {
     /// Working directory on the session's probe, which may be offline.
     pub working_directory: PathBuf,
     /// Probe providing the session's execution environment.
-    pub probe_id: crate::ProbeId,
+    pub probe_id: crate::api::ProbeId,
     /// Project the session belongs to; `None` for global sessions.
     pub project_id: Option<ProjectId>,
     /// Default model configuration for agents without a pinned model.
@@ -82,7 +82,7 @@ pub struct CreateSession {
     /// Working directory on the selected probe.
     pub working_directory: PathBuf,
     /// Probe that provides the execution environment.
-    pub probe_id: crate::ProbeId,
+    pub probe_id: crate::api::ProbeId,
     /// Project to create the session in; omission or null creates a global session.
     /// Fixed for the session's lifetime and inherited by its forks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -157,7 +157,7 @@ pub struct SessionFilter {
     /// Substring of the session name, compared ignoring ASCII case; empty matches all.
     pub name_contains: String,
     /// Sessions on any of these probes; empty matches every probe.
-    pub probe_ids: Vec<crate::ProbeId>,
+    pub probe_ids: Vec<crate::api::ProbeId>,
     /// Sessions in any of these projects, with `None` selecting global sessions;
     /// empty matches every project.
     pub project_ids: Vec<Option<ProjectId>>,

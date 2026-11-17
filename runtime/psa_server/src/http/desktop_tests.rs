@@ -6,7 +6,7 @@ use crate::{
     sessions,
 };
 use futures_util::StreamExt;
-use psa_api::events::Log;
+use psa::api::events::Log;
 
 pub(super) async fn fixture() -> (
     tempfile::TempDir,
@@ -62,7 +62,7 @@ pub(super) async fn fixture() -> (
         runtime: runtime.handle.clone(),
         accepting: Arc::new(AtomicBool::new(true)),
         client_key: "test-client-key".into(),
-        client_config: psa_api::ClientConfig {
+        client_config: psa::api::ClientConfig {
             default_agent_name: "root".into(),
             default_sandbox_image: None,
         },

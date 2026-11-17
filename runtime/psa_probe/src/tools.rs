@@ -23,7 +23,7 @@ pub async fn ensure_tools(data_dir: &Path) -> std::io::Result<()> {
         };
 
         if !matches {
-            let temporary = bin.join(format!(".{name}-{}", psa_api::probes::Uuid::new_v4()));
+            let temporary = bin.join(format!(".{name}-{}", psa::api::probes::Uuid::new_v4()));
             let result = async {
                 let mut file = tokio::fs::OpenOptions::new()
                     .create_new(true)

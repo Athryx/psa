@@ -30,8 +30,8 @@ fn pending(id: usize) -> PendingEvent {
         revision: 1,
         session_id: SessionId(1),
         agent_id: AgentId(1),
-        kind: psa_api::events::EventType::Message(psa_api::events::Message::text(
-            psa_api::events::MessageType::Human,
+        kind: psa::api::events::EventType::Message(psa::api::events::Message::text(
+            psa::api::events::MessageType::Human,
             format!("row-{id}"),
         )),
     }
@@ -178,7 +178,7 @@ fn RenderFixture(counters: RenderCounters) -> Element {
         button { onclick: move |_| { ui.write().drafts.insert(target, "unrelated composer draft".into()); }, "Draft" }
         button { onclick: move |_| {
             let mut event = pending(999); event.revision = 2;
-            event.kind = psa_api::events::EventType::Message(psa_api::events::Message::text(psa_api::events::MessageType::Human, "revised-row"));
+            event.kind = psa::api::events::EventType::Message(psa::api::events::Message::text(psa::api::events::MessageType::Human, "revised-row"));
             ui.write().transcripts.get_mut(&target).unwrap().apply(StreamMessage::Upsert { pending: event });
         }, "Revise" }
         button { onclick: move |_| active.toggle(), "Visibility" }
@@ -325,8 +325,8 @@ async fn mounted_dom_never_grows_after_ten_thousand_additional_events() {
 #[test]
 fn oversized_collapsed_system_prompt_does_not_build_its_body() {
     let content = format!("large-system-secret{}", "x".repeat(LAZY_DETAIL_BYTES));
-    let kind = psa_api::events::EventType::Message(psa_api::events::Message::text(
-        psa_api::events::MessageType::System,
+    let kind = psa::api::events::EventType::Message(psa::api::events::Message::text(
+        psa::api::events::MessageType::System,
         content,
     ));
     let html = dioxus_ssr::render_element(
@@ -342,8 +342,8 @@ fn ExpansionPane() -> Element {
     let mut mounted = use_signal(|| true);
     let payload = use_hook(|| {
         let mut event = pending(1);
-        event.kind = psa_api::events::EventType::Message(psa_api::events::Message::text(
-            psa_api::events::MessageType::System,
+        event.kind = psa::api::events::EventType::Message(psa::api::events::Message::text(
+            psa::api::events::MessageType::System,
             format!("expanded-secret{}", "x".repeat(LAZY_DETAIL_BYTES)),
         ));
         RowPayload::Pending(std::sync::Arc::new(event))
@@ -387,7 +387,7 @@ async fn recycled_details_remember_expansion_independently_in_duplicate_panes() 
 async fn large_details_materialize_on_expansion_and_unmount_on_collapse() {
     dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
     fn root() -> Element {
-        let kind = psa_api::events::EventType::Result(AgentResult::Json(
+        let kind = psa::api::events::EventType::Result(AgentResult::Json(
             serde_json::json!({ "large-secret": "x".repeat(LAZY_DETAIL_BYTES * 4) }),
         ));
         rsx! { EventContent { kind: EventKind::Owned(Shared::new(kind)), result: None, preferences: RowPreferences::from(&UiPreferences::default()) } }

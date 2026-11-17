@@ -12,8 +12,8 @@ use crate::{
     db::{Database, DbError},
     probes::ProbeHandle,
 };
-use psa_api::probes::{DirectoryEntry, Event};
-use psa_api::{
+use psa::api::probes::{DirectoryEntry, Event};
+use psa::api::{
     AgentConfig, AgentConfigInput, BundleConfig, ConfigGroup, ConfigId, HookOverrides,
     IncludedItems, ModelSelection, ProbeId, ProbeMetadata, Skill, SkillId, SkillLocation,
 };

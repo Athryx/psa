@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use llm_api::api::ToolDefinition;
-use psa_api::ToolId;
+use psa::api::ToolId;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::{

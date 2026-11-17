@@ -136,9 +136,9 @@ fn classifier_entries_become_decision_models_without_reasoning() {
     .unwrap();
 
     assert_eq!(models.len(), 2);
-    assert_eq!(models[0].kind, psa_api::ModelKind::Chat);
+    assert_eq!(models[0].kind, psa::api::ModelKind::Chat);
     let decider = &models[1];
-    assert_eq!(decider.kind, psa_api::ModelKind::Decision);
+    assert_eq!(decider.kind, psa::api::ModelKind::Decision);
     assert_eq!(decider.name, "Decider");
     assert_eq!(decider.context_window, Some(65536));
     assert_eq!(decider.max_output_tokens, None);

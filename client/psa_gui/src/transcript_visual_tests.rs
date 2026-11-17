@@ -9,7 +9,7 @@ fn ReasoningRoot(mode: ReasoningDisplay) -> Element {
         Ui::new(settings)
     });
     use_context_provider(|| ui);
-    let kind = psa_api::events::EventType::Thinking(psa_api::events::Thinking {
+    let kind = psa::api::events::EventType::Thinking(psa::api::events::Thinking {
         contents: llm_api::api::Reasoning {
             summary: vec!["First thought".into(), "Second thought".into()],
             opaque_state: Some(llm_api::api::ProviderData {
@@ -66,12 +66,12 @@ fn HiddenRowSpacingRoot() -> Element {
     });
     use_context_provider(|| ui);
     let message = |text: &str| {
-        psa_api::events::EventType::Message(psa_api::events::Message::text(
-            psa_api::events::MessageType::Agent,
+        psa::api::events::EventType::Message(psa::api::events::Message::text(
+            psa::api::events::MessageType::Agent,
             text,
         ))
     };
-    let thinking = psa_api::events::EventType::Thinking(psa_api::events::Thinking {
+    let thinking = psa::api::events::EventType::Thinking(psa::api::events::Thinking {
         contents: llm_api::api::Reasoning {
             summary: vec!["hidden thought".into()],
             opaque_state: None,
@@ -103,14 +103,14 @@ fn hidden_rows_do_not_add_spacing_elements() {
 
 #[test]
 fn tool_calls_render_kwargs_and_separate_highlighted_code() {
-    let call = psa_api::events::ToolCall {
+    let call = psa::api::events::ToolCall {
         call_id: "call".into(),
         tool_name: "bash".into(),
         arguments: r#"{"command":"if true; then echo hi; fi", "yield_time_ms":10}"#.into(),
         metadata: Default::default(),
     };
     let html = dioxus_ssr::render_element(rsx! {
-        EventRow { kind: psa_api::events::EventType::ToolCall(call), provisional: false, results: Rc::new(HashMap::new()) }
+        EventRow { kind: psa::api::events::EventType::ToolCall(call), provisional: false, results: Rc::new(HashMap::new()) }
     });
     assert!(html.contains("yield_time_ms=10"), "{html}");
     assert!(
@@ -123,9 +123,9 @@ fn tool_calls_render_kwargs_and_separate_highlighted_code() {
 #[test]
 fn system_prompt_is_collapsed_and_shows_description() {
     let mut message =
-        psa_api::events::Message::text(psa_api::events::MessageType::System, "system body");
+        psa::api::events::Message::text(psa::api::events::MessageType::System, "system body");
     message.description = Some("base instructions".into());
-    let kind = psa_api::events::EventType::Message(message);
+    let kind = psa::api::events::EventType::Message(message);
     let html = dioxus_ssr::render_element(
         rsx! { EventRow { kind, provisional: false, results: Rc::new(HashMap::new()) } },
     );
@@ -141,8 +141,8 @@ fn system_prompt_is_collapsed_and_shows_description() {
     );
 }
 
-fn tool_call(id: &str, tool: &str, arguments: serde_json::Value) -> psa_api::events::EventType {
-    psa_api::events::EventType::ToolCall(psa_api::events::ToolCall {
+fn tool_call(id: &str, tool: &str, arguments: serde_json::Value) -> psa::api::events::EventType {
+    psa::api::events::EventType::ToolCall(psa::api::events::ToolCall {
         call_id: id.into(),
         tool_name: tool.into(),
         arguments: arguments.to_string(),
@@ -150,8 +150,8 @@ fn tool_call(id: &str, tool: &str, arguments: serde_json::Value) -> psa_api::eve
     })
 }
 
-fn tool_result(id: &str, error: bool) -> psa_api::events::EventType {
-    psa_api::events::EventType::ToolResult(psa_api::events::ToolResult {
+fn tool_result(id: &str, error: bool) -> psa::api::events::EventType {
+    psa::api::events::EventType::ToolResult(psa::api::events::ToolResult {
         delivery: None,
         call_id: id.into(),
         error,
@@ -160,13 +160,13 @@ fn tool_result(id: &str, error: bool) -> psa_api::events::EventType {
     })
 }
 
-fn message(role: psa_api::events::MessageType, text: &str) -> psa_api::events::EventType {
-    psa_api::events::EventType::Message(psa_api::events::Message::text(role, text))
+fn message(role: psa::api::events::MessageType, text: &str) -> psa::api::events::EventType {
+    psa::api::events::EventType::Message(psa::api::events::Message::text(role, text))
 }
 
 #[test]
 fn consecutive_like_rows_form_runs_per_agent_and_compact_rows_close_up() {
-    use psa_api::events::MessageType;
+    use psa::api::events::MessageType;
     let read = |id: &str| tool_call(id, "read", serde_json::json!({ "path": id }));
     let rows = [
         (AgentId(1), message(MessageType::System, "a")),
@@ -225,7 +225,7 @@ fn collapsed_code_calls_preview_their_source_and_report_status() {
         "bash",
         serde_json::json!({ "command": command, "yield_time_ms": 10 }),
     );
-    let render = |results: HashMap<String, psa_api::events::ToolResult>| {
+    let render = |results: HashMap<String, psa::api::events::ToolResult>| {
         dioxus_ssr::render_element(rsx! {
             EventRow { kind: call.clone(), provisional: false, results: Rc::new(results) }
         })
@@ -244,7 +244,7 @@ fn collapsed_code_calls_preview_their_source_and_report_status() {
     assert_eq!(summary.matches("echo more").count(), 2, "{html}");
     assert_eq!(body.matches("echo more").count(), 6, "{html}");
 
-    let psa_api::events::EventType::ToolResult(result) = tool_result("call", true) else {
+    let psa::api::events::EventType::ToolResult(result) = tool_result("call", true) else {
         unreachable!()
     };
     let html = render(HashMap::from([("call".to_owned(), result)]));
@@ -257,7 +257,7 @@ fn collapsed_code_calls_preview_their_source_and_report_status() {
 
 #[component]
 fn GroupedTranscriptFixture() -> Element {
-    use psa_api::events::MessageType;
+    use psa::api::events::MessageType;
     let tab = Tab {
         id: ViewId(1),
         target: TranscriptTarget {
@@ -348,8 +348,8 @@ fn transcript_groups_tool_runs_and_indexes_user_messages_beside_the_rows() {
 fn inference_end(
     input_tokens: Option<u64>,
     outcome: llm_api::api::Outcome,
-) -> psa_api::events::EventType {
-    psa_api::events::EventType::InferenceResultEnd(psa_api::events::InferenceResultEnd {
+) -> psa::api::events::EventType {
+    psa::api::events::EventType::InferenceResultEnd(psa::api::events::InferenceResultEnd {
         id: 1,
         outcome,
         usage: llm_api::api::Usage {
@@ -363,8 +363,8 @@ fn inference_end(
     })
 }
 
-fn inference_start(id: u64) -> psa_api::events::EventType {
-    psa_api::events::EventType::InferenceResultStart(psa_api::events::InferenceResultStart {
+fn inference_start(id: u64) -> psa::api::events::EventType {
+    psa::api::events::EventType::InferenceResultStart(psa::api::events::InferenceResultStart {
         id,
         model_config: llm_api::providers::ModelConfig {
             model: llm_api::providers::Model::new(
@@ -379,8 +379,8 @@ fn inference_start(id: u64) -> psa_api::events::EventType {
 }
 
 /// Give an inference end the ID of the inference it closes.
-fn paired_end(id: u64, mut end: psa_api::events::EventType) -> psa_api::events::EventType {
-    if let psa_api::events::EventType::InferenceResultEnd(end) = &mut end {
+fn paired_end(id: u64, mut end: psa::api::events::EventType) -> psa::api::events::EventType {
+    if let psa::api::events::EventType::InferenceResultEnd(end) = &mut end {
         end.id = id;
     }
     end
@@ -396,8 +396,8 @@ fn completed() -> llm_api::api::Outcome {
 #[component]
 fn DividerPreferenceRoot(
     display: TurnDividerDisplay,
-    kind: Shared<psa_api::events::EventType>,
-    end: Option<Shared<psa_api::events::EventType>>,
+    kind: Shared<psa::api::events::EventType>,
+    end: Option<Shared<psa::api::events::EventType>>,
 ) -> Element {
     let mut preferences = UiPreferences::default();
     preferences.turn_dividers = display;
@@ -413,7 +413,7 @@ fn DividerPreferenceRoot(
 #[test]
 fn turn_dividers_report_usage_and_follow_the_preference() {
     use TurnDividerDisplay::{Hidden, Labeled, Line};
-    let render = |display, kind, end: Option<psa_api::events::EventType>| {
+    let render = |display, kind, end: Option<psa::api::events::EventType>| {
         dioxus_ssr::render_element(rsx! {
             DividerPreferenceRoot { display, kind: Shared::new(kind), end: end.map(Shared::new) }
         })
@@ -470,7 +470,7 @@ fn turn_dividers_report_usage_and_follow_the_preference() {
 
 #[test]
 fn rows_beside_a_turn_divider_sit_nearer_and_runs_stop_at_it() {
-    use psa_api::events::MessageType;
+    use psa::api::events::MessageType;
     let read = |id: &str| tool_call(id, "read", serde_json::json!({ "path": id }));
     let rows = [
         (AgentId(1), read("1")),
@@ -519,7 +519,7 @@ fn rows_beside_a_turn_divider_sit_nearer_and_runs_stop_at_it() {
     );
 }
 
-fn committed(id: u64, kind: psa_api::events::EventType) -> EventEnvelope {
+fn committed(id: u64, kind: psa::api::events::EventType) -> EventEnvelope {
     serde_json::from_value(serde_json::json!({
         "session_id": 1, "agent_id": 1, "position": id,
         "event": {
@@ -532,7 +532,7 @@ fn committed(id: u64, kind: psa_api::events::EventType) -> EventEnvelope {
 
 #[component]
 fn TurnTranscriptFixture() -> Element {
-    use psa_api::events::MessageType;
+    use psa::api::events::MessageType;
     let tab = Tab {
         id: ViewId(1),
         target: TranscriptTarget {

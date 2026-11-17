@@ -40,7 +40,7 @@ use crate::{
     db::DbError,
 };
 use actors::UnboundedMailbox;
-pub use psa_api::{AgentCommand, CommandResult, HookConfig, HookConfigs};
+pub use psa::api::{AgentCommand, CommandResult, HookConfig, HookConfigs};
 use psa_shared::probe_transport::ProbeError;
 use std::time::Duration;
 

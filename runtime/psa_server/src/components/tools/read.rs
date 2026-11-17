@@ -7,7 +7,7 @@ use crate::{
     probes::ProbeHandle, prompts,
 };
 use llm_api::api::{ContentBlock, ImageBlock, MediaSource, ToolDefinition};
-use psa_api::probes::{Command, Event, Stdio};
+use psa::api::probes::{Command, Event, Stdio};
 use psa_shared::probe_transport::ProbeError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

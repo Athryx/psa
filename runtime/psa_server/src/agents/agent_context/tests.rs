@@ -25,7 +25,7 @@ use llm_api::{
     api::{self, Outcome, StopReason},
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
-use psa_api::StreamMessage;
+use psa::api::StreamMessage;
 use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
@@ -39,7 +39,7 @@ struct Fixture {
     _directory: tempfile::TempDir,
     database: crate::db::Database,
     publication: Publication,
-    client: psa_api::Client,
+    client: psa::api::Client,
     base: String,
     runtime: Runtime,
     probes: ProbeRegistry,
@@ -82,7 +82,7 @@ impl Fixture {
             runtime: runtime.handle.clone(),
             accepting: Arc::new(AtomicBool::new(true)),
             client_key: "test-client-key".into(),
-            client_config: psa_api::ClientConfig {
+            client_config: psa::api::ClientConfig {
                 default_agent_name: "root".into(),
                 default_sandbox_image: None,
             },
@@ -106,7 +106,7 @@ impl Fixture {
             _directory: directory,
             database,
             publication,
-            client: psa_api::Client::new(&format!("http://{address}"), "test-client-key").unwrap(),
+            client: psa::api::Client::new(&format!("http://{address}"), "test-client-key").unwrap(),
             base: format!("http://{address}"),
             runtime,
             probes,
@@ -140,7 +140,7 @@ impl Fixture {
                     subagent_parent_id: None,
                     interactive: false,
                     hidden: false,
-                    definition_id: psa_api::AgentDefinitionId(1),
+                    definition_id: psa::api::AgentDefinitionId(1),
                     name: "agent".into(),
                 },
             )
@@ -249,7 +249,7 @@ async fn trace_queries_match_database_and_bind_inherited_fork_history() {
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
-                definition_id: psa_api::AgentDefinitionId(1),
+                definition_id: psa::api::AgentDefinitionId(1),
                 name: "other".into(),
             },
         )
@@ -444,7 +444,7 @@ struct TraceTool {
 
 impl Tool for TraceTool {
     fn tool_definition(&self) -> api::ToolDefinition {
-        crate::components::tools::tool_definition(psa_api::ToolId::Noop).unwrap()
+        crate::components::tools::tool_definition(psa::api::ToolId::Noop).unwrap()
     }
 
     fn cancellation_timeout(&self) -> Duration {
@@ -829,14 +829,14 @@ async fn extra_system_prompt_hook_persists_verbatim_system_message_and_skips_emp
         " \n",
         "  Follow these extra instructions.\n<literal> & text\n",
     ] {
-        let hook_config = psa_api::HookConfig::ExtraSystemPrompt {
+        let hook_config = psa::api::HookConfig::ExtraSystemPrompt {
             prompt: prompt.into(),
         };
         let mut cursor = fixture.database.cursor().await.unwrap();
         let definition = cursor
             .create_agent_definition(crate::db::CreateAgentDefinition {
                 name: "extra prompt".into(),
-                hooks: psa_api::HookConfigs {
+                hooks: psa::api::HookConfigs {
                     agent_create: vec![hook_config.clone()],
                     ..Default::default()
                 },
@@ -1154,7 +1154,7 @@ async fn run_project_context(fixture: &Fixture, cwd: &str) -> Vec<Event> {
         .await
         .unwrap();
     let mut hook =
-        crate::components::hooks::HookKind::from_config(&psa_api::HookConfig::ProjectContext);
+        crate::components::hooks::HookKind::from_config(&psa::api::HookConfig::ProjectContext);
     let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
     let (_controls, mut controls) = actors::unbounded_channel();
     assert!(
@@ -1336,7 +1336,7 @@ async fn project_context_cancelled_before_discovery_saves_no_partial_prompt() {
         .await
         .unwrap();
     let mut hook =
-        crate::components::hooks::HookKind::from_config(&psa_api::HookConfig::ProjectContext);
+        crate::components::hooks::HookKind::from_config(&psa::api::HookConfig::ProjectContext);
     let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
     let (sender, cancellation) = Cancellation::channel();
     sender.send(()).unwrap();
@@ -1357,7 +1357,7 @@ async fn project_context_cancels_a_pending_remote_operation() {
         .await
         .unwrap();
     let mut hook =
-        crate::components::hooks::HookKind::from_config(&psa_api::HookConfig::ProjectContext);
+        crate::components::hooks::HookKind::from_config(&psa::api::HookConfig::ProjectContext);
     let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
     let (sender, cancellation) = Cancellation::channel();
     {
@@ -1436,7 +1436,7 @@ async fn project_context_disconnected_probe_is_fatal_and_saves_no_prompt() {
     } = fixture;
     probe.disconnect(&probes).await;
     let mut hook =
-        crate::components::hooks::HookKind::from_config(&psa_api::HookConfig::ProjectContext);
+        crate::components::hooks::HookKind::from_config(&psa::api::HookConfig::ProjectContext);
     let mut context = AgentContext::new(&mut state, &probe_handle, &runtime.handle);
     let (_sender, cancellation) = Cancellation::channel();
     assert!(hook.run(&mut context, cancellation).await.is_err());

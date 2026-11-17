@@ -171,7 +171,7 @@ fn default_interactive_only() -> bool {
 /// Ordered explicit hook configurations for each lifecycle stage.
 ///
 /// Missing stages deserialize as empty lists. Omission-aware configuration input
-/// uses [`crate::HookOverrides`] to distinguish inherited stages from empty ones.
+/// uses [`crate::api::HookOverrides`] to distinguish inherited stages from empty ones.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct HookConfigs {
@@ -303,7 +303,7 @@ pub fn validate_completion_modes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ToolId;
+    use crate::api::ToolId;
     use llm_api::providers::Model;
     use serde_json::json;
 
@@ -716,7 +716,8 @@ mod tests {
         assert_eq!(serde_json::from_value::<HookConfigs>(wire).unwrap(), hooks);
         assert!(serde_json::from_value::<HookConfigs>(json!({"unknown_stage": []})).is_err());
         assert!(
-            serde_json::from_value::<crate::HookOverrides>(json!({"unknown_stage": []})).is_err()
+            serde_json::from_value::<crate::api::HookOverrides>(json!({"unknown_stage": []}))
+                .is_err()
         );
         let schema = serde_json::to_value(schemars::schema_for!(HookConfigs)).unwrap();
         assert_eq!(schema["additionalProperties"], false);

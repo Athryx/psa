@@ -60,7 +60,7 @@ pub(crate) async fn write_document(
     path: &Path,
     document: &toml_edit::DocumentMut,
 ) -> Result<(), AuthError> {
-    let temporary = path.with_extension(format!("{}.tmp", psa_api::probes::Uuid::new_v4()));
+    let temporary = path.with_extension(format!("{}.tmp", psa::api::probes::Uuid::new_v4()));
     let mut options = tokio::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

@@ -8,7 +8,7 @@ use llm_api::{
     },
     providers::{Model, ProviderType},
 };
-use psa_api::{DecisionCall, events::EventType};
+use psa::api::{DecisionCall, events::EventType};
 use std::{collections::BTreeMap, time::Duration};
 
 fn decider(name: &str) -> Model {

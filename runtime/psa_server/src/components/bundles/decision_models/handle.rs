@@ -8,7 +8,7 @@ use llm_api::{
     api::decisions::{DecisionRequest, DecisionResponse},
     providers::Model,
 };
-use psa_api::{ModelInfo, ModelKind};
+use psa::api::{ModelInfo, ModelKind};
 use std::{num::NonZeroUsize, sync::Arc};
 use tokio::sync::Semaphore;
 

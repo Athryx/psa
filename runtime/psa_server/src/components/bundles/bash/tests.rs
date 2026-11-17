@@ -62,7 +62,7 @@ async fn dropping_owner_invalidates_even_retained_tool_handles() {
 
 #[test]
 fn remote_shell_resolution_preserves_protocol_environment_and_stdin() {
-    use psa_api::probes::{Command, Stdio};
+    use psa::api::probes::{Command, Stdio};
     let command = Command::new("bash", "/work dir")
         .args(["-c", "printf '%s' '$injection'"])
         .env("EXAMPLE_SET", "id")

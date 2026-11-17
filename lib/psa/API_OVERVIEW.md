@@ -321,10 +321,10 @@ TODO: probe api
 
 ## Implementation
 
-Exact route templates/builders are in `src/routes.rs`. Wire types are grouped by
+Exact route templates/builders are in `src/api/routes.rs`. Wire types are grouped by
 topic (`sessions`, `agents`, `configs`, `definitions`, `feeds`, ...) and
-re-exported at the crate root; transcript events stay in `psa_api::events` and the
-probe protocol in `psa_api::probes`. `src/client.rs` provides the async `Client`,
+re-exported from `psa::api`; transcript events stay in `psa::api::events` and the
+probe protocol in `psa::api::probes`. `src/api/client.rs` provides the async `Client`,
 including typed JSON requests and SSE decoding.
 
 `EventsQuery.span` selects the events: `EventSpan::Forward { after, through }`,

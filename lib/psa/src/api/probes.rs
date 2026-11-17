@@ -40,8 +40,8 @@ pub fn parse_connect_url(value: &str) -> Result<String, InvalidServerUrl> {
     url.set_scheme(scheme).map_err(|_| InvalidServerUrl)?;
     // Accept an already-resolved connect URL too, as written for sandbox probes.
     let base = url.path().trim_end_matches('/');
-    if !base.ends_with(crate::routes::PROBES_CONNECT) {
-        url.set_path(&format!("{base}{}", crate::routes::PROBES_CONNECT));
+    if !base.ends_with(crate::api::routes::PROBES_CONNECT) {
+        url.set_path(&format!("{base}{}", crate::api::routes::PROBES_CONNECT));
     }
     Ok(url.into())
 }
@@ -420,7 +420,7 @@ pub struct SandboxSpec {
     /// Docker image reference.
     pub image: String,
     /// Host directories bound into the container.
-    pub mounts: Vec<crate::sandboxes::Mount>,
+    pub mounts: Vec<crate::api::sandboxes::Mount>,
 }
 
 /// Docker state of one sandbox container.
@@ -431,7 +431,7 @@ pub struct ContainerStatus {
     /// Docker container name.
     pub container_name: String,
     /// Whether the container is running.
-    pub state: crate::sandboxes::SandboxState,
+    pub state: crate::api::sandboxes::SandboxState,
 }
 
 /// Metadata for one immediate child of a listed directory, without following symlinks.

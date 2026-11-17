@@ -13,7 +13,7 @@ use crate::{
     components::{bundles::subagents::SubagentCoordinator, tools::ToolOutput},
     prompts,
 };
-use psa_api::events::AgentMessageLink;
+use psa::api::events::AgentMessageLink;
 
 /// Optional fields can be absent, but explicitly supplied null is invalid.
 fn deserialize_present<'de, T: serde::Deserialize<'de>, D: serde::Deserializer<'de>>(

@@ -6,7 +6,7 @@ use crate::{
     reactive::{use_ui_selector, use_ui_subscription},
 };
 use dioxus::prelude::*;
-use psa_api::*;
+use psa::api::*;
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct CreationTarget {

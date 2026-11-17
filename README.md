@@ -68,7 +68,7 @@ Keep `auth.toml` private and restart the server after configuration changes. See
 
 - `runtime/`: server, probe, and shared runtime utilities.
 - `client/`: desktop application, GUI, and shared client state.
-- `psa_api/`: API types and async client library.
+- `lib/psa/`: API types and async client library.
 - `lib/`: LLM adapters and actor libraries.
 - `scripts/`: build and packaging scripts; `docs/`: additional documentation.
 

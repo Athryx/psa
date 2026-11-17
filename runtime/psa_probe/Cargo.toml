@@ -5,7 +5,7 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
-psa_api = { path = "../../psa_api" }
+psa = { path = "../../lib/psa" }
 psa_shared = { path = "../psa_shared" }
 actors = { path = "../../lib/actors" }
 tokio = { version = "1", features = ["full"] }

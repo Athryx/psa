@@ -2,7 +2,7 @@
 //!
 //! A sandbox is a container on a manager probe's machine running a nested probe.
 //! It is identified by the nested probe's [`ProbeId`].
-use crate::ProbeId;
+use crate::api::ProbeId;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use time::OffsetDateTime;

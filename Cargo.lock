@@ -712,7 +712,7 @@ name = "client_shared"
 version = "0.1.0"
 dependencies = [
  "llm_api",
- "psa_api",
+ "psa",
  "reqwest",
  "serde",
  "serde_json",
@@ -4491,7 +4491,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "psa_api"
+name = "psa"
 version = "0.1.0"
 dependencies = [
  "eventsource-stream",
@@ -4515,7 +4515,7 @@ dependencies = [
  "dioxus",
  "dioxus-desktop",
  "directories",
- "psa_api",
+ "psa",
  "psa_gui",
  "rand 0.9.5",
  "serde_json",
@@ -4535,7 +4535,7 @@ dependencies = [
  "dioxus-ssr",
  "futures-util",
  "llm_api",
- "psa_api",
+ "psa",
  "pulldown-cmark",
  "serde",
  "serde_json",
@@ -4552,7 +4552,7 @@ dependencies = [
  "directories",
  "futures-util",
  "nix",
- "psa_api",
+ "psa",
  "psa_server",
  "psa_shared",
  "reqwest",
@@ -4590,7 +4590,7 @@ dependencies = [
  "llm_api",
  "monty-pool",
  "monty-types",
- "psa_api",
+ "psa",
  "psa_probe",
  "psa_shared",
  "rand 0.9.5",
@@ -4624,7 +4624,7 @@ dependencies = [
  "actors",
  "futures-channel",
  "futures-util",
- "psa_api",
+ "psa",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",

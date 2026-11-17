@@ -11,7 +11,7 @@ use llm_api::{
     api::ReasoningOverride,
     providers::{Model, ModelConfig, ProviderType},
 };
-use psa_api::{ListModels, ModelInfo, PinModel, ProviderInfo};
+use psa::api::{ListModels, ModelInfo, PinModel, ProviderInfo};
 use serde::{Deserialize, Serialize};
 pub use source::CatalogSource;
 use source::CatalogUpdate;
@@ -69,7 +69,7 @@ impl ModelCatalog {
 
     pub(crate) async fn set_provider_credential(
         &self,
-        request: psa_api::SetProviderCredential,
+        request: psa::api::SetProviderCredential,
     ) -> Result<ProviderInfo, crate::providers::AuthError> {
         // A disconnected client must not cancel between the durable rename and
         // publishing the new in-memory snapshot.
@@ -143,7 +143,7 @@ impl ModelCatalog {
         let Some(info) = self.model_info(&config.model).await? else {
             return Ok(None);
         };
-        if info.kind != psa_api::ModelKind::Chat {
+        if info.kind != psa::api::ModelKind::Chat {
             return Err(CatalogError::Invalid(format!(
                 "{} is a decision model and cannot generate chat responses",
                 info.model.api_name

@@ -8,7 +8,7 @@ use crate::{
     },
 };
 use llm_api::api::{Outcome, StopReason};
-use psa_api::events::{Event, EventId, EventType, Log, Message, MessageType, StatusChange};
+use psa::api::events::{Event, EventId, EventType, Log, Message, MessageType, StatusChange};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
@@ -244,7 +244,7 @@ impl RetryHistory {
 mod tests {
     use super::*;
     use llm_api::api::{HistoryItemMetadata, ToolSchema};
-    use psa_api::{AgentId, AgentResult, events::ToolCall};
+    use psa::api::{AgentId, AgentResult, events::ToolCall};
     use serde_json::json;
     use time::OffsetDateTime;
 

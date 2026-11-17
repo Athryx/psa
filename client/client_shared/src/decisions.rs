@@ -1,6 +1,6 @@
 //! Display text for decision-model calls, shared by every client UI.
 use llm_api::api::decisions::DecisionAnswer;
-use psa_api::DecisionCall;
+use psa::api::DecisionCall;
 use std::time::Duration;
 
 /// Multi-line description: the model, each question's headline answer in

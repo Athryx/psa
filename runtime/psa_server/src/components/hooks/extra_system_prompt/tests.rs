@@ -1,5 +1,5 @@
 use crate::components::hooks::HookKind;
-use psa_api::HookConfig;
+use psa::api::HookConfig;
 
 #[test]
 fn construction_owns_the_configured_prompt() {

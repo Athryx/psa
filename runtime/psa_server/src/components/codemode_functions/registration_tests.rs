@@ -8,7 +8,7 @@ use crate::{
     sessions::Session,
 };
 use llm_api::api::Usage;
-use psa_api::{AgentDefinitionId, AgentId, SessionId, events::EventId};
+use psa::api::{AgentDefinitionId, AgentId, SessionId, events::EventId};
 use time::OffsetDateTime;
 
 pub(super) fn snapshots() -> (AgentDefinition, Agent, Session) {

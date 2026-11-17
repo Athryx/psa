@@ -126,7 +126,7 @@ pub async fn start_with_shutdown(
         crate::config_registry::ConfigRegistry::new(config.data_dir)
             .with_agent_defaults(config.agent_defaults),
         config.session_defaults,
-        psa_api::ClientConfig {
+        psa::api::ClientConfig {
             default_agent_name: config.default_agent_name,
             default_sandbox_image: config.default_sandbox_image,
         },
@@ -171,7 +171,7 @@ pub async fn serve_with_providers(
         listener,
         database,
         providers,
-        psa_api::probes::Uuid::new_v4().to_string(),
+        psa::api::probes::Uuid::new_v4().to_string(),
         client_key,
         shutdown,
     )
@@ -237,7 +237,7 @@ pub async fn serve_with_configuration(
         probes,
         configuration,
         default_model_config,
-        psa_api::ClientConfig {
+        psa::api::ClientConfig {
             default_agent_name: "root".into(),
             default_sandbox_image: None,
         },
@@ -255,7 +255,7 @@ async fn serve_with_client_config(
     probes: crate::probes::ProbeRegistry,
     configuration: crate::config_registry::ConfigRegistry,
     default_model_config: ModelConfig,
-    client_config: psa_api::ClientConfig,
+    client_config: psa::api::ClientConfig,
     client_key: String,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
