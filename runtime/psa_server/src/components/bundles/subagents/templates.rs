@@ -209,7 +209,7 @@ pub fn model_label(selection: &ModelSelection) -> String {
         ModelSelection::Global => "session".into(),
         ModelSelection::Parent => "parent".into(),
         ModelSelection::Fixed { model, effort } => match effort {
-            EffortSelection::Parent => model.clone(),
+            EffortSelection::Parent => model.slug(),
             EffortSelection::Global => format!("{model}:session-effort"),
             EffortSelection::Fixed(effort) => format!("{model}:{}", effort.as_str()),
         },
@@ -245,7 +245,7 @@ mod tests {
 
     fn fixed(effort: Effort) -> ModelSelection {
         ModelSelection::Fixed {
-            model: "openrouter/vendor/model".into(),
+            model: "openrouter/vendor/model".parse().unwrap(),
             effort: EffortSelection::Fixed(effort),
         }
     }

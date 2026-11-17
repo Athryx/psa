@@ -17,9 +17,9 @@ pub fn agent_status(transcript: &Transcript, models: &[ModelInfo]) -> AgentStatu
         return AgentStatus::default();
     };
     let mut snapshot = transcript
-        .status_snapshot
+        .context_state
         .as_ref()
-        .unwrap_or_else(|| transcript.fallback_status_snapshot())
+        .unwrap_or_else(|| transcript.fallback_context_state())
         .clone();
     for (_, envelope) in transcript.committed.range((
         std::ops::Bound::Excluded(snapshot.head),
@@ -50,7 +50,7 @@ mod tests {
         providers::{Effort, Model, ProviderType},
     };
     use psa_api::{
-        AgentId, AgentStatusSnapshot, EventEnvelope, EventsPage, PendingEvent, SessionId,
+        AgentContextState, AgentId, EventEnvelope, EventsPage, PendingEvent, SessionId,
         StreamMessage,
         events::{Event, EventId, EventType, InferenceResultEnd},
     };
@@ -99,7 +99,7 @@ mod tests {
             pending_id: None,
         });
         let model: ModelInfo = serde_json::from_value(serde_json::json!({
-            "model": {"provider":"Openrouter", "api_name":"test"},
+            "model": "openrouter/test",
             "name":"Test", "input_modalities":[], "context_window":1000,
             "max_output_tokens":null, "cost":{"tiers":[]}, "reasoning":false,
             "reasoning_options":[], "authed":true, "pinned":false,
@@ -137,12 +137,12 @@ mod tests {
         let status = agent_status(&transcript, &[]);
         assert_eq!(status.model_config, Some(config("late-model")));
         assert_eq!(status.context_tokens, Some(100));
-        assert_eq!(transcript.fallback_status_snapshot().head, 20);
+        assert_eq!(transcript.fallback_context_state().head, 20);
         assert!(!std::ptr::eq(
-            before_history.fallback_status_snapshot(),
-            transcript.fallback_status_snapshot()
+            before_history.fallback_context_state(),
+            transcript.fallback_context_state()
         ));
-        assert!(transcript.status_snapshot.is_none());
+        assert!(transcript.context_state.is_none());
     }
 
     #[test]
@@ -152,7 +152,7 @@ mod tests {
             event: event(1, EventType::Model(config("cached"))),
             pending_id: None,
         });
-        let cached = original.fallback_status_snapshot();
+        let cached = original.fallback_context_state();
         let mut transcript = original.clone();
         transcript.apply(StreamMessage::Upsert {
             pending: PendingEvent {
@@ -163,13 +163,13 @@ mod tests {
                 kind: EventType::NewContext,
             },
         });
-        assert!(std::ptr::eq(cached, transcript.fallback_status_snapshot()));
+        assert!(std::ptr::eq(cached, transcript.fallback_context_state()));
         transcript.apply(StreamMessage::Snapshot {
             cursor: 1,
             pending: Vec::new(),
             queries: Vec::new(),
         });
-        assert!(std::ptr::eq(cached, transcript.fallback_status_snapshot()));
+        assert!(std::ptr::eq(cached, transcript.fallback_context_state()));
         transcript.apply(StreamMessage::Removed {
             session_id: SessionId(1),
             agent_id: AgentId(1),
@@ -179,7 +179,7 @@ mod tests {
             event: event(1, EventType::NewContext),
             pending_id: None,
         });
-        assert!(std::ptr::eq(cached, transcript.fallback_status_snapshot()));
+        assert!(std::ptr::eq(cached, transcript.fallback_context_state()));
         assert_eq!(
             agent_status(&transcript, &[]).model_config,
             Some(config("cached"))
@@ -188,14 +188,14 @@ mod tests {
             event: event(2, EventType::NewContext),
             pending_id: None,
         });
-        assert!(!std::ptr::eq(cached, transcript.fallback_status_snapshot()));
+        assert!(!std::ptr::eq(cached, transcript.fallback_context_state()));
         assert!(agent_status(&transcript, &[]).model_config.is_none());
     }
 
     #[test]
     fn live_events_advance_snapshot_and_replay_does_not_override_it() {
         let mut transcript = Transcript::new(SessionId(1), Some(AgentId(1)));
-        transcript.status_snapshot = Some(AgentStatusSnapshot {
+        transcript.context_state = Some(AgentContextState {
             head: 10,
             model_config: Some(config("current")),
             context_tokens: Some(50),
@@ -208,7 +208,7 @@ mod tests {
             event: event(11, end(Some(99), None, None)),
             pending_id: None,
         });
-        let snapshot = transcript.status_snapshot.as_ref().unwrap();
+        let snapshot = transcript.context_state.as_ref().unwrap();
         assert_eq!(snapshot.head, 11);
         assert_eq!(snapshot.model_config, Some(config("current")));
         assert_eq!(agent_status(&transcript, &[]).context_tokens, Some(99));
@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn snapshot_replay_live_reset_and_unknown_usage() {
         let mut transcript = Transcript::new(SessionId(1), Some(AgentId(1)));
-        transcript.status_snapshot = Some(AgentStatusSnapshot {
+        transcript.context_state = Some(AgentContextState {
             head: 10,
             model_config: Some(config("current")),
             context_tokens: Some(50),

@@ -11,10 +11,7 @@ fn model_config() -> ModelConfig {
 #[test]
 fn model_identity_is_shared_by_configuration_and_pin_requests() {
     let model = Model::new(ProviderType::Openrouter, "vendor/model").unwrap();
-    let identity = serde_json::json!({
-        "provider": "Openrouter",
-        "api_name": "vendor/model"
-    });
+    let identity = serde_json::json!("openrouter/vendor/model");
     let config = ModelConfig {
         model: model.clone(),
         effort: Effort::High,
@@ -38,44 +35,19 @@ fn model_identity_is_shared_by_configuration_and_pin_requests() {
 }
 
 #[test]
-fn agent_config_listing_query_names_the_refresh_session() {
-    let query = RefreshAndListAgentConfigs {
-        refresh_session_id: Some(SessionId(7)),
+fn config_refresh_lists_sessions_and_rejects_unknown_fields() {
+    let request = RefreshConfigs {
+        session_ids: vec![SessionId(7)],
     };
-    let wire = serde_json::json!({"refresh_session_id": 7});
-    assert_eq!(serde_json::to_value(&query).unwrap(), wire);
+    let wire = serde_json::json!({"session_ids": [7]});
+    assert_eq!(serde_json::to_value(&request).unwrap(), wire);
     assert_eq!(
-        serde_json::from_value::<RefreshAndListAgentConfigs>(wire)
-            .unwrap()
-            .refresh_session_id,
-        Some(SessionId(7))
+        serde_json::from_value::<RefreshConfigs>(wire).unwrap(),
+        request
     );
-    assert_eq!(
-        serde_json::from_str::<RefreshAndListAgentConfigs>("{}")
-            .unwrap()
-            .refresh_session_id,
-        None
-    );
-}
-
-#[test]
-fn skill_listing_query_names_the_refresh_session() {
-    let query = RefreshAndListSkills {
-        refresh_session_id: Some(SessionId(7)),
-    };
-    let wire = serde_json::json!({"refresh_session_id": 7});
-    assert_eq!(serde_json::to_value(&query).unwrap(), wire);
-    assert_eq!(
-        serde_json::from_value::<RefreshAndListSkills>(wire)
-            .unwrap()
-            .refresh_session_id,
-        Some(SessionId(7))
-    );
-    assert_eq!(
-        serde_json::from_str::<RefreshAndListSkills>("{}")
-            .unwrap()
-            .refresh_session_id,
-        None
+    assert!(
+        serde_json::from_value::<RefreshConfigs>(serde_json::json!({"refresh_session_id": 7}))
+            .is_err()
     );
 }
 
@@ -86,11 +58,11 @@ fn configured_agent_requests_carry_typed_model_and_effort_selections() {
         Some(ModelSelection::Global),
         Some(ModelSelection::Parent),
         Some(ModelSelection::Fixed {
-            model: "openrouter/vendor/model".into(),
+            model: Model::parse_slug("openrouter/vendor/model").unwrap(),
             effort: EffortSelection::Fixed(Effort::High),
         }),
     ] {
-        let request = NewConfiguredAgent {
+        let request = CreateAgent {
             config_id: ConfigId {
                 config_group: ConfigGroup::Global,
                 name: "worker".into(),
@@ -103,9 +75,7 @@ fn configured_agent_requests_carry_typed_model_and_effort_selections() {
         };
         let wire = serde_json::to_value(&request).unwrap();
         assert_eq!(
-            serde_json::from_value::<NewConfiguredAgent>(wire)
-                .unwrap()
-                .model,
+            serde_json::from_value::<CreateAgent>(wire).unwrap().model,
             model
         );
     }
@@ -117,7 +87,7 @@ fn configured_agent_requests_carry_typed_model_and_effort_selections() {
         serde_json::json!({"Fixed": {"model": "openrouter/vendor/model", "effort": 42}}),
     ] {
         assert!(
-            serde_json::from_value::<NewConfiguredAgent>(serde_json::json!({
+            serde_json::from_value::<CreateAgent>(serde_json::json!({
                 "config_id": {"config_group": "Global", "name": "worker"},
                 "name": "child",
                 "model": model,
@@ -139,16 +109,6 @@ fn provider_info_only_transmits_identity_and_authentication() {
 
 #[test]
 fn definitions_have_flat_versioned_wire_types_and_default_empty_hooks() {
-    let request: CreateAgentDefinition = serde_json::from_value(serde_json::json!({
-        "name": "assistant",
-    }))
-    .unwrap();
-    assert_eq!(request.name, "assistant");
-    assert_eq!(request.hooks, HookConfigs::default());
-    assert!(request.bundles.is_empty());
-    assert_eq!(request.model, AgentModel::Global);
-    assert!(request.skills.is_empty());
-    assert!(request.permitted_subagents.is_empty());
     assert_eq!(
         serde_json::from_str::<HookConfigs>("{}").unwrap(),
         HookConfigs::default()
@@ -169,7 +129,7 @@ fn definitions_have_flat_versioned_wire_types_and_default_empty_hooks() {
         id: AgentDefinitionId(9),
         previous_version_id: Some(AgentDefinitionId(4)),
         version: 2,
-        name: request.name,
+        name: "assistant".into(),
         description: "Reusable assistant".into(),
         selectable: true,
         bundles: vec![BundleConfig::FileTools { read_only: false }],
@@ -202,59 +162,12 @@ fn definitions_have_flat_versioned_wire_types_and_default_empty_hooks() {
         decoded.bundles,
         vec![BundleConfig::FileTools { read_only: false }]
     );
-    let mut legacy = json;
-    legacy.as_object_mut().unwrap().remove("bundles");
-    let legacy: AgentDefinition = serde_json::from_value(legacy).unwrap();
-    assert!(legacy.bundles.is_empty());
     assert_eq!(decoded.hooks, hooks);
     assert_eq!(decoded.model, model_config().into());
-    assert!(
-        serde_json::from_value::<CreateAgentDefinition>(serde_json::json!({
-            "name": "assistant", "extras": {}
-        }))
-        .is_err()
-    );
-    assert!(
-        serde_json::from_value::<UpdateAgentDefinition>(serde_json::json!({
-            "description": "not a complete replacement"
-        }))
-        .is_err()
-    );
 }
 
 #[test]
-fn bundle_requests_roundtrip_and_replacement_defaults_clear_bundles() {
-    let request = CreateAgentDefinition {
-        name: "files".into(),
-        bundles: vec![BundleConfig::FileTools { read_only: false }],
-        ..Default::default()
-    };
-    let json = serde_json::to_value(&request).unwrap();
-    assert_eq!(
-        json["bundles"],
-        serde_json::json!([{"FileTools": {"read_only": false}}])
-    );
-    assert!(json.get("tools").is_none());
-    let decoded: CreateAgentDefinition = serde_json::from_value(json.clone()).unwrap();
-    assert_eq!(decoded.bundles, request.bundles);
-    let decoded: UpdateAgentDefinition = serde_json::from_value(json).unwrap();
-    assert_eq!(decoded.bundles, request.bundles);
-    let replacement: UpdateAgentDefinition =
-        serde_json::from_value(serde_json::json!({"name": "replacement"})).unwrap();
-    assert!(replacement.bundles.is_empty());
-    assert!(CreateAgentDefinition::default().bundles.is_empty());
-    for bundles in [serde_json::json!(["Unknown"]), serde_json::Value::Null] {
-        assert!(
-            serde_json::from_value::<CreateAgentDefinition>(serde_json::json!({
-                "name": "invalid", "bundles": bundles
-            }))
-            .is_err()
-        );
-    }
-}
-
-#[test]
-fn session_models_are_optional_and_agents_reference_definitions() {
+fn session_models_are_optional() {
     let mut session = serde_json::json!({
         "name": "session",
         "working_directory": "/work",
@@ -287,167 +200,6 @@ fn session_models_are_optional_and_agents_reference_definitions() {
     }))
     .unwrap();
     assert_eq!(update.model_config, Some(model_config()));
-    let agent = CreateAgent {
-        subagent_parent_id: None,
-        interactive: false,
-        hidden: false,
-        definition_id: AgentDefinitionId(7),
-        name: "agent".into(),
-    };
-    let mut json = serde_json::to_value(agent).unwrap();
-    assert_eq!(
-        json,
-        serde_json::json!({"definition_id": 7, "name": "agent", "interactive": false, "hidden": false, "subagent_parent_id": null})
-    );
-    assert!(serde_json::from_value::<CreateAgent>(json.clone()).is_ok());
-    json["model"] = serde_json::to_value(model_config()).unwrap();
-    assert!(serde_json::from_value::<CreateAgent>(json).is_err());
-}
-
-#[test]
-fn agent_interactive_wire_field_defaults_false_and_round_trips_bools() {
-    let omitted: CreateAgent = serde_json::from_value(serde_json::json!({
-        "definition_id": 7,
-        "name": "agent"
-    }))
-    .unwrap();
-    assert!(!omitted.interactive);
-
-    for interactive in [false, true] {
-        let request = CreateAgent {
-            subagent_parent_id: None,
-            definition_id: AgentDefinitionId(7),
-            name: "agent".into(),
-            interactive,
-            hidden: false,
-        };
-        let json = serde_json::to_value(&request).unwrap();
-        assert_eq!(json["interactive"], interactive);
-        let decoded: CreateAgent = serde_json::from_value(json).unwrap();
-        assert_eq!(decoded.interactive, interactive);
-
-        let agent = Agent {
-            id: AgentId(1),
-            session_id: SessionId(2),
-            definition_id: request.definition_id,
-            parent_id: None,
-            subagent_parent_id: None,
-            name: request.name,
-            interactive,
-            hidden: false,
-            state: AgentState::Idle,
-            usage: AgentUsage::default(),
-            next_event_id: events::EventId(1),
-            created_at: time::OffsetDateTime::UNIX_EPOCH,
-            updated_at: time::OffsetDateTime::UNIX_EPOCH,
-        };
-        let json = serde_json::to_value(&agent).unwrap();
-        assert_eq!(json["interactive"], interactive);
-        let decoded: Agent = serde_json::from_value(json).unwrap();
-        assert_eq!(decoded.interactive, interactive);
-    }
-
-    for invalid in [
-        serde_json::Value::Null,
-        serde_json::json!("true"),
-        serde_json::json!(1),
-    ] {
-        assert!(
-            serde_json::from_value::<CreateAgent>(serde_json::json!({
-                "definition_id": 7, "name": "agent", "interactive": invalid
-            }))
-            .is_err()
-        );
-    }
-}
-
-#[test]
-fn agent_hidden_wire_field_defaults_false_and_round_trips_bools() {
-    let create_json = serde_json::json!({"definition_id": 7, "name": "agent"});
-    let configured_json = serde_json::json!({
-        "config_id": {"config_group": "Global", "name": "worker"},
-        "name": "agent"
-    });
-    let mut create: CreateAgent = serde_json::from_value(create_json.clone()).unwrap();
-    let mut configured: NewConfiguredAgent =
-        serde_json::from_value(configured_json.clone()).unwrap();
-    assert!(!create.hidden);
-    assert!(!configured.hidden);
-
-    for hidden in [false, true] {
-        create.hidden = hidden;
-        configured.hidden = hidden;
-        for request in [
-            serde_json::to_value(&create).unwrap(),
-            serde_json::to_value(&configured).unwrap(),
-        ] {
-            assert_eq!(request["hidden"], hidden);
-        }
-        assert_eq!(
-            serde_json::from_value::<CreateAgent>(serde_json::to_value(&create).unwrap())
-                .unwrap()
-                .hidden,
-            hidden
-        );
-        assert_eq!(
-            serde_json::from_value::<NewConfiguredAgent>(
-                serde_json::to_value(&configured).unwrap()
-            )
-            .unwrap()
-            .hidden,
-            hidden
-        );
-
-        let agent = Agent {
-            id: AgentId(1),
-            session_id: SessionId(2),
-            definition_id: create.definition_id,
-            parent_id: None,
-            subagent_parent_id: None,
-            name: create.name.clone(),
-            interactive: false,
-            hidden,
-            state: AgentState::Idle,
-            usage: AgentUsage::default(),
-            next_event_id: events::EventId(1),
-            created_at: time::OffsetDateTime::UNIX_EPOCH,
-            updated_at: time::OffsetDateTime::UNIX_EPOCH,
-        };
-        let update = serde_json::to_value(StreamMessage::AgentUpdated {
-            agent: agent.clone(),
-        })
-        .unwrap();
-        assert_eq!(update["agent"]["hidden"], hidden);
-        let mut json = serde_json::to_value(&agent).unwrap();
-        assert_eq!(json["hidden"], hidden);
-        assert_eq!(
-            serde_json::from_value::<Agent>(json.clone())
-                .unwrap()
-                .hidden,
-            hidden
-        );
-        json.as_object_mut().unwrap().remove("hidden");
-        assert!(
-            !serde_json::from_value::<Agent>(json.clone())
-                .unwrap()
-                .hidden
-        );
-
-        for invalid in [
-            serde_json::Value::Null,
-            serde_json::json!("true"),
-            serde_json::json!(1),
-        ] {
-            let mut request = create_json.clone();
-            request["hidden"] = invalid.clone();
-            assert!(serde_json::from_value::<CreateAgent>(request).is_err());
-            let mut request = configured_json.clone();
-            request["hidden"] = invalid.clone();
-            assert!(serde_json::from_value::<NewConfiguredAgent>(request).is_err());
-            json["hidden"] = invalid;
-            assert!(serde_json::from_value::<Agent>(json.clone()).is_err());
-        }
-    }
 }
 
 #[test]
@@ -467,8 +219,10 @@ fn wire_ids_timestamps_and_message_requests_have_one_representation() {
     let request = AgentRequest::Message {
         delivery: MessageDelivery::Steer,
         content: vec![],
+        source: None,
     };
     let json = serde_json::to_string(&request).unwrap();
+    assert!(!json.contains("source"));
     assert!(!json.contains("replay_content"));
     assert!(serde_json::from_str::<AgentRequest>(&json).is_ok());
     assert!(
@@ -642,24 +396,6 @@ fn client_query_wire_types_reject_unknown_fields_and_variants() {
 }
 
 #[test]
-fn legacy_event_snapshots_and_pages_default_queries_to_empty() {
-    let snapshot: StreamMessage = serde_json::from_value(serde_json::json!({
-        "type": "snapshot", "cursor": 5, "pending": []
-    }))
-    .unwrap();
-    assert!(matches!(snapshot, StreamMessage::Snapshot { queries, .. } if queries.is_empty()));
-    let page: EventsPage = serde_json::from_value(serde_json::json!({
-        "events": [], "pending": [], "next_after": 5, "head": 5, "has_more": false
-    }))
-    .unwrap();
-    assert!(page.queries.is_empty());
-    assert_eq!(
-        serde_json::to_value(page).unwrap()["queries"],
-        serde_json::json!([])
-    );
-}
-
-#[test]
 fn paths_and_client_base_urls_are_validated() {
     assert_eq!(
         routes::agent_path(routes::AGENT_EVENTS, SessionId(1), AgentId(2)),
@@ -686,35 +422,23 @@ fn paths_and_client_base_urls_are_validated() {
 }
 
 #[test]
-fn core_subagent_ancestry_and_attributed_requests_round_trip() {
-    let legacy: CreateAgent = serde_json::from_value(serde_json::json!({
-        "definition_id": 1, "name": "root"
-    }))
-    .unwrap();
-    assert_eq!(legacy.subagent_parent_id, None);
-    let child: CreateAgent = serde_json::from_value(serde_json::json!({
-        "definition_id": 1, "name": "worker", "subagent_parent_id": 9
-    }))
-    .unwrap();
-    assert_eq!(child.subagent_parent_id, Some(AgentId(9)));
-    let request = AgentRequest::SubagentMessage {
-        source: Some(AgentMessageSource {
-            agent_id: Some(AgentId(9)),
-            name: Some("parent".into()),
-        }),
+fn attributed_message_requests_round_trip() {
+    let request = AgentRequest::Message {
+        delivery: MessageDelivery::Steer,
+        source: Some(AgentId(9)),
         content: vec![llm_api::api::ContentBlock::Text(llm_api::api::TextBlock {
             text: "task".into(),
             annotations: vec![],
         })],
     };
     let encoded = serde_json::to_value(&request).unwrap();
-    assert_eq!(encoded["SubagentMessage"]["source"]["agent_id"], 9);
-    let AgentRequest::SubagentMessage { source, .. } =
+    assert_eq!(encoded["Message"]["source"], 9);
+    let AgentRequest::Message { source, .. } =
         serde_json::from_value::<AgentRequest>(encoded).unwrap()
     else {
         panic!()
     };
-    assert_eq!(source.unwrap().name.as_deref(), Some("parent"));
+    assert_eq!(source, Some(AgentId(9)));
 }
 
 fn summary(name: &str, project: Option<&str>) -> Session {
@@ -735,43 +459,60 @@ fn summary(name: &str, project: Option<&str>) -> Session {
 
 #[test]
 fn decision_call_events_round_trip_with_durations() {
-    use std::time::Duration;
-    let call = DecisionCall {
-        tool_call_id: Some("call-1".into()),
-        model: llm_api::providers::Model::new(
-            llm_api::providers::ProviderType::Openrouter,
-            "vendor/decider",
-        )
-        .unwrap(),
-        questions: vec![DecisionQuestionSummary {
-            key: "angry".into(),
-            kind: "noul".into(),
-        }],
-        outcome: DecisionOutcome::PartlyAnswered,
-        answers: vec![
-            DecisionAnswerSummary {
-                key: "angry".into(),
-                result: DecisionAnswerResult::Noul(0.25),
-                confidence: Some(0.9),
-            },
-            DecisionAnswerSummary {
-                key: "other".into(),
-                result: DecisionAnswerResult::Refused,
-                confidence: None,
-            },
-        ],
-        usage: DecisionCallUsage {
-            input_tokens: Some(128),
-            cached_tokens: None,
-            cost: Some(0.0000384),
-        },
-        duration: Duration::from_millis(1250),
-        request_id: Some("gen-dec-1".into()),
+    use llm_api::api::decisions::{
+        DecisionAnswer, DecisionQuestion, DecisionRequest, DecisionResponse,
     };
-    let event = events::EventType::DecisionCall(call.clone());
-    let restored: events::EventType =
-        serde_json::from_value(serde_json::to_value(&event).unwrap()).unwrap();
-    assert!(matches!(restored, events::EventType::DecisionCall(restored) if restored == call));
+    use std::{collections::BTreeMap, time::Duration};
+
+    let model: llm_api::providers::Model = "openrouter/vendor/decider".parse().unwrap();
+    let request = DecisionRequest {
+        model: model.clone(),
+        state: serde_json::json!({"ticket": "Where is my refund?"}),
+        questions: BTreeMap::from([(
+            "angry".into(),
+            DecisionQuestion::Noul {
+                instructions: "Is the customer angry?".into(),
+                criteria: None,
+            },
+        )]),
+    };
+    let answered = DecisionCall {
+        tool_call_id: Some("call-1".into()),
+        request: request.clone(),
+        response: Ok(DecisionResponse {
+            model,
+            response_id: Some("gen-dec-1".into()),
+            answers: BTreeMap::from([
+                (
+                    "angry".into(),
+                    DecisionAnswer::Noul {
+                        noul: 0.25,
+                        confidence: Some(0.9),
+                    },
+                ),
+                ("other".into(), DecisionAnswer::Refusal),
+            ]),
+            usage: llm_api::api::Usage {
+                input_tokens: Some(128),
+                cost: Some(0.0000384),
+                ..Default::default()
+            },
+            provider_metadata: Default::default(),
+        }),
+        duration: Duration::from_millis(1250),
+    };
+    let failed = DecisionCall {
+        tool_call_id: None,
+        request,
+        response: Err("HTTP 429".into()),
+        duration: Duration::from_millis(40),
+    };
+    for call in [answered, failed] {
+        let event = events::EventType::DecisionCall(call.clone());
+        let restored: events::EventType =
+            serde_json::from_value(serde_json::to_value(&event).unwrap()).unwrap();
+        assert!(matches!(restored, events::EventType::DecisionCall(restored) if restored == call));
+    }
 }
 
 #[test]

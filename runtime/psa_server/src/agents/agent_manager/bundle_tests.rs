@@ -10,7 +10,7 @@ use crate::{
 use std::{collections::VecDeque, sync::atomic::Ordering};
 
 async fn create_agent_record(
-    definition: psa_api::CreateAgentDefinition,
+    definition: crate::db::CreateAgentDefinition,
 ) -> (tempfile::TempDir, Database, Agent) {
     let directory = tempfile::tempdir().unwrap();
     let database = Database::open(directory.path().join("bundle-worker.sqlite3"))
@@ -138,7 +138,7 @@ fn assert_components_released_before_cleanup(shared: &ProbeState) {
 
 #[tokio::test]
 async fn normal_worker_retirement_retains_components_across_generations() {
-    let (_directory, database, agent) = create_agent_record(psa_api::CreateAgentDefinition {
+    let (_directory, database, agent) = create_agent_record(crate::db::CreateAgentDefinition {
         name: "normal".into(),
         ..Default::default()
     })
@@ -185,7 +185,7 @@ async fn normal_worker_retirement_retains_components_across_generations() {
 
 #[tokio::test]
 async fn worker_supervisor_error_retains_bundle_until_owner_cleanup() {
-    let (_directory, database, agent) = create_agent_record(psa_api::CreateAgentDefinition {
+    let (_directory, database, agent) = create_agent_record(crate::db::CreateAgentDefinition {
         name: "error".into(),
         ..Default::default()
     })
@@ -207,7 +207,7 @@ async fn worker_supervisor_error_retains_bundle_until_owner_cleanup() {
 #[tokio::test]
 async fn lifecycle_hook_error_and_panic_retain_bundle_until_owner_cleanup() {
     for panic in [false, true] {
-        let (_directory, database, agent) = create_agent_record(psa_api::CreateAgentDefinition {
+        let (_directory, database, agent) = create_agent_record(crate::db::CreateAgentDefinition {
             name: "hook failure".into(),
             ..Default::default()
         })
@@ -245,7 +245,7 @@ async fn lifecycle_hook_error_and_panic_retain_bundle_until_owner_cleanup() {
 
 #[tokio::test]
 async fn cleanup_errors_are_returned_by_owner_not_worker_retirement() {
-    let (_directory, database, agent) = create_agent_record(psa_api::CreateAgentDefinition {
+    let (_directory, database, agent) = create_agent_record(crate::db::CreateAgentDefinition {
         name: "cleanup failure".into(),
         ..Default::default()
     })
@@ -270,7 +270,7 @@ async fn cleanup_errors_are_returned_by_owner_not_worker_retirement() {
 async fn replay_and_recovery_do_not_install_worker_bundles() {
     // This definition deliberately cannot install. Recovery must still operate
     // on its persisted transcript without constructing bundle resources.
-    let (_directory, database, agent) = create_agent_record(psa_api::CreateAgentDefinition {
+    let (_directory, database, agent) = create_agent_record(crate::db::CreateAgentDefinition {
         name: "duplicate file tool".into(),
         bundles: vec![
             psa_api::BundleConfig::FileTools { read_only: false },

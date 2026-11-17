@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::NewEvent;
 
 fn reported(tokens: u64) -> Usage {
     Usage {
@@ -37,7 +38,7 @@ async fn cache_writes_count_only_reported_values() {
     );
 
     let mut usage = reported(5);
-    usage.cache_write_input_tokens = Some(4);
+    usage.cache_write_tokens = Some(4);
     let updated = cursor
         .add_events(agent.id, &[result(usage.clone()), result(usage)])
         .await
@@ -66,7 +67,7 @@ async fn usage_batches_unknown_fields_and_rollback() {
     let mut cursor = db.cursor().await.unwrap();
     assert_eq!(
         cursor.get_agent(agent.id).await.unwrap().usage,
-        crate::agents::AgentUsage::default()
+        llm_api::api::Usage::zero()
     );
     let appended = cursor
         .add_events(agent.id, &[result(reported(3)), result(reported(5))])
@@ -208,7 +209,7 @@ async fn migration_backfills_usage_through_each_ancestor_cutoff() {
             .await
             .unwrap()
             .usage,
-        crate::agents::AgentUsage::default()
+        llm_api::api::Usage::zero()
     );
     cursor.rollback().await.unwrap();
     db.close().await;
@@ -264,19 +265,24 @@ async fn status_projects_fork_bounded_markers_and_context_resets() {
         .await
         .unwrap();
     let status = cursor
-        .load_agent_status(fork.session.id, child)
+        .load_agent_context_state(fork.session.id, child)
         .await
         .unwrap();
     assert_eq!(status.model_config, Some(model()));
     assert_eq!(status.context_tokens, Some(42));
     assert_eq!(status.head, 303);
-    assert!(cursor.load_agent_status(session.id, child).await.is_err());
+    assert!(
+        cursor
+            .load_agent_context_state(session.id, child)
+            .await
+            .is_err()
+    );
     cursor
         .add_events(child, &[NewEvent::new(EventType::NewContext)])
         .await
         .unwrap();
     let status = cursor
-        .load_agent_status(fork.session.id, child)
+        .load_agent_context_state(fork.session.id, child)
         .await
         .unwrap();
     assert!(status.model_config.is_none());
@@ -319,7 +325,7 @@ async fn unreported_compaction_usage_keeps_totals_known_and_poisoned_totals_are_
     );
 
     // Totals stored before the fix lost every count after a compaction.
-    let poisoned = crate::agents::AgentUsage {
+    let poisoned = llm_api::api::Usage {
         input_tokens: None,
         output_tokens: None,
         total_tokens: None,
@@ -340,8 +346,9 @@ async fn unreported_compaction_usage_keeps_totals_known_and_poisoned_totals_are_
 
 #[tokio::test]
 async fn model_usage_groups_inference_and_decision_calls_by_model() {
+    use llm_api::api::decisions::{DecisionRequest, DecisionResponse};
     use llm_api::providers::{Effort, Model, ModelConfig, ProviderType};
-    use psa_api::{DecisionCall, DecisionCallUsage, DecisionOutcome};
+    use psa_api::DecisionCall;
 
     let (_dir, db, session, agent) = fixture().await;
     let model = |name: &str| Model::new(ProviderType::Openrouter, name).unwrap();
@@ -368,20 +375,29 @@ async fn model_usage_groups_inference_and_decision_calls_by_model() {
             provider_metadata: Default::default(),
         }))
     };
-    let decision = |outcome: DecisionOutcome, cost: Option<f64>| {
+    let decision = |response: Result<f64, &str>| {
+        let decider = model("vendor/decider");
         NewEvent::new(EventType::DecisionCall(DecisionCall {
             tool_call_id: None,
-            model: model("vendor/decider"),
-            questions: Vec::new(),
-            outcome,
-            answers: Vec::new(),
-            usage: DecisionCallUsage {
-                input_tokens: Some(4),
-                cached_tokens: None,
-                cost,
+            request: DecisionRequest {
+                model: decider.clone(),
+                state: "state".into(),
+                questions: Default::default(),
             },
+            response: response
+                .map(|cost| DecisionResponse {
+                    model: decider,
+                    response_id: None,
+                    answers: Default::default(),
+                    usage: Usage {
+                        input_tokens: Some(4),
+                        cost: Some(cost),
+                        ..Usage::default()
+                    },
+                    provider_metadata: Default::default(),
+                })
+                .map_err(String::from),
             duration: Duration::ZERO,
-            request_id: None,
         }))
     };
 
@@ -397,8 +413,8 @@ async fn model_usage_groups_inference_and_decision_calls_by_model() {
                 end(first + 2, 7, None),
                 start(first + 4, "vendor/b"),
                 end(first + 4, 3, Some(0.25)),
-                decision(DecisionOutcome::Answered, Some(0.125)),
-                decision(DecisionOutcome::Failed("timeout".into()), None),
+                decision(Ok(0.125)),
+                decision(Err("timeout")),
             ],
         )
         .await

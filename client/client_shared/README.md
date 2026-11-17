@@ -63,7 +63,7 @@ inference's start and end resolve to it; a row with no later started-and-ended
 inference, or cut off by a `NewContext`, resolves to `None`.
 
 `context.rs` reconstructs what one inference was sent from the events of its
-context (fetch them with `EventsQuery::from_context_start`). Providers report
+context (fetch them with `EventSpan::ContextOf`). Providers report
 only a total, so each item is weighed by text length and scaled to the reported
 input tokens. `ContextMakeup::segments` arranges the diagram by order, size, or
 type, with a bounded number of blocks for any context length.

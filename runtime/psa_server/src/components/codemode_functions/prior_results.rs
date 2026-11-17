@@ -1,7 +1,8 @@
+use crate::db::EventRange;
 use std::{collections::HashSet, time::Duration};
 
 use llm_api::api::{ContentBlock, ToolSchema};
-use psa_api::events::{Event, EventId, EventRange, EventType, ToolResult};
+use psa_api::events::{Event, EventId, EventType, ToolResult};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;

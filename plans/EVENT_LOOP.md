@@ -98,7 +98,7 @@ internal failures are logged and return a sanitized typed error body.
   count remains unknown rather than being treated as reported zero. An aggregate
   field is unknown if any counted call omitted that field. Reject overflow and
   roll back the whole append. `NewContext`/compaction must not reset totals.
-- Extend `AddEventResult` with `new_usage: Option<AgentUsage>`, the updated total
+- Extend `AddEventResult` with `new_usage: Option<Usage>`, the updated total
   snapshot when changed, analogous to `new_state`. The worker assigns it to
   `state.agent.usage` only after cursor commit, alongside its state/context update;
   do not independently add the usage again in memory. Reload it when restarting

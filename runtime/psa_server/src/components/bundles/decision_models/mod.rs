@@ -28,20 +28,18 @@ pub(crate) struct DecisionPolicy {
 }
 
 impl DecisionPolicy {
-    pub(crate) fn parse(include_global: bool, slugs: &[String]) -> Result<Self, InstallError> {
+    /// Policy over the configured models, dropping repeats.
+    pub(crate) fn new(include_global: bool, configured: &[Model]) -> Self {
         let mut models = Vec::new();
-        for slug in slugs {
-            let model = Model::parse_slug(slug).map_err(|error| {
-                InstallError::new(format!("invalid decision model {slug:?}: {error}"))
-            })?;
-            if !models.contains(&model) {
-                models.push(model);
+        for model in configured {
+            if !models.contains(model) {
+                models.push(model.clone());
             }
         }
-        Ok(Self {
+        Self {
             include_global,
             models,
-        })
+        }
     }
 
     /// Configured models first, then the session's decision model when included.
@@ -86,17 +84,13 @@ pub struct DecisionModelsBundle {
 }
 
 impl DecisionModelsBundle {
-    pub fn new(
-        include_global: bool,
-        models: &[String],
-        resources: &SessionBundleHandle,
-    ) -> Result<Self, InstallError> {
-        Ok(Self {
+    pub fn new(include_global: bool, models: &[Model], resources: &SessionBundleHandle) -> Self {
+        Self {
             access: DecisionAccess {
-                policy: Arc::new(DecisionPolicy::parse(include_global, models)?),
+                policy: Arc::new(DecisionPolicy::new(include_global, models)),
                 handle: resources.decisions(),
             },
-        })
+        }
     }
 }
 

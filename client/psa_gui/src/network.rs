@@ -421,17 +421,25 @@ pub async fn create_sandbox(
 }
 
 /// Start, stop, or delete a sandbox, reporting failures in the status bar.
-pub async fn change_sandbox(mut ui: Signal<Ui>, id: ProbeId, action: client_shared::SandboxChange) {
+pub async fn change_sandbox(ui: Signal<Ui>, id: ProbeId, action: client_shared::SandboxChange) {
+    apply_sandbox_change(ui, id, action).await;
+}
+
+async fn apply_sandbox_change(
+    mut ui: Signal<Ui>,
+    id: ProbeId,
+    action: client_shared::SandboxChange,
+) -> CommandEnd {
     let generation = ui.peek().generation;
     let api = match client(ui) {
         Ok(api) => api,
         Err(error) => {
             ui.write().error = Some(error.to_string());
-            return;
+            return Some(Err(error.to_string()));
         }
     };
     if !ui.write().sandbox_pending.insert(id) {
-        return;
+        return Some(Err("a change to this sandbox is already in progress".into()));
     }
 
     let result = match action {
@@ -440,7 +448,7 @@ pub async fn change_sandbox(mut ui: Signal<Ui>, id: ProbeId, action: client_shar
         client_shared::SandboxChange::Delete => api.delete_sandbox(id).await.map(|()| None),
     };
     if ui.peek().generation != generation {
-        return;
+        return None;
     }
 
     let mut state = ui.write();
@@ -459,13 +467,16 @@ pub async fn change_sandbox(mut ui: Signal<Ui>, id: ProbeId, action: client_shar
             state.notice = Some("Sandbox deleted".into());
         }
         Err(error) => {
-            state.error = Some(format!(
+            let message = format!(
                 "Unable to {} sandbox: {}",
                 action.as_str(),
                 describe_api_error(&error)
-            ));
+            );
+            state.error = Some(message.clone());
+            return Some(Err(message));
         }
     }
+    Some(Ok(()))
 }
 
 /// Start or stop the sandbox running a session, as requested by `/sandbox`.
@@ -473,7 +484,7 @@ pub async fn change_session_sandbox(
     mut ui: Signal<Ui>,
     session_id: SessionId,
     action: client_shared::SandboxAction,
-) {
+) -> CommandEnd {
     let probe_id = ui
         .peek()
         .sessions
@@ -488,15 +499,16 @@ pub async fn change_session_sandbox(
             .then_some(probe_id)
     });
     let Some(sandbox) = sandbox else {
-        ui.write().error = Some("This session is not running in a sandbox".into());
-        return;
+        let message = "This session is not running in a sandbox";
+        ui.write().error = Some(message.into());
+        return Some(Err(message.into()));
     };
 
     let change = match action {
         client_shared::SandboxAction::Start => client_shared::SandboxChange::Start,
         client_shared::SandboxAction::Stop => client_shared::SandboxChange::Stop,
     };
-    change_sandbox(ui, sandbox, change).await;
+    apply_sandbox_change(ui, sandbox, change).await
 }
 
 fn publish_probe_refresh(
@@ -772,11 +784,11 @@ async fn session_connection(
     // Session positions and agent event IDs are distinct. Capture the session
     // head for replay, then bootstrap each agent's bounded history separately.
     let boundary = api
-        .events(
+        .list_events(
             session_id,
             None,
             &EventsQuery {
-                recent: true,
+                span: EventSpan::Latest,
                 limit: 1,
                 ..Default::default()
             },
@@ -790,7 +802,10 @@ async fn session_connection(
             session_id,
             None,
             &EventsQuery {
-                after: boundary.head,
+                span: EventSpan::Forward {
+                    after: boundary.head,
+                    through: None,
+                },
                 include_pending: true,
                 ..Default::default()
             },
@@ -802,11 +817,11 @@ async fn session_connection(
     }
     for target in targets {
         let page = api
-            .events(
+            .list_events(
                 session_id,
                 Some(target.agent_id),
                 &EventsQuery {
-                    recent: true,
+                    span: EventSpan::Latest,
                     include_pending: true,
                     limit: 150,
                     ..Default::default()
@@ -816,9 +831,12 @@ async fn session_connection(
         if ui.peek().generation != generation {
             return Ok(());
         }
-        // A status snapshot may be newer than the page. The subscribed stream
+        // A context state snapshot may be newer than the page. The subscribed stream
         // buffers all later events, and the projection ignores replay through its head.
-        let status = api.get_agent_status(session_id, target.agent_id).await.ok();
+        let context_state = api
+            .get_agent_context_state(session_id, target.agent_id)
+            .await
+            .ok();
         if ui.read().generation != generation {
             return Ok(());
         }
@@ -828,7 +846,7 @@ async fn session_connection(
             .entry(*target)
             .or_insert_with(|| Transcript::new(session_id, Some(target.agent_id)).into());
         transcript.bootstrap(page);
-        transcript.status_snapshot = status;
+        transcript.context_state = context_state;
     }
     // The subscribed stream buffers AgentUpdated while the HTTP snapshot loads;
     // consume those updates afterward, so live metadata always wins.
@@ -1220,21 +1238,21 @@ pub async fn load_context_events(
     let api = client(ui).map_err(|_| "Not connected to a server".to_owned())?;
 
     let mut events = Vec::new();
+    let mut after = 0;
     let mut query = EventsQuery {
-        through: Some(turn),
+        span: EventSpan::ContextOf { through: turn },
         limit: PAGE_LIMIT,
-        from_context_start: true,
         ..Default::default()
     };
     loop {
         let page = api
-            .events(target.session_id, Some(target.agent_id), &query)
+            .list_events(target.session_id, Some(target.agent_id), &query)
             .await
             .map_err(|error| format!("Unable to load this turn's context: {error}"))?;
         if ui.peek().generation != generation {
             return Err("The server connection changed".into());
         }
-        if page.has_more && page.next_after <= query.after {
+        if page.has_more && page.next_after <= after {
             return Err("The server returned a non-progressing page".into());
         }
 
@@ -1242,9 +1260,12 @@ pub async fn load_context_events(
         if !page.has_more {
             return Ok(events);
         }
+        after = page.next_after;
         query = EventsQuery {
-            after: page.next_after,
-            through: Some(turn),
+            span: EventSpan::Forward {
+                after,
+                through: Some(turn),
+            },
             limit: PAGE_LIMIT,
             ..Default::default()
         };
@@ -1284,12 +1305,12 @@ pub async fn load_adjacent_turns(
     let mut before = turn;
     let previous = loop {
         let query = EventsQuery {
-            before: Some(before),
+            span: EventSpan::Before(before),
             limit: PAGE_LIMIT,
             ..Default::default()
         };
         let page = api
-            .events(target.session_id, Some(target.agent_id), &query)
+            .list_events(target.session_id, Some(target.agent_id), &query)
             .await
             .map_err(describe)?;
         if let Some(found) = turn_ends(&page).max() {
@@ -1304,12 +1325,15 @@ pub async fn load_adjacent_turns(
     let mut after = turn;
     let next = loop {
         let query = EventsQuery {
-            after,
+            span: EventSpan::Forward {
+                after,
+                through: None,
+            },
             limit: PAGE_LIMIT,
             ..Default::default()
         };
         let page = api
-            .events(target.session_id, Some(target.agent_id), &query)
+            .list_events(target.session_id, Some(target.agent_id), &query)
             .await
             .map_err(describe)?;
         if let Some(found) = turn_ends(&page).min() {
@@ -1344,11 +1368,11 @@ pub async fn older(mut ui: Signal<Ui>, target: TranscriptTarget) -> bool {
         return false;
     };
     match api
-        .events(
+        .list_events(
             target.session_id,
             Some(target.agent_id),
             &EventsQuery {
-                before: Some(before),
+                span: EventSpan::Before(before),
                 limit: 150,
                 ..Default::default()
             },
@@ -1423,10 +1447,14 @@ pub fn submit(
 
 /// `/fork [name]`: copies the session through its current head, then opens the
 /// fork at the copy of the agent the command was typed in.
-pub async fn fork_session(mut ui: Signal<Ui>, target: TranscriptTarget, name: String) {
+pub async fn fork_session(
+    mut ui: Signal<Ui>,
+    target: TranscriptTarget,
+    name: String,
+) -> CommandEnd {
     let generation = ui.peek().generation;
     let Ok(api) = client(ui) else {
-        return;
+        return None;
     };
     let request = ForkSession {
         point: ForkPoint::Head,
@@ -1437,13 +1465,14 @@ pub async fn fork_session(mut ui: Signal<Ui>, target: TranscriptTarget, name: St
     };
     let result = api.fork_session(target.session_id, &request).await;
     if ui.peek().generation != generation {
-        return;
+        return None;
     }
     let fork = match result {
         Ok(fork) => fork,
         Err(error) => {
-            ui.write().error = Some(format!("Unable to fork the session: {error}"));
-            return;
+            let message = format!("Unable to fork the session: {error}");
+            ui.write().error = Some(message.clone());
+            return Some(Err(message));
         }
     };
 
@@ -1461,6 +1490,7 @@ pub async fn fork_session(mut ui: Signal<Ui>, target: TranscriptTarget, name: St
         state.notice = Some("Session forked.".into());
     }
     open_session(ui, id, true).await;
+    Some(Ok(()))
 }
 
 /// Opens a session that may not be in the loaded list, such as a fork's parent,
@@ -1481,25 +1511,81 @@ pub async fn open_session_by_id(mut ui: Signal<Ui>, id: SessionId) {
     open_session(ui, id, true).await;
 }
 
-/// `/refresh` outside a new session: re-runs global and session-project agent
-/// and skill discovery. The server's `config.toml` still requires a restart.
-pub async fn refresh_configs(mut ui: Signal<Ui>, session_id: SessionId) {
+/// `/refresh` outside a new session: rescans the global and the session's
+/// `.agents` agent and skill configuration. The server's `config.toml` still requires a restart.
+pub async fn refresh_configs(mut ui: Signal<Ui>, session_id: SessionId) -> CommandEnd {
     let generation = ui.peek().generation;
     let result = match client(ui) {
-        Ok(api) => api.refresh_and_list_agent_configs(Some(session_id)).await,
+        Ok(api) => match api.refresh_configs(&[session_id]).await {
+            Ok(()) => api.list_agent_configs().await,
+            Err(error) => Err(error),
+        },
         Err(error) => Err(error),
     };
     if ui.peek().generation != generation {
-        return;
+        return None;
     }
     let mut state = ui.write();
     match result {
-        Ok(items) => state.notice = Some(format!("Reloaded {} agent configurations.", items.len())),
-        Err(error) => state.error = Some(format!("Unable to refresh configurations: {error}")),
+        Ok(items) => {
+            let message = format!("Reloaded {} agent configurations.", items.len());
+            state.notice = Some(message.clone());
+            Some(Ok(()))
+        }
+        Err(error) => {
+            let message = format!("Unable to refresh configurations: {error}");
+            state.error = Some(message.clone());
+            Some(Err(message))
+        }
     }
 }
 
-/// Steers `/compact` to an existing agent. The draft clears only if unchanged
+/// How a client-side slash command ended: its failure message on error, or
+/// `None` when the UI moved on (such as a reconnect) and nothing is recorded.
+pub type CommandEnd = Option<Result<(), String>>;
+
+/// Run a client-side slash command, then record it in the transcript of the
+/// agent it was typed to. Root drafts have no agent yet, so nothing is recorded.
+pub async fn record_command(
+    mut ui: Signal<Ui>,
+    target: TranscriptTarget,
+    name: &'static str,
+    args: String,
+    action: impl std::future::Future<Output = CommandEnd>,
+) {
+    let Some(ended) = action.await else {
+        return;
+    };
+    if target.agent_id == crate::app::DRAFT_ROOT {
+        return;
+    }
+    let Ok(api) = client(ui) else {
+        return;
+    };
+
+    let (outcome, output) = match ended {
+        Ok(()) => (CommandOutcome::Succeeded, None),
+        Err(message) => (CommandOutcome::Failed, Some(message)),
+    };
+    let record = events::CommandRecord {
+        name: name.into(),
+        args: args.trim().into(),
+        outcome,
+        output,
+    };
+    if let Err(error) = api
+        .record_command(target.session_id, target.agent_id, record)
+        .await
+    {
+        let mut state = ui.write();
+        if state.error.is_none() {
+            state.error = Some(format!("Unable to record /{name}: {error}"));
+        }
+    }
+}
+
+/// Steers `/compact` to an existing agent and waits for it to finish; the
+/// server records it in the transcript. The draft clears only if unchanged
 /// since the command was captured; rejected commands keep it for editing.
 pub fn submit_compact(
     ui: Signal<Ui>,
@@ -1525,12 +1611,20 @@ pub fn submit_compact(
         }
         let mut ui = ui;
         let mut state = ui.write();
-        match result {
-            Ok(_) => {
-                state.drafts.clear_if_revision(&target, draft.revision);
-                state.notice = Some("Compaction requested.".into());
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                state.error = Some(format!("Unable to compact: {error}"));
+                return;
             }
-            Err(error) => state.error = Some(format!("Unable to compact: {error}")),
+        };
+        state.drafts.clear_if_revision(&target, draft.revision);
+        match result.outcome {
+            CommandOutcome::Succeeded => state.notice = Some("Compaction finished.".into()),
+            CommandOutcome::Interrupted => state.notice = Some("Compaction interrupted.".into()),
+            CommandOutcome::Failed => {
+                state.error = Some(result.output.unwrap_or_else(|| "Compaction failed.".into()))
+            }
         }
     }
 }
@@ -1569,6 +1663,7 @@ async fn submit_captured(
         AgentRequest::Interrupt
     } else {
         AgentRequest::Message {
+            source: None,
             delivery: MessageDelivery::Steer,
             content: psa_api::events::Message::text(psa_api::events::MessageType::Human, content)
                 .content,
@@ -1685,7 +1780,8 @@ pub async fn load_draft_root(mut ui: Signal<Ui>, session_id: SessionId) {
     let result = async {
         let api = client(ui)?;
         let config = api.get_config().await?;
-        let items = api.refresh_and_list_agent_configs(Some(session_id)).await?;
+        api.refresh_configs(&[session_id]).await?;
+        let items = api.list_agent_configs().await?;
         Ok::<_, ClientError>((config, items))
     }
     .await;
@@ -1866,7 +1962,7 @@ async fn submit_captured_root(
         }
         return;
     }
-    let request = NewConfiguredAgent {
+    let request = CreateAgent {
         name: config.config_id.name.clone(),
         config_id: config.config_id,
         subagent_parent_id: None,
@@ -1981,7 +2077,7 @@ mod adjacent_turn_tests {
         has_more: bool,
     ) -> serde_json::Value {
         serde_json::json!({
-            "events": events, "pending": [], "next_after": next_after, "head": 20,
+            "events": events, "pending": [], "queries": [], "next_after": next_after, "head": 20,
             "has_more": has_more, "next_before": next_before, "has_older": next_before.is_some(),
         })
     }

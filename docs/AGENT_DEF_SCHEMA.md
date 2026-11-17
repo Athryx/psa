@@ -2,7 +2,7 @@
 
 ## Implemented API and identity
 
-The configuration API is implemented in `psa_api/src/definitions.rs` and `psa_api/src/agent_defaults.rs`, with HTTP
+The configuration API is implemented in `psa_api/src/configs.rs` and `psa_api/src/definitions.rs`, with HTTP
 routes in `runtime/psa_server/src/http.rs` and a thin `psa_api::Client`. Discovery is in
 `runtime/psa_server/src/config_registry`; registration and immutable graph resolution are
 in `runtime/psa_server/src/db/configurations.rs`.
@@ -24,19 +24,21 @@ in `runtime/psa_server/src/db/configurations.rs`.
 | Route | Input | Response | `Client` method |
 | --- | --- | --- | --- |
 | `POST /agent-configs` | JSON array of `AgentConfigInput` | `Vec<AgentConfigStatus>` | `upsert_agent_configs(&[I])` (`I: Clone + Into<AgentConfigInput>`) |
-| `GET /agent-configs?refresh_session_id=...` | Optional discovery-refresh session | `Vec<AgentConfigStatus>` | `refresh_and_list_agent_configs(Option<SessionId>)` |
+| `GET /agent-configs` | none | `Vec<AgentConfigStatus>` | `list_agent_configs()` |
 | `POST /agent-configs/lookup` | `ConfigId` JSON body | `AgentConfigStatus` | `get_agent_config(&ConfigId)` |
-| `GET /agent-snapshots/{definition_id}` | Internal snapshot ID | `Option<ResolvedAgentConfig>` | `get_resolved_agent_config(AgentDefinitionId)` |
+| `GET /agent-snapshots/{definition_id}` | Internal snapshot ID | `ResolvedAgentConfig` (404 if unknown) | `get_resolved_agent_config(AgentDefinitionId)` |
 | `POST /skills` | `NewSkill` JSON body | `Skill` (201) | `upload_skill(&NewSkill)` |
-| `GET /skills?refresh_session_id=...` | Optional discovery-refresh session | `Vec<Skill>` | `refresh_and_list_skills(Option<SessionId>)` |
-| `POST /sessions/{session_id}/agents` | `NewConfiguredAgent` | `Agent` (201) | `create_agent(SessionId, &NewConfiguredAgent)` |
+| `GET /skills` | none | `Vec<Skill>` | `list_skills()` |
+| `POST /configs/refresh` | `RefreshConfigs { session_ids }` | 204 | `refresh_configs(&[SessionId])` |
+| `POST /sessions/{session_id}/agents` | `CreateAgent` | `Agent` (201) | `create_agent(SessionId, &CreateAgent)` |
 
 Lookup by compound config ID uses a body rather than path encoding. An unknown
 snapshot returns JSON `null`; a missing current config produces a not-found
-error. Lists refresh source metadata first; `refresh_session_id` selects the
-project to refresh for both agent configurations and skills, not a filter that
-hides other registered groups. Snapshot reads and current-config lookup do not
-perform discovery.
+error. Listing never rescans; it returns every registered group. `POST
+/configs/refresh` rescans the global directory and the `.agents` directory of
+each listed session (discovering it on first use), for agent configurations and
+skills together. Snapshot reads and current-config lookup do not perform
+discovery.
 
 There is **no backwards compatibility**: `/agent-definitions` CRUD routes,
 constants, and client methods are removed. The old `CreateAgent` body is not
@@ -161,7 +163,9 @@ functions `list_decision_models()` and `await decide(model, state, questions)`.
 when `model` is omitted. Without it, `model` may be omitted only when exactly one
 model is legal. For example,
 `{"DecisionModels":{"include_global":true,"models":["openrouter/typesafe/jev-1.14"]}}`.
-Each call is recorded as a public `DecisionCall` event. A session runs at most
+Each call is recorded as a public `DecisionCall` event holding the complete
+request (including `state`), the provider response or failure message, and the
+duration. A session runs at most
 `[decisions] max_concurrent_calls` (server `config.toml`, default 8) calls at
 once; further calls queue until a slot frees.
 
@@ -261,12 +265,14 @@ file refresh resolves omitted fields again. Existing snapshots never change.
   Use `ConfigRegistry::new(custom_data_dir).with_agent_defaults(agent_defaults)`
   to configure library-side component defaults. Uploads are stored beneath
   `skill-uploads` in that root.
-- Probe projects use `.agents/{agents,skills}`. At session creation, start at the
+- Probe-local configuration lives in `.agents/{agents,skills}`, registered as
+  `ConfigGroup::AgentsDir { path, probe_id }`. At session creation, start at the
   probe cwd and walk upward to the first `.agents` directory; stop there, even
-  when empty or missing its `agents`/`skills` subdirectories. Ancestor projects
-  are not merged. Retain this selection on the session and rediscover it when
-  cwd changes. Paths are normalized absolute paths; probe identity distinguishes
-  projects with the same path on different machines.
+  when empty or missing its `agents`/`skills` subdirectories. Ancestor
+  directories are not merged. Retain this selection on the session and
+  rediscover it when cwd changes. Paths are normalized absolute paths; probe
+  identity distinguishes directories with the same path on different machines.
+  This is unrelated to a session's `project_id` label.
 - There is no probe-global defaults directory or group. `global_defaults`
   includes `ConfigGroup::Global`, not a second set of probe-local defaults.
 - Scans validate the complete selected source batch before transactional
@@ -288,25 +294,28 @@ tables are:
 ```rust
 struct SubagentInclusionsConfig {
     global_defaults: bool,
-    project_defaults: bool,
+    group_defaults: bool,
     subagents: Vec<String>,
 }
 struct SkillInclusionsConfig {
     global_defaults: bool,
-    project_defaults: bool,
+    group_defaults: bool,
     skills: Vec<String>,
     additional_paths: Vec<PathBuf>,
 }
 ```
 
 - Both inclusion booleans default to `true`, including when their table is
-  omitted. Project-wide subagent inclusion excludes the defining agent itself;
-  explicit self references and cycles remain supported.
+  omitted. `global_defaults` includes `ConfigGroup::Global`; `group_defaults`
+  includes the defining config's own group (for a global config, Global again).
+  Inclusion never reaches across groups, so a global config does not include a
+  session's `.agents` items. Group-wide subagent inclusion excludes the defining
+  agent itself; explicit self references and cycles remain supported.
 - Included groups are applied in order, with later groups overriding earlier
   groups by name. Explicit items override group selections last, even when an
   explicit item is missing; this prevents silently selecting another source.
 - File names resolve first in the defining config group, then globally. The
-  selected project group follows Global in default group expansion.
+  own group follows Global in default group expansion.
 - Resolve `additional_paths` relative to the defining TOML file. Parse each
   directory's `SKILL.md`, use metadata names with directory-name fallback, and
   register it in the defining file's group before resolving references. Repeated
@@ -324,11 +333,11 @@ default = false
 
 [subagents]
 global_defaults = false
-project_defaults = false
+group_defaults = false
 
 [skills]
 global_defaults = false
-project_defaults = false
+group_defaults = false
 ```
 
 For session/global inheritance alone, omit `models` or write `models = ["Global"]`.
@@ -344,7 +353,7 @@ and `[hooks]` with `after_request = []` explicitly disable those defaults.
 ## Creation-time model choice
 
 ```rust
-struct NewConfiguredAgent {
+struct CreateAgent {
     config_id: ConfigId,
     name: String,
     subagent_parent_id: Option<AgentId>,
@@ -415,8 +424,8 @@ These fields have distinct purposes:
   probe-local `SKILL.md` paths), and
   `permitted_subagents: Vec<AgentDefinitionId>`. Its `skills` are **paths**, not
   skill record IDs; its model is a resolved execution choice, not `models`.
-  `ModelConfig` contains `model: { provider, api_name }` and `effort`; the provider
-  belongs to the nested model identity, not the configuration itself.
+  `ModelConfig` contains a `model` slug (such as `openrouter/vendor/model`) and
+  `effort`.
 - `references` separately records immutable subagent IDs and mutable skill IDs.
   It must not be confused with source `IncludedItems` or executable skill paths.
 - `AgentConfigStatus` is current lookup/list/upsert response metadata, not a
@@ -438,11 +447,11 @@ required materialization failures.
 ## Refresh, materialization, and `SyncDir`
 
 Before configured agent creation, refresh global sources and the session's
-retained project. Refresh mutable skill metadata, resolve the reachable graph,
-and complete required skill copies before building prompts or exposing the new
-agent. `GET /skills` and `GET /agent-configs` use the same refresh pipeline; a
-session-scoped list refreshes its selected project as well as globals, while an
-unscoped list refreshes globals only. Listing does not copy content to probes.
+retained `.agents` directory. Refresh mutable skill metadata, resolve the
+reachable graph, and complete required skill copies before building prompts or
+exposing the new agent. `POST /configs/refresh` uses the same refresh pipeline
+for globals plus each listed session's directory; it does not copy content to
+probes. `GET /skills` and `GET /agent-configs` only read the registry.
 
 For remote probes, server-owned skills materialize to
 `<probe_data_dir>/skill-cache/<SkillId>`. A probe advertising `host: true` shares
@@ -450,7 +459,7 @@ the server filesystem and instead uses the original server-owned `SKILL.md`
 paths, without synchronization, hashing, cache writes, or source replacement.
 For remote copies, change detection hashes the complete directory's paths, types, modes and file
 bytes, not only `SKILL.md` or timestamps. A sibling SHA-256 marker records a
-successful sync; an existing unchanged managed copy can be reused. Project
+successful sync; an existing unchanged managed copy can be reused. `.agents`
 skills stay at their probe-owned source path. Copies never target those sources.
 
 The implemented generic probe `SyncDir` operation shares `UploadDir`'s streamed
@@ -480,12 +489,13 @@ managed paths can change.
   retention/garbage collection of snapshots and unused probe caches is not
   provided by this API. Replacing an API-uploaded skill cleans up its obsolete
   server upload directory.
-- A selected unavailable/inaccessible project or failed required copy fails the
-  operation rather than silently falling back. Offline session creation or cwd
-  changes defer project discovery until the first session-scoped refresh with
-  the probe online; a completed discovery finding no project is retained until
-  cwd changes, and forks inherit discovery status unless they override cwd.
+- A selected unavailable/inaccessible `.agents` directory or failed required
+  copy fails the operation rather than silently falling back. Offline session
+  creation or cwd changes defer discovery until the first refresh naming the
+  session with the probe online; a completed discovery finding no directory is
+  retained until cwd changes, and forks inherit discovery status unless they
+  override cwd.
 - Paths are normalized lexically; discovery does not promise cross-symlink
-  canonical project identity on remote probes.
+  canonical directory identity on remote probes.
 - Atomic replacement depends on Linux/filesystem support for directory exchange;
   the implementation does not weaken it to a non-atomic delete-and-rename.

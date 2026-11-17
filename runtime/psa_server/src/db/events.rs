@@ -9,11 +9,14 @@ use super::{
     sessions::get_session,
     snapshots::{decode_snapshot, encode_snapshot},
 };
-use crate::agents::{AgentId, AgentState, AgentUsage};
-use psa_api::events::{Event, EventId, EventRange, EventType, NewEvent};
-use psa_api::{DecisionCall, DecisionOutcome};
+use crate::agents::{AgentId, AgentState};
+use llm_api::api::Usage;
+use psa_api::DecisionCall;
+use psa_api::events::{Event, EventId, EventType};
+use serde::{Deserialize, Serialize};
 use sqlx::{Acquire, SqliteConnection};
 use std::collections::HashSet;
+use time::OffsetDateTime;
 
 /// Maximum private codemode snapshot size accepted for one tool result.
 pub const MAX_CODEMODE_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
@@ -116,7 +119,7 @@ pub struct AddEventResult {
     pub events: Vec<Event>,
     /// The last state in the batch, only if it differs from the previous state.
     pub new_state: Option<AgentState>,
-    pub new_usage: Option<AgentUsage>,
+    pub new_usage: Option<Usage>,
 }
 
 impl DatabaseCursor {
@@ -245,7 +248,13 @@ impl DatabaseCursor {
             )
             .execute(&mut *savepoint)
             .await?;
-            insert_payload(&mut savepoint, result.last_insert_rowid(), &payload).await?;
+            insert_payload(
+                &mut savepoint,
+                result.last_insert_rowid(),
+                agent_id,
+                &payload,
+            )
+            .await?;
             for private_event in &private_events[offset] {
                 match private_event {
                     PrivateEvent::CodeModeSnapshot(snapshot) => {
@@ -579,10 +588,7 @@ pub(super) async fn load_segments(
     Ok(segments)
 }
 
-pub(super) fn add_usage(
-    total: &mut AgentUsage,
-    usage: &llm_api::api::Usage,
-) -> Result<(), DbError> {
+pub(super) fn add_usage(total: &mut Usage, usage: &llm_api::api::Usage) -> Result<(), DbError> {
     fn add(a: Option<u64>, b: Option<u64>) -> Result<Option<u64>, DbError> {
         match (a, b) {
             (Some(a), Some(b)) => {
@@ -599,7 +605,7 @@ pub(super) fn add_usage(
     total.output_tokens = add(total.output_tokens, usage.output_tokens)?;
     total.total_tokens = add(total.total_tokens, usage.total_tokens)?;
     total.cached_input_tokens = add(total.cached_input_tokens, usage.cached_input_tokens)?;
-    total.cache_write_tokens = add(total.cache_write_tokens, usage.cache_write_input_tokens)?;
+    total.cache_write_tokens = add(total.cache_write_tokens, usage.cache_write_tokens)?;
     total.reasoning_output_tokens =
         add(total.reasoning_output_tokens, usage.reasoning_output_tokens)?;
     add_cost(total, usage.cost);
@@ -608,12 +614,52 @@ pub(super) fn add_usage(
 
 /// Add a decision call's charge. A failed call produced no answer and reports
 /// no charge, so it leaves the total known.
-pub(super) fn add_decision_cost(total: &mut AgentUsage, call: &DecisionCall) {
-    if !matches!(call.outcome, DecisionOutcome::Failed(_)) {
-        add_cost(total, call.usage.cost);
+pub(super) fn add_decision_cost(total: &mut Usage, call: &DecisionCall) {
+    if let Some(usage) = call.usage() {
+        add_cost(total, usage.cost);
     }
 }
 
-fn add_cost(total: &mut AgentUsage, cost: Option<f64>) {
+fn add_cost(total: &mut Usage, cost: Option<f64>) {
     total.cost = total.cost.zip(cost).map(|(total, cost)| total + cost);
+}
+
+/// Event payload and timestamp awaiting a committed identifier.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewEvent {
+    /// Timestamp to preserve when committing the event.
+    pub timestamp: OffsetDateTime,
+    /// Transcript event payload.
+    pub kind: EventType,
+}
+
+impl NewEvent {
+    /// Creates an uncommitted event stamped with the current UTC time.
+    pub fn new(kind: EventType) -> Self {
+        Self {
+            timestamp: OffsetDateTime::now_utc(),
+            kind,
+        }
+    }
+}
+
+/// Pagination bounds within an agent's event lineage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventRange {
+    /// Exclusive lower sequence bound; defaults to zero.
+    pub after: EventId,
+    /// Inclusive upper sequence bound; absent to use the current head.
+    pub through: Option<EventId>,
+    /// Maximum number of events to return; defaults to 1,000.
+    pub limit: u32,
+}
+
+impl Default for EventRange {
+    fn default() -> Self {
+        Self {
+            after: EventId(0),
+            through: None,
+            limit: 1000,
+        }
+    }
 }

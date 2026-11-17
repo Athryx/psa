@@ -1,5 +1,5 @@
 use super::*;
-use psa_api::{CreateSession, ForkPoint, ForkSession, NewConfiguredAgent, UpdateSession};
+use psa_api::{CreateAgent, CreateSession, ForkPoint, ForkSession, UpdateSession};
 
 fn upload(version: &str) -> NewSkill {
     let mut archive = tar::Builder::new(Vec::new());
@@ -28,7 +28,7 @@ fn upload(version: &str) -> NewSkill {
 }
 
 #[tokio::test]
-async fn configured_creation_refreshes_sources_uploads_and_retains_selected_project() {
+async fn configured_creation_refreshes_sources_uploads_and_retains_selected_agents_dir() {
     assert_configured_creation(false).await;
 }
 
@@ -54,19 +54,18 @@ async fn assert_configured_creation(host: bool) {
     let project = harness.dir.path().join("work");
     let nested = project.join("nested");
     for directory in [
-        global.join("agents"),
         global.join("skills/global"),
+        project.join(".agents/agents"),
         project.join(".agents/skills/project"),
         nested.clone(),
     ] {
         tokio::fs::create_dir_all(directory).await.unwrap();
     }
-    tokio::fs::write(
-        global.join("agents/review.toml"),
-        "name = 'review'\n[hooks]\nagent_create = ['Skills']\n",
-    )
-    .await
-    .unwrap();
+    // Default inclusion takes Global plus the agent's own `.agents` group.
+    let review_toml = "name = 'review'\n[hooks]\nagent_create = ['Skills']\n";
+    tokio::fs::write(project.join(".agents/agents/review.toml"), review_toml)
+        .await
+        .unwrap();
     tokio::fs::write(
         global.join("skills/global/SKILL.md"),
         "---\ndescription: global skill\n---\n",
@@ -84,18 +83,38 @@ async fn assert_configured_creation(host: bool) {
         .upload_skill(&upload("old.txt"))
         .await
         .unwrap();
-    let session = harness.client.create_session(&CreateSession {
-        decision_model: None,
-        name: "configured".into(), working_directory: nested.clone(), probe_id: harness.id, project_id: None,
-        model_config: Some(serde_json::from_value(serde_json::json!({"model":{"provider":"Openrouter","api_name":"test-model"}, "effort":"Medium"})).unwrap()),
-    }).await.unwrap();
-    // Introducing a nearer project must not change the project's retained identity.
-    tokio::fs::create_dir_all(nested.join(".agents"))
+    let session = harness
+        .client
+        .create_session(&CreateSession {
+            decision_model: None,
+            name: "configured".into(),
+            working_directory: nested.clone(),
+            probe_id: harness.id,
+            project_id: None,
+            model_config: Some(
+                serde_json::from_value(
+                    serde_json::json!({"model":"openrouter/test-model", "effort":"Medium"}),
+                )
+                .unwrap(),
+            ),
+        })
         .await
         .unwrap();
-    let request = NewConfiguredAgent {
+    // Introducing a nearer `.agents` directory must not change the session's
+    // retained selection.
+    tokio::fs::create_dir_all(nested.join(".agents/agents"))
+        .await
+        .unwrap();
+    tokio::fs::write(nested.join(".agents/agents/review.toml"), review_toml)
+        .await
+        .unwrap();
+    let agents_dir = |path: &std::path::Path| ConfigGroup::AgentsDir {
+        path: path.join(".agents").to_str().unwrap().into(),
+        probe_id: harness.id,
+    };
+    let request = CreateAgent {
         config_id: ConfigId {
-            config_group: ConfigGroup::Global,
+            config_group: agents_dir(&project),
             name: "review".into(),
         },
         name: "review".into(),
@@ -104,11 +123,8 @@ async fn assert_configured_creation(host: bool) {
         hidden: false,
         model: Some(psa_api::ModelSelection::Global),
     };
-    let listed = harness
-        .client
-        .refresh_and_list_skills(Some(session.id))
-        .await
-        .unwrap();
+    harness.client.refresh_configs(&[session.id]).await.unwrap();
+    let listed = harness.client.list_skills().await.unwrap();
     assert_eq!(listed.len(), 3);
     assert!(
         !tokio::fs::try_exists(harness.metadata.data_dir.join("skill-cache"))
@@ -124,7 +140,6 @@ async fn assert_configured_creation(host: bool) {
         .client
         .get_resolved_agent_config(agent.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(snapshot.references.skills.len(), 3);
     assert!(
@@ -197,7 +212,6 @@ async fn assert_configured_creation(host: bool) {
         .client
         .get_resolved_agent_config(next.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert!(next_snapshot.references.skills.contains(&first_upload.id));
     assert!(
@@ -210,8 +224,8 @@ async fn assert_configured_creation(host: bool) {
         assert!(!tokio::fs::try_exists(&cache).await.unwrap());
     }
 
-    // Fork without a cwd override retains the selected project even though the
-    // current cwd now has a newly introduced, nearer empty .agents directory.
+    // Fork without a cwd override retains the selected directory even though the
+    // current cwd now has a newly introduced, nearer .agents directory.
     let forked = harness
         .client
         .fork_session(
@@ -232,7 +246,6 @@ async fn assert_configured_creation(host: bool) {
         .client
         .get_resolved_agent_config(fork_agent.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert!(
         fork_snapshot
@@ -241,8 +254,8 @@ async fn assert_configured_creation(host: bool) {
             .contains(&project.join(".agents/skills/project/SKILL.md"))
     );
 
-    // An actual cwd change rediscovers that empty nearest project and excludes
-    // the ancestor skills, rather than merging ancestor projects.
+    // An actual cwd change rediscovers the nearest directory; its agent sees
+    // only Global and its own (skill-less) group, never the ancestor's skills.
     let deeper = nested.join("deeper");
     tokio::fs::create_dir_all(&deeper).await.unwrap();
     harness
@@ -256,16 +269,22 @@ async fn assert_configured_creation(host: bool) {
         )
         .await
         .unwrap();
+    let nearer = CreateAgent {
+        config_id: ConfigId {
+            config_group: agents_dir(&nested),
+            name: "review".into(),
+        },
+        ..request.clone()
+    };
     let agent = harness
         .client
-        .create_agent(session.id, &request)
+        .create_agent(session.id, &nearer)
         .await
         .unwrap();
     let snapshot = harness
         .client
         .get_resolved_agent_config(agent.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(snapshot.references.skills.len(), 2);
     if host {

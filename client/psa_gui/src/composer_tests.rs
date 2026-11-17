@@ -112,12 +112,15 @@ fn composer_fixture() -> Element {
         let mut state = Ui::new(DesktopSettings::default());
         // Selection should not send a request to a running local server during tests.
         state.settings.active_profile_mut().connection.api_url = "invalid-url".into();
-        state.sessions.push(serde_json::from_value(serde_json::json!({
-            "id":1,"parent_id":null,"name":"test","working_directory":"/tmp",
-            "probe_id":"00000000-0000-0000-0000-000000000001",
-            "model_config":{"model":{"provider":"Openrouter","api_name":"alpha"},"effort":"Low"},
-            "busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"
-        })).unwrap());
+        state.sessions.push(
+            serde_json::from_value(serde_json::json!({
+                "id":1,"parent_id":null,"name":"test","working_directory":"/tmp",
+                "probe_id":"00000000-0000-0000-0000-000000000001",
+                "model_config":{"model":"openrouter/alpha","effort":"Low"},
+                "busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"
+            }))
+            .unwrap(),
+        );
         state.agents.insert(SessionId(1), vec![serde_json::from_value(serde_json::json!({
             "id":2,"definition_id":1,"session_id":1,"parent_id":null,"subagent_parent_id":null,
             "name":"worker","hidden":false,"interactive":true,"state":"Idle",
@@ -127,7 +130,7 @@ fn composer_fixture() -> Element {
         for name in ["Alpha", "Beta"] {
             state.models.push(
                 serde_json::from_value(serde_json::json!({
-                    "model": {"provider": "Openrouter", "api_name": name.to_lowercase()},
+                    "model": format!("openrouter/{}", name.to_lowercase()),
                     "name": name,
                     "input_modalities": [], "context_window": null, "max_output_tokens": null,
                     "cost": {"tiers": []}, "reasoning": true, "reasoning_options": [{"effort":"Low","wire_effort":"Low"},{"effort":"High","wire_effort":"High"}],
@@ -218,9 +221,9 @@ fn info_fixture() -> Element {
 
 fn info_cache_write_fixture() -> Element {
     let open = use_signal(|| true);
-    let usage = AgentUsage {
+    let usage = Usage {
         cache_write_tokens: Some(42),
-        ..Default::default()
+        ..Usage::zero()
     };
     rsx! { AgentInfo { name:"worker".to_string(), template:None, definition_id:None, path:None, probe:None, model:None, effort:None, usage:Some(usage), open } }
 }

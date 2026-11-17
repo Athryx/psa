@@ -22,26 +22,26 @@ async fn nearest_empty_project_stops_ancestor_discovery() {
     let service = ConfigRegistry::new(harness.dir.path().join("global"));
     let probe = harness.handle().await;
     let selected = service
-        .discover_project(&probe, harness.id, &inner.join("nested"))
+        .discover_agents_dir(&probe, harness.id, &inner.join("nested"))
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
         selected,
-        ConfigGroup::Project {
+        ConfigGroup::AgentsDir {
             path: inner.join(".agents").to_string_lossy().into_owned(),
             probe_id: harness.id
         }
     );
     tokio::fs::remove_dir(inner.join(".agents")).await.unwrap();
     let selected = service
-        .discover_project(&probe, harness.id, &inner)
+        .discover_agents_dir(&probe, harness.id, &inner)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
         selected,
-        ConfigGroup::Project {
+        ConfigGroup::AgentsDir {
             path: root.join(".agents").to_string_lossy().into_owned(),
             probe_id: harness.id
         }

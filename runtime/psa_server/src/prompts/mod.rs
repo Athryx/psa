@@ -105,11 +105,8 @@ pub fn tool_failed() -> Vec<ContentBlock> {
 }
 /// Header for a message from another agent. Agents address each other by
 /// name; internal IDs are not model-facing.
-pub fn agent_message_header(sender_name: Option<&str>) -> String {
-    match sender_name {
-        Some(name) => format!("Message from agent \"{name}\":\n"),
-        None => "Message from another agent:\n".into(),
-    }
+pub fn agent_message_header(sender_name: &str) -> String {
+    format!("Message from agent \"{sender_name}\":\n")
 }
 pub fn context_summary(summary: &str) -> String {
     format!("Previous context summary:\n{summary}")

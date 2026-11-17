@@ -1,8 +1,9 @@
+use crate::db::NewEvent;
 use crate::{
     agents::agent_context::AgentContext, components::cancellation::Cancellation, db::DbError,
 };
 use actors::{Mailbox, MailboxHandle, Reply};
-use psa_api::events::{Event, EventType, Log, NewEvent};
+use psa_api::events::{Event, EventType, Log};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::{

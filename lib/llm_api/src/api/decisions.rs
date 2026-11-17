@@ -102,7 +102,8 @@ impl DecisionQuestion {
 }
 
 /// A decision request, such as for `openrouter`'s `typesafe/jev-1.14`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DecisionRequest {
     /// Decision model; its provider must match the client's.
     pub model: Model,
@@ -174,8 +175,26 @@ pub enum DecisionAnswer {
     Unsupported,
 }
 
+impl DecisionAnswer {
+    /// False for a refusal or an answer type this client does not model.
+    pub fn is_answered(&self) -> bool {
+        !matches!(self, Self::Refusal | Self::Unsupported)
+    }
+
+    /// Model confidence in the answer, when reported.
+    pub fn confidence(&self) -> Option<f64> {
+        match self {
+            Self::Noul { confidence, .. }
+            | Self::Choice { confidence, .. }
+            | Self::Score { confidence, .. } => *confidence,
+            Self::Refusal | Self::Unsupported => None,
+        }
+    }
+}
+
 /// A completed decision call.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DecisionResponse {
     /// Model the request was sent to.
     pub model: Model,
@@ -189,6 +208,17 @@ pub struct DecisionResponse {
     pub usage: Usage,
     /// Other response fields, such as the served model version and upstream provider.
     pub provider_metadata: ProviderFields,
+}
+
+impl DecisionResponse {
+    /// True when every question in the request received a modeled answer.
+    pub fn is_complete(&self, request: &DecisionRequest) -> bool {
+        request.questions.keys().all(|key| {
+            self.answers
+                .get(key)
+                .is_some_and(DecisionAnswer::is_answered)
+        })
+    }
 }
 
 #[derive(Serialize)]

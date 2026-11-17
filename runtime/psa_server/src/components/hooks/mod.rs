@@ -40,7 +40,7 @@ use crate::{
     db::DbError,
 };
 use actors::UnboundedMailbox;
-pub use psa_api::{AgentCommand, HookConfig, HookConfigs};
+pub use psa_api::{AgentCommand, CommandResult, HookConfig, HookConfigs};
 use psa_shared::probe_transport::ProbeError;
 use std::time::Duration;
 
@@ -61,15 +61,9 @@ pub enum HookError {
     ClientQuery(#[from] crate::agents::client_queries::ClientQueryError),
 }
 
-/// Whether a command hook executed a command or left it to later hooks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandOutcome {
-    Handled,
-    Ignored,
-}
-
-/// Receives typed agent commands. Hooks ignore variants they do not handle;
-/// the first hook to handle a command stops dispatch.
+/// Receives typed agent commands. A hook returns `None` for commands it does not
+/// handle, leaving them to later hooks; the first result stops dispatch. Hooks
+/// do not record the command: the worker records it with the returned result.
 pub trait CommandHook: Send {
     fn cancellation_timeout(&self) -> Duration;
     fn handle_command(
@@ -77,7 +71,7 @@ pub trait CommandHook: Send {
         context: &mut AgentContext<'_>,
         command: &AgentCommand,
         cancellation: Cancellation,
-    ) -> impl std::future::Future<Output = Result<CommandOutcome, HookError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Option<CommandResult>, HookError>> + Send;
 }
 
 /// Static dispatch for bundle-installed command hooks.
@@ -97,7 +91,7 @@ impl CommandHook for CommandHookKind {
         context: &mut AgentContext<'_>,
         command: &AgentCommand,
         cancellation: Cancellation,
-    ) -> Result<CommandOutcome, HookError> {
+    ) -> Result<Option<CommandResult>, HookError> {
         match self {
             Self::Compaction(hook) => hook.handle_command(context, command, cancellation).await,
         }
@@ -256,14 +250,14 @@ pub(crate) async fn run_hook(
     Ok(interrupted)
 }
 
-/// Offers a command to each hook in order until one handles it. Returns the
-/// outcome and whether an interrupt arrived while a hook was running.
+/// Offers a command to each hook in order until one handles it. Returns that
+/// hook's result, if any, and whether an interrupt arrived while a hook ran.
 pub(crate) async fn run_command_hooks(
     hooks: &mut [CommandHookKind],
     context: &mut AgentContext<'_>,
     controls: &mut UnboundedMailbox<AgentManagerMessage>,
     command: &AgentCommand,
-) -> Result<(CommandOutcome, bool), AgentError> {
+) -> Result<(Option<CommandResult>, bool), AgentError> {
     for hook in hooks {
         let (sender, cancellation) = Cancellation::channel();
         let grace = hook.cancellation_timeout();
@@ -280,15 +274,15 @@ pub(crate) async fn run_command_hooks(
         context.update_session(session);
         context.finish_persistence().await?;
 
-        let outcome = result
+        let handled = result
             .ok_or(AgentError::HookTimeout)?
             .map_err(|error| AgentError::Hook(Box::new(error)))?;
-        if interrupted || outcome == CommandOutcome::Handled {
-            return Ok((outcome, interrupted));
+        if interrupted || handled.is_some() {
+            return Ok((handled, interrupted));
         }
     }
 
-    Ok((CommandOutcome::Ignored, false))
+    Ok((None, false))
 }
 
 #[derive(Default)]

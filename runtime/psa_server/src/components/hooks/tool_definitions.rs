@@ -1,4 +1,5 @@
 use super::{Hook, HookError};
+use crate::db::NewEvent;
 use crate::{
     agents::agent_context::AgentContext,
     components::{
@@ -10,7 +11,7 @@ use crate::{
 use llm_api::api::ToolDefinition as ApiToolDefinition;
 use psa_api::{
     ToolId,
-    events::{EventType, Message, NewEvent, ToolDefinition},
+    events::{EventType, Message, ToolDefinition},
 };
 use std::time::Duration;
 

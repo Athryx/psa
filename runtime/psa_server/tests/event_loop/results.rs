@@ -42,7 +42,7 @@ async fn create_configured(
         .client
         .create_agent(
             session.id,
-            &wire::NewConfiguredAgent {
+            &wire::CreateAgent {
                 config_id,
                 name: "result producer".into(),
                 model: None,
@@ -75,7 +75,7 @@ async fn ordinary_runs_record_one_text_result_including_token_limited_answers() 
     assert!(
         harness
             .client
-            .last_result_raw(session.id, agent.id)
+            .get_last_result(session.id, agent.id)
             .await
             .unwrap()
             .is_none()
@@ -83,14 +83,14 @@ async fn ordinary_runs_record_one_text_result_including_token_limited_answers() 
     run(&harness, session.id, agent.id).await;
     let first = harness
         .client
-        .last_result::<String>(session.id, agent.id)
+        .get_last_result_as::<String>(session.id, agent.id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(first.value, "hello");
     let transcript = harness
         .client
-        .events(session.id, Some(agent.id), &Default::default())
+        .list_events(session.id, Some(agent.id), &Default::default())
         .await
         .unwrap();
     assert!(transcript.events.iter().any(|event| matches!(&event.event.kind,
@@ -107,7 +107,7 @@ async fn ordinary_runs_record_one_text_result_including_token_limited_answers() 
     run(&harness, session.id, agent.id).await;
     let latest = harness
         .client
-        .last_results::<String>(session.id, agent.id, 2)
+        .list_results_as::<String>(session.id, agent.id, 2)
         .await
         .unwrap();
     assert_eq!(latest.len(), 2);
@@ -125,21 +125,24 @@ async fn ordinary_runs_record_one_text_result_including_token_limited_answers() 
     );
     let all = harness
         .client
-        .events(session.id, Some(agent.id), &Default::default())
+        .list_events(session.id, Some(agent.id), &Default::default())
         .await
         .unwrap();
     assert!(all.events.iter().any(|event| matches!(&event.event.kind,
         EventType::InferenceResultEnd(end) if matches!(end.outcome, api::Outcome::Incomplete { reason: api::StopReason::TokenLimit }))));
     for limit in [0, 10001] {
         assert!(matches!(
-            harness.client.results(session.id, agent.id, limit).await,
+            harness
+                .client
+                .list_results(session.id, agent.id, limit)
+                .await,
             Err(wire::ClientError::Api { status: 400, .. })
         ));
     }
     assert!(matches!(
         harness
             .client
-            .last_result::<Answer>(session.id, agent.id)
+            .get_last_result_as::<Answer>(session.id, agent.id)
             .await,
         Err(wire::ClientError::Json(_))
     ));
@@ -179,7 +182,7 @@ async fn ordinary_runs_record_one_text_result_including_token_limited_answers() 
     assert_eq!(child.state, AgentState::Idle);
     let inherited = harness
         .client
-        .last_results::<String>(fork.session.id, child.id, 10)
+        .list_results_as::<String>(fork.session.id, child.id, 10)
         .await
         .unwrap();
     assert_eq!(inherited.len(), 1);
@@ -187,7 +190,7 @@ async fn ordinary_runs_record_one_text_result_including_token_limited_answers() 
     assert_eq!(inherited[0].agent_id, child.id);
     assert_eq!(inherited[0].event_id, first.event_id);
     assert!(matches!(
-        harness.client.results(session.id, child.id, 1).await,
+        harness.client.list_results(session.id, child.id, 1).await,
         Err(wire::ClientError::Api { status: 404, .. })
     ));
 
@@ -218,7 +221,7 @@ async fn ordinary_runs_record_one_text_result_including_token_limited_answers() 
     let client = wire::Client::new(&format!("http://{address}"), "test-client-key").unwrap();
     assert_eq!(
         client
-            .last_results::<String>(session.id, agent.id, 2)
+            .list_results_as::<String>(session.id, agent.id, 2)
             .await
             .unwrap(),
         latest
@@ -237,7 +240,7 @@ async fn result_only_pages_and_sse_filter_before_pagination_without_changing_cur
     }
     let newest = harness
         .client
-        .results(session.id, agent.id, 10)
+        .list_results(session.id, agent.id, 10)
         .await
         .unwrap();
     for scope in [None, Some(agent.id)] {
@@ -248,10 +251,11 @@ async fn result_only_pages_and_sse_filter_before_pagination_without_changing_cur
             ..Default::default()
         };
         let mut ids = Vec::new();
+        let mut after = 0;
         loop {
             let page = harness
                 .client
-                .events(session.id, scope, &query)
+                .list_events(session.id, scope, &query)
                 .await
                 .unwrap();
             assert!(page.pending.is_empty());
@@ -263,8 +267,12 @@ async fn result_only_pages_and_sse_filter_before_pagination_without_changing_cur
             if !page.has_more {
                 break;
             }
-            assert!(page.next_after > query.after);
-            query.after = page.next_after;
+            assert!(page.next_after > after);
+            after = page.next_after;
+            query.span = wire::EventSpan::Forward {
+                after,
+                through: None,
+            };
         }
         assert_eq!(
             ids,
@@ -277,7 +285,7 @@ async fn result_only_pages_and_sse_filter_before_pagination_without_changing_cur
     }
     let full = harness
         .client
-        .events(session.id, Some(agent.id), &Default::default())
+        .list_events(session.id, Some(agent.id), &Default::default())
         .await
         .unwrap();
     let mut stream = harness
@@ -289,7 +297,10 @@ async fn result_only_pages_and_sse_filter_before_pagination_without_changing_cur
                 results_only: true,
                 include_pending: true,
                 limit: 1,
-                through: Some(full.head),
+                span: wire::EventSpan::Forward {
+                    after: 0,
+                    through: Some(full.head),
+                },
                 ..Default::default()
             },
             None,
@@ -324,7 +335,10 @@ async fn result_only_pages_and_sse_filter_before_pagination_without_changing_cur
             session.id,
             Some(agent.id),
             &wire::EventsQuery {
-                after: full.head,
+                span: wire::EventSpan::Forward {
+                    after: full.head,
+                    through: None,
+                },
                 results_only: true,
                 include_pending: true,
                 ..Default::default()
@@ -362,7 +376,7 @@ async fn result_only_pages_and_sse_filter_before_pagination_without_changing_cur
     assert_eq!(
         harness
             .client
-            .results(session.id, agent.id, 10)
+            .list_results(session.id, agent.id, 10)
             .await
             .unwrap()
             .len(),
@@ -385,7 +399,7 @@ async fn typed_result_retries_invalid_and_missing_calls_then_persists_the_exact_
     run(&harness, session.id, agent.id).await;
     let result = harness
         .client
-        .last_result::<Answer>(session.id, agent.id)
+        .get_last_result_as::<Answer>(session.id, agent.id)
         .await
         .unwrap()
         .unwrap();
@@ -393,7 +407,7 @@ async fn typed_result_retries_invalid_and_missing_calls_then_persists_the_exact_
     assert_eq!(
         harness
             .client
-            .results(session.id, agent.id, 10)
+            .list_results(session.id, agent.id, 10)
             .await
             .unwrap()
             .len(),
@@ -401,7 +415,7 @@ async fn typed_result_retries_invalid_and_missing_calls_then_persists_the_exact_
     );
     let page = harness
         .client
-        .events(session.id, Some(agent.id), &Default::default())
+        .list_events(session.id, Some(agent.id), &Default::default())
         .await
         .unwrap();
     assert_eq!(
@@ -456,14 +470,14 @@ async fn typed_result_retry_budgets_stop_without_fabricating_results_and_reset_o
         assert!(
             harness
                 .client
-                .last_result_raw(session.id, agent.id)
+                .get_last_result(session.id, agent.id)
                 .await
                 .unwrap()
                 .is_none()
         );
         let page = harness
             .client
-            .events(session.id, Some(agent.id), &Default::default())
+            .list_events(session.id, Some(agent.id), &Default::default())
             .await
             .unwrap();
         assert_eq!(
@@ -482,7 +496,7 @@ async fn typed_result_retry_budgets_stop_without_fabricating_results_and_reset_o
         assert_eq!(
             harness
                 .client
-                .last_result::<Answer>(session.id, agent.id)
+                .get_last_result_as::<Answer>(session.id, agent.id)
                 .await
                 .unwrap()
                 .unwrap()
@@ -571,7 +585,7 @@ async fn interrupting_typed_completion_does_not_create_a_result() {
     assert!(
         harness
             .client
-            .results(session.id, agent.id, 10)
+            .list_results(session.id, agent.id, 10)
             .await
             .unwrap()
             .is_empty()

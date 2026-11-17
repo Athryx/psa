@@ -5,10 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Unique identifier for a pending runtime client query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct ClientQueryId(
-    /// UUID used to correlate a query with its response.
-    pub uuid::Uuid,
-);
+pub struct ClientQueryId(pub uuid::Uuid);
 
 impl ClientQueryId {
     /// Generate a random version-4 query identifier.
@@ -53,10 +50,7 @@ pub struct ClientQueryRequest {
 )]
 pub enum ClientQuery {
     /// Ask the client to answer one or more questions.
-    AskQuestion(
-        /// Questions and optional suggested choices.
-        AskQuestionRequest,
-    ),
+    AskQuestion(AskQuestionRequest),
 }
 
 /// Typed client response to a pending query.
@@ -69,10 +63,7 @@ pub enum ClientQuery {
 )]
 pub enum ClientQueryResponse {
     /// Answers to an ask-question request.
-    AskQuestion(
-        /// Answers in the same order as the requested questions.
-        AskQuestionResponse,
-    ),
+    AskQuestion(AskQuestionResponse),
 }
 
 /// Nonempty ordered list of questions to present to the client.

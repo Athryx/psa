@@ -1,5 +1,5 @@
 use super::*;
-use wire::{AgentEffort, AgentModel, EffortSelection, ModelSelection, NewConfiguredAgent};
+use wire::{AgentEffort, AgentModel, CreateAgent, EffortSelection, ModelSelection};
 
 #[tokio::test]
 async fn configured_creation_requires_an_exact_full_model_selection() {
@@ -17,7 +17,7 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
         .await
         .unwrap();
     let allowed = ModelSelection::Fixed {
-        model: "openrouter/vendor/model".into(),
+        model: "openrouter/vendor/model".parse().unwrap(),
         effort: EffortSelection::Fixed(Effort::High),
     };
     let mut config = agent_config("explicit-model");
@@ -41,7 +41,7 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
             .config
             .default
     );
-    let request = |choice| NewConfiguredAgent {
+    let request = |choice| CreateAgent {
         name: "exact selection".into(),
         config_id: config.config_id.clone(),
         model: choice,
@@ -52,15 +52,15 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
 
     for choice in [
         Some(ModelSelection::Fixed {
-            model: "openrouter/vendor/model".into(),
+            model: "openrouter/vendor/model".parse().unwrap(),
             effort: EffortSelection::Fixed(Effort::Low),
         }),
         Some(ModelSelection::Fixed {
-            model: "openrouter/vendor/model".into(),
+            model: "openrouter/vendor/model".parse().unwrap(),
             effort: EffortSelection::Parent,
         }),
         Some(ModelSelection::Fixed {
-            model: "openrouter/vendor/unsupported".into(),
+            model: "openrouter/vendor/unsupported".parse().unwrap(),
             effort: EffortSelection::Fixed(Effort::High),
         }),
         Some(ModelSelection::Global),
@@ -91,7 +91,6 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
         .client
         .get_resolved_agent_config(implicit.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(
         implicit_snapshot.definition.model.effort(),
@@ -107,7 +106,6 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
         .client
         .get_resolved_agent_config(parent.definition_id)
         .await
-        .unwrap()
         .unwrap();
     let parent_model = AgentModel::from(ModelConfig {
         model: Model::new(ProviderType::Openrouter, "vendor/model").unwrap(),
@@ -118,11 +116,11 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
 
     // Parent variants copy the parent's policy; Global variants keep following the session.
     let fixed_parent = ModelSelection::Fixed {
-        model: "openrouter/vendor/child".into(),
+        model: "openrouter/vendor/child".parse().unwrap(),
         effort: EffortSelection::Parent,
     };
     let fixed_global = ModelSelection::Fixed {
-        model: "openrouter/vendor/child-global".into(),
+        model: "openrouter/vendor/child-global".parse().unwrap(),
         effort: EffortSelection::Global,
     };
     let mut dynamic = agent_config("dynamic-model");
@@ -139,7 +137,7 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
         .await
         .unwrap();
     assert!(!registered[0].config.default);
-    let dynamic_request = |choice| NewConfiguredAgent {
+    let dynamic_request = |choice| CreateAgent {
         name: "dynamic selection".into(),
         config_id: dynamic.config_id.clone(),
         model: choice,
@@ -179,7 +177,7 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
             .client
             .create_agent(
                 session.id,
-                &NewConfiguredAgent {
+                &CreateAgent {
                     name: format!("dynamic selection {index}"),
                     config_id: dynamic.config_id.clone(),
                     model: Some(selection),
@@ -194,7 +192,6 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
             .client
             .get_resolved_agent_config(child.definition_id)
             .await
-            .unwrap()
             .unwrap();
         assert_eq!(snapshot.definition.model, expected);
     }
@@ -212,7 +209,6 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
         .client
         .get_resolved_agent_config(defaulted.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(snapshot.definition.model, AgentModel::Global);
     harness.close().await;

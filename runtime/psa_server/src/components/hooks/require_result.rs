@@ -1,4 +1,5 @@
 use super::{Hook, HookError};
+use crate::db::NewEvent;
 use crate::{
     agents::{AgentState, agent_context::AgentContext},
     components::{
@@ -7,9 +8,7 @@ use crate::{
     },
 };
 use llm_api::api::{Outcome, StopReason};
-use psa_api::events::{
-    Event, EventId, EventType, Log, Message, MessageType, NewEvent, StatusChange,
-};
+use psa_api::events::{Event, EventId, EventType, Log, Message, MessageType, StatusChange};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, sync::Arc, time::Duration};
 

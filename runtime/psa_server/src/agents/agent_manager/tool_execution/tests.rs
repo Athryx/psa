@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::NewEvent;
 use crate::{
     agents::{NewAgent, session_manager::Runtime},
     components::tools::{ToolId, ToolSystemPrompt, typed_tool_execute},

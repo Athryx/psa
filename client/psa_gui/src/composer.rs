@@ -12,7 +12,10 @@ use dioxus::{
     core::{AttributeValue, spawn_forever},
     prelude::*,
 };
-use llm_api::providers::{Effort, Model, ModelConfig};
+use llm_api::{
+    api::Usage,
+    providers::{Effort, Model, ModelConfig},
+};
 use psa_api::*;
 
 #[cfg(test)]
@@ -106,7 +109,13 @@ fn refresh_configs(mut ui: Signal<Ui>, target: TranscriptTarget) {
         return;
     }
     ui.write().drafts.remove(&target);
-    spawn(network::refresh_configs(ui, target.session_id));
+    spawn(network::record_command(
+        ui,
+        target,
+        "refresh",
+        String::new(),
+        network::refresh_configs(ui, target.session_id),
+    ));
 }
 
 fn refresh_draft_configs(mut ui: Signal<Ui>, session_id: SessionId, target: TranscriptTarget) {
@@ -207,7 +216,7 @@ fn draft_status_model(
                     session.map(|config| config.effort)
                 }
             };
-            (Model::parse_slug(model).ok(), effort)
+            (Some(model.clone()), effort)
         }
         None => (None, None),
     }
@@ -241,7 +250,7 @@ fn ResolvedTemplate(id: AgentDefinitionId) -> Element {
         name.set(None);
         spawn(async move {
             if let Ok(client) = network::client(ui) {
-                if let Ok(Some(snapshot)) = client.get_resolved_agent_config(id).await {
+                if let Ok(snapshot) = client.get_resolved_agent_config(id).await {
                     name.set(Some(snapshot.config.config_id.name));
                 }
             }
@@ -259,7 +268,7 @@ fn AgentInfo(
     probe: Option<ProbeId>,
     model: Option<String>,
     effort: Option<Effort>,
-    usage: Option<AgentUsage>,
+    usage: Option<Usage>,
     mut open: Signal<bool>,
 ) -> Element {
     crate::app::register_modal(open);
@@ -415,11 +424,19 @@ fn select_session_effort(mut ui: Signal<Ui>, target: TranscriptTarget, effort: E
     };
     if let Some(config) = config {
         let generation = ui.peek().generation;
-        spawn(async move {
-            if ui.peek().generation == generation {
-                change_model(ui, target.session_id, config).await;
+        let change = async move {
+            if ui.peek().generation != generation {
+                return None;
             }
-        });
+            change_model(ui, target.session_id, config).await
+        };
+        spawn(network::record_command(
+            ui,
+            target,
+            "effort",
+            effort.as_str().into(),
+            change,
+        ));
         ui.write().drafts.remove(&target);
     }
 }
@@ -439,10 +456,25 @@ fn choose_effort(model: &ModelInfo, preferred: Effort) -> Effort {
             .unwrap_or(Effort::Off)
     }
 }
-async fn rename_session(mut ui: Signal<Ui>, session_id: SessionId, name: String) {
+/// `/rename`, recorded in the transcript of the agent it was typed to.
+fn spawn_rename(ui: Signal<Ui>, target: TranscriptTarget, name: String) {
+    spawn(network::record_command(
+        ui,
+        target,
+        "rename",
+        name.clone(),
+        rename_session(ui, target.session_id, name),
+    ));
+}
+
+async fn rename_session(
+    mut ui: Signal<Ui>,
+    session_id: SessionId,
+    name: String,
+) -> network::CommandEnd {
     let generation = ui.peek().generation;
     let Ok(api) = network::client(ui) else {
-        return;
+        return None;
     };
     let result = api
         .update_session(
@@ -454,11 +486,17 @@ async fn rename_session(mut ui: Signal<Ui>, session_id: SessionId, name: String)
         )
         .await;
     if generation != ui.peek().generation {
-        return;
+        return None;
     }
     match result {
-        Ok(_) => ui.write().notice = Some("Session renamed.".into()),
-        Err(_) => ui.write().error = Some("Unable to rename the session".into()),
+        Ok(_) => {
+            ui.write().notice = Some("Session renamed.".into());
+            Some(Ok(()))
+        }
+        Err(error) => {
+            ui.write().error = Some("Unable to rename the session".into());
+            Some(Err(format!("Unable to rename the session: {error}")))
+        }
     }
 }
 
@@ -478,6 +516,17 @@ fn open_slash_prompt(
     prompt.set(Some(kind));
 }
 
+/// `/info` only opens a local view, so it is recorded as finished at once.
+fn record_info(ui: Signal<Ui>, target: TranscriptTarget) {
+    spawn(network::record_command(
+        ui,
+        target,
+        "info",
+        String::new(),
+        async { Some(Ok(())) },
+    ));
+}
+
 fn focus_node(node: Signal<Option<std::rc::Rc<MountedData>>>) {
     if let Some(node) = node.peek().clone() {
         spawn(async move {
@@ -486,10 +535,14 @@ fn focus_node(node: Signal<Option<std::rc::Rc<MountedData>>>) {
     }
 }
 
-async fn change_model(mut ui: Signal<Ui>, session_id: SessionId, model_config: ModelConfig) {
+async fn change_model(
+    mut ui: Signal<Ui>,
+    session_id: SessionId,
+    model_config: ModelConfig,
+) -> network::CommandEnd {
     let generation = ui.peek().generation;
     let Ok(api) = network::client(ui) else {
-        return;
+        return None;
     };
     let result = api
         .update_session(
@@ -501,14 +554,19 @@ async fn change_model(mut ui: Signal<Ui>, session_id: SessionId, model_config: M
         )
         .await;
     if generation != ui.peek().generation {
-        return;
+        return None;
     }
     match result {
         Ok(_) => {
-            ui.write().notice = Some("Session default updated. Pinned agents are unchanged.".into())
+            ui.write().notice =
+                Some("Session default updated. Pinned agents are unchanged.".into());
+            Some(Ok(()))
         }
-        Err(_) => {
-            ui.write().error = Some("Unable to change the session default model/effort".into())
+        Err(error) => {
+            ui.write().error = Some("Unable to change the session default model/effort".into());
+            Some(Err(format!(
+                "Unable to change the session default model/effort: {error}"
+            )))
         }
     }
 }
@@ -770,6 +828,7 @@ fn select_menu_action(
             CommandId::Info => {
                 ui.write().drafts.remove(&target);
                 info_open.set(true);
+                record_info(ui, target);
             }
             // Choosing from the menu compacts immediately; Tab completes
             // `/compact ` so focus instructions can be typed first.
@@ -779,7 +838,13 @@ fn select_menu_action(
             CommandId::Rename => open_slash_prompt(ui, target, prompt, SlashPrompt::RenameSession),
             CommandId::Fork => {
                 ui.write().drafts.remove(&target);
-                spawn(network::fork_session(ui, target, String::new()));
+                spawn(network::record_command(
+                    ui,
+                    target,
+                    "fork",
+                    String::new(),
+                    network::fork_session(ui, target, String::new()),
+                ));
             }
             _ => {
                 ui.write()
@@ -803,16 +868,25 @@ fn select_menu_action(
             choosing_model.set(None);
         }
         MenuAction::SessionModel(config) => {
-            spawn(change_model(ui, target.session_id, config));
+            let args = format!("{} {}", config.model, config.effort.as_str());
+            spawn(network::record_command(
+                ui,
+                target,
+                "model",
+                args,
+                change_model(ui, target.session_id, config),
+            ));
             ui.write().drafts.remove(&target);
         }
         MenuAction::SessionEffort(effort) => select_session_effort(ui, target, effort),
         MenuAction::Sandbox(action) => {
             ui.write().drafts.remove(&target);
-            spawn(network::change_session_sandbox(
+            spawn(network::record_command(
                 ui,
-                target.session_id,
-                action,
+                target,
+                "sandbox",
+                action.as_str().into(),
+                network::change_session_sandbox(ui, target.session_id, action),
             ));
         }
     }
@@ -1231,6 +1305,7 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
             } => {
                 ui.write().drafts.remove(&target);
                 info_open.set(true);
+                record_info(ui, target);
             }
             ComposerInput::Command {
                 id: CommandId::Rename,
@@ -1240,7 +1315,7 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
                     open_slash_prompt(ui, target, prompt, SlashPrompt::RenameSession);
                 } else {
                     ui.write().drafts.remove(&target);
-                    spawn(rename_session(ui, session_id, arguments));
+                    spawn_rename(ui, target, arguments);
                 }
             }
             ComposerInput::Command {
@@ -1249,10 +1324,12 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
             } => match SandboxAction::parse(&arguments) {
                 Some(action) => {
                     ui.write().drafts.remove(&target);
-                    spawn(network::change_session_sandbox(
+                    spawn(network::record_command(
                         ui,
-                        target.session_id,
-                        action,
+                        target,
+                        "sandbox",
+                        action.as_str().into(),
+                        network::change_session_sandbox(ui, target.session_id, action),
                     ));
                 }
                 None => {
@@ -1264,7 +1341,13 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
                 arguments,
             } if !root => {
                 ui.write().drafts.remove(&target);
-                spawn(network::fork_session(ui, target, arguments));
+                spawn(network::record_command(
+                    ui,
+                    target,
+                    "fork",
+                    arguments.clone(),
+                    network::fork_session(ui, target, arguments),
+                ));
             }
             ComposerInput::Command {
                 id: CommandId::Compact,
@@ -1323,7 +1406,7 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
                             submit_label: "Rename",
                             onsubmit: move |name: String| {
                                 prompt.set(None);
-                                spawn(rename_session(ui, session_id, name));
+                                spawn_rename(ui, target, name);
                                 focus_node(textarea_node);
                             },
                             oncancel: move |_| {

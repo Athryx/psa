@@ -4,6 +4,7 @@
 //! text, which makes them cheap enough to run over large amounts of data. Every
 //! call is recorded as a public `DecisionCall` event.
 
+use crate::db::NewEvent;
 use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
@@ -12,15 +13,11 @@ use std::{
 use llm_api::{
     api::{
         HistoryItemKind, ToolSchema,
-        decisions::{DecisionAnswer, DecisionQuestion, DecisionRequest, DecisionResponse},
+        decisions::{DecisionQuestion, DecisionRequest, DecisionResponse},
     },
     providers::Model,
 };
-use psa_api::{
-    DecisionAnswerResult, DecisionAnswerSummary, DecisionCall, DecisionCallUsage, DecisionOutcome,
-    DecisionQuestionSummary,
-    events::{EventType, NewEvent},
-};
+use psa_api::{DecisionCall, events::EventType};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -70,7 +67,7 @@ impl Decide {
             .await
             .map_err(|message| value_error(&message))?;
         let request = DecisionRequest {
-            model: model.clone(),
+            model,
             state: arguments.state,
             questions: arguments.questions,
         };
@@ -86,17 +83,26 @@ impl Decide {
             .await;
         let duration = started.elapsed();
 
-        let call = match &result {
-            Ok(response) => summarize_response(&model, &request, response, duration),
+        let response = match result {
+            Ok(response) => Ok(response),
             Err(failure) if failure.cancelled => {
-                return Err(CodeModeError::runtime(failure.message.clone()));
+                return Err(CodeModeError::runtime(failure.message));
             }
-            Err(failure) => summarize_failure(&model, &request, &failure.message, duration),
+            Err(failure) => Err(failure.message),
+        };
+        let value = match &response {
+            Ok(response) => Ok(answers_value(&request, response)),
+            Err(message) => Err(CodeModeError::runtime(message.clone())),
+        };
+        let call = DecisionCall {
+            tool_call_id: current_codemode_call_id(context),
+            request,
+            response,
+            duration,
         };
         record_call(context, call).await;
 
-        let response = result.map_err(|failure| CodeModeError::runtime(failure.message))?;
-        Ok(answers_value(&model, &request, response))
+        value
     }
 
     /// An explicit name must be legal; otherwise the policy's default is used.
@@ -142,121 +148,30 @@ fn value_error(message: &str) -> CodeModeError {
     }
 }
 
-fn question_summaries(request: &DecisionRequest) -> Vec<DecisionQuestionSummary> {
-    request
-        .questions
-        .iter()
-        .map(|(key, question)| DecisionQuestionSummary {
-            key: key.clone(),
-            kind: question.kind().into(),
-        })
-        .collect()
-}
-
-fn summarize_answer(answer: Option<&DecisionAnswer>) -> (DecisionAnswerResult, Option<f64>) {
-    match answer {
-        Some(DecisionAnswer::Noul { noul, confidence }) => {
-            (DecisionAnswerResult::Noul(*noul), *confidence)
-        }
-        Some(DecisionAnswer::Choice {
-            choice, confidence, ..
-        }) => (DecisionAnswerResult::Choice(choice.clone()), *confidence),
-        Some(DecisionAnswer::Score {
-            score, confidence, ..
-        }) => (DecisionAnswerResult::Score(*score), *confidence),
-        Some(DecisionAnswer::Refusal) => (DecisionAnswerResult::Refused, None),
-        Some(DecisionAnswer::Unsupported) => (DecisionAnswerResult::Unsupported, None),
-        None => (DecisionAnswerResult::Missing, None),
-    }
-}
-
-fn summarize_response(
-    model: &Model,
-    request: &DecisionRequest,
-    response: &DecisionResponse,
-    duration: Duration,
-) -> DecisionCall {
-    let answers: Vec<_> = request
-        .questions
-        .keys()
-        .map(|key| {
-            let (result, confidence) = summarize_answer(response.answers.get(key));
-            DecisionAnswerSummary {
-                key: key.clone(),
-                result,
-                confidence,
-            }
-        })
-        .collect();
-    let complete = answers.iter().all(|answer| {
-        !matches!(
-            answer.result,
-            DecisionAnswerResult::Refused
-                | DecisionAnswerResult::Unsupported
-                | DecisionAnswerResult::Missing
-        )
-    });
-    DecisionCall {
-        tool_call_id: None,
-        model: model.clone(),
-        questions: question_summaries(request),
-        outcome: if complete {
-            DecisionOutcome::Answered
-        } else {
-            DecisionOutcome::PartlyAnswered
-        },
-        answers,
-        usage: DecisionCallUsage {
-            input_tokens: response.usage.input_tokens,
-            cached_tokens: response.usage.cached_input_tokens,
-            cost: response.usage.cost,
-        },
-        duration,
-        request_id: response.response_id.clone(),
-    }
-}
-
-fn summarize_failure(
-    model: &Model,
-    request: &DecisionRequest,
-    message: &str,
-    duration: Duration,
-) -> DecisionCall {
-    DecisionCall {
-        tool_call_id: None,
-        model: model.clone(),
-        questions: question_summaries(request),
-        outcome: DecisionOutcome::Failed(message.into()),
-        answers: Vec::new(),
-        usage: DecisionCallUsage::default(),
-        duration,
-        request_id: None,
-    }
-}
-
 /// Unanswered questions are `None` to the script: a refusal or a missing
 /// answer is not a negative verdict and must not be read as one.
-fn answers_value(model: &Model, request: &DecisionRequest, response: DecisionResponse) -> Value {
+fn answers_value(request: &DecisionRequest, response: &DecisionResponse) -> Value {
     let answers: serde_json::Map<String, Value> = request
         .questions
         .keys()
         .map(|key| {
             let value = match response.answers.get(key) {
-                Some(DecisionAnswer::Refusal | DecisionAnswer::Unsupported) | None => Value::Null,
-                Some(answer) => serde_json::to_value(answer).unwrap_or(Value::Null),
+                Some(answer) if answer.is_answered() => {
+                    serde_json::to_value(answer).unwrap_or(Value::Null)
+                }
+                _ => Value::Null,
             };
             (key.clone(), value)
         })
         .collect();
     json!({
-        "model": model.slug(),
+        "model": request.model.slug(),
         "cost": response.usage.cost,
         "answers": answers,
     })
 }
 
-async fn record_call(context: &mut AgentContext<'_>, mut call: DecisionCall) {
-    call.tool_call_id = current_codemode_call_id(context);
+async fn record_call(context: &mut AgentContext<'_>, call: DecisionCall) {
     let saved = context
         .save_events(&[NewEvent::new(EventType::DecisionCall(call))])
         .await;

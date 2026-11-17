@@ -1,12 +1,15 @@
 use super::fixture;
+use crate::db::NewEvent;
 use crate::sessions::{ForkPoint, SessionFork, SessionUpdate};
-use llm_api::providers::{Model, ProviderType};
-use psa_api::{
-    DecisionAnswerResult, DecisionAnswerSummary, DecisionCall, DecisionCallUsage, DecisionOutcome,
-    DecisionQuestionSummary,
-    events::{EventType, NewEvent},
+use llm_api::{
+    api::{
+        Usage,
+        decisions::{DecisionAnswer, DecisionQuestion, DecisionRequest, DecisionResponse},
+    },
+    providers::{Model, ProviderType},
 };
-use std::time::Duration;
+use psa_api::{DecisionCall, events::EventType};
+use std::{collections::BTreeMap, time::Duration};
 
 fn decider(name: &str) -> Model {
     Model::new(ProviderType::Openrouter, name).unwrap()
@@ -17,24 +20,36 @@ async fn decision_call_events_round_trip_through_the_database() {
     let (_dir, db, _session, agent) = fixture().await;
     let call = DecisionCall {
         tool_call_id: Some("call-1".into()),
-        model: decider("vendor/decider"),
-        questions: vec![DecisionQuestionSummary {
-            key: "angry".into(),
-            kind: "noul".into(),
-        }],
-        outcome: DecisionOutcome::PartlyAnswered,
-        answers: vec![DecisionAnswerSummary {
-            key: "angry".into(),
-            result: DecisionAnswerResult::Noul(0.25),
-            confidence: Some(0.9),
-        }],
-        usage: DecisionCallUsage {
-            input_tokens: Some(128),
-            cached_tokens: Some(64),
-            cost: Some(0.0000384),
+        request: DecisionRequest {
+            model: decider("vendor/decider"),
+            state: "Where is my refund?".into(),
+            questions: BTreeMap::from([(
+                "angry".into(),
+                DecisionQuestion::Noul {
+                    instructions: "Is the customer angry?".into(),
+                    criteria: None,
+                },
+            )]),
         },
+        response: Ok(DecisionResponse {
+            model: decider("vendor/decider"),
+            response_id: Some("gen-dec-1".into()),
+            answers: BTreeMap::from([(
+                "angry".into(),
+                DecisionAnswer::Noul {
+                    noul: 0.25,
+                    confidence: Some(0.9),
+                },
+            )]),
+            usage: Usage {
+                input_tokens: Some(128),
+                cached_input_tokens: Some(64),
+                cost: Some(0.0000384),
+                ..Usage::default()
+            },
+            provider_metadata: Default::default(),
+        }),
         duration: Duration::from_millis(1250),
-        request_id: Some("gen-dec-1".into()),
     };
 
     let mut cursor = db.cursor().await.unwrap();

@@ -46,7 +46,7 @@ fn model_choices_enforce_allowed_list_and_default_policy() {
     let mut config = config(vec![ModelSelection::Global, ModelSelection::Parent], false);
     assert!(select_model(&config, None, &parent).is_err());
     let unsupported = ModelSelection::Fixed {
-        model: "openrouter/other".into(),
+        model: "openrouter/other".parse().unwrap(),
         effort: EffortSelection::Global,
     };
     assert!(select_model(&config, Some(&unsupported), &parent).is_err());
@@ -86,7 +86,7 @@ fn a_single_allowed_model_is_implicitly_selected_even_without_default_permission
         ModelSelection::Global,
         ModelSelection::Parent,
         ModelSelection::Fixed {
-            model: "openrouter/vendor/model".into(),
+            model: "openrouter/vendor/model".parse().unwrap(),
             effort: EffortSelection::Fixed(Effort::Low),
         },
     ] {
@@ -100,7 +100,7 @@ fn a_single_allowed_model_is_implicitly_selected_even_without_default_permission
 #[test]
 fn fixed_model_choices_require_exact_slug_and_effort_policy() {
     let allowed = ModelSelection::Fixed {
-        model: "openrouter/vendor/model".into(),
+        model: "openrouter/vendor/model".parse().unwrap(),
         effort: EffortSelection::Parent,
     };
     let config = config(vec![allowed.clone()], false);
@@ -115,20 +115,20 @@ fn fixed_model_choices_require_exact_slug_and_effort_policy() {
 
     for unsupported in [
         ModelSelection::Fixed {
-            model: "openrouter/vendor/model".into(),
+            model: "openrouter/vendor/model".parse().unwrap(),
             // Even a fixed effort equal to the parent's effort is a different policy.
             effort: EffortSelection::Fixed(Effort::High),
         },
         ModelSelection::Fixed {
-            model: "openrouter/vendor/model".into(),
+            model: "openrouter/vendor/model".parse().unwrap(),
             effort: EffortSelection::Global,
         },
         ModelSelection::Fixed {
-            model: "openrouter/vendor/other".into(),
+            model: "openrouter/vendor/other".parse().unwrap(),
             effort: EffortSelection::Parent,
         },
         ModelSelection::Fixed {
-            model: "openai_codex/vendor/model".into(),
+            model: "openai_codex/vendor/model".parse().unwrap(),
             effort: EffortSelection::Parent,
         },
         ModelSelection::Global,
@@ -160,7 +160,7 @@ fn fixed_models_parse_provider_slug_and_keep_effort_policy() {
         ),
     ] {
         let selection = ModelSelection::Fixed {
-            model: "openrouter/vendor/model".into(),
+            model: "openrouter/vendor/model".parse().unwrap(),
             effort,
         };
         let config = config(vec![selection.clone()], false);
@@ -172,12 +172,6 @@ fn fixed_models_parse_provider_slug_and_keep_effort_policy() {
             }
         );
     }
-    let invalid = ModelSelection::Fixed {
-        model: "unknown/model".into(),
-        effort: EffortSelection::Global,
-    };
-    let config = config(vec![invalid.clone()], false);
-    assert!(select_model(&config, Some(&invalid), &AgentModel::Global).is_err());
 }
 
 #[test]

@@ -7,6 +7,7 @@ use crate::components::{
     codemode_functions::prior_results::PriorResults,
     tools::{CodeMode, Noop},
 };
+use crate::db::NewEvent;
 use llm_api::api::ContentBlock;
 use serde_json::json;
 

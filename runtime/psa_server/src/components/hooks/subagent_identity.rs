@@ -1,11 +1,12 @@
 //! Identity is emitted at creation; forks preserve their inherited prompt.
 use super::{Hook, HookError};
 use crate::components::bundles::subagents::ChildTemplate;
+use crate::db::NewEvent;
 use crate::{
     agents::{agent_context::AgentContext, session_manager::RuntimeError},
     components::cancellation::Cancellation,
 };
-use psa_api::events::{EventType, Message, NewEvent};
+use psa_api::events::{EventType, Message};
 use std::{sync::Arc, time::Duration};
 
 pub struct SubagentIdentity {

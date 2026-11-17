@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT p.event_pk, p.message_type, p.delivery, p.content, p.metadata, p.description, p.source_agent_id, p.source_name, p.request_id FROM event_message p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+  "query": "SELECT p.event_pk, p.call_id, p.content, p.error, p.metadata, p.delivery_agent_id, p.delivery_request_id, p.delivery_sender_name, p.delivery_recipient_name FROM event_tool_result p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
   "describe": {
     "columns": [
       {
@@ -9,41 +9,41 @@
         "type_info": "Integer",
         "origin": {
           "Table": {
-            "table": "event_message",
+            "table": "event_tool_result",
             "name": "event_pk"
           }
         }
       },
       {
-        "name": "message_type",
+        "name": "call_id",
         "ordinal": 1,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "event_message",
-            "name": "message_type"
-          }
-        }
-      },
-      {
-        "name": "delivery",
-        "ordinal": 2,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "event_message",
-            "name": "delivery"
+            "table": "event_tool_result",
+            "name": "call_id"
           }
         }
       },
       {
         "name": "content",
-        "ordinal": 3,
+        "ordinal": 2,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "event_message",
+            "table": "event_tool_result",
             "name": "content"
+          }
+        }
+      },
+      {
+        "name": "error",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_tool_result",
+            "name": "error"
           }
         }
       },
@@ -53,52 +53,52 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "event_message",
+            "table": "event_tool_result",
             "name": "metadata"
           }
         }
       },
       {
-        "name": "description",
+        "name": "delivery_agent_id",
         "ordinal": 5,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "event_message",
-            "name": "description"
-          }
-        }
-      },
-      {
-        "name": "source_agent_id",
-        "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
-            "table": "event_message",
-            "name": "source_agent_id"
+            "table": "event_tool_result",
+            "name": "delivery_agent_id"
           }
         }
       },
       {
-        "name": "source_name",
+        "name": "delivery_request_id",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_tool_result",
+            "name": "delivery_request_id"
+          }
+        }
+      },
+      {
+        "name": "delivery_sender_name",
         "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "event_message",
-            "name": "source_name"
+            "table": "event_tool_result",
+            "name": "delivery_sender_name"
           }
         }
       },
       {
-        "name": "request_id",
+        "name": "delivery_recipient_name",
         "ordinal": 8,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "event_message",
-            "name": "request_id"
+            "table": "event_tool_result",
+            "name": "delivery_recipient_name"
           }
         }
       }
@@ -109,7 +109,7 @@
     "nullable": [
       false,
       false,
-      true,
+      false,
       false,
       false,
       true,
@@ -118,5 +118,5 @@
       true
     ]
   },
-  "hash": "d901477abe43fbda83986e169a0034321586397c78e5df584ee58d021875dff0"
+  "hash": "ed24cdd803ce1274eb0ccccdfaa59bee3c5f34e4b2e51b9fe17d8c4b542f2610"
 }

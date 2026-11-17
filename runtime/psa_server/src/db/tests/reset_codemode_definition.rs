@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::NewEvent;
 
 #[tokio::test]
 async fn reset_codemode_definition_round_trips_through_persistence_and_reopen() {

@@ -1,6 +1,7 @@
 //! Native CodeMode reset is a persisted state barrier, not history deletion.
 
 use super::*;
+use crate::db::NewEvent;
 use crate::{
     components::{
         bundles::codemode::MontyEngine,

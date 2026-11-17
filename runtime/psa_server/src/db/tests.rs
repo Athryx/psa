@@ -1,4 +1,5 @@
 use super::{Database, DbError};
+use crate::db::{EventRange, NewEvent};
 use crate::{
     agents::AgentState,
     agents::{Agent, NewAgent, ToolDefinitionExt},
@@ -90,7 +91,7 @@ fn usage() -> Usage {
         output_tokens: Some(7),
         total_tokens: None,
         cached_input_tokens: Some(0),
-        cache_write_input_tokens: Some(2),
+        cache_write_tokens: Some(2),
         reasoning_output_tokens: Some(3),
         cost: Some(0.125),
         provider_details: std::collections::BTreeMap::from([(

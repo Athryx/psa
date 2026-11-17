@@ -25,6 +25,7 @@ use llm_api::{
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
 use psa_api::{self as wire, AgentRequest, AgentState, MessageDelivery, StreamMessage, events::*};
+use psa_server::db::NewEvent;
 use psa_server::{
     agents::{
         NewAgent, ToolDefinitionExt, agent_manager::AgentManagerState, publication::Publication,
@@ -291,7 +292,7 @@ impl Harness {
             .client
             .create_agent(
                 session.id,
-                &wire::NewConfiguredAgent {
+                &wire::CreateAgent {
                     model: None,
                     subagent_parent_id: None,
                     interactive: false,
@@ -338,6 +339,7 @@ impl Harness {
 
 fn message(delivery: MessageDelivery) -> AgentRequest {
     AgentRequest::Message {
+        source: None,
         delivery,
         content: psa_server::prompts::text("test input"),
     }
@@ -353,7 +355,7 @@ async fn interactive_and_hidden_metadata_survive_http_create_get_list_and_fork()
         .client
         .create_agent(
             session.id,
-            &wire::NewConfiguredAgent {
+            &wire::CreateAgent {
                 model: None,
                 subagent_parent_id: None,
                 name: "interactive".into(),
@@ -445,13 +447,13 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
         })
         .await
         .unwrap();
-    let expected = Some(wire::ConfigGroup::Project {
+    let expected = Some(wire::ConfigGroup::AgentsDir {
         path: "/work/project/.agents".into(),
         probe_id: support::probe_metadata().id,
     });
     let mut cursor = harness.db.cursor().await.unwrap();
     assert_eq!(
-        cursor.get_session_project(session.id).await.unwrap(),
+        cursor.get_session_agents_dir(session.id).await.unwrap(),
         expected
     );
     cursor.rollback().await.unwrap();
@@ -484,20 +486,23 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
     let mut cursor = harness.db.cursor().await.unwrap();
     assert_eq!(
         cursor
-            .get_session_project(inherited.session.id)
+            .get_session_agents_dir(inherited.session.id)
             .await
             .unwrap(),
         expected
     );
     assert_eq!(
-        cursor.get_session_project(moved.session.id).await.unwrap(),
-        Some(wire::ConfigGroup::Project {
+        cursor
+            .get_session_agents_dir(moved.session.id)
+            .await
+            .unwrap(),
+        Some(wire::ConfigGroup::AgentsDir {
             path: "/else/.agents".into(),
             probe_id: support::probe_metadata().id,
         })
     );
     assert_eq!(
-        cursor.get_session_project(session.id).await.unwrap(),
+        cursor.get_session_agents_dir(session.id).await.unwrap(),
         expected
     );
     cursor.rollback().await.unwrap();
@@ -514,10 +519,13 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
         .await
         .unwrap();
     let mut cursor = harness.db.cursor().await.unwrap();
-    assert_eq!(cursor.get_session_project(session.id).await.unwrap(), None);
+    assert_eq!(
+        cursor.get_session_agents_dir(session.id).await.unwrap(),
+        None
+    );
     assert_eq!(
         cursor
-            .get_session_project(inherited.session.id)
+            .get_session_agents_dir(inherited.session.id)
             .await
             .unwrap(),
         expected
@@ -561,7 +569,7 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
         .client
         .create_agent(
             session.id,
-            &wire::NewConfiguredAgent {
+            &wire::CreateAgent {
                 config_id: request.config_id.clone(),
                 name: "pinned".into(),
                 subagent_parent_id: None,
@@ -577,7 +585,6 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
         .client
         .get_resolved_agent_config(original.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(
         serde_json::to_value(&snapshot.config).unwrap(),
@@ -585,7 +592,7 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
     );
     let events = harness
         .client
-        .events(session.id, Some(original.id), &wire::EventsQuery::default())
+        .list_events(session.id, Some(original.id), &wire::EventsQuery::default())
         .await
         .unwrap();
     assert_eq!(
@@ -611,7 +618,7 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
         .client
         .create_agent(
             session.id,
-            &wire::NewConfiguredAgent {
+            &wire::CreateAgent {
                 config_id: request.config_id.clone(),
                 name: "updated".into(),
                 subagent_parent_id: None,
@@ -637,7 +644,6 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
         .client
         .get_resolved_agent_config(original.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(
         serde_json::to_value(&retained).unwrap(),
@@ -647,18 +653,14 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
         .client
         .get_resolved_agent_config(updated.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(
         updated_snapshot.config.hooks.agent_create,
         replacement.hooks.agent_create
     );
     assert_eq!(updated_snapshot.definition.hooks, replacement.hooks);
-    let configs = harness
-        .client
-        .refresh_and_list_agent_configs(Some(session.id))
-        .await
-        .unwrap();
+    harness.client.refresh_configs(&[session.id]).await.unwrap();
+    let configs = harness.client.list_agent_configs().await.unwrap();
     assert_eq!(
         configs
             .iter()
@@ -699,7 +701,7 @@ async fn config_batches_cycles_and_dependency_changes_pin_complete_graphs() {
             .all(|entry| entry.status.missing_components.is_empty())
     );
     let (session, _) = harness.create_agent().await;
-    let create = |name: &str| wire::NewConfiguredAgent {
+    let create = |name: &str| wire::CreateAgent {
         config_id: first.config_id.clone(),
         name: name.into(),
         subagent_parent_id: None,
@@ -725,14 +727,12 @@ async fn config_batches_cycles_and_dependency_changes_pin_complete_graphs() {
         .client
         .get_resolved_agent_config(original.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(snapshot.references.subagents.len(), 1);
     let child = harness
         .client
         .get_resolved_agent_config(snapshot.references.subagents[0])
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(child.config.config_id, second.config_id);
     assert_eq!(child.references.subagents, vec![original.definition_id]);
@@ -754,14 +754,12 @@ async fn config_batches_cycles_and_dependency_changes_pin_complete_graphs() {
         .client
         .get_resolved_agent_config(original.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(retained.references.subagents, snapshot.references.subagents);
     let retained_child = harness
         .client
         .get_resolved_agent_config(child.definition.id)
         .await
-        .unwrap()
         .unwrap();
     assert!(retained_child.config.hooks.agent_create.is_empty());
 
@@ -778,7 +776,7 @@ async fn config_batches_cycles_and_dependency_changes_pin_complete_graphs() {
     assert!(
         !harness
             .client
-            .refresh_and_list_agent_configs(None)
+            .list_agent_configs()
             .await
             .unwrap()
             .iter()
@@ -796,7 +794,7 @@ async fn group_membership_changes_only_advance_new_agent_snapshots() {
     parent.subagents.groups = vec![group.clone()];
     harness.upsert_config(parent.clone()).await;
     let (session, _) = harness.create_agent().await;
-    let request = |name: &str| wire::NewConfiguredAgent {
+    let request = |name: &str| wire::CreateAgent {
         config_id: parent.config_id.clone(),
         name: name.into(),
         subagent_parent_id: None,
@@ -813,7 +811,6 @@ async fn group_membership_changes_only_advance_new_agent_snapshots() {
         .client
         .get_resolved_agent_config(original.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert!(before.references.subagents.is_empty());
 
@@ -830,14 +827,12 @@ async fn group_membership_changes_only_advance_new_agent_snapshots() {
         .client
         .get_resolved_agent_config(updated.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(after.references.subagents.len(), 1);
     let selected = harness
         .client
         .get_resolved_agent_config(after.references.subagents[0])
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(selected.config.config_id, member.config_id);
     assert!(
@@ -845,7 +840,6 @@ async fn group_membership_changes_only_advance_new_agent_snapshots() {
             .client
             .get_resolved_agent_config(original.definition_id)
             .await
-            .unwrap()
             .unwrap()
             .references
             .subagents
@@ -873,7 +867,7 @@ async fn missing_explicit_dependencies_warn_and_resolve_again_when_registered() 
         }]
     );
     let (session, _) = harness.create_agent().await;
-    let request = wire::NewConfiguredAgent {
+    let request = wire::CreateAgent {
         config_id: parent.config_id.clone(),
         name: "parent".into(),
         subagent_parent_id: None,
@@ -890,7 +884,6 @@ async fn missing_explicit_dependencies_warn_and_resolve_again_when_registered() 
         .client
         .get_resolved_agent_config(incomplete.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert!(incomplete_snapshot.references.subagents.is_empty());
     assert_eq!(
@@ -912,7 +905,7 @@ async fn missing_explicit_dependencies_warn_and_resolve_again_when_registered() 
         .client
         .create_agent(
             session.id,
-            &wire::NewConfiguredAgent {
+            &wire::CreateAgent {
                 name: "restored".into(),
                 ..request
             },
@@ -926,7 +919,6 @@ async fn missing_explicit_dependencies_warn_and_resolve_again_when_registered() 
             .get_resolved_agent_config(incomplete.definition_id)
             .await
             .unwrap()
-            .unwrap()
             .references
             .subagents
             .is_empty()
@@ -935,7 +927,6 @@ async fn missing_explicit_dependencies_warn_and_resolve_again_when_registered() 
         .client
         .get_resolved_agent_config(agent.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(snapshot.references.subagents.len(), 1);
     harness.wait_stopped(session.id).await;
@@ -985,7 +976,7 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
             .client
             .create_agent(
                 session.id,
-                &wire::NewConfiguredAgent {
+                &wire::CreateAgent {
                     model: None,
                     subagent_parent_id: None,
                     interactive: false,
@@ -1227,7 +1218,7 @@ async fn busy_queries_track_all_workers_and_request_ids_ignore_generations() {
             .client
             .create_agent(
                 session.id,
-                &wire::NewConfiguredAgent {
+                &wire::CreateAgent {
                     model: None,
                     subagent_parent_id: None,
                     interactive: false,
@@ -1445,7 +1436,7 @@ async fn http_tools_hooks_usage_streaming_and_reconnect() {
     assert_eq!(agent_view.usage.total_tokens, Some(14));
     let page = harness
         .client
-        .events(
+        .list_events(
             session.id,
             None,
             &wire::EventsQuery {
@@ -1580,7 +1571,7 @@ async fn shutdown_interrupts_inference_persists_partial_output_and_discards_queu
         loop {
             let page = harness
                 .client
-                .events(
+                .list_events(
                     session.id,
                     Some(agent.id),
                     &wire::EventsQuery {
@@ -1902,7 +1893,7 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
         .client
         .create_agent(
             session.id,
-            &wire::NewConfiguredAgent {
+            &wire::CreateAgent {
                 model: None,
                 subagent_parent_id: Some(parent.id),
                 config_id: config_id("default"),
@@ -1927,14 +1918,14 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
     ) {}
     let accepted = harness
         .client
-        .send_subagent_message(
+        .submit_request(
             session.id,
             child.id,
-            Some(wire::AgentMessageSource {
-                agent_id: Some(parent.id),
-                name: Some("untrusted display name".into()),
-            }),
-            psa_server::prompts::text("inspect this"),
+            &wire::AgentRequest::Message {
+                delivery: wire::MessageDelivery::Steer,
+                content: psa_server::prompts::text("inspect this"),
+                source: Some(parent.id),
+            },
         )
         .await
         .unwrap();
@@ -1945,7 +1936,6 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
     let rendered = serde_json::to_string(&request["messages"]).unwrap();
     assert!(rendered.contains("Message from agent \\\"agent\\\":"));
     assert!(rendered.contains("inspect this"));
-    assert!(!rendered.contains("untrusted display name"));
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let StreamMessage::Committed { event, .. } =
@@ -1959,10 +1949,12 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
             if message.message_type == MessageType::Subagent {
                 assert_eq!(
                     message.source.unwrap(),
-                    MessageSender {
-                        agent_id: Some(parent.id),
-                        name: Some(parent.name.clone()),
+                    AgentMessageLink {
                         request_id: accepted.request_id.clone(),
+                        sender: parent.id,
+                        sender_name: parent.name.clone(),
+                        recipient: child.id,
+                        recipient_name: child.name.clone(),
                     }
                 );
                 break;
@@ -1990,10 +1982,10 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
     );
     let page = harness
         .client
-        .events(session.id, Some(child.id), &Default::default())
+        .list_events(session.id, Some(child.id), &Default::default())
         .await
         .unwrap();
-    assert!(page.events.iter().any(|event| matches!(&event.event.kind, EventType::Message(message) if message.message_type == MessageType::Subagent && message.source.as_ref().and_then(|source| source.agent_id) == Some(parent.id))));
+    assert!(page.events.iter().any(|event| matches!(&event.event.kind, EventType::Message(message) if message.message_type == MessageType::Subagent && message.source.as_ref().map(|source| source.sender) == Some(parent.id))));
     let fork = harness
         .client
         .fork_session(

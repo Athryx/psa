@@ -1,4 +1,5 @@
 use super::{Hook, HookError};
+use crate::db::NewEvent;
 use crate::{
     agents::{AgentState, agent_context::AgentContext, publication::status_event},
     components::cancellation::Cancellation,
@@ -6,7 +7,7 @@ use crate::{
 use llm_api::api::{ContentBlock, Outcome, StopReason};
 use psa_api::{
     AgentResult,
-    events::{Event, EventType, MessageType, NewEvent},
+    events::{Event, EventType, MessageType},
 };
 use std::time::Duration;
 

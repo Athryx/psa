@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO event_tool_result (event_pk,call_id,content,error,metadata,delivery_agent_id,delivery_request_id,delivery_sender_name,delivery_recipient_name) VALUES (?,?,?,?,?,?,?,?,?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "fd11c966df42b7d9e2bde352e0222183cce9be7e1f6e564f7241275716c141ce"
+}

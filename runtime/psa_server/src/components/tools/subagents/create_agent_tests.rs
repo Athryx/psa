@@ -37,14 +37,14 @@ impl Fixture {
         crate::test_support::register_probe(&database).await;
         let mut cursor = database.cursor().await.unwrap();
         let worker = cursor
-            .create_agent_definition(psa_api::CreateAgentDefinition {
+            .create_agent_definition(crate::db::CreateAgentDefinition {
                 name: "worker-template".into(),
                 ..Default::default()
             })
             .await
             .unwrap();
         let definition = cursor
-            .create_agent_definition(psa_api::CreateAgentDefinition {
+            .create_agent_definition(crate::db::CreateAgentDefinition {
                 name: "caller".into(),
                 permitted_subagents: vec![worker.id],
                 ..Default::default()
@@ -185,10 +185,13 @@ async fn cancelled_creation(cancel_at: CancelAt, fail_submission: bool, fail_int
         };
         assert_eq!(owner, session);
         assert_eq!(agent, child);
-        let AgentRequest::SubagentMessage { source, content } = request else {
+        let AgentRequest::Message {
+            source, content, ..
+        } = request
+        else {
             panic!("expected attributed initial task");
         };
-        assert_eq!(source.unwrap().agent_id, Some(caller));
+        assert_eq!(source, Some(caller));
         assert!(matches!(&content[..], [ContentBlock::Text(text)] if text.text == "do work"));
         if matches!(cancel_at, CancelAt::InitialSubmission) {
             cancel.take().unwrap().send(()).unwrap();
@@ -311,7 +314,13 @@ async fn uncancelled_creation_reports_submission_result_without_interrupting() {
                 panic!("expected initial task submission");
             };
             assert_eq!(agent, child);
-            assert!(matches!(request, AgentRequest::SubagentMessage { .. }));
+            assert!(matches!(
+                request,
+                AgentRequest::Message {
+                    source: Some(_),
+                    ..
+                }
+            ));
             let result = if fail_submission {
                 Err(RuntimeError::Invalid("initial task rejected".into()))
             } else {

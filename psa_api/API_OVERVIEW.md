@@ -40,10 +40,13 @@ not guarantee a matching agent configuration exists.
 - create agent
 - list agents
 - get agents
-- submit requests to either interrupt or send steering message
+- submit requests to interrupt, send a message, or record a finished client-side
+  slash command (`AgentRequest::RecordCommand`)
+- run a typed command (`POST .../commands`, `Client::send_command`); the response
+  is its `CommandResult` once it finishes. See `docs/COMPACTION.md#commands`.
 
-`GET /sessions/{session_id}/agents/{agent_id}/status` returns an
-`AgentStatusSnapshot` with the effective model configuration, the last inference's
+`GET /sessions/{session_id}/agents/{agent_id}/context-state` returns an
+`AgentContextState` with the effective model configuration, the last inference's
 reported total tokens (or the sum when both input and output are reported), and
 an inclusive agent event `head`. Token usage is neither cumulative spend nor an
 exact current context size; it is unknown after a reset, compaction, failed or
@@ -145,21 +148,22 @@ snapshot ID. The current routes and async client methods are:
   `Vec<AgentConfigStatus>`. Omitted/null bundles and omitted hook stages inherit
   server defaults; explicit lists replace them, including empty lists. Passing
   normalized `AgentConfig` values through the client makes all lists explicit.
-- `GET /agent-configs?refresh_session_id=ID` /
-  `refresh_and_list_agent_configs(refresh_session_id)` refreshes global discovery
-  and optionally the selected session's project, then returns all registered
-  configurations and dependency statuses. The session ID controls discovery,
-  not result filtering.
+- `GET /agent-configs` / `list_agent_configs()` returns all registered
+  configurations and dependency statuses without rescanning. `GET /skills` /
+  `list_skills()` does the same for skills.
+- `POST /configs/refresh` / `refresh_configs(&session_ids)` rescans the server's
+  global configuration directory and each listed session's `.agents` directory
+  (`ConfigGroup::AgentsDir`), discovering it on first use; HTTP 204 on success.
 - `POST /agent-configs/lookup` / `get_agent_config(&config_id)` accepts a JSON
   `ConfigId` and returns its current `AgentConfigStatus`, or HTTP 404 if unknown.
   A status contains the normalized `config` and `status.missing_components`.
 - `GET /agent-snapshots/{definition_id}` /
-  `get_resolved_agent_config(definition_id)` returns HTTP 200 with a
-  `ResolvedAgentConfig`, or JSON `null` (`None`) for an unknown ID. It contains
+  `get_resolved_agent_config(definition_id)` returns a `ResolvedAgentConfig`,
+  or HTTP 404 for an unknown ID. It contains
   captured source `config`, executable `definition`, and resolved `references`
   for subagent snapshots and mutable skill records.
 
-`POST /sessions/{session_id}/agents` accepts `NewConfiguredAgent` with a
+`POST /sessions/{session_id}/agents` accepts `CreateAgent` with a
 `config_id`, instance `name`, and optional allowed `model` selection. It resolves
 and pins the current configuration graph; subsequent configuration upserts do
 not modify existing agents' snapshots. Legacy `/agent-definitions` CRUD is
@@ -317,18 +321,23 @@ TODO: probe api
 
 ## Implementation
 
-Exact route templates/builders are in `src/routes.rs`; wire types are in
-`src/types.rs` and `src/events.rs`. `src/client.rs` provides the async `Client`,
-including typed JSON requests and SSE decoding. `EventsQuery` uses `after`,
-`through`, `recent`, `before`, `limit`, `include_pending`, `results_only`, and
-`from_context_start`; it has no `stream` field.
+Exact route templates/builders are in `src/routes.rs`. Wire types are grouped by
+topic (`sessions`, `agents`, `configs`, `definitions`, `feeds`, ...) and
+re-exported at the crate root; transcript events stay in `psa_api::events` and the
+probe protocol in `psa_api::probes`. `src/client.rs` provides the async `Client`,
+including typed JSON requests and SSE decoding.
+
+`EventsQuery.span` selects the events: `EventSpan::Forward { after, through }`,
+`Latest`, `Before(cursor)`, or `ContextOf { through }`. On the wire these are the
+flat parameters `after`, `through`, `recent`, `before`, and `from_context_start`;
+combinations that do not form one span are rejected. Only `Forward` can stream.
 `results_only=true` filters durable Result events before the database limit and
-filters SSE durable events as well. `from_context_start=true` (agent routes,
-JSON only, with `through` and no other lower bound) begins the page at the model
-context containing `through`: its opening `NewContext` event, or the agent's
-first event. Continue a partial page with `after = next_after`. Event endpoints
-select SSE with `Accept: text/event-stream`, or JSON with
-`Accept: application/json` (JSON is the default). `Client::events()` requests JSON;
+filters SSE durable events as well. `ContextOf { through }` (agent routes only)
+begins the page at the model context containing `through`: its opening
+`NewContext` event, or the agent's first event. Continue a partial page with
+`Forward { after: next_after, through }`. Event endpoints select SSE with
+`Accept: text/event-stream`, or JSON with `Accept: application/json` (JSON is
+the default). `Client::list_events()` requests JSON;
 `Client::stream_events()` requests SSE. Only the streaming method accepts a
 `Last-Event-ID` resume cursor. SSE supports provisional-to-persistent promotion.
 
@@ -482,8 +491,9 @@ storage provenance only. `AgentResult::decode::<T>()` decodes the payload, and
 record `decode::<T>()` preserves the metadata. Event consumers can also use
 `EventEnvelope::into_result_record()` or `EventEnvelope::decode_result::<T>()`.
 Text decodes as a string, not
-parsed JSON source. Client methods are `results`, `last_result_raw`,
-`last_result::<T>`, and `last_results::<T>`; typed mismatches return errors.
+parsed JSON source. Client methods are `list_results`, `get_last_result`,
+`list_results_as::<T>`, and `get_last_result_as::<T>`; typed mismatches return
+errors.
 See [durable result examples and semantics](../docs/AGENT_RESULTS.md).
 
 ## Providers and models
@@ -491,16 +501,19 @@ See [durable result examples and semantics](../docs/AGENT_RESULTS.md).
 `Model` identifies a model by `provider: ProviderType` and `api_name: String`.
 The API name is provider-specific (for example `vendor/model` on OpenRouter),
 without a harness provider prefix. Rust callers construct it with
-`Model::new(ProviderType::Openrouter, "vendor/model")?`.
-`ModelConfig` adds `effort` to that identity; `provider` is nested inside `model`,
-not a top-level configuration field. For example, a session's `model_config` is:
+`Model::new(ProviderType::Openrouter, "vendor/model")?` or parse a slug with
+`"openrouter/vendor/model".parse::<Model>()?`.
+On the wire, and in configuration files and agent configs, a `Model` is always
+its `provider_slug/api_name` slug string, such as `openrouter/vendor/model` or
+`openai_codex/gpt-5`. Only the first slash separates the provider. Deserializing
+an invalid slug fails. `ModelConfig` adds `effort` to that identity; for example,
+a session's `model_config` is:
 
 ```json
-{"model":{"provider":"Openrouter","api_name":"vendor/model"},"effort":"Medium"}
+{"model":"openrouter/vendor/model","effort":"Medium"}
 ```
 
-Model configuration files instead use a provider/API-name slug string, never a
-structured `Model`. Server creation defaults in `config.toml` are:
+Server creation defaults in `config.toml` use the same slug:
 
 ```toml
 [session_defaults]
@@ -536,7 +549,7 @@ example `/models?provider=Openrouter&authed=true&pinned=true` lists pinned
 OpenRouter models when OpenRouter credentials are configured. `authed=false`
 selects models whose provider has no configured credentials.
 
-Each entry contains `model: { provider, api_name }`, display `name`,
+Each entry contains the `model` slug, display `name`,
 `input_modalities`, optional `context_window` and `max_output_tokens`, `cost`,
 `reasoning`, `reasoning_options`, live `authed`, persisted `pinned`, and RFC 3339
 `refreshed_at`. Cost values are reference USD per million tokens: `input`,
@@ -555,7 +568,7 @@ keeps flat `provider` and `model` query fields, with `model` holding the API nam
 `PUT /models/pin` accepts:
 
 ```json
-{"model":{"provider":"Openrouter","api_name":"vendor/model"},"pinned":true}
+{"model":"openrouter/vendor/model","pinned":true}
 ```
 
 `ModelInfo` and `PinModel` carry the provider only inside `model`, not as a

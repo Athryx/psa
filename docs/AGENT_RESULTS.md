@@ -107,10 +107,10 @@ to obtain result records while retaining envelope provenance.
 
 Client methods:
 
-- `results(session, agent, limit)`: raw tagged result records.
-- `last_result_raw(session, agent)`: newest raw record, or None.
-- `last_result::<T>(session, agent)`: newest decoded record, or None.
-- `last_results::<T>(session, agent, limit)`: decoded records newest first.
+- `list_results(session, agent, limit)`: tagged result records, newest first.
+- `get_last_result(session, agent)`: newest record, or None.
+- `get_last_result_as::<T>(session, agent)`: newest decoded record, or None.
+- `list_results_as::<T>(session, agent, limit)`: decoded records newest first.
 
 `EventsQuery.results_only = true` filters durable events to Results before the
 database limit is applied; SSE also filters durable event delivery. It does not

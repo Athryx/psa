@@ -1,11 +1,12 @@
 //! Mutable source registry and lazy, cycle-aware immutable snapshot resolution.
+use super::agent_definitions::CreateAgentDefinition;
 use super::{
     DatabaseCursor, DbError,
     schema::{decode_integer, encode_integer},
 };
 use crate::components::bundles::validate_completion_config;
 use psa_api::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -30,28 +31,12 @@ fn validate_id(id: &ConfigId) -> Result<(), DbError> {
                 "custom group must be nonempty".into(),
             ));
         }
-        ConfigGroup::Project { path, .. } if !std::path::Path::new(path).is_absolute() => {
+        ConfigGroup::AgentsDir { path, .. } if !std::path::Path::new(path).is_absolute() => {
             return Err(DbError::InvalidInput(
-                "project group path must be absolute".into(),
+                "AgentsDir group path must be absolute".into(),
             ));
         }
         _ => {}
-    }
-    Ok(())
-}
-
-/// Syntax only: whether a slug names a decision model is checked against the
-/// live catalog when the model is called, since the catalog may not be loaded yet.
-fn validate_decision_model_slugs(bundles: &[psa_api::BundleConfig]) -> Result<(), DbError> {
-    for bundle in bundles {
-        let psa_api::BundleConfig::DecisionModels { models, .. } = bundle else {
-            continue;
-        };
-        for slug in models {
-            llm_api::providers::Model::parse_slug(slug).map_err(|error| {
-                DbError::InvalidInput(format!("invalid decision model {slug:?}: {error}"))
-            })?;
-        }
     }
     Ok(())
 }
@@ -62,7 +47,6 @@ fn validate_batch(agents: &[AgentConfig], skills: &[SkillRegistration]) -> Resul
         validate_id(&config.config_id)?;
         validate_completion_config(&config.bundles, &config.hooks)
             .map_err(|error| DbError::InvalidInput(error.to_string()))?;
-        validate_decision_model_slugs(&config.bundles)?;
         if !seen.insert(&config.config_id) {
             return Err(DbError::InvalidInput(
                 "duplicate agent config ID in batch".into(),
@@ -75,26 +59,16 @@ fn validate_batch(agents: &[AgentConfig], skills: &[SkillRegistration]) -> Resul
         }
         let mut model_names = HashSet::new();
         for model in &config.models {
+            // Slugs always contain a slash, so they cannot collide with the keywords.
             let name = match model {
-                ModelSelection::Fixed { model, .. } => model.as_str(),
-                ModelSelection::Global => "global",
-                ModelSelection::Parent => "parent",
+                ModelSelection::Fixed { model, .. } => model.slug(),
+                ModelSelection::Global => "global".into(),
+                ModelSelection::Parent => "parent".into(),
             };
             if !model_names.insert(name) {
                 return Err(DbError::InvalidInput(
                     "only one selection and effort policy per model is allowed".into(),
                 ));
-            }
-            if let ModelSelection::Fixed { model, .. } = model {
-                if model.trim() != model
-                    || !model
-                        .split_once('/')
-                        .is_some_and(|(provider, name)| !provider.is_empty() && !name.is_empty())
-                {
-                    return Err(DbError::InvalidInput(
-                        "fixed model must be a provider/model identifier".into(),
-                    ));
-                }
             }
         }
         for id in config.subagents.items.iter().chain(&config.skills.items) {
@@ -688,60 +662,60 @@ impl DatabaseCursor {
         self.finish_registry_savepoint(result).await
     }
 
-    pub async fn set_session_project(
+    pub async fn set_session_agents_dir(
         &mut self,
         session: SessionId,
-        project: Option<ConfigGroup>,
+        agents_dir: Option<ConfigGroup>,
     ) -> Result<(), DbError> {
-        if project
+        if agents_dir
             .as_ref()
-            .is_some_and(|project| !matches!(project, ConfigGroup::Project { .. }))
+            .is_some_and(|group| !matches!(group, ConfigGroup::AgentsDir { .. }))
         {
             return Err(DbError::InvalidInput(
-                "session project must be a project group".into(),
+                "a session agents directory must be an AgentsDir group".into(),
             ));
         }
-        // JSON null records a successful scan that found no project. An absent
+        // JSON null records a successful scan that found no `.agents` directory. An absent
         // row means discovery is deferred (for example, the probe was offline).
-        sqlx::query("INSERT INTO session_projects(session_id,config_group) VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET config_group=excluded.config_group")
-            .bind(encode_integer(session.0)?).bind(key(&project)?).execute(self.connection()).await?;
+        sqlx::query("INSERT INTO session_agents_dirs(session_id,config_group) VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET config_group=excluded.config_group")
+            .bind(encode_integer(session.0)?).bind(key(&agents_dir)?).execute(self.connection()).await?;
         Ok(())
     }
 
-    pub async fn has_session_project_discovery(
+    pub async fn has_session_agents_dir_discovery(
         &mut self,
         session: SessionId,
     ) -> Result<bool, DbError> {
         Ok(sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM session_projects WHERE session_id=?)",
+            "SELECT EXISTS(SELECT 1 FROM session_agents_dirs WHERE session_id=?)",
         )
         .bind(encode_integer(session.0)?)
         .fetch_one(self.connection())
         .await?)
     }
 
-    /// Mark discovery unknown, rather than a successful scan with no project.
-    pub async fn clear_session_project(&mut self, session: SessionId) -> Result<(), DbError> {
-        sqlx::query("DELETE FROM session_projects WHERE session_id=?")
+    /// Mark discovery unknown, rather than a successful scan that found nothing.
+    pub async fn clear_session_agents_dir(&mut self, session: SessionId) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM session_agents_dirs WHERE session_id=?")
             .bind(encode_integer(session.0)?)
             .execute(self.connection())
             .await?;
         Ok(())
     }
 
-    pub async fn get_session_project(
+    pub async fn get_session_agents_dir(
         &mut self,
         session: SessionId,
     ) -> Result<Option<ConfigGroup>, DbError> {
-        let project: Option<String> =
-            sqlx::query_scalar("SELECT config_group FROM session_projects WHERE session_id=?")
+        let agents_dir: Option<String> =
+            sqlx::query_scalar("SELECT config_group FROM session_agents_dirs WHERE session_id=?")
                 .bind(encode_integer(session.0)?)
                 .fetch_optional(self.connection())
                 .await?;
-        let project: Option<Option<ConfigGroup>> = project
+        let agents_dir: Option<Option<ConfigGroup>> = agents_dir
             .map(|value| serde_json::from_str(&value).map_err(DbError::from))
             .transpose()?;
-        Ok(project.flatten())
+        Ok(agents_dir.flatten())
     }
 }
 
@@ -785,6 +759,34 @@ fn graph_signature(
         selected.insert(encoded, node);
     }
     key(&(root, selected))
+}
+
+/// Trusted source registration after reading and validating SKILL.md.
+/// Network upload callers use `NewSkill`, not arbitrary server-local paths.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillRegistration {
+    /// Named identity to create or update.
+    pub config_id: ConfigId,
+    /// Validated skill name.
+    pub name: String,
+    /// Validated skill description.
+    pub description: String,
+    /// Trusted server or probe source location.
+    pub skill_location: SkillLocation,
+    /// Exclude from the model-facing catalogue; defaults to false.
+    #[serde(default)]
+    pub disable_model_invocation: bool,
+}
+
+/// Consistent reachable selection for adapters to materialize outside a DB lock.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfigGraph {
+    /// Reachable source configurations.
+    pub configs: Vec<AgentConfig>,
+    /// Selected mutable skill records to materialize.
+    pub skills: Vec<Skill>,
+    /// Dependency statuses captured with the graph.
+    pub statuses: Vec<AgentConfigStatus>,
 }
 
 #[cfg(test)]

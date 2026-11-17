@@ -75,7 +75,7 @@ mod tests {
     use super::*;
     use psa_api::{
         AgentId, PendingEvent, SessionId, StreamMessage,
-        events::{Message, MessageDelivery, MessageSender, ToolCall, ToolResult},
+        events::{AgentMessageLink, Message, ToolCall, ToolResult},
     };
 
     fn transcript(kinds: Vec<EventType>) -> Transcript {
@@ -105,9 +105,12 @@ mod tests {
 
     fn result(id: &str, request: &str) -> EventType {
         EventType::ToolResult(ToolResult {
-            delivery: Some(MessageDelivery {
-                agent_id: AgentId(2),
+            delivery: Some(AgentMessageLink {
                 request_id: request.into(),
+                sender: AgentId(1),
+                sender_name: "sender".into(),
+                recipient: AgentId(2),
+                recipient_name: "recipient".into(),
             }),
             call_id: id.into(),
             content: Message::text(MessageType::Agent, "Message sent to \"worker\".").content,
@@ -118,10 +121,12 @@ mod tests {
 
     fn received(request: &str) -> EventType {
         EventType::Message(Message {
-            source: Some(MessageSender {
-                agent_id: Some(AgentId(1)),
-                name: Some("sender".into()),
+            source: Some(AgentMessageLink {
                 request_id: request.into(),
+                sender: AgentId(1),
+                sender_name: "sender".into(),
+                recipient: AgentId(2),
+                recipient_name: "recipient".into(),
             }),
             ..Message::text(MessageType::Subagent, "same text")
         })

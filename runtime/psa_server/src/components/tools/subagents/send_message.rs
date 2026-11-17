@@ -9,7 +9,6 @@ use crate::{
     prompts,
 };
 use llm_api::api::ToolDefinition;
-use psa_api::{AgentMessageSource, events::MessageDelivery};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::time::Duration;
@@ -84,27 +83,18 @@ impl SendMessage {
                 return Err("You cannot send a message to yourself".into());
             }
 
-            let accepted = context
+            let link = context
                 .sessions()
                 .send_subagent_message(
                     context.session().id,
-                    target.id,
-                    Some(AgentMessageSource {
-                        agent_id: Some(caller),
-                        name: None,
-                    }),
+                    target,
+                    context.agent(),
                     crate::prompts::text(message),
                 )
                 .await
                 .map_err(|error| error.to_string())?;
             handle.note_delivery(target.id);
-            Ok((
-                format!("Message sent to \"{}\".", target.name),
-                MessageDelivery {
-                    agent_id: target.id,
-                    request_id: accepted.request_id,
-                },
-            ))
+            Ok((format!("Message sent to \"{}\".", target.name), link))
         };
         let result = tokio::select! {
             biased;

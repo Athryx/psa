@@ -127,11 +127,11 @@ operations. It rejects waits when no session run can progress outside a wait,
 after briefly deferring and allowing pending operations to establish progress.
 It observes runs without the bundle too. Timeout/cancellation releases waits.
 
-`AgentRequest::SubagentMessage` uses the ordinary steering queue. Its optional
-source contains agent ID/name; supplied IDs are checked against the session and
+Subagent messages are `AgentRequest::Message` requests with a `source`; tools
+send them with `Steer` delivery. The source contains agent ID/name; supplied IDs are checked against the session and
 names are resolved by the server. Transcript messages use `MessageType::Subagent`
 and preserve source metadata. Model projection renders them as attributed
-user-role context. The Rust client exposes `send_subagent_message`.
+user-role context. The Rust client sends them with `submit_request`.
 
 A session lifecycle callback installed by the bundle sends completion/error/
 interruption reports to a child's parent when the parent has the bundle, even

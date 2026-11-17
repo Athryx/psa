@@ -7,13 +7,14 @@ use super::{
         validate_name,
     },
 };
+use crate::db::EventRange;
 use crate::{
     agents::{Agent, AgentId},
     sessions::{
         ForkPoint, ForkedSession, NewSession, Session, SessionFork, SessionId, SessionUpdate,
     },
 };
-use psa_api::events::{EventId, EventRange};
+use psa_api::events::EventId;
 use sqlx::{Acquire, SqliteConnection};
 
 impl DatabaseCursor {

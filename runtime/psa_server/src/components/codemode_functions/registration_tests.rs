@@ -1,12 +1,13 @@
 use super::*;
 use crate::{
-    agents::{Agent, AgentDefinition, AgentState, AgentUsage},
+    agents::{Agent, AgentDefinition, AgentState},
     components::{
         bundles::{BundleConfig, InstalledComponents},
         hooks::HookConfigs,
     },
     sessions::Session,
 };
+use llm_api::api::Usage;
 use psa_api::{AgentDefinitionId, AgentId, SessionId, events::EventId};
 use time::OffsetDateTime;
 
@@ -25,7 +26,7 @@ pub(super) fn snapshots() -> (AgentDefinition, Agent, Session) {
         created_position: 1,
         name: "test".into(),
         state: AgentState::Idle,
-        usage: AgentUsage::default(),
+        usage: Usage::zero(),
         created_at: now,
         updated_at: now,
     };

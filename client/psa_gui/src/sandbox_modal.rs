@@ -183,7 +183,7 @@ fn build_request(fields: &DraftStore<Field>, rows: &[MountRow]) -> Result<Create
 
     let name = value(&Field::Name);
     if let Some(name) = &name
-        && !psa_api::sandboxes::is_valid_sandbox_name(name)
+        && !psa_api::is_valid_sandbox_name(name)
     {
         return Err("Names use up to 64 letters, digits, '-', '_' or '.'".into());
     }

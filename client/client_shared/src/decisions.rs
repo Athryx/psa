@@ -1,33 +1,32 @@
 //! Display text for decision-model calls, shared by every client UI.
-use psa_api::{DecisionAnswerResult, DecisionCall, DecisionOutcome};
+use llm_api::api::decisions::DecisionAnswer;
+use psa_api::DecisionCall;
 use std::time::Duration;
 
-/// Multi-line description: the model, each headline answer, then usage.
+/// Multi-line description: the model, each question's headline answer in
+/// key order, then usage.
 pub fn describe_decision_call(call: &DecisionCall) -> String {
-    let mut lines = vec![format!("Decision model {}", call.model.api_name)];
+    let mut lines = vec![format!("Decision model {}", call.model().api_name)];
 
-    match &call.outcome {
-        DecisionOutcome::Failed(message) => lines.push(format!("failed: {message}")),
-        DecisionOutcome::Answered | DecisionOutcome::PartlyAnswered => {
-            lines.extend(call.answers.iter().map(|answer| {
+    match &call.response {
+        Err(message) => lines.push(format!("failed: {message}")),
+        Ok(response) => {
+            lines.extend(call.request.questions.keys().map(|key| {
+                let answer = response.answers.get(key);
                 let confidence = answer
-                    .confidence
+                    .and_then(DecisionAnswer::confidence)
                     .map(|confidence| format!(" (confidence {:.0}%)", confidence * 100.0))
                     .unwrap_or_default();
-                format!(
-                    "{}: {}{confidence}",
-                    answer.key,
-                    describe_result(&answer.result)
-                )
+                format!("{key}: {}{confidence}", describe_answer(answer))
             }));
         }
     }
 
     let mut usage = Vec::new();
-    if let Some(tokens) = call.usage.input_tokens {
+    if let Some(tokens) = call.usage().and_then(|usage| usage.input_tokens) {
         usage.push(format!("{tokens} input tokens"));
     }
-    if let Some(cost) = call.usage.cost {
+    if let Some(cost) = call.usage().and_then(|usage| usage.cost) {
         usage.push(format!("{cost} credits"));
     }
     usage.push(describe_duration(call.duration));
@@ -36,14 +35,15 @@ pub fn describe_decision_call(call: &DecisionCall) -> String {
     lines.join("\n")
 }
 
-fn describe_result(result: &DecisionAnswerResult) -> String {
-    match result {
-        DecisionAnswerResult::Noul(probability) => format!("{:.0}% true", probability * 100.0),
-        DecisionAnswerResult::Choice(choice) => choice.clone(),
-        DecisionAnswerResult::Score(score) => format!("score {score:.2}"),
-        DecisionAnswerResult::Refused => "refused".into(),
-        DecisionAnswerResult::Unsupported => "unsupported answer".into(),
-        DecisionAnswerResult::Missing => "no answer".into(),
+/// Headline result only; probability distributions are left to the event.
+fn describe_answer(answer: Option<&DecisionAnswer>) -> String {
+    match answer {
+        Some(DecisionAnswer::Noul { noul, .. }) => format!("{:.0}% true", noul * 100.0),
+        Some(DecisionAnswer::Choice { choice, .. }) => choice.clone(),
+        Some(DecisionAnswer::Score { score, .. }) => format!("score {score:.2}"),
+        Some(DecisionAnswer::Refusal) => "refused".into(),
+        Some(DecisionAnswer::Unsupported) => "unsupported answer".into(),
+        None => "no answer".into(),
     }
 }
 
@@ -58,65 +58,94 @@ fn describe_duration(duration: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use psa_api::{DecisionAnswerSummary, DecisionCallUsage};
+    use llm_api::{
+        api::{
+            Usage,
+            decisions::{DecisionQuestion, DecisionRequest, DecisionResponse},
+        },
+        providers::Model,
+    };
+    use std::collections::BTreeMap;
 
-    fn call(outcome: DecisionOutcome, answers: Vec<DecisionAnswerSummary>) -> DecisionCall {
+    fn noul(instructions: &str) -> DecisionQuestion {
+        DecisionQuestion::Noul {
+            instructions: instructions.into(),
+            criteria: None,
+        }
+    }
+
+    fn call(response: Result<DecisionResponse, String>) -> DecisionCall {
+        let model: Model = "openrouter/vendor/decider".parse().unwrap();
         DecisionCall {
             tool_call_id: None,
-            model: llm_api::providers::Model::new(
-                llm_api::providers::ProviderType::Openrouter,
-                "vendor/decider",
-            )
-            .unwrap(),
-            questions: Vec::new(),
-            outcome,
-            answers,
-            usage: DecisionCallUsage {
-                input_tokens: Some(128),
-                cached_tokens: None,
-                cost: Some(0.5),
+            request: DecisionRequest {
+                model,
+                state: "ticket".into(),
+                questions: BTreeMap::from([
+                    ("angry".into(), noul("Is the customer angry?")),
+                    (
+                        "action".into(),
+                        DecisionQuestion::Choice {
+                            instructions: "What should happen?".into(),
+                            criteria: BTreeMap::from([
+                                ("refund".into(), "Refund".into()),
+                                ("reply".into(), "Reply".into()),
+                            ]),
+                        },
+                    ),
+                    ("tone".into(), noul("Is the tone polite?")),
+                    ("urgent".into(), noul("Is it urgent?")),
+                ]),
             },
+            response,
             duration: Duration::from_millis(1250),
-            request_id: None,
+        }
+    }
+
+    fn response(answers: BTreeMap<String, DecisionAnswer>) -> DecisionResponse {
+        DecisionResponse {
+            model: "openrouter/vendor/decider".parse().unwrap(),
+            response_id: None,
+            answers,
+            usage: Usage {
+                input_tokens: Some(128),
+                cost: Some(0.5),
+                ..Usage::default()
+            },
+            provider_metadata: Default::default(),
         }
     }
 
     #[test]
     fn answers_usage_and_duration_are_listed() {
-        let text = describe_decision_call(&call(
-            DecisionOutcome::PartlyAnswered,
-            vec![
-                DecisionAnswerSummary {
-                    key: "angry".into(),
-                    result: DecisionAnswerResult::Noul(0.25),
+        let text = describe_decision_call(&call(Ok(response(BTreeMap::from([
+            (
+                "angry".into(),
+                DecisionAnswer::Noul {
+                    noul: 0.25,
                     confidence: Some(0.9),
                 },
-                DecisionAnswerSummary {
-                    key: "action".into(),
-                    result: DecisionAnswerResult::Choice("refund".into()),
+            ),
+            (
+                "action".into(),
+                DecisionAnswer::Choice {
+                    choice: "refund".into(),
+                    probabilities: BTreeMap::new(),
                     confidence: None,
                 },
-                DecisionAnswerSummary {
-                    key: "tone".into(),
-                    result: DecisionAnswerResult::Refused,
-                    confidence: None,
-                },
-            ],
-        ));
+            ),
+            ("tone".into(), DecisionAnswer::Refusal),
+        ])))));
         assert_eq!(
             text,
-            "Decision model vendor/decider\nangry: 25% true (confidence 90%)\naction: refund\ntone: refused\n128 input tokens · 0.5 credits · 1.2s"
+            "Decision model vendor/decider\naction: refund\nangry: 25% true (confidence 90%)\ntone: refused\nurgent: no answer\n128 input tokens · 0.5 credits · 1.2s"
         );
     }
 
     #[test]
     fn failures_show_the_message_and_sub_second_durations() {
-        let mut failed = call(
-            DecisionOutcome::Failed("HTTP 429: slow down".into()),
-            Vec::new(),
-        );
+        let mut failed = call(Err("HTTP 429: slow down".into()));
         failed.duration = Duration::from_millis(40);
-        failed.usage = DecisionCallUsage::default();
         assert_eq!(
             describe_decision_call(&failed),
             "Decision model vendor/decider\nfailed: HTTP 429: slow down\n40ms"

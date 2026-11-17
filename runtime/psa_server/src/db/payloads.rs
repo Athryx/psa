@@ -111,10 +111,7 @@ impl StoredUsage {
             output_tokens: usage.output_tokens.map(encode_integer).transpose()?,
             total_tokens: usage.total_tokens.map(encode_integer).transpose()?,
             cached_tokens: usage.cached_input_tokens.map(encode_integer).transpose()?,
-            cache_write_tokens: usage
-                .cache_write_input_tokens
-                .map(encode_integer)
-                .transpose()?,
+            cache_write_tokens: usage.cache_write_tokens.map(encode_integer).transpose()?,
             reasoning_tokens: usage
                 .reasoning_output_tokens
                 .map(encode_integer)
@@ -130,7 +127,7 @@ impl StoredUsage {
             output_tokens: self.output_tokens.map(decode_integer).transpose()?,
             total_tokens: self.total_tokens.map(decode_integer).transpose()?,
             cached_input_tokens: self.cached_tokens.map(decode_integer).transpose()?,
-            cache_write_input_tokens: self.cache_write_tokens.map(decode_integer).transpose()?,
+            cache_write_tokens: self.cache_write_tokens.map(decode_integer).transpose()?,
             reasoning_output_tokens: self.reasoning_tokens.map(decode_integer).transpose()?,
             cost: self.cost,
             provider_details: parse_json(&self.usage_details)?,
@@ -138,11 +135,15 @@ impl StoredUsage {
     }
 }
 
+/// `agent_id` owns the event: the recipient of a received agent message and the
+/// sender of a delivering tool result, so those link sides are not stored.
 pub(super) async fn insert_payload(
     conn: &mut SqliteConnection,
     pk: i64,
+    agent_id: i64,
     event: &EventType,
 ) -> Result<(), DbError> {
+    let owner = psa_api::AgentId(decode_integer(agent_id)?);
     match event {
         EventType::Result(value) => {
             let value = serialize_json(value)?;
@@ -201,16 +202,19 @@ pub(super) async fn insert_payload(
             let delivery: Option<&str> = None;
             let metadata = serialize_json(&value.metadata)?;
             let content = serialize_json(&value.content)?;
-            let sender = value.source.as_ref();
-            let source_agent_id = sender
-                .and_then(|sender| sender.agent_id)
-                .map(|id| encode_integer(id.0))
-                .transpose()?;
-            let source_name = sender.and_then(|sender| sender.name.as_deref());
-            let request_id = sender.map(|sender| sender.request_id.as_str());
+            let link = value.source.as_ref();
+            if link.is_some_and(|link| link.recipient != owner) {
+                return Err(DbError::InvalidInput(
+                    "a received message's recipient must be its agent".into(),
+                ));
+            }
+            let source_agent_id = link.map(|link| encode_integer(link.sender.0)).transpose()?;
+            let source_name = link.map(|link| link.sender_name.as_str());
+            let recipient_name = link.map(|link| link.recipient_name.as_str());
+            let request_id = link.map(|link| link.request_id.as_str());
 
             sqlx::query!(
-                "INSERT INTO event_message (event_pk,message_type,delivery,content,metadata,description,source_agent_id,source_name,request_id) VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO event_message (event_pk,message_type,delivery,content,metadata,description,source_agent_id,source_name,recipient_name,request_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 pk,
                 message_type,
                 delivery,
@@ -219,6 +223,7 @@ pub(super) async fn insert_payload(
                 value.description,
                 source_agent_id,
                 source_name,
+                recipient_name,
                 request_id
             )
             .execute(&mut *conn)
@@ -299,25 +304,30 @@ pub(super) async fn insert_payload(
         EventType::ToolResult(value) => {
             let metadata = serialize_json(&value.metadata)?;
             let content = serialize_json(&value.content)?;
-            let delivery_agent_id = value
-                .delivery
-                .as_ref()
-                .map(|delivery| encode_integer(delivery.agent_id.0))
+            let link = value.delivery.as_ref();
+            if link.is_some_and(|link| link.sender != owner) {
+                return Err(DbError::InvalidInput(
+                    "a delivering tool result's sender must be its agent".into(),
+                ));
+            }
+            let delivery_agent_id = link
+                .map(|link| encode_integer(link.recipient.0))
                 .transpose()?;
-            let delivery_request_id = value
-                .delivery
-                .as_ref()
-                .map(|delivery| delivery.request_id.as_str());
+            let delivery_request_id = link.map(|link| link.request_id.as_str());
+            let delivery_sender_name = link.map(|link| link.sender_name.as_str());
+            let delivery_recipient_name = link.map(|link| link.recipient_name.as_str());
 
             sqlx::query!(
-                "INSERT INTO event_tool_result (event_pk,call_id,content,error,metadata,delivery_agent_id,delivery_request_id) VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO event_tool_result (event_pk,call_id,content,error,metadata,delivery_agent_id,delivery_request_id,delivery_sender_name,delivery_recipient_name) VALUES (?,?,?,?,?,?,?,?,?)",
                 pk,
                 value.call_id,
                 content,
                 value.error,
                 metadata,
                 delivery_agent_id,
-                delivery_request_id
+                delivery_request_id,
+                delivery_sender_name,
+                delivery_recipient_name
             )
             .execute(&mut *conn)
             .await?;
@@ -470,6 +480,7 @@ pub(super) async fn load_payloads(
     lower: i64,
     upper: i64,
 ) -> Result<HashMap<i64, EventType>, DbError> {
+    let owner = psa_api::AgentId(decode_integer(agent_id)?);
     let mut payloads = HashMap::new();
     macro_rules! load {
         ($query:literal, |$r:ident| $event:expr) => {
@@ -518,18 +529,24 @@ pub(super) async fn load_payloads(
         |r| EventType::NewContext
     );
     load!(
-        "SELECT p.event_pk, p.message_type, p.delivery, p.content, p.metadata, p.description, p.source_agent_id, p.source_name, p.request_id FROM event_message p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+        "SELECT p.event_pk, p.message_type, p.delivery, p.content, p.metadata, p.description, p.source_agent_id, p.source_name, p.recipient_name, p.request_id FROM event_message p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
         |r| EventType::Message(Message {
             source: r
                 .request_id
                 .map(|request_id| {
-                    Ok::<_, DbError>(MessageSender {
-                        agent_id: r
-                            .source_agent_id
-                            .map(|id| decode_integer(id).map(psa_api::AgentId))
-                            .transpose()?,
-                        name: r.source_name,
+                    Ok::<_, DbError>(AgentMessageLink {
                         request_id,
+                        sender: psa_api::AgentId(decode_integer(
+                            r.source_agent_id
+                                .ok_or_else(|| invalid("subagent sender id"))?,
+                        )?),
+                        sender_name: r
+                            .source_name
+                            .ok_or_else(|| invalid("subagent sender name"))?,
+                        recipient: owner,
+                        recipient_name: r
+                            .recipient_name
+                            .ok_or_else(|| invalid("subagent recipient name"))?,
                     })
                 })
                 .transpose()?,
@@ -600,18 +617,28 @@ pub(super) async fn load_payloads(
         })
     );
     load!(
-        "SELECT p.event_pk, p.call_id, p.content, p.error, p.metadata, p.delivery_agent_id, p.delivery_request_id FROM event_tool_result p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+        "SELECT p.event_pk, p.call_id, p.content, p.error, p.metadata, p.delivery_agent_id, p.delivery_request_id, p.delivery_sender_name, p.delivery_recipient_name FROM event_tool_result p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
         |r| EventType::ToolResult(ToolResult {
             call_id: r.call_id,
             content: parse_json(&r.content)?,
             error: r.error != 0,
             metadata: parse_json(&r.metadata)?,
-            delivery: match (r.delivery_agent_id, r.delivery_request_id) {
-                (Some(agent_id), Some(request_id)) => Some(MessageDelivery {
-                    agent_id: psa_api::AgentId(decode_integer(agent_id)?),
-                    request_id,
-                }),
-                (None, None) => None,
+            delivery: match (
+                r.delivery_agent_id,
+                r.delivery_request_id,
+                r.delivery_sender_name,
+                r.delivery_recipient_name
+            ) {
+                (Some(recipient), Some(request_id), Some(sender_name), Some(recipient_name)) => {
+                    Some(AgentMessageLink {
+                        request_id,
+                        sender: owner,
+                        sender_name,
+                        recipient: psa_api::AgentId(decode_integer(recipient)?),
+                        recipient_name,
+                    })
+                }
+                (None, None, None, None) => None,
                 _ => return Err(DbError::Corrupt("incomplete tool result delivery".into())),
             }
         })

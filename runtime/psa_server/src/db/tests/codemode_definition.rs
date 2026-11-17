@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::{EventRange, NewEvent};
 
 #[tokio::test]
 async fn codemode_definition_round_trips_through_database() {

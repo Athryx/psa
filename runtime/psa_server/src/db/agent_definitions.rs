@@ -2,9 +2,9 @@ use super::{
     DatabaseCursor, DbError,
     schema::{decode_integer, encode_integer},
 };
-use psa_api::{
-    AgentDefinition, AgentDefinitionId, CreateAgentDefinition, HookConfigs, UpdateAgentDefinition,
-};
+use psa_api::{AgentDefinition, AgentDefinitionId, AgentModel, BundleConfig, HookConfigs};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 struct DefinitionRow {
     id: i64,
@@ -128,3 +128,35 @@ impl DatabaseCursor {
         .await
     }
 }
+
+/// Configuration for creating an immutable agent definition version.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateAgentDefinition {
+    /// Definition name.
+    pub name: String,
+    /// Human-readable description; defaults to empty.
+    #[serde(default)]
+    pub description: String,
+    /// Whether this definition is offered for selection; defaults to false.
+    #[serde(default)]
+    pub selectable: bool,
+    /// Ordered feature bundle configurations; defaults to empty.
+    #[serde(default)]
+    pub bundles: Vec<BundleConfig>,
+    /// Ordered lifecycle hook configurations; defaults to no hooks.
+    #[serde(default)]
+    pub hooks: HookConfigs,
+    /// Model policy; defaults to following the session model.
+    #[serde(default)]
+    pub model: AgentModel,
+    /// Paths to skill files or directories; defaults to empty.
+    #[serde(default)]
+    pub skills: Vec<PathBuf>,
+    /// Allowed subagent definition versions; defaults to empty.
+    #[serde(default)]
+    pub permitted_subagents: Vec<AgentDefinitionId>,
+}
+
+/// A complete replacement that creates a new immutable definition version.
+pub type UpdateAgentDefinition = CreateAgentDefinition;

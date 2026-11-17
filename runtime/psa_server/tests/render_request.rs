@@ -10,6 +10,7 @@ use llm_api::{
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
 use psa_api::events::*;
+use psa_server::db::{EventRange, NewEvent};
 use psa_server::{
     agents::NewAgent, agents::agent_projection::AgentProjection, db::Database, sessions::NewSession,
 };

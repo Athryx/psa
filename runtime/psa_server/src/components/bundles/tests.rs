@@ -1,11 +1,12 @@
 use super::{testing::*, *};
 use crate::{
-    agents::{AgentState, AgentUsage},
+    agents::AgentState,
     components::{
         hooks::{HookConfig, HookConfigs},
         tools::{ExecutionMode, Read, Tool, ToolId},
     },
 };
+use llm_api::api::Usage;
 use psa_api::{AgentDefinitionId, AgentId, SessionId, events::EventId};
 use std::sync::atomic::Ordering;
 use time::OffsetDateTime;
@@ -25,7 +26,7 @@ fn snapshots() -> (Agent, Session) {
         created_position: 1,
         name: "bundles".into(),
         state: AgentState::Idle,
-        usage: AgentUsage::default(),
+        usage: Usage::zero(),
         created_at: now,
         updated_at: now,
     };
@@ -246,14 +247,16 @@ fn removed_tools_fields_are_rejected_even_when_empty() {
         serde_json::json!(["AskQuestion"]),
     ] {
         assert!(
-            serde_json::from_value::<psa_api::CreateAgentDefinition>(
+            serde_json::from_value::<crate::db::CreateAgentDefinition>(
                 serde_json::json!({"name":"legacy", "tools":tools})
             )
             .is_err()
         );
         assert!(
-            serde_json::from_value::<psa_api::AgentDefaults>(serde_json::json!({"tools":tools}))
-                .is_err()
+            serde_json::from_value::<crate::config::AgentDefaults>(
+                serde_json::json!({"tools":tools})
+            )
+            .is_err()
         );
         let config = serde_json::json!({"config_id":{"config_group":"Global","name":"legacy"},"models":["Global"],"tools":tools});
         assert!(serde_json::from_value::<psa_api::AgentConfig>(config.clone()).is_err());

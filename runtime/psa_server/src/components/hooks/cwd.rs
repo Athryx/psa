@@ -1,6 +1,7 @@
 use super::{Hook, HookError};
+use crate::db::NewEvent;
 use crate::{agents::agent_context::AgentContext, components::cancellation::Cancellation, prompts};
-use psa_api::events::{EventType, Message, NewEvent};
+use psa_api::events::{EventType, Message};
 use std::time::Duration;
 
 /// Adds the invocation's session working directory to the model context.

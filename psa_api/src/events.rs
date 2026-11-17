@@ -14,10 +14,7 @@ use time::OffsetDateTime;
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
 )]
-pub struct EventId(
-    /// Underlying numeric identifier.
-    pub u64,
-);
+pub struct EventId(pub u64);
 
 /// An immutable, committed transcript event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,126 +30,41 @@ pub struct Event {
     pub kind: EventType,
 }
 
-/// Event payload and timestamp awaiting a committed identifier.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NewEvent {
-    /// Timestamp to preserve when committing the event.
-    pub timestamp: OffsetDateTime,
-    /// Transcript event payload.
-    pub kind: EventType,
-}
-
-impl NewEvent {
-    /// Creates an uncommitted event stamped with the current UTC time.
-    pub fn new(kind: EventType) -> Self {
-        Self {
-            timestamp: OffsetDateTime::now_utc(),
-            kind,
-        }
-    }
-}
-
-/// Pagination bounds within an agent's event lineage.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventRange {
-    /// Exclusive lower sequence bound; defaults to zero.
-    pub after: EventId,
-    /// Inclusive upper sequence bound; absent to use the current head.
-    pub through: Option<EventId>,
-    /// Maximum number of events to return; defaults to 1,000.
-    pub limit: u32,
-}
-
-impl Default for EventRange {
-    fn default() -> Self {
-        Self {
-            after: EventId(0),
-            through: None,
-            limit: 1000,
-        }
-    }
-}
-
 /// Payload of a committed or provisional transcript event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EventType {
     /// Records a change in agent execution state.
-    StatusChange(
-        /// New state and optional transition reason.
-        StatusChange,
-    ),
+    StatusChange(StatusChange),
     /// Updates the model configuration used by subsequent context.
-    Model(
-        /// Model configuration to apply.
-        ModelConfig,
-    ),
+    Model(ModelConfig),
     /// Starts a new model-facing context.
     NewContext,
     /// Records a message in the conversation.
-    Message(
-        /// Message content, origin, and replay metadata.
-        Message,
-    ),
+    Message(Message),
     /// Records model reasoning and replay metadata.
-    Thinking(
-        /// Reasoning content and replay metadata.
-        Thinking,
-    ),
+    Thinking(Thinking),
     /// Records a provider-native history item.
-    ProviderItem(
-        /// Native history item to preserve for replay.
-        HistoryItem,
-    ),
+    ProviderItem(HistoryItem),
     /// Publishes a native tool's model-facing definition.
-    ToolDefinition(
-        /// Tool identifier and model-facing schema.
-        ToolDefinition,
-    ),
+    ToolDefinition(ToolDefinition),
     /// Records a requested tool invocation.
-    ToolCall(
-        /// Invocation identity, tool name, and raw arguments.
-        ToolCall,
-    ),
+    ToolCall(ToolCall),
     /// Records the result of a tool invocation.
-    ToolResult(
-        /// Output and error status for the matching call.
-        ToolResult,
-    ),
+    ToolResult(ToolResult),
     /// Records a durable agent result artifact, separate from ordinary messages.
-    Result(
-        /// Result payload with its text-or-JSON representation.
-        AgentResult,
-    ),
+    Result(AgentResult),
     /// Appends a compacted summary; pair with NewContext to replace older history.
-    Compaction(
-        /// Replacement summary and compaction usage.
-        Compaction,
-    ),
+    Compaction(Compaction),
     /// Records a harness diagnostic.
-    Log(
-        /// Diagnostic text and error flag.
-        Log,
-    ),
-    /// Records a command when its worker begins executing it.
-    Command(
-        /// Command that was requested.
-        crate::AgentCommand,
-    ),
+    Log(Log),
+    /// Records a slash command and how it ended, after it finished.
+    Command(CommandRecord),
     /// Begins the recorded result of an inference, not the request itself.
-    InferenceResultStart(
-        /// Result identifier and configuration attribution.
-        InferenceResultStart,
-    ),
+    InferenceResultStart(InferenceResultStart),
     /// Ends a recorded inference result with outcome and usage.
-    InferenceResultEnd(
-        /// Terminal outcome, usage, timing, and provider metadata.
-        InferenceResultEnd,
-    ),
+    InferenceResultEnd(InferenceResultEnd),
     /// Records a decision-model call. Not part of the model's context.
-    DecisionCall(
-        /// Questions, headline answers, usage, and timing.
-        crate::DecisionCall,
-    ),
+    DecisionCall(crate::DecisionCall),
 }
 
 /// Origin or role of a transcript message.
@@ -170,27 +82,31 @@ pub enum MessageType {
     System,
 }
 
-/// Delivery of a message from another agent. Present on, and only on,
-/// [`MessageType::Subagent`] messages.
+/// One agent-to-agent message. The same link is recorded on both sides: on the
+/// received [`MessageType::Subagent`] message, and on the result of the
+/// `send_message` or `create_agent` call that sent it, so clients can jump
+/// between them by `request_id`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MessageSender {
-    /// Sending agent; absent when the submission carried no attribution.
-    pub agent_id: Option<AgentId>,
-    /// Sending agent name captured at submission, if known.
-    pub name: Option<String>,
-    /// Server-assigned request that delivered this message. The sending
-    /// `send_message` or `create_agent` result records the same ID in its
-    /// [`ToolResult::delivery`].
+pub struct AgentMessageLink {
+    /// Server-assigned request that delivered the message.
     pub request_id: String,
+    /// Sending agent.
+    pub sender: AgentId,
+    /// Sending agent's name captured at submission.
+    pub sender_name: String,
+    /// Receiving agent.
+    pub recipient: AgentId,
+    /// Receiving agent's name captured at submission.
+    pub recipient_name: String,
 }
 
 /// Conversation content with its origin and replay metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    /// Delivery of a subagent message; `None` for every other message type.
+    /// Link to the sending agent; set on, and only on, subagent messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<MessageSender>,
+    pub source: Option<AgentMessageLink>,
     /// Short display description, primarily for system instructions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -231,9 +147,9 @@ mod message_tests {
 
     #[test]
     fn system_description_is_optional_and_round_trips() {
-        let legacy = serde_json::to_value(Message::text(MessageType::System, "prompt")).unwrap();
-        assert!(legacy.get("description").is_none());
-        let decoded: Message = serde_json::from_value(legacy).unwrap();
+        let plain = serde_json::to_value(Message::text(MessageType::System, "prompt")).unwrap();
+        assert!(plain.get("description").is_none());
+        let decoded: Message = serde_json::from_value(plain).unwrap();
         assert_eq!(decoded.description, None);
 
         let described = Message::system("prompt", "Base instructions");
@@ -284,7 +200,7 @@ pub struct ToolResult {
     /// Identifier of the corresponding tool call.
     pub call_id: ToolCallId,
     /// Ordered tool output content blocks.
-    pub content: crate::ToolResult,
+    pub content: Vec<ContentBlock>,
     /// Whether the tool execution reported an error.
     pub error: bool,
     /// Provider replay metadata associated with the result.
@@ -292,33 +208,16 @@ pub struct ToolResult {
     /// Agent message this call delivered, for clients linking a sent message
     /// to its receipt. Never sent to the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery: Option<MessageDelivery>,
-}
-
-/// An agent message delivered by a tool call, such as `send_message`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MessageDelivery {
-    /// Receiving agent.
-    pub agent_id: AgentId,
-    /// Request that delivered the message; matches the receipt's
-    /// [`MessageSender::request_id`].
-    pub request_id: String,
+    pub delivery: Option<AgentMessageLink>,
 }
 
 /// Portable text or a provider-native summary of compacted context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CompactionSummary {
     /// A text summary used to replace previous model-facing context.
-    Text(
-        /// Replacement summary text.
-        String,
-    ),
+    Text(String),
     /// A provider-native history item representing the compacted context.
-    ProviderItem(
-        /// Provider-native compacted history item.
-        HistoryItem,
-    ),
+    ProviderItem(HistoryItem),
 }
 
 /// A context compaction result and its inference usage.
@@ -346,6 +245,44 @@ pub struct Log {
     pub error: bool,
     /// Diagnostic text.
     pub message: String,
+}
+
+/// A slash command as the user typed it, recorded once it finished. Server
+/// commands are recorded by the worker that ran them; client-only commands are
+/// recorded through [`crate::AgentRequest::RecordCommand`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandRecord {
+    /// Command name without the leading slash, such as `compact`.
+    pub name: String,
+    /// Everything after the name, trimmed; empty when there were no arguments.
+    pub args: String,
+    /// How the command ended.
+    pub outcome: crate::CommandOutcome,
+    /// Text the command reported, such as a failure reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+impl CommandRecord {
+    /// The record of a typed agent command that finished with `result`.
+    pub fn new(command: &crate::AgentCommand, result: crate::CommandResult) -> Self {
+        Self {
+            name: command.name().into(),
+            args: command.args(),
+            outcome: result.outcome,
+            output: result.output,
+        }
+    }
+
+    /// The command as typed: `/name`, followed by its arguments when present.
+    pub fn command_line(&self) -> String {
+        if self.args.is_empty() {
+            format!("/{}", self.name)
+        } else {
+            format!("/{} {}", self.name, self.args)
+        }
+    }
 }
 
 /// Identifier correlating the start and end of a recorded inference result.

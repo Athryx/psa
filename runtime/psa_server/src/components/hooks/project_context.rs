@@ -1,10 +1,11 @@
 use super::{Hook, HookError};
+use crate::db::NewEvent;
 use crate::{
     agents::agent_context::AgentContext, components::cancellation::Cancellation, db::DbError,
     probes::ProbeHandle,
 };
 use psa_api::{
-    events::{EventType, Log, Message, NewEvent},
+    events::{EventType, Log, Message},
     probes::Event,
 };
 use psa_shared::probe_transport::ProbeError;

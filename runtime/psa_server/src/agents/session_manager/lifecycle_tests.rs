@@ -216,8 +216,8 @@ impl Drop for Fixture {
     }
 }
 
-fn agent_request() -> psa_api::CreateAgent {
-    psa_api::CreateAgent {
+fn agent_request() -> crate::agents::NewAgent {
+    crate::agents::NewAgent {
         subagent_parent_id: None,
         interactive: false,
         hidden: false,
@@ -271,7 +271,7 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
         .handle
         .update_agent_definition(
             psa_api::AgentDefinitionId(1),
-            psa_api::CreateAgentDefinition {
+            crate::db::CreateAgentDefinition {
                 name: "explicit".into(),
                 model: explicit_model.clone().into(),
                 bundles: vec![psa_api::BundleConfig::Noop],
@@ -297,7 +297,7 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
         .handle
         .create_agent(
             session.id,
-            psa_api::CreateAgent {
+            crate::agents::NewAgent {
                 subagent_parent_id: None,
                 interactive: false,
                 hidden: false,
@@ -467,7 +467,7 @@ async fn subagent_identity_is_created_once_and_preserved_on_reload_restart_and_f
         .handle
         .update_agent_definition(
             psa_api::AgentDefinitionId(1),
-            psa_api::CreateAgentDefinition {
+            crate::db::CreateAgentDefinition {
                 name: "subagents".into(),
                 bundles: vec![psa_api::BundleConfig::Subagents],
                 hooks: psa_api::HookConfigs {
@@ -488,7 +488,7 @@ async fn subagent_identity_is_created_once_and_preserved_on_reload_restart_and_f
         .handle
         .create_agent(
             session.id,
-            psa_api::CreateAgent {
+            crate::agents::NewAgent {
                 definition_id: definition.id,
                 ..agent_request()
             },

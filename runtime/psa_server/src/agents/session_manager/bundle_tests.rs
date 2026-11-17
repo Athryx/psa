@@ -23,7 +23,7 @@ async fn runtime_shutdown_cleans_retained_owners_and_reports_failures() {
         crate::test_support::register_probe(&db).await;
         let mut cursor = db.cursor().await.unwrap();
         let definition = cursor
-            .create_agent_definition(psa_api::CreateAgentDefinition {
+            .create_agent_definition(crate::db::CreateAgentDefinition {
                 name: "owner".into(),
                 ..Default::default()
             })

@@ -1,4 +1,5 @@
 use super::*;
+use psa_server::db::EventRange;
 
 /// A tiny `context_window` compacts before every request; a large one only on command.
 async fn create_compacting_agent(
@@ -32,7 +33,7 @@ async fn create_compacting_agent(
         .client
         .create_agent(
             session.id,
-            &wire::NewConfiguredAgent {
+            &wire::CreateAgent {
                 config_id: config_id("compacting"),
                 name: "worker".into(),
                 model: None,
@@ -50,6 +51,7 @@ async fn create_compacting_agent(
             session.id,
             agent.id,
             &AgentRequest::Message {
+                source: None,
                 delivery: MessageDelivery::Steer,
                 content: psa_server::prompts::text("old work ".repeat(100)),
             },
@@ -67,6 +69,7 @@ async fn submit_recent(harness: &Harness, session: wire::SessionId, agent: wire:
             session,
             agent,
             &AgentRequest::Message {
+                source: None,
                 delivery: MessageDelivery::Steer,
                 content: psa_server::prompts::text("next task"),
             },
@@ -216,21 +219,22 @@ async fn compact_command_summarizes_idle_agent_without_starting_a_run() {
         "agents without the Compaction bundle reject the command"
     );
 
-    harness
-        .client
-        .send_command(
-            session.id,
-            agent.id,
-            wire::CommandDelivery::Steer,
-            compact.clone(),
-        )
-        .await
-        .unwrap();
+    // The request stays open until compaction finishes.
+    let client = harness.client.clone();
+    let (session_id, agent_id) = (session.id, agent.id);
+    let command = compact.clone();
+    let result = tokio::spawn(async move {
+        client
+            .send_command(session_id, agent_id, wire::CommandDelivery::Steer, command)
+            .await
+    });
     let summary_request = harness.requests.recv().await.unwrap().to_string();
     assert!(summary_request.contains("context summarization assistant"));
     assert!(summary_request.contains("Additional instructions for this summary:"));
     assert!(summary_request.contains("Focus on the old work."));
     harness.wait_stopped(session.id).await;
+    let result = result.await.unwrap().unwrap();
+    assert_eq!(result.outcome, wire::CommandOutcome::Succeeded);
     let worker = harness
         .client
         .get_agent(session.id, agent.id)
@@ -246,14 +250,15 @@ async fn compact_command_summarizes_idle_agent_without_starting_a_run() {
     let command = events
         .iter()
         .position(
-            |event| matches!(&event.kind, EventType::Command(recorded) if *recorded == compact),
+            |event| matches!(&event.kind, EventType::Command(recorded) if *recorded == wire::events::CommandRecord::new(&compact, result.clone())),
         )
         .unwrap();
     let compaction = events
         .iter()
         .position(|event| matches!(event.kind, EventType::Compaction(_)))
         .unwrap();
-    assert!(command < compaction);
+    // Recorded once finished, after the compaction it produced.
+    assert!(compaction < command);
     assert!(!events[command..].iter().any(|event| matches!(
         &event.kind,
         EventType::StatusChange(change) if change.new_status == AgentState::Running

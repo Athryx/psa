@@ -25,6 +25,8 @@ pub const AGENT_CONFIG_LOOKUP: &str = "/agent-configs/lookup";
 pub const AGENT_SNAPSHOT: &str = "/agent-snapshots/{definition_id}";
 /// GET registered skills or POST a skill archive upload.
 pub const SKILLS: &str = "/skills";
+/// POST a rescan of filesystem-discovered agent configurations and skills.
+pub const CONFIGS_REFRESH: &str = "/configs/refresh";
 
 /// POST a new session.
 pub const SESSIONS: &str = "/sessions";
@@ -43,11 +45,13 @@ pub const AGENTS: &str = "/sessions/{session_id}/agents";
 /// GET one agent within its session.
 pub const AGENT: &str = "/sessions/{session_id}/agents/{agent_id}";
 /// Effective model and last inference usage at an agent event boundary.
-pub const AGENT_STATUS: &str = "/sessions/{session_id}/agents/{agent_id}/status";
+pub const AGENT_CONTEXT_STATE: &str = "/sessions/{session_id}/agents/{agent_id}/context-state";
 /// GET cumulative usage per model, including inherited calls.
 pub const AGENT_USAGE: &str = "/sessions/{session_id}/agents/{agent_id}/usage";
-/// POST an interrupt or message request to an agent.
+/// POST an interrupt, message, or command record request to an agent.
 pub const REQUESTS: &str = "/sessions/{session_id}/agents/{agent_id}/requests";
+/// POST a command to run; responds with its result once it finishes.
+pub const COMMANDS: &str = "/sessions/{session_id}/agents/{agent_id}/commands";
 /// POST a response to an outstanding scoped client query.
 pub const CLIENT_QUERY_RESPONSE: &str =
     "/sessions/{session_id}/agents/{agent_id}/queries/{query_id}/response";

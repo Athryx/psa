@@ -1,6 +1,7 @@
 //! One gate serializes transcript commits/publication with SSE replay snapshots.
 
 use super::{AgentError, AgentId, agent_projection::AgentProjection};
+use crate::db::NewEvent;
 use crate::{
     db::{AddEventResult, Database, DbError, EventBatchItem},
     sessions::SessionId,

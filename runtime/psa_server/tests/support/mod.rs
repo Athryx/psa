@@ -28,7 +28,7 @@ pub async fn create_agent_definition(
     cursor: &mut psa_server::db::DatabaseCursor,
 ) -> psa_api::AgentDefinitionId {
     cursor
-        .create_agent_definition(psa_api::CreateAgentDefinition {
+        .create_agent_definition(psa_server::db::CreateAgentDefinition {
             name: "default".into(),
             bundles: vec![psa_api::BundleConfig::Noop],
             hooks: psa_api::HookConfigs {

@@ -137,7 +137,7 @@ impl BundleKind {
                     *include_global,
                     models,
                     resources,
-                )?)
+                ))
             }
         };
         Ok(bundle)

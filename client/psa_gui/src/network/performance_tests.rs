@@ -69,9 +69,10 @@ fn session_snapshot(id: u64, name: &str) -> Session {
     serde_json::from_value(serde_json::json!({
         "id":id, "parent_id":null, "name":name, "working_directory":"/tmp",
         "probe_id":"00000000-0000-0000-0000-000000000001",
-        "model_config":{"model":{"provider":"Openrouter","api_name":"model"}, "effort":"Medium"}, "busy":false,
+        "model_config":{"model":"openrouter/model", "effort":"Medium"}, "busy":false,
         "created_at":"2026-01-01T00:00:00Z", "updated_at":"2026-01-01T00:00:00Z"
-    })).unwrap()
+    }))
+    .unwrap()
 }
 
 fn agent_snapshot(id: u64) -> Agent {
@@ -410,8 +411,8 @@ fn assert_same_projection(actual: &Transcript, expected: &Transcript) {
         serde_json::to_value(&expected.session).unwrap()
     );
     assert_eq!(
-        serde_json::to_value(&actual.status_snapshot).unwrap(),
-        serde_json::to_value(&expected.status_snapshot).unwrap()
+        serde_json::to_value(&actual.context_state).unwrap(),
+        serde_json::to_value(&expected.context_state).unwrap()
     );
     assert_eq!(actual.request_failures, expected.request_failures);
     assert_eq!(

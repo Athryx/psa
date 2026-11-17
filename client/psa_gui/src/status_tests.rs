@@ -27,35 +27,37 @@ fn agent_composer_fixture() -> Element {
         session_id: SessionId(1),
         agent_id: AgentId(2),
     };
-    let ui = use_signal(|| {
-        let mut state = Ui::new(DesktopSettings::default());
-        state.sessions.push(serde_json::from_value(serde_json::json!({
+    let ui =
+        use_signal(|| {
+            let mut state = Ui::new(DesktopSettings::default());
+            state.sessions.push(serde_json::from_value(serde_json::json!({
             "id":1,"parent_id":null,"name":"test","working_directory":"/home/project",
             "probe_id":"00000000-0000-0000-0000-000000000001",
-            "model_config":{"model":{"provider":"Openrouter","api_name":"default"},"effort":"Low"},
+            "model_config":{"model":"openrouter/default","effort":"Low"},
             "busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"
         })).unwrap());
-        state.models.push(
-            serde_json::from_value(serde_json::json!({
-                "model":{"provider":"Openrouter","api_name":"actual"},"name":"Actual Model",
-                "input_modalities":[],"context_window":200000,"max_output_tokens":null,
-                "cost":{"tiers":[]},"reasoning":true,"reasoning_options":[],
-                "authed":true,"pinned":false,"refreshed_at":"2024-01-01T00:00:00Z"
-            }))
-            .unwrap(),
-        );
-        let mut transcript = Transcript::new(target.session_id, Some(target.agent_id));
-        transcript.apply(StreamMessage::Committed {
-            event:serde_json::from_value(serde_json::json!({
-                "session_id":1,"agent_id":2,"position":1,
-                "event":{"id":1,"source_agent_id":2,"timestamp":"2026-01-01T00:00:00Z",
-                    "kind":{"Model":{"model":{"provider":"Openrouter","api_name":"actual"},"effort":"High"}}}
-            })).unwrap(),
-            pending_id:None,
+            state.models.push(
+                serde_json::from_value(serde_json::json!({
+                    "model":"openrouter/actual","name":"Actual Model",
+                    "input_modalities":[],"context_window":200000,"max_output_tokens":null,
+                    "cost":{"tiers":[]},"reasoning":true,"reasoning_options":[],
+                    "authed":true,"pinned":false,"refreshed_at":"2024-01-01T00:00:00Z"
+                }))
+                .unwrap(),
+            );
+            let mut transcript = Transcript::new(target.session_id, Some(target.agent_id));
+            transcript.apply(StreamMessage::Committed {
+                event: serde_json::from_value(serde_json::json!({
+                    "session_id":1,"agent_id":2,"position":1,
+                    "event":{"id":1,"source_agent_id":2,"timestamp":"2026-01-01T00:00:00Z",
+                        "kind":{"Model":{"model":"openrouter/actual","effort":"High"}}}
+                }))
+                .unwrap(),
+                pending_id: None,
+            });
+            state.transcripts.insert(target, transcript.into());
+            state
         });
-        state.transcripts.insert(target, transcript.into());
-        state
-    });
     use_context_provider(|| ui);
     rsx! { Composer { tab: Tab { id: ViewId(1), target, kind: TabKind::Transcript, preview: false, last_focused: 0 } } }
 }
@@ -75,7 +77,7 @@ fn composer_uses_agent_model_not_session_default() {
 #[test]
 fn draft_status_resolves_selected_policy_without_assuming_an_unselected_model() {
     let session: ModelConfig = serde_json::from_value(serde_json::json!({
-        "model":{"provider":"Openrouter","api_name":"default"},"effort":"Low"
+        "model":"openrouter/default","effort":"Low"
     }))
     .unwrap();
     for selection in [ModelSelection::Global, ModelSelection::Parent] {
@@ -95,7 +97,7 @@ fn draft_status_resolves_selected_policy_without_assuming_an_unselected_model() 
             Effort::Low
         };
         let selection = ModelSelection::Fixed {
-            model: "openrouter/vendor/actual".into(),
+            model: "openrouter/vendor/actual".parse().unwrap(),
             effort,
         };
         let (model, effort) = draft_status_model(Some(&selection), Some(&session));
@@ -108,7 +110,7 @@ fn draft_status_resolves_selected_policy_without_assuming_an_unselected_model() 
         (None, None)
     );
     let fixed = ModelSelection::Fixed {
-        model: "openrouter/actual".into(),
+        model: "openrouter/actual".parse().unwrap(),
         effort: EffortSelection::Fixed(Effort::Max),
     };
     let (model, effort) = draft_status_model(Some(&fixed), None);
@@ -121,37 +123,38 @@ fn draft_status_fixture() -> Element {
         session_id: SessionId(1),
         agent_id: crate::app::DRAFT_ROOT,
     };
-    let ui = use_signal(|| {
-        let mut state = Ui::new(DesktopSettings::default());
-        state.sessions.push(serde_json::from_value(serde_json::json!({
+    let ui =
+        use_signal(|| {
+            let mut state = Ui::new(DesktopSettings::default());
+            state.sessions.push(serde_json::from_value(serde_json::json!({
             "id":1,"parent_id":null,"name":"test","working_directory":"/tmp",
             "probe_id":"00000000-0000-0000-0000-000000000001",
-            "model_config":{"model":{"provider":"Openrouter","api_name":"default"},"effort":"Low"},
+            "model_config":{"model":"openrouter/default","effort":"Low"},
             "busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"
         })).unwrap());
-        state.models.push(
-            serde_json::from_value(serde_json::json!({
-                "model":{"provider":"Openrouter","api_name":"actual"},"name":"Draft Model",
-                "input_modalities":[],"context_window":200000,"max_output_tokens":null,
-                "cost":{"tiers":[]},"reasoning":true,"reasoning_options":[],
-                "authed":true,"pinned":false,"refreshed_at":"2024-01-01T00:00:00Z"
-            }))
-            .unwrap(),
-        );
-        state.draft_roots.insert(
-            SessionId(1),
-            crate::app::DraftRoot {
-                model: Some(ModelSelection::Fixed {
-                    model: "openrouter/actual".into(),
-                    effort: EffortSelection::Fixed(Effort::High),
-                }),
-                ready: true,
-                ..Default::default()
-            }
-            .into(),
-        );
-        state
-    });
+            state.models.push(
+                serde_json::from_value(serde_json::json!({
+                    "model":"openrouter/actual","name":"Draft Model",
+                    "input_modalities":[],"context_window":200000,"max_output_tokens":null,
+                    "cost":{"tiers":[]},"reasoning":true,"reasoning_options":[],
+                    "authed":true,"pinned":false,"refreshed_at":"2024-01-01T00:00:00Z"
+                }))
+                .unwrap(),
+            );
+            state.draft_roots.insert(
+                SessionId(1),
+                crate::app::DraftRoot {
+                    model: Some(ModelSelection::Fixed {
+                        model: "openrouter/actual".parse().unwrap(),
+                        effort: EffortSelection::Fixed(Effort::High),
+                    }),
+                    ready: true,
+                    ..Default::default()
+                }
+                .into(),
+            );
+            state
+        });
     use_context_provider(|| ui);
     rsx! { DraftComposer { tab: Tab { id: ViewId(1), target, kind: TabKind::Transcript, preview: false, last_focused: 0 } } }
 }

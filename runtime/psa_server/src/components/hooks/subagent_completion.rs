@@ -6,7 +6,7 @@ use crate::{
     },
     prompts,
 };
-use psa_api::{AgentMessageSource, AgentRequest, BundleId};
+use psa_api::{AgentRequest, BundleId};
 
 pub(crate) struct SubagentCompletion;
 
@@ -67,11 +67,9 @@ impl SubagentCompletion {
             .steer_if_not_interrupted(
                 session_id,
                 parent,
-                AgentRequest::SubagentMessage {
-                    source: Some(AgentMessageSource {
-                        agent_id: Some(agent_id),
-                        name: None,
-                    }),
+                AgentRequest::Message {
+                    delivery: psa_api::MessageDelivery::Steer,
+                    source: Some(agent_id),
                     content: prompts::text(prompts::truncate_middle(&report, 30_000).into_owned()),
                 },
             )

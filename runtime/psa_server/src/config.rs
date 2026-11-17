@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 use llm_api::providers::{Effort, Model, ModelConfig, ProviderType};
-use psa_api::AgentDefaults;
-use serde::{Deserialize, Deserializer};
+use psa_api::{AgentConfig, AgentConfigInput, BundleConfig, HookConfigs, HookOverrides};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     net::SocketAddr,
     num::NonZeroUsize,
@@ -57,7 +57,7 @@ default = true
 
 [subagents]
 global_defaults = false
-project_defaults = false
+group_defaults = false
 subagents = ["subagent"]
 "#,
     ),
@@ -70,7 +70,7 @@ models = ["Parent"]
 # A leaf worker: it cannot create subagents of its own.
 [subagents]
 global_defaults = false
-project_defaults = false
+group_defaults = false
 "#,
     ),
 ];
@@ -279,14 +279,13 @@ where
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct SessionDefaults {
-        model: String,
+        model: Model,
         effort: Effort,
     }
 
     let defaults = SessionDefaults::deserialize(deserializer)?;
-    let model = Model::parse_slug(&defaults.model).map_err(serde::de::Error::custom)?;
     Ok(ModelConfig {
-        model,
+        model: defaults.model,
         effort: defaults.effort,
     })
 }
@@ -334,4 +333,134 @@ async fn write_new_file(path: &Path, contents: &str) -> Result<bool, ConfigError
         .map_err(io_error)?;
     file.sync_all().await.map_err(io_error)?;
     Ok(true)
+}
+
+/// Server-configured fallbacks. Explicit definition lists replace these lists.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentDefaults {
+    /// Ordered fallback bundle configurations; defaults to empty.
+    pub bundles: Vec<BundleConfig>,
+    /// Per-stage fallback hook configurations; all stages default to empty.
+    pub hooks: HookConfigs,
+}
+
+impl AgentDefaults {
+    /// Fill omitted bundle and hook lists from these defaults. Explicit lists,
+    /// even empty ones, replace the defaults rather than merging with them.
+    /// Models and dependencies are not validated here.
+    pub fn resolve(&self, input: AgentConfigInput) -> AgentConfig {
+        AgentConfig {
+            config_id: input.config_id,
+            description: input.description,
+            selectable: input.selectable,
+            bundles: input.bundles.unwrap_or_else(|| self.bundles.clone()),
+            hooks: self.resolve_hooks(input.hooks),
+            models: input.models,
+            default: input.default,
+            subagents: input.subagents,
+            skills: input.skills,
+        }
+    }
+
+    /// Each omitted stage inherits its default list independently.
+    fn resolve_hooks(&self, hooks: HookOverrides) -> HookConfigs {
+        let defaults = &self.hooks;
+        HookConfigs {
+            agent_create: hooks
+                .agent_create
+                .unwrap_or_else(|| defaults.agent_create.clone()),
+            session_update: hooks
+                .session_update
+                .unwrap_or_else(|| defaults.session_update.clone()),
+            before_request: hooks
+                .before_request
+                .unwrap_or_else(|| defaults.before_request.clone()),
+            after_request: hooks
+                .after_request
+                .unwrap_or_else(|| defaults.after_request.clone()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod agent_defaults_tests {
+    use super::*;
+    use psa_api::{ConfigGroup, ConfigId, HookConfig, ModelSelection};
+    use serde_json::json;
+
+    fn defaults() -> AgentDefaults {
+        AgentDefaults {
+            bundles: vec![
+                BundleConfig::FileTools { read_only: false },
+                BundleConfig::Noop,
+            ],
+            hooks: HookConfigs {
+                agent_create: vec![
+                    HookConfig::DefaultStartup,
+                    HookConfig::ExtraSystemPrompt {
+                        prompt: "Inherited prompt".into(),
+                    },
+                ],
+                after_request: vec![HookConfig::StopWithoutTools],
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn omitted_lists_inherit_and_explicit_empty_lists_disable_defaults() {
+        let id = json!({"config_group": "Global", "name": "agent"});
+        let input: AgentConfigInput =
+            serde_json::from_value(json!({"config_id": id, "models": ["Global"]})).unwrap();
+        let resolved = defaults().resolve(input.clone());
+        assert_eq!(resolved.bundles, defaults().bundles);
+        assert_eq!(resolved.hooks, defaults().hooks);
+        let wire = serde_json::to_value(&input).unwrap();
+        assert!(wire.get("bundles").is_none());
+        assert!(wire.get("tools").is_none());
+        let input: AgentConfigInput = serde_json::from_value(json!({"config_id": id, "models": ["Global"], "bundles": [], "hooks": {"agent_create": []}})).unwrap();
+        let resolved = defaults().resolve(input);
+        assert!(resolved.bundles.is_empty());
+        assert!(resolved.hooks.agent_create.is_empty());
+        assert_eq!(resolved.hooks.after_request, defaults().hooks.after_request);
+    }
+
+    #[test]
+    fn explicit_hook_payloads_replace_only_their_stage() {
+        let input: AgentConfigInput = serde_json::from_value(json!({
+            "config_id": {"config_group": "Global", "name": "agent"},
+            "models": ["Global"],
+            "hooks": {"agent_create": [{"ExtraSystemPrompt": {"prompt": "Local prompt"}}]},
+        }))
+        .unwrap();
+        let serialized = serde_json::to_value(&input).unwrap();
+        assert!(serialized["hooks"].get("after_request").is_none());
+        let resolved = defaults().resolve(input);
+        assert_eq!(
+            resolved.hooks.agent_create,
+            vec![HookConfig::ExtraSystemPrompt {
+                prompt: "Local prompt".into(),
+            }]
+        );
+        assert_eq!(resolved.hooks.after_request, defaults().hooks.after_request);
+        assert_eq!(resolved.bundles, defaults().bundles);
+    }
+
+    #[test]
+    fn normalized_configs_remain_fully_explicit_when_resubmitted() {
+        let input = AgentConfigInput::new(
+            ConfigId {
+                config_group: ConfigGroup::Global,
+                name: "agent".into(),
+            },
+            vec![ModelSelection::Global],
+        );
+        let explicit: AgentConfigInput = AgentDefaults::default().resolve(input).into();
+        let serialized = serde_json::to_value(&explicit).unwrap();
+        let roundtrip: AgentConfigInput = serde_json::from_value(serialized).unwrap();
+        let resolved = defaults().resolve(roundtrip);
+        assert!(resolved.bundles.is_empty());
+        assert_eq!(resolved.hooks, HookConfigs::default());
+    }
 }

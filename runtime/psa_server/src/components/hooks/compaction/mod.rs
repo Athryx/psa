@@ -4,7 +4,9 @@ mod prompts;
 #[cfg(test)]
 mod tests;
 
-use super::{CommandHook, CommandOutcome, Hook, HookError};
+use super::{CommandHook, Hook, HookError};
+use crate::agents::NewAgent;
+use crate::db::{CreateAgentDefinition, EventRange, NewEvent};
 use crate::{
     agents::{AgentState, agent_context::AgentContext, session_manager::RuntimeError},
     components::cancellation::Cancellation,
@@ -14,11 +16,9 @@ use llm_api::{
     providers::ModelConfig,
 };
 use psa_api::{
-    AgentCommand, AgentDefinitionId, AgentResult, CreateAgent, CreateAgentDefinition, HookConfig,
+    AgentCommand, AgentDefinitionId, AgentResult, CommandOutcome, CommandResult, HookConfig,
     HookConfigs,
-    events::{
-        Compaction, CompactionSummary, Event, EventRange, EventType, Log, MessageType, NewEvent,
-    },
+    events::{Compaction, CompactionSummary, Event, EventType, Log, MessageType},
 };
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
@@ -219,7 +219,7 @@ impl CompactionHook {
         let agent = sessions
             .create_agent_with_model(
                 session,
-                CreateAgent {
+                NewAgent {
                     definition_id,
                     name: format!("{prefix}{count}"),
                     subagent_parent_id: None,
@@ -344,26 +344,29 @@ impl CommandHook for CompactionHook {
         context: &mut AgentContext<'_>,
         command: &AgentCommand,
         mut cancellation: Cancellation,
-    ) -> Result<CommandOutcome, HookError> {
+    ) -> Result<Option<CommandResult>, HookError> {
         // New command variants must decide here whether compaction ignores them.
         let instructions = match command {
             AgentCommand::Compact { instructions } => instructions.as_deref(),
         };
 
-        // A manual request reports failures in the transcript rather than
+        // A manual request reports failures in its command result rather than
         // failing the worker; persistence failures still propagate.
-        match self
+        let (outcome, output) = match self
             .compact_now(context, instructions, &mut cancellation)
             .await
         {
-            Ok(()) => {}
-            Err(HookError::Sessions(RuntimeError::Cancelled)) if cancellation.is_cancelled() => {}
-            Err(error @ (HookError::Database(_) | HookError::Agent(_))) => return Err(error),
-            Err(error) => {
-                save_log(context, true, &format!("Compaction failed: {error}")).await?;
+            Ok(()) => (CommandOutcome::Succeeded, None),
+            Err(HookError::Sessions(RuntimeError::Cancelled)) if cancellation.is_cancelled() => {
+                (CommandOutcome::Interrupted, None)
             }
-        }
-        Ok(CommandOutcome::Handled)
+            Err(error @ (HookError::Database(_) | HookError::Agent(_))) => return Err(error),
+            Err(error) => (
+                CommandOutcome::Failed,
+                Some(format!("Compaction failed: {error}")),
+            ),
+        };
+        Ok(Some(CommandResult { outcome, output }))
     }
 }
 

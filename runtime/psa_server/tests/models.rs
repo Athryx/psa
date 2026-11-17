@@ -12,10 +12,8 @@ use llm_api::{
     api::{OpenAiCompletions, OpenAiCompletionsConfig, Provider, ReasoningOverride},
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
-use psa_api::{
-    self as api,
-    events::{EventRange, EventType},
-};
+use psa_api::{self as api, events::EventType};
+use psa_server::db::EventRange;
 use psa_server::{db::Database, models::CatalogSource, providers::ProviderRegistry};
 use serde_json::{Value, json};
 use std::{
@@ -277,7 +275,7 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
         let agent = client
             .create_agent(
                 session.id,
-                &api::NewConfiguredAgent {
+                &api::CreateAgent {
                     subagent_parent_id: None,
                     model: None,
                     name: "main".into(),
@@ -289,17 +287,17 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
             .await
             .unwrap();
         client
-            .send_subagent_message(
+            .send_message(
                 session.id,
                 agent.id,
-                None,
+                api::MessageDelivery::Steer,
                 psa_server::prompts::text("hello"),
             )
             .await
             .unwrap();
         wait_idle(&client, session.id).await;
         let page = client
-            .events(session.id, Some(agent.id), &Default::default())
+            .list_events(session.id, Some(agent.id), &Default::default())
             .await
             .unwrap();
         let start = page

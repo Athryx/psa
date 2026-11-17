@@ -528,14 +528,22 @@ fn native_compaction_is_not_silently_replaced_by_a_text_summary() {
 
 #[test]
 fn subagent_attribution_is_preserved_in_the_transcript_and_estimate() {
-    let transcript = events(vec![message(MessageType::Subagent, "report")]);
+    let mut report = psa_api::events::Message::text(MessageType::Subagent, "report");
+    report.source = Some(psa_api::events::AgentMessageLink {
+        request_id: "r".into(),
+        sender: psa_api::AgentId(2),
+        sender_name: "worker".into(),
+        recipient: psa_api::AgentId(1),
+        recipient_name: "recipient".into(),
+    });
+    let transcript = events(vec![EventType::Message(report)]);
     assert_eq!(
         serialize_conversation(&transcript),
-        "[User]: Message from another agent:\nreport"
+        "[User]: Message from agent \"worker\":\nreport"
     );
     assert_eq!(
         estimate_context_tokens(&transcript),
-        char_count("Message from another agent:\nreport").div_ceil(4)
+        char_count("Message from agent \"worker\":\nreport").div_ceil(4)
     );
 }
 

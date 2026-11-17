@@ -4,6 +4,7 @@ use crate::components::{
     codemode_functions::CodeModeFunctionKind,
     tools::{CodeMode, Noop},
 };
+use crate::db::NewEvent;
 use crate::db::PrivateEvent;
 use serde_json::json;
 

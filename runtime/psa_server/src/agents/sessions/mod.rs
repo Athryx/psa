@@ -122,7 +122,7 @@ impl Sessions {
 
     pub async fn create_agent_definition(
         &self,
-        request: api::CreateAgentDefinition,
+        request: crate::db::CreateAgentDefinition,
     ) -> Result<api::AgentDefinition, RuntimeError> {
         let mut cursor = self.database.cursor().await?;
         let definition = cursor.create_agent_definition(request).await?;
@@ -154,7 +154,7 @@ impl Sessions {
     pub(crate) async fn update_agent_definition(
         &self,
         id: api::AgentDefinitionId,
-        request: api::UpdateAgentDefinition,
+        request: crate::db::UpdateAgentDefinition,
     ) -> Result<api::AgentDefinition, RuntimeError> {
         let mut cursor = self.database.cursor().await?;
         let definition = cursor.update_agent_definition(id, request).await?;
@@ -171,8 +171,8 @@ impl Sessions {
             .unwrap_or_else(|| self.default_model_config.clone());
         self.validate_decision_model(request.decision_model.as_ref())
             .await?;
-        let project = self
-            .discover_session_project(request.probe_id, &request.working_directory)
+        let agents_dir = self
+            .discover_session_agents_dir(request.probe_id, &request.working_directory)
             .await?;
         let publication = self.publication.lock().await;
         let mut cursor = self.database.cursor().await?;
@@ -186,8 +186,10 @@ impl Sessions {
                 decision_model: request.decision_model,
             })
             .await?;
-        if let Some(project) = project {
-            cursor.set_session_project(session.id, project).await?;
+        if let Some(agents_dir) = agents_dir {
+            cursor
+                .set_session_agents_dir(session.id, agents_dir)
+                .await?;
         }
         cursor.commit().await?;
 
@@ -225,9 +227,12 @@ impl Sessions {
         let _guard = self.configuration_gate.lock().await;
         self.validate_decision_model(request.decision_model.as_ref())
             .await?;
-        let project = if let Some(cwd) = &request.working_directory {
+        let agents_dir = if let Some(cwd) = &request.working_directory {
             let session = self.get_session(id).await?;
-            Some(self.discover_session_project(session.probe_id, cwd).await?)
+            Some(
+                self.discover_session_agents_dir(session.probe_id, cwd)
+                    .await?,
+            )
         } else {
             None
         };
@@ -246,9 +251,9 @@ impl Sessions {
                 },
             )
             .await?;
-        match project {
-            Some(Some(project)) => cursor.set_session_project(id, project).await?,
-            Some(None) => cursor.clear_session_project(id).await?,
+        match agents_dir {
+            Some(Some(agents_dir)) => cursor.set_session_agents_dir(id, agents_dir).await?,
+            Some(None) => cursor.clear_session_agents_dir(id).await?,
             None => {}
         }
         cursor.commit().await?;
@@ -271,15 +276,16 @@ impl Sessions {
         let _guard = self.configuration_gate.lock().await;
         self.validate_decision_model(request.metadata.decision_model.as_ref())
             .await?;
-        let project = if let Some(cwd) = &request.metadata.working_directory {
+        let agents_dir = if let Some(cwd) = &request.metadata.working_directory {
             let source = self.get_session(id).await?;
-            self.discover_session_project(source.probe_id, cwd).await?
+            self.discover_session_agents_dir(source.probe_id, cwd)
+                .await?
         } else {
             let mut cursor = self.database.cursor().await?;
-            let known = cursor.has_session_project_discovery(id).await?;
-            let project = cursor.get_session_project(id).await?;
+            let known = cursor.has_session_agents_dir_discovery(id).await?;
+            let agents_dir = cursor.get_session_agents_dir(id).await?;
             cursor.rollback().await?;
-            known.then_some(project)
+            known.then_some(agents_dir)
         };
         let notification = self.commands.reserve_notification().await?;
         let publication = self.publication.lock().await;
@@ -328,8 +334,10 @@ impl Sessions {
         }
 
         let session = cursor.get_session(fork.session.id).await?;
-        if let Some(project) = project {
-            cursor.set_session_project(session.id, project).await?;
+        if let Some(agents_dir) = agents_dir {
+            cursor
+                .set_session_agents_dir(session.id, agents_dir)
+                .await?;
         }
         cursor.commit().await?;
 
@@ -348,7 +356,7 @@ impl Sessions {
     async fn commit_agent(
         &self,
         session: SessionId,
-        request: api::CreateAgent,
+        request: crate::agents::NewAgent,
     ) -> Result<Agent, RuntimeError> {
         let notification = self.commands.reserve_notification().await?;
         let publication = self.publication.lock().await;
@@ -410,7 +418,7 @@ impl Sessions {
         &self,
         session: SessionId,
         agent: AgentId,
-        range: api::events::EventRange,
+        range: crate::db::EventRange,
     ) -> Result<Vec<api::events::Event>, RuntimeError> {
         let mut cursor = self.database.cursor().await?;
         cursor.require_agent_session(session, agent).await?;
@@ -491,8 +499,7 @@ impl Sessions {
         agent: AgentId,
         request: api::AgentRequest,
     ) -> Result<api::RequestAccepted, RuntimeError> {
-        if matches!(&request, api::AgentRequest::Message { content, .. } | api::AgentRequest::SubagentMessage { content, .. } if content.is_empty())
-        {
+        if matches!(&request, api::AgentRequest::Message { content, .. } if content.is_empty()) {
             return Err(RuntimeError::Invalid(
                 "message content must not be empty".into(),
             ));
@@ -502,6 +509,22 @@ impl Sessions {
             .submit(session, agent, request)
             .await
             .map_err(|_| RuntimeError::Unavailable)?
+    }
+
+    /// Run a command at its delivery point and wait for its result. A command
+    /// discarded before it finishes, such as by shutdown, is `Cancelled`.
+    pub async fn run_command(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        request: api::RunCommand,
+    ) -> Result<api::CommandResult, RuntimeError> {
+        let result = self
+            .commands
+            .run_command(session, agent, request)
+            .await
+            .map_err(|_| RuntimeError::Unavailable)??;
+        result.await.map_err(|_| RuntimeError::Cancelled)
     }
 
     pub async fn steer(
@@ -516,24 +539,39 @@ impl Sessions {
             api::AgentRequest::Message {
                 delivery: api::MessageDelivery::Steer,
                 content,
+                source: None,
             },
         )
         .await
     }
 
+    /// Steer a message from `sender` to `recipient`, returning the link the
+    /// sender records on its tool result.
     pub async fn send_subagent_message(
         &self,
         session: SessionId,
-        agent: AgentId,
-        source: Option<api::AgentMessageSource>,
+        recipient: &Agent,
+        sender: &Agent,
         content: Vec<llm_api::api::ContentBlock>,
-    ) -> Result<api::RequestAccepted, RuntimeError> {
-        self.submit(
-            session,
-            agent,
-            api::AgentRequest::SubagentMessage { source, content },
-        )
-        .await
+    ) -> Result<api::events::AgentMessageLink, RuntimeError> {
+        let accepted = self
+            .submit(
+                session,
+                recipient.id,
+                api::AgentRequest::Message {
+                    delivery: api::MessageDelivery::Steer,
+                    content,
+                    source: Some(sender.id),
+                },
+            )
+            .await?;
+        Ok(api::events::AgentMessageLink {
+            request_id: accepted.request_id,
+            sender: sender.id,
+            sender_name: sender.name.clone(),
+            recipient: recipient.id,
+            recipient_name: recipient.name.clone(),
+        })
     }
 
     /// Background hooks use this conditional submission rather than a racy state check.
@@ -559,6 +597,7 @@ impl Sessions {
             session,
             agent,
             api::AgentRequest::Message {
+                source: None,
                 delivery: api::MessageDelivery::Resume,
                 content,
             },
@@ -580,7 +619,7 @@ impl Sessions {
 mod tests {
     use super::*;
     use crate::{agents::session_manager::ManagerCommand, db::DbError};
-    use psa_api::events::{EventId, EventType, NewEvent, StatusChange};
+    use psa_api::events::{EventId, EventType, StatusChange};
     use std::time::Duration;
 
     pub(super) struct Fixture {
@@ -628,8 +667,8 @@ mod tests {
         }
     }
 
-    pub(super) fn create_agent_request() -> api::CreateAgent {
-        api::CreateAgent {
+    pub(super) fn create_agent_request() -> crate::agents::NewAgent {
+        crate::agents::NewAgent {
             subagent_parent_id: None,
             interactive: false,
             hidden: false,
@@ -693,9 +732,9 @@ mod tests {
             .add_events(
                 agent.id,
                 &[
-                    NewEvent::new(EventType::Model(crate::test_support::model_config())),
-                    NewEvent::new(EventType::NewContext),
-                    NewEvent::new(EventType::StatusChange(StatusChange {
+                    crate::db::NewEvent::new(EventType::Model(crate::test_support::model_config())),
+                    crate::db::NewEvent::new(EventType::NewContext),
+                    crate::db::NewEvent::new(EventType::StatusChange(StatusChange {
                         new_status: api::AgentState::Running,
                         reason: None,
                     })),
@@ -783,7 +822,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let sessions = &fixture.sessions;
         let initial = sessions
-            .create_agent_definition(api::CreateAgentDefinition {
+            .create_agent_definition(crate::db::CreateAgentDefinition {
                 name: "custom".into(),
                 description: "first version".into(),
                 selectable: true,
@@ -803,7 +842,7 @@ mod tests {
         let updated = sessions
             .update_agent_definition(
                 initial.id,
-                api::UpdateAgentDefinition {
+                crate::db::UpdateAgentDefinition {
                     name: "replacement".into(),
                     ..Default::default()
                 },
@@ -1047,6 +1086,7 @@ mod tests {
                     session.id,
                     AgentId(1),
                     api::AgentRequest::Message {
+                        source: None,
                         delivery,
                         content: Vec::new(),
                     },
@@ -1072,6 +1112,7 @@ mod tests {
                         SessionId(1),
                         AgentId(2),
                         api::AgentRequest::Message {
+                            source: None,
                             delivery: api::MessageDelivery::Queue,
                             content: content.clone()
                         }
@@ -1120,7 +1161,12 @@ mod tests {
                 };
                 assert_eq!((session, agent), (SessionId(1), AgentId(2)));
                 match (delivery, request) {
-                    (Some(expected), api::AgentRequest::Message { delivery, content }) => {
+                    (
+                        Some(expected),
+                        api::AgentRequest::Message {
+                            delivery, content, ..
+                        },
+                    ) => {
                         assert_eq!(delivery, expected);
                         assert_eq!(content.len(), 1);
                     }

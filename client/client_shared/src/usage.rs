@@ -1,13 +1,13 @@
 //! Display-independent calculations over cumulative agent usage.
 
-use psa_api::AgentUsage;
+use llm_api::api::Usage;
 
 /// Fraction of input tokens served from cache, when both cumulative counts are
 /// known and consistent. An empty input total has no defined hit rate.
 ///
 /// Usage includes inherited fork history and compaction; it must not be summed
 /// across forks to estimate provider-wide usage.
-pub fn cache_hit_rate(usage: &AgentUsage) -> Option<f64> {
+pub fn cache_hit_rate(usage: &Usage) -> Option<f64> {
     let input = usage.input_tokens?;
     let cached = usage.cached_input_tokens?;
     if input == 0 || cached > input {
@@ -22,7 +22,7 @@ mod tests {
 
     #[test]
     fn cache_rate_requires_known_consistent_nonzero_input() {
-        let mut usage = AgentUsage::default();
+        let mut usage = Usage::zero();
         assert_eq!(cache_hit_rate(&usage), None);
         usage.input_tokens = Some(100);
         assert_eq!(cache_hit_rate(&usage), Some(0.0));

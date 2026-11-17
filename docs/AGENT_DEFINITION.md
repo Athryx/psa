@@ -3,7 +3,7 @@
 Agent defined by sets of:
 - tools
 - hooks
-- model config (`model: { provider, api_name }` identity plus `effort`)
+- model config (`model` slug such as `openrouter/vendor/model`, plus `effort`)
 - Extras (just consumed by hooks / tools, so are just fields)
   - skills
   - permitted subagents

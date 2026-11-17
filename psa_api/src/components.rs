@@ -5,9 +5,11 @@
 //! Unit configurations serialize as variant names; parameterized configurations use
 //! externally tagged objects, such as `{"ExtraSystemPrompt":{"prompt":"Be concise."}}`.
 
-use crate::{BundleId, HookId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+/// Default number of result-correction retries for the TypedResult bundle.
+pub const DEFAULT_RESULT_RETRIES: u32 = 3;
 
 /// Construction configuration for a lifecycle hook.
 ///
@@ -37,23 +39,6 @@ pub enum HookConfig {
     Skills,
     /// Follows session model updates unless the definition pins its own model.
     SessionModelUpdate,
-}
-
-impl HookConfig {
-    /// Return the hook's identity independently of its construction data.
-    pub fn id(&self) -> HookId {
-        match self {
-            Self::Noop => HookId::Noop,
-            Self::StopWithoutTools => HookId::StopWithoutTools,
-            Self::DefaultStartup => HookId::DefaultStartup,
-            Self::ExtraSystemPrompt { .. } => HookId::ExtraSystemPrompt,
-            Self::ProjectContext => HookId::ProjectContext,
-            Self::ToolDefinitions => HookId::ToolDefinitions,
-            Self::Cwd => HookId::Cwd,
-            Self::Skills => HookId::Skills,
-            Self::SessionModelUpdate => HookId::SessionModelUpdate,
-        }
-    }
 }
 
 /// Construction configuration for a feature bundle that owns related components.
@@ -111,10 +96,10 @@ pub enum BundleConfig {
         /// Defaults to false.
         #[serde(default)]
         include_global: bool,
-        /// Decision models allowed regardless of the session, as `provider/api_name`
-        /// slugs. Each must be a decision model in the catalog. Defaults to empty.
+        /// Decision models allowed regardless of the session. Each must be a
+        /// decision model in the catalog. Defaults to empty.
         #[serde(default)]
-        models: Vec<String>,
+        models: Vec<llm_api::providers::Model>,
     },
     /// Summarizes older context before inference once it nears the context window,
     /// and handles the manual `Compact` command, using a hidden summarizer agent.
@@ -153,7 +138,7 @@ impl BundleConfig {
     /// Uses the schema for values accepted by Serde. The server validates the schema
     /// and requires an object root; this constructor only generates configuration.
     pub fn typed_result<T: JsonSchema>() -> Self {
-        Self::typed_result_with_retries::<T>(crate::DEFAULT_RESULT_RETRIES)
+        Self::typed_result_with_retries::<T>(DEFAULT_RESULT_RETRIES)
     }
 
     /// Generate a typed-result configuration with an explicit correction retry budget.
@@ -176,7 +161,7 @@ fn default_compaction_keep_recent_tokens() -> u64 {
 }
 
 fn default_result_retries() -> u32 {
-    crate::DEFAULT_RESULT_RETRIES
+    DEFAULT_RESULT_RETRIES
 }
 
 fn default_interactive_only() -> bool {
@@ -200,10 +185,126 @@ pub struct HookConfigs {
     pub after_request: Vec<HookConfig>,
 }
 
+/// Identity of a built-in feature bundle, without its construction data.
+/// Use [`BundleConfig`] when selecting a bundle installation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BundleId {
+    /// Installs a tool that performs no work.
+    Noop,
+    /// Installs Read and, unless read-only, Edit and Write.
+    FileTools,
+    /// Installs the Bash, InteractBash, and CloseBash tools with shared sessions.
+    Bash,
+    /// Installs the CodeMode execution and reset tools.
+    CodeMode,
+    /// Installs goal tools and a goal-aware stopping policy.
+    Goal,
+    /// Installs the tool for requesting structured client input.
+    AskQuestion,
+    /// Installs session-wide agent tools backed by core ancestry and steering.
+    Subagents,
+    /// Installs schema-validated result recording and its completion policy.
+    TypedResult,
+    /// Installs automatic context compaction and the `Compact` command.
+    Compaction,
+    /// Installs session listing and trace export tools.
+    Traces,
+    /// Installs the CodeMode functions for calling decision models.
+    DecisionModels,
+}
+
+/// Identity of an installed native agent tool, independent of construction data.
+/// Tools are installed through their owning [`BundleConfig`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolId {
+    /// Performs no work.
+    Noop,
+    /// Reads file contents.
+    Read,
+    /// Edits a file using exact text replacements.
+    Edit,
+    /// Writes file contents.
+    Write,
+    /// Starts a shell command.
+    Bash,
+    /// Sends input to or polls a running shell command.
+    InteractBash,
+    /// Stops a running shell command.
+    CloseBash,
+    /// Executes code through the CodeMode tool.
+    CodeMode,
+    /// Resets the CodeMode REPL without deleting prior checkpoints or tool results.
+    ResetCodeMode,
+    /// Sets the agent's goal when goal mode is installed.
+    SetGoal,
+    /// Updates the status of the agent's goal.
+    SetGoalStatus,
+    /// Requests structured input from a connected client.
+    AskQuestion,
+    /// Creates a subagent from a permitted definition.
+    CreateAgent,
+    /// Sends an attributed message to another agent.
+    SendMessage,
+    /// Waits for an agent message.
+    WaitMessage,
+    /// Lists agents visible to the subagent tools.
+    ListAgents,
+    /// Records a structured result validated against the installed result schema.
+    RecordResult,
+    /// Exports a session as a harness-neutral trace directory on the probe.
+    ExportTrace,
+    /// Lists psa sessions.
+    ListSessions,
+}
+
+/// A configuration cannot safely establish its selected completion policy.
+#[derive(Debug, thiserror::Error)]
+pub enum CompletionConfigurationError {
+    /// More than one distinct completion policy was selected, including defaults.
+    #[error("StopWithoutTools, Goal, and TypedResult completion modes are mutually exclusive")]
+    IncompatibleModes,
+    /// A terminal-response hook was assigned to a nonterminal lifecycle stage.
+    #[error("StopWithoutTools must be configured in after_request")]
+    InvalidStopperStage,
+}
+
+/// Validate completion-policy selection after applying server defaults.
+///
+/// Goal and TypedResult are incompatible with each other and with StopWithoutTools,
+/// even when a bundle's installation policy could skip a particular agent.
+/// Repeated copies of the same hook do not select a second completion mode.
+/// The server additionally compiles TypedResult schemas when saving configs.
+pub fn validate_completion_modes(
+    bundles: &[BundleConfig],
+    hooks: &HookConfigs,
+) -> Result<(), CompletionConfigurationError> {
+    let is_stopper = |hook: &HookConfig| matches!(hook, HookConfig::StopWithoutTools);
+    if hooks.agent_create.iter().any(is_stopper)
+        || hooks.session_update.iter().any(is_stopper)
+        || hooks.before_request.iter().any(is_stopper)
+    {
+        return Err(CompletionConfigurationError::InvalidStopperStage);
+    }
+
+    let ordinary = hooks.after_request.iter().any(is_stopper);
+    let goal = bundles
+        .iter()
+        .any(|bundle| matches!(bundle, BundleConfig::Goal { .. }));
+    let typed = bundles
+        .iter()
+        .any(|bundle| matches!(bundle, BundleConfig::TypedResult { .. }));
+    if u8::from(ordinary) + u8::from(goal) + u8::from(typed) > 1 {
+        return Err(CompletionConfigurationError::IncompatibleModes);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ToolId;
+    use llm_api::providers::Model;
     use serde_json::json;
 
     #[test]
@@ -233,14 +334,14 @@ mod tests {
             (
                 BundleConfig::DecisionModels {
                     include_global: true,
-                    models: vec!["openrouter/vendor/decider".into()],
+                    models: vec![Model::parse_slug("openrouter/vendor/decider").unwrap()],
                 },
                 BundleId::DecisionModels,
             ),
             (
                 BundleConfig::TypedResult {
                     schema: serde_json::json!({"type": "object"}).into(),
-                    max_retries: crate::DEFAULT_RESULT_RETRIES,
+                    max_retries: DEFAULT_RESULT_RETRIES,
                 },
                 BundleId::TypedResult,
             ),
@@ -252,23 +353,19 @@ mod tests {
                 config
             );
         }
-        for (config, id) in [
-            (HookConfig::Noop, HookId::Noop),
-            (HookConfig::StopWithoutTools, HookId::StopWithoutTools),
-            (HookConfig::DefaultStartup, HookId::DefaultStartup),
-            (
-                HookConfig::ExtraSystemPrompt {
-                    prompt: "Follow these instructions. 🦀".into(),
-                },
-                HookId::ExtraSystemPrompt,
-            ),
-            (HookConfig::ProjectContext, HookId::ProjectContext),
-            (HookConfig::ToolDefinitions, HookId::ToolDefinitions),
-            (HookConfig::Cwd, HookId::Cwd),
-            (HookConfig::Skills, HookId::Skills),
-            (HookConfig::SessionModelUpdate, HookId::SessionModelUpdate),
+        for config in [
+            HookConfig::Noop,
+            HookConfig::StopWithoutTools,
+            HookConfig::DefaultStartup,
+            HookConfig::ExtraSystemPrompt {
+                prompt: "Follow these instructions. 🦀".into(),
+            },
+            HookConfig::ProjectContext,
+            HookConfig::ToolDefinitions,
+            HookConfig::Cwd,
+            HookConfig::Skills,
+            HookConfig::SessionModelUpdate,
         ] {
-            assert_eq!(config.id(), id);
             let wire = serde_json::to_value(&config).unwrap();
             assert_eq!(serde_json::from_value::<HookConfig>(wire).unwrap(), config);
         }
@@ -284,27 +381,6 @@ mod tests {
                 models: Vec::new(),
             }
         );
-    }
-
-    #[test]
-    fn removed_tools_fields_are_rejected_even_when_empty() {
-        for tools in [json!([]), json!(["Read"]), json!(null)] {
-            let definition = json!({"name": "agent", "tools": tools});
-            assert!(
-                serde_json::from_value::<crate::CreateAgentDefinition>(definition.clone()).is_err()
-            );
-            assert!(serde_json::from_value::<crate::UpdateAgentDefinition>(definition).is_err());
-            let config = json!({
-                "config_id": {"config_group": "Global", "name": "agent"},
-                "models": ["Global"],
-                "tools": tools,
-            });
-            assert!(serde_json::from_value::<crate::AgentConfigInput>(config.clone()).is_err());
-            assert!(serde_json::from_value::<crate::AgentConfig>(config).is_err());
-            assert!(
-                serde_json::from_value::<crate::AgentDefaults>(json!({"tools": tools})).is_err()
-            );
-        }
     }
 
     #[test]
@@ -526,7 +602,7 @@ mod tests {
             default,
             BundleConfig::TypedResult {
                 schema: expected_schema.clone(),
-                max_retries: crate::DEFAULT_RESULT_RETRIES,
+                max_retries: DEFAULT_RESULT_RETRIES,
             }
         );
         for max_retries in [0, 1, 5] {
@@ -646,19 +722,49 @@ mod tests {
         assert_eq!(schema["additionalProperties"], false);
     }
 
+    fn typed() -> BundleConfig {
+        BundleConfig::TypedResult {
+            schema: json!({"type":"object"}).into(),
+            max_retries: 3,
+        }
+    }
+
     #[test]
-    fn removed_agent_prompt_fields_are_rejected_by_configuration_inputs() {
-        let definition = json!({"name": "agent", "extra_system_prompt": "old field"});
-        assert!(
-            serde_json::from_value::<crate::CreateAgentDefinition>(definition.clone()).is_err()
-        );
-        assert!(serde_json::from_value::<crate::UpdateAgentDefinition>(definition).is_err());
-        let config = json!({
-            "config_id": {"config_group": "Global", "name": "agent"},
-            "models": ["Global"],
-            "extra_system_prompt": "old field",
-        });
-        assert!(serde_json::from_value::<crate::AgentConfigInput>(config.clone()).is_err());
-        assert!(serde_json::from_value::<crate::AgentConfig>(config).is_err());
+    fn rejects_incompatible_modes_including_skippable_goal_policy() {
+        let ordinary = HookConfigs {
+            after_request: vec![HookConfig::StopWithoutTools],
+            ..Default::default()
+        };
+        let goal = BundleConfig::Goal {
+            interactive_only: true,
+        };
+        assert!(validate_completion_modes(&[], &ordinary).is_ok());
+        assert!(validate_completion_modes(&[goal.clone()], &HookConfigs::default()).is_ok());
+        assert!(validate_completion_modes(&[typed()], &HookConfigs::default()).is_ok());
+        assert!(validate_completion_modes(&[goal.clone()], &ordinary).is_err());
+        assert!(validate_completion_modes(&[typed()], &ordinary).is_err());
+        assert!(validate_completion_modes(&[goal, typed()], &HookConfigs::default()).is_err());
+    }
+
+    #[test]
+    fn compaction_is_not_a_completion_mode() {
+        let compact = BundleConfig::Compaction {
+            reserve_tokens: 16384,
+            keep_recent_tokens: 20000,
+            context_window: None,
+        };
+        assert!(validate_completion_modes(&[compact, typed()], &HookConfigs::default()).is_ok());
+    }
+
+    #[test]
+    fn rejects_nonterminal_stopper_stages() {
+        let hooks = HookConfigs {
+            before_request: vec![HookConfig::StopWithoutTools],
+            ..Default::default()
+        };
+        assert!(matches!(
+            validate_completion_modes(&[], &hooks),
+            Err(CompletionConfigurationError::InvalidStopperStage)
+        ));
     }
 }

@@ -9,7 +9,8 @@ summarizer bookkeeping:
   (the GUI's `/compact [instructions]`). It runs in any agent state, ignores the
   threshold and the recent-context budget (summarizing everything before the
   latest entry), and never starts or resumes a run. Optional instructions are appended
-  to the summarization prompts. A no-op or failure is recorded as a transcript log.
+  to the summarization prompts. A no-op is recorded as a transcript log; a failure
+  becomes the command's `Failed` result.
 
 ```toml
 bundles = [{ Compaction = { reserve_tokens = 16384, keep_recent_tokens = 20000 } }]
@@ -24,13 +25,28 @@ completion mode and works with Goal, StopWithoutTools, and TypedResult.
 
 ## Commands
 
-Agent commands are submitted as `AgentRequest::Command { delivery, command }`
-(`Client::send_command`). `CommandDelivery::Steer` runs at the next worker
-boundary, including between turns of a run; `Queue` waits until the agent is not
-running. Commands share the request FIFO with messages but are not steering, so
-they never wake `wait_message`. Each command is recorded as an
-`EventType::Command` event before its hooks run. The server rejects a command at
-submission unless the agent's definition selects the bundle that handles it.
+Agent commands are typed `AgentCommand`s, run with `POST .../commands`
+(`Client::send_command`, body `RunCommand { delivery, command }`). The request
+stays open until the command finishes and returns its `CommandResult`
+(`Succeeded`, `Failed`, or `Interrupted`, with optional output text); a command
+discarded first, such as at shutdown, returns 410. `CommandDelivery::Steer` runs
+at the next worker boundary, including between turns of a run; `Queue` waits
+until the agent is not running. Commands share the request FIFO with messages
+but are not steering, so they never wake `wait_message`. The server rejects a
+command at submission unless the agent's definition selects the bundle that
+handles it.
+
+Command hooks return `Some(CommandResult)` for commands they handle and `None`
+otherwise; they do not record anything about the command itself. After the
+hooks finish, the worker records an `EventType::Command(CommandRecord)` with the
+command as typed (`name`, `args`), its outcome, and output, so the record
+follows the events the command produced. A command no hook handles is recorded
+as `Failed`. Bundles record their own results, such as compaction summaries.
+
+Client-side slash commands (`/model`, `/rename`, `/fork`, ...) are recorded the
+same way with `AgentRequest::RecordCommand(CommandRecord)`
+(`Client::record_command`), which is steered: the worker records it at the
+agent's next boundary, even during a run.
 
 ## Preparation
 

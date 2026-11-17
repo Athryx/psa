@@ -13,7 +13,7 @@ use crate::{
     components::{bundles::subagents::SubagentCoordinator, tools::ToolOutput},
     prompts,
 };
-use psa_api::events::MessageDelivery;
+use psa_api::events::AgentMessageLink;
 
 /// Optional fields can be absent, but explicitly supplied null is invalid.
 fn deserialize_present<'de, T: serde::Deserialize<'de>, D: serde::Deserializer<'de>>(
@@ -32,7 +32,7 @@ fn require_coordinator(
 
 /// Like [`format_tool_output`], recording the delivered message for clients
 /// without showing its IDs to the model.
-fn format_delivery_output(result: Result<(String, MessageDelivery), String>) -> ToolOutput {
+fn format_delivery_output(result: Result<(String, AgentMessageLink), String>) -> ToolOutput {
     match result {
         Ok((text, delivery)) => {
             let mut output = format_tool_output(Ok(text));

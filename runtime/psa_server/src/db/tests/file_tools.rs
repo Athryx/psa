@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::NewEvent;
 
 #[tokio::test]
 async fn native_tool_definitions_round_trip_through_persistence_and_reopen() {

@@ -16,10 +16,9 @@ use axum::{
     routing::{get, post},
 };
 use psa_api::{
-    CreateSandbox, ListSandboxes, Probe, ProbeId, Sandbox, SandboxState,
+    CreateSandbox, ListSandboxes, Probe, ProbeId, Sandbox, SandboxState, is_valid_sandbox_name,
     probes::{ContainerStatus, SandboxRequest, SandboxSpec, Uuid},
     routes,
-    sandboxes::is_valid_sandbox_name,
 };
 use psa_shared::probe_transport::ProbeError;
 use std::{collections::HashMap, time::Duration};

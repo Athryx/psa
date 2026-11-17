@@ -8,6 +8,7 @@ use super::{
     publication::Publication,
     sessions::Sessions,
 };
+use crate::db::{EventRange, NewEvent};
 use crate::{
     components::bundles::{
         InstalledComponents,
@@ -20,8 +21,9 @@ use crate::{
 };
 use actors::Mailbox;
 use psa_api::{
-    AgentCommand, AgentRequest, CommandDelivery, MessageDelivery, RequestAccepted, StreamMessage,
-    events::{EventId, EventRange, EventType, Log, MessageSender, MessageType, NewEvent},
+    AgentCommand, AgentRequest, CommandDelivery, CommandResult, MessageDelivery, RequestAccepted,
+    StreamMessage,
+    events::{AgentMessageLink, CommandRecord, EventId, EventType, Log, MessageType},
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -169,15 +171,27 @@ pub(crate) struct QueuedRequest {
     pub delivery: MessageDelivery,
     pub content: Vec<llm_api::api::ContentBlock>,
     pub message_type: MessageType,
-    pub source: Option<psa_api::events::MessageSender>,
+    pub source: Option<psa_api::events::AgentMessageLink>,
     pub allow_restart: bool,
 }
 
-#[derive(Clone)]
 pub(crate) struct QueuedCommand {
     pub id: String,
     pub delivery: CommandDelivery,
-    pub command: AgentCommand,
+    pub work: CommandWork,
+}
+
+/// What a queued command asks the worker to do. Either way, the worker records
+/// the finished command in the transcript.
+pub(crate) enum CommandWork {
+    /// Run a typed command with the command hooks and report its result.
+    Run {
+        command: AgentCommand,
+        /// Dropped unanswered when the command is discarded before it finishes.
+        reply: oneshot::Sender<CommandResult>,
+    },
+    /// Record a client-side command that has already finished.
+    Record(CommandRecord),
 }
 
 /// Messages and commands share one FIFO so their relative order is preserved.
@@ -263,6 +277,14 @@ pub(crate) enum ManagerCommand {
         request: AgentRequest,
         #[reply]
         reply: oneshot::Sender<Result<RequestAccepted, RuntimeError>>,
+    },
+    /// Validate and enqueue a command; the inner receiver yields its result.
+    RunCommand {
+        session: SessionId,
+        agent: AgentId,
+        request: psa_api::RunCommand,
+        #[reply]
+        reply: oneshot::Sender<Result<oneshot::Receiver<CommandResult>, RuntimeError>>,
     },
     /// Conditional steering for background hooks; never restarts a stopped agent.
     SubmitIfNotInterrupted {
@@ -724,6 +746,15 @@ impl SessionManager {
                 let result = self.submit(session, agent, request).await;
                 let _ = reply.send(result);
             }
+            ManagerCommand::RunCommand {
+                session,
+                agent,
+                request,
+                reply,
+            } => {
+                let result = self.submit_command(session, agent, request).await;
+                let _ = reply.send(result);
+            }
             ManagerCommand::Boundary {
                 agent,
                 generation,
@@ -881,38 +912,40 @@ impl SessionManager {
         let session_snapshot = cursor.get_session(session).await?;
 
         let (delivery, content, message_type, source) = match request {
-            AgentRequest::Message { delivery, content } => {
-                (delivery, content, MessageType::Human, None)
+            AgentRequest::Message {
+                delivery,
+                content,
+                source: None,
+            } => (delivery, content, MessageType::Human, None),
+            AgentRequest::Message {
+                delivery,
+                content,
+                source: Some(sender),
+            } => {
+                let name = cursor.require_agent_session(session, sender).await?.name;
+                (
+                    delivery,
+                    content,
+                    MessageType::Subagent,
+                    Some((sender, name)),
+                )
             }
-            AgentRequest::Command { delivery, command } => {
+            AgentRequest::RecordCommand(record) => {
                 cursor.rollback().await?;
-                crate::components::bundles::require_command_support(&definition, &command)
-                    .map_err(RuntimeError::Invalid)?;
+                if record.name.trim().is_empty() || record.name.contains(char::is_whitespace) {
+                    return Err(RuntimeError::Invalid(
+                        "command name must be one nonempty word".into(),
+                    ));
+                }
                 return self
                     .enqueue(agent, session, |id| {
                         QueuedItem::Command(QueuedCommand {
                             id,
-                            delivery,
-                            command,
+                            delivery: CommandDelivery::Steer,
+                            work: CommandWork::Record(record),
                         })
                     })
                     .await;
-            }
-            AgentRequest::SubagentMessage {
-                content,
-                mut source,
-            } => {
-                if let Some(source) = &mut source
-                    && let Some(id) = source.agent_id
-                {
-                    source.name = Some(cursor.require_agent_session(session, id).await?.name);
-                }
-                (
-                    MessageDelivery::Steer,
-                    content,
-                    MessageType::Subagent,
-                    source,
-                )
             }
             AgentRequest::Interrupt => {
                 cursor.rollback().await?;
@@ -949,12 +982,15 @@ impl SessionManager {
             return Err(RuntimeError::MissingProvider);
         }
 
+        let recipient_name = snapshot.name;
         self.enqueue(agent, session, |id| {
             // Every subagent message records the request that delivered it.
-            let source = (message_type == MessageType::Subagent).then(|| MessageSender {
-                agent_id: source.as_ref().and_then(|source| source.agent_id),
-                name: source.and_then(|source| source.name),
+            let source = source.map(|(sender, sender_name)| AgentMessageLink {
                 request_id: id.clone(),
+                sender,
+                sender_name,
+                recipient: agent,
+                recipient_name,
             });
             QueuedItem::Message(QueuedRequest {
                 id,
@@ -966,6 +1002,38 @@ impl SessionManager {
             })
         })
         .await
+    }
+
+    async fn submit_command(
+        &mut self,
+        session: SessionId,
+        agent: AgentId,
+        request: psa_api::RunCommand,
+    ) -> Result<oneshot::Receiver<CommandResult>, RuntimeError> {
+        if self.shutting_down {
+            return Err(RuntimeError::Unavailable);
+        }
+
+        let mut cursor = self.db.cursor().await?;
+        let snapshot = cursor.require_agent_session(session, agent).await?;
+        let definition = cursor.get_agent_definition(snapshot.definition_id).await?;
+        cursor.rollback().await?;
+        crate::components::bundles::require_command_support(&definition, &request.command)
+            .map_err(RuntimeError::Invalid)?;
+
+        let (reply, result) = oneshot::channel();
+        self.enqueue(agent, session, |id| {
+            QueuedItem::Command(QueuedCommand {
+                id,
+                delivery: request.delivery,
+                work: CommandWork::Run {
+                    command: request.command,
+                    reply,
+                },
+            })
+        })
+        .await?;
+        Ok(result)
     }
 
     async fn enqueue(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::NewEvent;
 
 #[tokio::test]
 async fn batch_snapshots_share_the_base_projection_and_saves_replace_only_the_writer() {

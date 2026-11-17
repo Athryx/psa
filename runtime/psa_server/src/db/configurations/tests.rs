@@ -481,39 +481,51 @@ async fn deferred_project_discovery_distinguishes_unknown_from_known_absent() {
         .unwrap();
     assert!(
         !cursor
-            .has_session_project_discovery(session.id)
+            .has_session_agents_dir_discovery(session.id)
             .await
             .unwrap()
     );
-    assert_eq!(cursor.get_session_project(session.id).await.unwrap(), None);
-    cursor.set_session_project(session.id, None).await.unwrap();
+    assert_eq!(
+        cursor.get_session_agents_dir(session.id).await.unwrap(),
+        None
+    );
+    cursor
+        .set_session_agents_dir(session.id, None)
+        .await
+        .unwrap();
     assert!(
         cursor
-            .has_session_project_discovery(session.id)
+            .has_session_agents_dir_discovery(session.id)
             .await
             .unwrap()
     );
-    assert_eq!(cursor.get_session_project(session.id).await.unwrap(), None);
-    let project = ConfigGroup::Project {
+    assert_eq!(
+        cursor.get_session_agents_dir(session.id).await.unwrap(),
+        None
+    );
+    let project = ConfigGroup::AgentsDir {
         path: "/work/.agents".into(),
         probe_id,
     };
     cursor
-        .set_session_project(session.id, Some(project.clone()))
+        .set_session_agents_dir(session.id, Some(project.clone()))
         .await
         .unwrap();
     assert_eq!(
-        cursor.get_session_project(session.id).await.unwrap(),
+        cursor.get_session_agents_dir(session.id).await.unwrap(),
         Some(project)
     );
-    cursor.clear_session_project(session.id).await.unwrap();
+    cursor.clear_session_agents_dir(session.id).await.unwrap();
     assert!(
         !cursor
-            .has_session_project_discovery(session.id)
+            .has_session_agents_dir_discovery(session.id)
             .await
             .unwrap()
     );
-    assert_eq!(cursor.get_session_project(session.id).await.unwrap(), None);
+    assert_eq!(
+        cursor.get_session_agents_dir(session.id).await.unwrap(),
+        None
+    );
     cursor.commit().await.unwrap();
     db.close().await;
 }

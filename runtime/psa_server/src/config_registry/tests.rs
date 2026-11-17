@@ -18,7 +18,6 @@ fn lower_config(text: &str, defaults: &AgentDefaults) -> AgentConfig {
     config
         .lower(
             &ConfigGroup::Global,
-            None,
             Vec::new(),
             &HashSet::new(),
             &HashSet::new(),
@@ -187,13 +186,13 @@ fn file_defaults_and_explicit_values() {
     let config: AgentDefinitionConfig = toml::from_str("name = 'example'").unwrap();
     assert!(config.default);
     assert_eq!(config.models, vec![ModelSelection::Global]);
-    assert!(config.skills.global_defaults && config.skills.project_defaults);
-    assert!(config.subagents.global_defaults && config.subagents.project_defaults);
-    let config: AgentDefinitionConfig = toml::from_str("name = 'example'\ndefault = false\nmodels = []\n[skills]\nglobal_defaults = false\n[subagents]\nproject_defaults = false").unwrap();
+    assert!(config.skills.global_defaults && config.skills.group_defaults);
+    assert!(config.subagents.global_defaults && config.subagents.group_defaults);
+    let config: AgentDefinitionConfig = toml::from_str("name = 'example'\ndefault = false\nmodels = []\n[skills]\nglobal_defaults = false\n[subagents]\ngroup_defaults = false").unwrap();
     assert!(!config.default);
     assert!(config.models.is_empty());
-    assert!(!config.skills.global_defaults && config.skills.project_defaults);
-    assert!(config.subagents.global_defaults && !config.subagents.project_defaults);
+    assert!(!config.skills.global_defaults && config.skills.group_defaults);
+    assert!(config.subagents.global_defaults && !config.subagents.group_defaults);
 }
 
 #[tokio::test]
@@ -222,7 +221,7 @@ async fn relative_additional_paths_metadata_and_failed_scans_are_atomic() {
         .await
         .unwrap();
     let service = ConfigRegistry::new(global.clone());
-    service.refresh(&database, None).await.unwrap();
+    service.refresh(&database, &[]).await.unwrap();
     let mut cursor = database.cursor().await.unwrap();
     let skills = cursor.list_skills().await.unwrap();
     let configs = cursor.list_agent_configs().await.unwrap();
@@ -242,7 +241,7 @@ async fn relative_additional_paths_metadata_and_failed_scans_are_atomic() {
     let skill_file = global.join("extra/fallback/SKILL.md");
     let contents = tokio::fs::read(&skill_file).await.unwrap();
     tokio::fs::remove_file(&skill_file).await.unwrap();
-    service.refresh(&database, None).await.unwrap();
+    service.refresh(&database, &[]).await.unwrap();
     let mut cursor = database.cursor().await.unwrap();
     assert!(cursor.list_skills().await.unwrap().is_empty());
     let missing = cursor.list_agent_configs().await.unwrap();
@@ -253,7 +252,7 @@ async fn relative_additional_paths_metadata_and_failed_scans_are_atomic() {
     assert_eq!(missing[0].status.missing_components.len(), 1);
     cursor.rollback().await.unwrap();
     tokio::fs::write(&skill_file, &contents).await.unwrap();
-    service.refresh(&database, None).await.unwrap();
+    service.refresh(&database, &[]).await.unwrap();
     let mut cursor = database.cursor().await.unwrap();
     assert_eq!(cursor.list_skills().await.unwrap()[0].id, skills[0].id);
     cursor.rollback().await.unwrap();
@@ -262,7 +261,7 @@ async fn relative_additional_paths_metadata_and_failed_scans_are_atomic() {
     tokio::fs::write(global.join("agents/example.toml"), "invalid = [")
         .await
         .unwrap();
-    assert!(service.refresh(&database, None).await.is_err());
+    assert!(service.refresh(&database, &[]).await.is_err());
     let mut cursor = database.cursor().await.unwrap();
     assert_eq!(cursor.list_agent_configs().await.unwrap().len(), 1);
     assert_eq!(cursor.list_skills().await.unwrap()[0].id, skills[0].id);
@@ -271,7 +270,7 @@ async fn relative_additional_paths_metadata_and_failed_scans_are_atomic() {
     tokio::fs::remove_file(global.join("agents/example.toml"))
         .await
         .unwrap();
-    service.refresh(&database, None).await.unwrap();
+    service.refresh(&database, &[]).await.unwrap();
     let mut cursor = database.cursor().await.unwrap();
     assert!(cursor.list_agent_configs().await.unwrap().is_empty());
     assert!(cursor.list_skills().await.unwrap().is_empty());
@@ -293,7 +292,7 @@ async fn goal_source_must_explicitly_clear_inherited_ordinary_completion() {
         .await
         .unwrap();
     let registry = ConfigRegistry::new(global).with_agent_defaults(configured_defaults());
-    assert!(registry.refresh(&db, None).await.is_err());
+    assert!(registry.refresh(&db, &[]).await.is_err());
     let mut cursor = db.cursor().await.unwrap();
     assert!(cursor.list_agent_configs().await.unwrap().is_empty());
     cursor.rollback().await.unwrap();
@@ -301,7 +300,7 @@ async fn goal_source_must_explicitly_clear_inherited_ordinary_completion() {
     tokio::fs::write(&path, format!("{base}\n[hooks]\nafter_request = []\n"))
         .await
         .unwrap();
-    registry.refresh(&db, None).await.unwrap();
+    registry.refresh(&db, &[]).await.unwrap();
     let mut cursor = db.cursor().await.unwrap();
     let configs = cursor.list_agent_configs().await.unwrap();
     assert_eq!(configs.len(), 1);

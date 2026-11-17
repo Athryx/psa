@@ -3,9 +3,11 @@ use super::*;
 fn agent(id: u64, session: u64, state: AgentState) -> Agent {
     let mut agent: Agent = serde_json::from_value(serde_json::json!({
         "id": id, "definition_id": 1, "session_id": session,
-        "parent_id": null, "name": format!("agent-{id}"), "interactive": true,
-        "state": "Idle", "usage": {"input_tokens": 0, "output_tokens": 0,
-            "total_tokens": 0, "cached_input_tokens": 0, "reasoning_output_tokens": 0},
+        "parent_id": null, "subagent_parent_id": null, "name": format!("agent-{id}"),
+        "interactive": true, "hidden": false, "state": "Idle",
+        "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+            "cached_input_tokens": 0, "cache_write_tokens": 0,
+            "reasoning_output_tokens": 0, "cost": 0.0},
         "next_event_id": 1, "created_at": "2026-01-01T00:00:00Z",
         "updated_at": "2026-01-01T00:00:00Z"
     }))
@@ -146,17 +148,18 @@ fn clicking_tab_selects_it_without_closing_another_tab() {
 }
 
 fn details_root() -> Element {
-    let ui = use_signal(|| {
-        let mut state = fixture();
-        state.sessions.push(serde_json::from_value(serde_json::json!({
+    let ui =
+        use_signal(|| {
+            let mut state = fixture();
+            state.sessions.push(serde_json::from_value(serde_json::json!({
             "id":1,"parent_id":null,"name":"session1","working_directory":"/work",
             "probe_id":"00000000-0000-0000-0000-000000000001",
-            "model_config":{"model":{"provider":"Openrouter","api_name":"test/model"},"effort":"Medium"},
+            "model_config":{"model":"openrouter/test/model","effort":"Medium"},
             "busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"
         })).unwrap());
-        state.workspace.open(target(1, 1), false);
-        state
-    });
+            state.workspace.open(target(1, 1), false);
+            state
+        });
     use_context_provider(|| ui);
     rsx! { Details {} }
 }
@@ -182,7 +185,7 @@ fn forked_details_root() -> Element {
             state.sessions.push(serde_json::from_value(serde_json::json!({
                 "id":id,"parent_id":parent,"name":name,"working_directory":"/work",
                 "probe_id":"00000000-0000-0000-0000-000000000001",
-                "model_config":{"model":{"provider":"Openrouter","api_name":"test/model"},"effort":"High"},
+                "model_config":{"model":"openrouter/test/model","effort":"High"},
                 "busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"
             })).unwrap());
         }

@@ -1,10 +1,11 @@
 use super::{create_legacy_database, fixture, model};
+use crate::db::CreateAgentDefinition;
 use crate::{
     agents::NewAgent,
     db::{Database, DbError},
     sessions::{ForkPoint, SessionFork, SessionUpdate},
 };
-use psa_api::{AgentDefinitionId, BundleConfig, CreateAgentDefinition, HookConfig, HookConfigs};
+use psa_api::{AgentDefinitionId, BundleConfig, HookConfig, HookConfigs};
 
 #[tokio::test]
 async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {

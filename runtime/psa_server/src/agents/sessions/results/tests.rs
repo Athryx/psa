@@ -4,6 +4,7 @@ use crate::agents::{
     publication::status_event,
     sessions::tests::{Fixture, create_agent_request},
 };
+use crate::db::NewEvent;
 use psa_api::{AgentResult, ForkPoint, ForkSession};
 use std::{
     future::Future,

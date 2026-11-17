@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::{EventRange, NewEvent};
 
 #[path = "client_query_tests.rs"]
 mod client_query_tests;
@@ -833,7 +834,7 @@ async fn extra_system_prompt_hook_persists_verbatim_system_message_and_skips_emp
         };
         let mut cursor = fixture.database.cursor().await.unwrap();
         let definition = cursor
-            .create_agent_definition(psa_api::CreateAgentDefinition {
+            .create_agent_definition(crate::db::CreateAgentDefinition {
                 name: "extra prompt".into(),
                 hooks: psa_api::HookConfigs {
                     agent_create: vec![hook_config.clone()],

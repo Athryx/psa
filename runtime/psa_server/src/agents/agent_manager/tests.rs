@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::NewEvent;
 use crate::sessions::NewSession;
 use std::time::Duration;
 

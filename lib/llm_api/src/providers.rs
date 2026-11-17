@@ -49,7 +49,11 @@ impl ProviderType {
 /// provider prefix. On OpenRouter this is the `maker/model` slug the API
 /// expects (e.g. `z-ai/glm-5.3`); Codex uses a plain model name (e.g.
 /// `gpt-5`). The provider and API name together define model identity.
+///
+/// Serializes as its `provider_slug/api_name` slug (see [`Model::parse_slug`]),
+/// so deserialization validates like construction does.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct Model {
     pub provider: ProviderType,
     pub api_name: String,
@@ -102,7 +106,7 @@ impl Model {
 
     /// The `provider_slug/api_name` form accepted by [`Model::parse_slug`].
     pub fn slug(&self) -> String {
-        format!("{}/{}", self.provider.as_str(), self.api_name)
+        self.to_string()
     }
 
     /// Validate a nonempty API model name with no surrounding whitespace.
@@ -131,6 +135,47 @@ impl Model {
         self.api_name
             .split_once('/')
             .map_or(self.api_name.as_str(), |(_, name)| name)
+    }
+}
+
+impl TryFrom<String> for Model {
+    type Error = crate::Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse_slug(&value)
+    }
+}
+
+impl std::str::FromStr for Model {
+    type Err = crate::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse_slug(value)
+    }
+}
+
+impl std::fmt::Display for Model {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}/{}", self.provider.as_str(), self.api_name)
+    }
+}
+
+impl From<Model> for String {
+    fn from(model: Model) -> Self {
+        model.slug()
+    }
+}
+
+impl schemars::JsonSchema for Model {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Model".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "Provider slug followed by the API name, such as `openrouter/vendor/model`."
+        })
     }
 }
 
@@ -274,13 +319,13 @@ mod tests {
     }
 
     #[test]
-    fn model_config_serializes_provider_inside_model() {
+    fn model_config_serializes_model_as_slug() {
         let config = ModelConfig {
             model: Model::new(ProviderType::Openrouter, "vendor/model").unwrap(),
             effort: Effort::High,
         };
         let expected = serde_json::json!({
-            "model": {"provider": "Openrouter", "api_name": "vendor/model"},
+            "model": "openrouter/vendor/model",
             "effort": "High",
         });
 
@@ -288,6 +333,20 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<ModelConfig>(expected).unwrap(),
             config
+        );
+    }
+
+    #[test]
+    fn model_deserialization_rejects_invalid_slugs() {
+        for slug in ["vendor/model", "openrouter/", " openrouter/model"] {
+            assert!(serde_json::from_value::<Model>(serde_json::json!(slug)).is_err());
+        }
+        assert!(
+            serde_json::from_value::<Model>(
+                serde_json::json!({"provider": "Openrouter", "api_name": "model"})
+            )
+            .is_err(),
+            "the old object form is rejected"
         );
     }
 

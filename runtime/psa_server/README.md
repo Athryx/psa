@@ -77,8 +77,8 @@ It defaults to `"default"` when omitted, including in existing files. Authentica
 `psa_api`. Changes take effect after restarting the server.
 
 `[session_defaults]` provides the model for new sessions that omit `model_config`
-or send null. Model configuration files use a provider/API-name slug string, such
-as `openrouter/vendor/model`, not a structured `Model`. If the entire section is
+or send null. Models are written as provider/API-name slugs, such as
+`openrouter/vendor/model`, here and everywhere else. If the entire section is
 absent, the built-in default is OpenAI Codex `gpt-5` with `Medium` effort. If the
 section is present, both `model` and `effort` are required. Explicit API model
 configurations override it. The concrete chosen configuration is persisted and
@@ -157,7 +157,7 @@ lifecycle state and cumulative usage. Requests are accepted into bounded queues,
 not necessarily persisted or executed at the time HTTP 202 is returned.
 
 ```rust,no_run
-use psa_api::{Client, CreateSession, NewConfiguredAgent, AgentConfigInput, AgentRequest,
+use psa_api::{Client, CreateSession, CreateAgent, AgentConfigInput, AgentRequest,
     ConfigGroup, ConfigId, HookConfig, HookOverrides, IncludedItems, MessageDelivery, ModelSelection,
     ProjectId};
 use llm_api::{api::{ContentBlock, TextBlock}, providers::{Effort, Model, ModelConfig, ProviderType}};
@@ -191,7 +191,7 @@ config.hooks = HookOverrides {
 };
 config.skills = IncludedItems { groups: vec![ConfigGroup::Global], items: vec![] };
 client.upsert_agent_configs(&[config]).await?;
-let agent = client.create_agent(session.id, &NewConfiguredAgent {
+let agent = client.create_agent(session.id, &CreateAgent {
     config_id,
     subagent_parent_id: None,
     interactive: false,
@@ -446,7 +446,7 @@ agents and forks keep their pinned snapshots when current configurations change.
 There is no compatibility API: `/agent-definitions` CRUD routes and client
 methods are removed.
 
-`POST /sessions/{session_id}/agents` takes `NewConfiguredAgent` with `config_id`
+`POST /sessions/{session_id}/agents` takes `CreateAgent` with `config_id`
 and a name, not a `definition_id`. Its optional `model: Option<ModelSelection>`
 must exactly match a configured selector: `"Global"`, `"Parent"`, or a `Fixed`
 object including both model and effort policy. Omitted/null selects the sole
@@ -674,7 +674,7 @@ atomically update this field using the last `StatusChange` in the batch. A fork
 inherits the state visible at its cutoff, not its parent's later state. Migration
 0005 backfills existing agents from their bounded event histories.
 `add_events` returns `db::AddEventResult` with the assigned `events` and
-`new_state: Option<AgentState>` and `new_usage: Option<AgentUsage>`. These are
+`new_state: Option<AgentState>` and `new_usage: Option<Usage>`. These are
 updated snapshots only when changed; they remain staged until cursor commit.
 Migration 0006 backfills cumulative token usage from inference results and
 compaction calls through each ancestor cutoff. Counts are exact where known;
@@ -697,7 +697,8 @@ use psa_server::{
     db::Database,
     sessions::{NewSession, ForkPoint, SessionFork, SessionUpdate},
 };
-use psa_api::events::{EventId, EventRange, EventType, Message, MessageType, NewEvent};
+use psa_api::events::{EventId, EventType, Message, MessageType};
+use psa_server::db::{EventRange, NewEvent};
 use llm_api::{api::RequestConfig, providers::{Effort, Model, ModelConfig, ProviderType}};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -790,8 +791,7 @@ messages and tool results to history before calling it.
 Generated output is delimited by `InferenceResultStart` (ID and actual model/request
 snapshots), output item events, and `InferenceResultEnd` (matching ID, terminal
 outcome, usage, timing, and response metadata). Model configurations in `Model`
-events and inference-result snapshots use `{ model: { provider, api_name }, effort }`;
-there is no separate top-level provider. Persist the entire block atomically
+events and inference-result snapshots use `{ model: "provider_slug/api_name", effort }`. Persist the entire block atomically
 after generation, including both markers for an empty or failed response. These
 markers describe a result, not a running request. Prompt messages and tool results
 belong outside the block. A historical fork inside a result block is inspectable

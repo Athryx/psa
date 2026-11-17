@@ -1552,13 +1552,7 @@ fn EventContent(
                 .clone()
                 .filter(|_| message.message_type == psa_api::events::MessageType::Subagent)
             {
-                let sender = source
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| match source.agent_id {
-                        Some(id) => format!("agent {}", id.0),
-                        None => "unknown agent".into(),
-                    });
+                let sender = source.sender_name.clone();
                 let preview =
                     build_line_preview(message.content.iter().filter_map(|block| match block {
                         ContentBlock::Text(text) => Some(text.text.as_str()),
@@ -1571,8 +1565,8 @@ fn EventContent(
                     "received",
                     blocks_are_large(&message.content),
                     rsx! {
-                        if let (Some(session_id), Some(agent_id)) = (session_id, source.agent_id) {
-                            AgentLink { session_id, agent_id, label: sender, link: MessageLink::Sent { request_id: source.request_id.clone() } }
+                        if let Some(session_id) = session_id {
+                            AgentLink { session_id, agent_id: source.sender, label: sender, link: MessageLink::Sent { request_id: source.request_id.clone() } }
                         } else {
                             span { class: "item-target", "{sender}" }
                         }
@@ -1599,12 +1593,17 @@ fn EventContent(
             rsx! { article { class: if log.error { "message error" } else { "message muted" }, div { class: "role", "Harness log" } pre { "{log.message}" } } }
         }
         EventType::Command(command) => {
-            let text = client_shared::describe_agent_command(command);
-            rsx! { article { class: "message command-message", title: "Command", pre { "{text}" } } }
+            let text = client_shared::describe_command(command);
+            let class = if command.outcome == psa_api::CommandOutcome::Succeeded {
+                "message command-message"
+            } else {
+                "message command-message error"
+            };
+            rsx! { article { class, title: "Command", pre { "{text}" } } }
         }
         EventType::DecisionCall(call) => {
             let text = client_shared::describe_decision_call(call);
-            let class = if matches!(call.outcome, psa_api::DecisionOutcome::Failed(_)) {
+            let class = if call.response.is_err() {
                 "message error"
             } else {
                 "message muted"
@@ -1632,7 +1631,7 @@ fn EventContent(
                                 .as_str()
                                 .map(str::to_owned)
                         })
-                        .unwrap_or_else(|| format!("agent {}", sent.agent_id.0));
+                        .unwrap_or_else(|| format!("agent {}", sent.recipient.0));
                     Some((session_id, sent, label))
                 })
                 .flatten();
@@ -1665,7 +1664,7 @@ fn EventContent(
                         span { class: "item-text",
                             if let Some((session_id, sent, label)) = recipient {
                                 "→ "
-                                AgentLink { session_id, agent_id: sent.agent_id, label, link: MessageLink::Received { request_id: sent.request_id } }
+                                AgentLink { session_id, agent_id: sent.recipient, label, link: MessageLink::Received { request_id: sent.request_id } }
                                 " "
                             }
                             if let Some(target) = &summary.target { span { class: "item-target", "{target}" } " " }

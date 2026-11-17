@@ -1,5 +1,6 @@
 //! Goal-aware replacement for StopWithoutTools on agents with Goal installed.
 use super::{Hook, HookError, stop_without_tools::build_text_completion_events};
+use crate::db::NewEvent;
 use crate::{
     agents::{AgentState, agent_context::AgentContext},
     components::{
@@ -8,7 +9,7 @@ use crate::{
     },
 };
 use llm_api::api::{Outcome, StopReason};
-use psa_api::events::{EventType, Message, MessageType, NewEvent};
+use psa_api::events::{EventType, Message, MessageType};
 use std::time::Duration;
 
 pub struct GoalHook {
@@ -249,7 +250,7 @@ mod tests {
                     "goal-{interactive}-{interactive_only}-{reason:?}-{active}-{completed}-{interrupted}-{cancelled}"
                 );
                 let definition = cursor
-                    .create_agent_definition(psa_api::CreateAgentDefinition {
+                    .create_agent_definition(crate::db::CreateAgentDefinition {
                         name,
                         bundles: vec![psa_api::BundleConfig::Goal { interactive_only }],
                         ..Default::default()

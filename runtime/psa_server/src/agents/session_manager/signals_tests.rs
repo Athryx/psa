@@ -23,7 +23,7 @@ impl Fixture {
         crate::test_support::register_probe(&db).await;
         let mut cursor = db.cursor().await.unwrap();
         let definition = cursor
-            .create_agent_definition(psa_api::CreateAgentDefinition {
+            .create_agent_definition(crate::db::CreateAgentDefinition {
                 name: "signals".into(),
                 bundles,
                 ..Default::default()
@@ -128,6 +128,7 @@ impl Fixture {
                 self.session,
                 self.agent,
                 AgentRequest::Message {
+                    source: None,
                     delivery,
                     content: crate::prompts::text("work"),
                 },
@@ -258,10 +259,10 @@ async fn commands_are_not_steering_and_run_without_starting_runs() {
     for delivery in [CommandDelivery::Queue, CommandDelivery::Steer] {
         fixture
             .manager
-            .submit(
+            .submit_command(
                 fixture.session,
                 fixture.agent,
-                AgentRequest::Command {
+                psa_api::RunCommand {
                     delivery,
                     command: AgentCommand::Compact { instructions: None },
                 },
@@ -295,10 +296,10 @@ async fn commands_require_their_bundle() {
     fixture.add_worker();
     let result = fixture
         .manager
-        .submit(
+        .submit_command(
             fixture.session,
             fixture.agent,
-            AgentRequest::Command {
+            psa_api::RunCommand {
                 delivery: CommandDelivery::Steer,
                 command: AgentCommand::Compact { instructions: None },
             },
@@ -632,11 +633,9 @@ async fn subagent_steering_resolves_sender_and_shares_level_triggered_waits() {
         .submit(
             fixture.session,
             fixture.agent,
-            AgentRequest::SubagentMessage {
-                source: Some(psa_api::AgentMessageSource {
-                    agent_id: Some(fixture.agent),
-                    name: Some("wrong name".into()),
-                }),
+            AgentRequest::Message {
+                delivery: psa_api::MessageDelivery::Steer,
+                source: Some(fixture.agent),
                 content: crate::prompts::text("hello"),
             },
         )
@@ -648,7 +647,7 @@ async fn subagent_steering_resolves_sender_and_shares_level_triggered_waits() {
     };
     assert_eq!(request.delivery, MessageDelivery::Steer);
     assert_eq!(request.message_type, MessageType::Subagent);
-    assert_eq!(request.source.unwrap().name.as_deref(), Some("signals"));
+    assert_eq!(request.source.unwrap().sender_name, "signals");
     assert_eq!(*signal.borrow_and_update(), Some(false));
     assert!(fixture.manager.workers[&fixture.agent].queue.is_empty());
 }
@@ -675,11 +674,9 @@ async fn subagent_steering_rejects_missing_and_cross_session_senders() {
             .submit(
                 fixture.session,
                 fixture.agent,
-                AgentRequest::SubagentMessage {
-                    source: Some(psa_api::AgentMessageSource {
-                        agent_id: Some(source),
-                        name: None,
-                    }),
+                AgentRequest::Message {
+                    delivery: psa_api::MessageDelivery::Steer,
+                    source: Some(source),
                     content: crate::prompts::text("hello"),
                 },
             )
@@ -693,7 +690,8 @@ async fn subagent_steering_rejects_missing_and_cross_session_senders() {
 async fn background_reports_cannot_restart_parent_even_if_interrupted_after_acceptance() {
     let mut fixture = Fixture::new().await;
     fixture.add_worker();
-    let request = AgentRequest::SubagentMessage {
+    let request = AgentRequest::Message {
+        delivery: psa_api::MessageDelivery::Steer,
         source: None,
         content: crate::prompts::text("report"),
     };
@@ -753,7 +751,7 @@ async fn completion_hook_reports_children_without_bundle_and_preserves_outcomes(
     let mut fixture = Fixture::with_bundles(vec![psa_api::BundleConfig::Subagents]).await;
     let mut cursor = fixture.manager.db.cursor().await.unwrap();
     let definition = cursor
-        .create_agent_definition(psa_api::CreateAgentDefinition {
+        .create_agent_definition(crate::db::CreateAgentDefinition {
             name: "plain child".into(),
             ..Default::default()
         })
@@ -809,10 +807,13 @@ async fn completion_hook_reports_children_without_bundle_and_preserves_outcomes(
             };
             assert_eq!(session, fixture.session);
             assert_eq!(agent, fixture.agent);
-            let AgentRequest::SubagentMessage { source, content } = request else {
+            let AgentRequest::Message {
+                source, content, ..
+            } = request
+            else {
                 panic!("expected attributed message")
             };
-            assert_eq!(source.unwrap().agent_id, Some(child.id));
+            assert_eq!(source, Some(child.id));
             assert!(
                 matches!(&content[0], llm_api::api::ContentBlock::Text(text) if text.text == expected)
             );
@@ -835,7 +836,7 @@ async fn starting_plain_child_restores_parent_bundle_lifecycle_callbacks() {
     let mut fixture = Fixture::with_bundles(vec![psa_api::BundleConfig::Subagents]).await;
     let mut cursor = fixture.manager.db.cursor().await.unwrap();
     let definition = cursor
-        .create_agent_definition(psa_api::CreateAgentDefinition {
+        .create_agent_definition(crate::db::CreateAgentDefinition {
             name: "plain child after restart".into(),
             ..Default::default()
         })

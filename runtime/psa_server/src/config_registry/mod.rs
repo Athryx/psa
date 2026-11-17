@@ -6,15 +6,16 @@ mod tests;
 mod transfer;
 mod upload;
 
+use crate::config::AgentDefaults;
+use crate::db::SkillRegistration;
 use crate::{
     db::{Database, DbError},
     probes::ProbeHandle,
 };
 use psa_api::probes::{DirectoryEntry, Event};
 use psa_api::{
-    AgentConfig, AgentConfigInput, AgentDefaults, BundleConfig, ConfigGroup, ConfigId,
-    HookOverrides, IncludedItems, ModelSelection, ProbeId, ProbeMetadata, Skill, SkillId,
-    SkillLocation, SkillRegistration,
+    AgentConfig, AgentConfigInput, BundleConfig, ConfigGroup, ConfigId, HookOverrides,
+    IncludedItems, ModelSelection, ProbeId, ProbeMetadata, Skill, SkillId, SkillLocation,
 };
 use psa_shared::probe_transport::ProbeError;
 use serde::Deserialize;
@@ -72,7 +73,7 @@ impl ConfigRegistry {
     }
 
     /// Select exactly the nearest .agents directory, even when it is empty.
-    pub async fn discover_project(
+    pub async fn discover_agents_dir(
         &self,
         probe: &ProbeHandle,
         probe_id: ProbeId,
@@ -88,7 +89,7 @@ impl ConfigRegistry {
                         current.join(".agents").display()
                     )));
                 }
-                return Ok(Some(ConfigGroup::Project {
+                return Ok(Some(ConfigGroup::AgentsDir {
                     path: current.join(".agents").to_string_lossy().into_owned(),
                     probe_id,
                 }));
@@ -99,11 +100,12 @@ impl ConfigRegistry {
         }
     }
 
-    /// Refresh globals and optionally the already-selected project. Never rediscovers ancestors.
+    /// Refresh globals and the given, already-discovered `.agents` directories.
+    /// Never rediscovers ancestors.
     pub async fn refresh(
         &self,
         database: &Database,
-        project: Option<(&ProbeHandle, &ConfigGroup)>,
+        agents_dirs: &[(ProbeHandle, ConfigGroup)],
     ) -> Result<(), DiscoveryError> {
         let _guard = self.gate.lock().await;
         tokio::fs::create_dir_all(&self.data_dir).await?;
@@ -120,14 +122,14 @@ impl ConfigRegistry {
             )
             .await?,
         ];
-        if let Some((probe, group)) = project {
-            let ConfigGroup::Project { path, .. } = group else {
+        for (probe, group) in agents_dirs {
+            let ConfigGroup::AgentsDir { path, .. } = group else {
                 return Err(DiscoveryError::Invalid(
-                    "selected project must have a project config group".into(),
+                    "a refreshed directory must have an AgentsDir config group".into(),
                 ));
             };
-            // A successfully observed missing selected project becomes an empty
-            // source, never an invitation to discover a different ancestor.
+            // A successfully observed missing directory becomes an empty source,
+            // never an invitation to discover a different ancestor.
             batches.push(
                 scan_group(
                     Source::Probe(probe),
@@ -204,7 +206,6 @@ impl ConfigRegistry {
                 .map(|(_, config, additional)| {
                     config.lower(
                         &batch.group,
-                        project.map(|(_, group)| group),
                         additional,
                         &agent_ids,
                         &skill_ids,
@@ -559,9 +560,9 @@ async fn add_skill(
     let skill_location = match source {
         Source::Local => SkillLocation::Global(path),
         Source::Probe(_) => {
-            let ConfigGroup::Project { probe_id, .. } = group else {
+            let ConfigGroup::AgentsDir { probe_id, .. } = group else {
                 return Err(DiscoveryError::Invalid(
-                    "remote source requires a project group".into(),
+                    "remote source requires an AgentsDir group".into(),
                 ));
             };
             SkillLocation::Probe {
@@ -613,14 +614,15 @@ fn default_models() -> Vec<ModelSelection> {
 #[serde(default, deny_unknown_fields)]
 pub struct SubagentInclusionsConfig {
     pub global_defaults: bool,
-    pub project_defaults: bool,
+    /// Include every item of this config's own group.
+    pub group_defaults: bool,
     pub subagents: Vec<String>,
 }
 impl Default for SubagentInclusionsConfig {
     fn default() -> Self {
         Self {
             global_defaults: true,
-            project_defaults: true,
+            group_defaults: true,
             subagents: Vec::new(),
         }
     }
@@ -630,7 +632,8 @@ impl Default for SubagentInclusionsConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct SkillInclusionsConfig {
     pub global_defaults: bool,
-    pub project_defaults: bool,
+    /// Include every item of this config's own group.
+    pub group_defaults: bool,
     pub skills: Vec<String>,
     pub additional_paths: Vec<PathBuf>,
 }
@@ -638,7 +641,7 @@ impl Default for SkillInclusionsConfig {
     fn default() -> Self {
         Self {
             global_defaults: true,
-            project_defaults: true,
+            group_defaults: true,
             skills: Vec::new(),
             additional_paths: Vec::new(),
         }
@@ -649,7 +652,6 @@ impl AgentDefinitionConfig {
     fn lower(
         self,
         group: &ConfigGroup,
-        project: Option<&ConfigGroup>,
         additional: Vec<ConfigId>,
         agents: &HashSet<ConfigId>,
         skills: &HashSet<ConfigId>,
@@ -657,22 +659,20 @@ impl AgentDefinitionConfig {
     ) -> Result<AgentConfig, DiscoveryError> {
         let subagents = expand_inclusions(
             self.subagents.global_defaults,
-            self.subagents.project_defaults,
+            self.subagents.group_defaults,
             &self.subagents.subagents,
             group,
-            project,
             agents,
         );
         let mut included_skills = expand_inclusions(
             self.skills.global_defaults,
-            self.skills.project_defaults,
+            self.skills.group_defaults,
             &self.skills.skills,
             group,
-            project,
             skills,
         );
         included_skills.items.extend(additional);
-        Ok(AgentConfigInput {
+        Ok(defaults.resolve(AgentConfigInput {
             config_id: ConfigId {
                 config_group: group.clone(),
                 name: self.name,
@@ -685,31 +685,31 @@ impl AgentDefinitionConfig {
             default: self.default,
             subagents,
             skills: included_skills,
-        }
-        .resolve(defaults))
+        }))
     }
 }
 
+/// Default groups are Global and/or the config's own group; named items
+/// resolve in the own group first, then in Global.
 fn expand_inclusions(
     global: bool,
-    include_project: bool,
+    own_group: bool,
     names: &[String],
     current: &ConfigGroup,
-    project: Option<&ConfigGroup>,
     available: &HashSet<ConfigId>,
 ) -> IncludedItems {
     let mut groups = Vec::new();
     if global {
         groups.push(ConfigGroup::Global);
     }
-    if include_project && let Some(project) = project {
-        groups.push(project.clone());
+    if own_group && !groups.contains(current) {
+        groups.push(current.clone());
     }
     let items = names
         .iter()
         .map(|name| {
             let local = ConfigId {
-                config_group: project.unwrap_or(current).clone(),
+                config_group: current.clone(),
                 name: name.clone(),
             };
             if available.contains(&local) {

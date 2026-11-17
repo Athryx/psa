@@ -278,7 +278,7 @@ pub enum StopReason {
     Other(String),
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Usage {
     /// None means unreported, rather than zero.
     pub input_tokens: Option<u64>,
@@ -287,7 +287,7 @@ pub struct Usage {
     /// Subset of input_tokens; do not add to the total.
     pub cached_input_tokens: Option<u64>,
     /// Subset of input_tokens written to the provider's prompt cache.
-    pub cache_write_input_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
     /// Subset of output_tokens; do not add to the total.
     pub reasoning_output_tokens: Option<u64>,
     /// Charge reported by the provider, such as OpenRouter credits.
@@ -297,6 +297,21 @@ pub struct Usage {
 }
 
 impl Usage {
+    /// Every count and the cost reported as zero: the starting point for
+    /// cumulative totals, where `None` later means some call left it unknown.
+    pub fn zero() -> Self {
+        Self {
+            input_tokens: Some(0),
+            output_tokens: Some(0),
+            total_tokens: Some(0),
+            cached_input_tokens: Some(0),
+            cache_write_tokens: Some(0),
+            reasoning_output_tokens: Some(0),
+            cost: Some(0.0),
+            provider_details: ProviderFields::new(),
+        }
+    }
+
     /// True when no count or provider detail was reported at all, such as a
     /// record whose tokens are billed elsewhere. Distinct from reported zeros.
     pub fn is_unreported(&self) -> bool {
@@ -304,7 +319,7 @@ impl Usage {
             && self.output_tokens.is_none()
             && self.total_tokens.is_none()
             && self.cached_input_tokens.is_none()
-            && self.cache_write_input_tokens.is_none()
+            && self.cache_write_tokens.is_none()
             && self.reasoning_output_tokens.is_none()
             && self.cost.is_none()
             && self.provider_details.is_empty()
@@ -316,9 +331,7 @@ impl Usage {
         self.output_tokens = latest.output_tokens.or(self.output_tokens);
         self.total_tokens = latest.total_tokens.or(self.total_tokens);
         self.cached_input_tokens = latest.cached_input_tokens.or(self.cached_input_tokens);
-        self.cache_write_input_tokens = latest
-            .cache_write_input_tokens
-            .or(self.cache_write_input_tokens);
+        self.cache_write_tokens = latest.cache_write_tokens.or(self.cache_write_tokens);
         self.reasoning_output_tokens = latest
             .reasoning_output_tokens
             .or(self.reasoning_output_tokens);
@@ -344,7 +357,7 @@ mod tests {
             output_tokens: Some(2),
             total_tokens: Some(12),
             cached_input_tokens: Some(4),
-            cache_write_input_tokens: Some(3),
+            cache_write_tokens: Some(3),
             reasoning_output_tokens: Some(1),
             cost: Some(0.5),
             provider_details: BTreeMap::from([
@@ -369,7 +382,7 @@ mod tests {
         assert_eq!(usage.output_tokens, Some(0));
         assert_eq!(usage.total_tokens, Some(10));
         assert_eq!(usage.cached_input_tokens, Some(4));
-        assert_eq!(usage.cache_write_input_tokens, Some(3));
+        assert_eq!(usage.cache_write_tokens, Some(3));
         assert_eq!(usage.reasoning_output_tokens, Some(0));
         assert_eq!(usage.cost, Some(0.25));
         assert_eq!(usage.provider_details["retained"], json!(true));

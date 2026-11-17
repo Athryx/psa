@@ -1,6 +1,7 @@
 use super::desktop_tests::fixture;
 use super::*;
 use crate::agents::agent_projection::AgentProjection;
+use crate::db::NewEvent;
 use futures_util::StreamExt;
 use std::time::Duration;
 
@@ -24,11 +25,11 @@ async fn recent_to_sse_gap_replays_then_live_promotions_keep_identity() {
     });
     let client = api::Client::new(&base, "test-client-key").unwrap();
     let page = client
-        .events(
+        .list_events(
             session.id,
             Some(agent.id),
             &api::EventsQuery {
-                recent: true,
+                span: api::EventSpan::Latest,
                 include_pending: true,
                 ..Default::default()
             },
@@ -65,7 +66,10 @@ async fn recent_to_sse_gap_replays_then_live_promotions_keep_identity() {
             session.id,
             Some(agent.id),
             &api::EventsQuery {
-                after: page.head,
+                span: api::EventSpan::Forward {
+                    after: page.head,
+                    through: None,
+                },
                 include_pending: true,
                 ..Default::default()
             },
@@ -103,11 +107,11 @@ async fn recent_to_sse_gap_replays_then_live_promotions_keep_identity() {
         matches!(next(&mut stream).await, api::StreamMessage::Committed { pending_id: Some(id), .. } if id == "draft")
     );
     let older = client
-        .events(
+        .list_events(
             session.id,
             Some(agent.id),
             &api::EventsQuery {
-                before: Some(2),
+                span: api::EventSpan::Before(2),
                 include_pending: true,
                 ..Default::default()
             },
@@ -129,7 +133,7 @@ async fn global_feed_carries_every_session_and_agent_creation_updates_summary() 
         .runtime
         .create_agent(
             session.id,
-            api::CreateAgent {
+            crate::agents::NewAgent {
                 subagent_parent_id: None,
                 definition_id: api::AgentDefinitionId(1),
                 name: "new".into(),

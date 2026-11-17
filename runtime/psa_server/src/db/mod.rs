@@ -25,9 +25,12 @@ use tokio::sync::watch;
 
 use crate::agents::AgentId;
 
+pub use agent_definitions::{CreateAgentDefinition, UpdateAgentDefinition};
+pub use configurations::{AgentConfigGraph, SkillRegistration};
 pub use error::DbError;
 pub use events::{
-    AddEventResult, EventBatchItem, MAX_CODEMODE_SNAPSHOT_BYTES, PrivateEvent, PrivateEventKind,
+    AddEventResult, EventBatchItem, EventRange, MAX_CODEMODE_SNAPSHOT_BYTES, NewEvent,
+    PrivateEvent, PrivateEventKind,
 };
 pub use queries::InferenceResultEvents;
 pub use sandboxes::SandboxRecord;

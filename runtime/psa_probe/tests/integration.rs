@@ -138,8 +138,7 @@ impl Harness {
     }
     fn request(&self, key: &str, version: u32) -> tungstenite::handshake::client::Request {
         let url =
-            reqwest::Url::parse(&psa_api::client::parse_probe_server_url(&self.base).unwrap())
-                .unwrap();
+            reqwest::Url::parse(&psa_api::probes::parse_connect_url(&self.base).unwrap()).unwrap();
         let mut url = url;
         url.query_pairs_mut()
             .append_pair("version", &version.to_string())
@@ -253,7 +252,7 @@ async fn registration_auth_sessions_and_reconnect() {
                 project_id: None,
                 model_config: Some(
                     serde_json::from_value(serde_json::json!({
-                        "model": { "provider": "Openrouter", "api_name": "test-model" },
+                        "model": "openrouter/test-model",
                         "effort": "Medium"
                     }))
                     .unwrap(),
@@ -340,7 +339,7 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
                 probe_id: harness.id,
                 project_id: None,
                 model_config: Some(serde_json::from_value(serde_json::json!({
-                    "model": { "provider": "Openrouter", "api_name": "test-model" },
+                    "model": "openrouter/test-model",
                     "effort": "Medium"
                 }))
                 .unwrap()),
@@ -351,7 +350,7 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
             config_group: psa_api::ConfigGroup::Custom("test".into()),
             name: "remote skills".into(),
         };
-        let project = psa_api::ConfigGroup::Project {
+        let project = psa_api::ConfigGroup::AgentsDir {
             path: cwd.join(".agents").to_str().unwrap().into(),
             probe_id: harness.id,
         };
@@ -384,7 +383,7 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
             .client
             .create_agent(
                 session.id,
-                &psa_api::NewConfiguredAgent {
+                &psa_api::CreateAgent {
                     subagent_parent_id: None,
                     interactive: false,
                     hidden: false,
@@ -400,7 +399,7 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
         }
         let page = harness
             .client
-            .events(session.id, Some(agent.id), &psa_api::EventsQuery::default())
+            .list_events(session.id, Some(agent.id), &psa_api::EventsQuery::default())
             .await
             .unwrap();
         let events: Vec<_> = page.events.iter().map(|event| &event.event.kind).collect();

@@ -2,6 +2,7 @@
 //! remains authoritative, including when the broadcast receiver has lagged.
 
 use super::{RuntimeError, Sessions};
+use crate::db::EventRange;
 use crate::{
     agents::session_manager::EXECUTION_FAILURE_MESSAGE, components::cancellation::Cancellation,
 };

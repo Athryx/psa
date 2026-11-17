@@ -5,15 +5,16 @@ use super::{
     agent_context::AgentContext,
     agent_projection::AgentProjection,
     publication::{Publication, status_event},
-    session_manager::{BoundaryReply, LifecycleHook, ManagerClient},
+    session_manager::{BoundaryReply, CommandWork, LifecycleHook, ManagerClient},
     sessions::Sessions,
 };
+use crate::db::NewEvent;
 use crate::{
     components::{
         bundles::InstalledComponents,
         cancellation::wait_for_interrupt,
         codemode_functions::CodeModeEntry,
-        hooks::{CommandOutcome, run_command_hooks, run_hooks},
+        hooks::{run_command_hooks, run_hooks},
         tools::{self, ToolKind, failed_tool_result},
     },
     db::{AddEventResult, Database, EventBatchItem},
@@ -38,6 +39,7 @@ type PersistenceResult = Result<(AddEventResult, AgentProjection), AgentError>;
 type PendingPersistence = JoinHandle<PersistenceResult>;
 
 pub use psa_api::{AgentState, MessageDelivery};
+use psa_api::{CommandOutcome, CommandResult};
 
 #[actors::mailbox(client = AgentClient, unbounded)]
 pub enum AgentManagerMessage {
@@ -682,29 +684,51 @@ pub(crate) async fn run_worker(
                     continue;
                 }
                 BoundaryReply::Command(request) => {
-                    // Recorded before execution, so its effects follow it in the transcript.
-                    state
-                        .persist_events(&[NewEvent::new(EventType::Command(
-                            request.command.clone(),
-                        ))])
-                        .await?;
-                    let probe = probes.handle(state.session.probe_id).await.ok();
-                    let mut context =
-                        AgentContext::with_optional_probe(&mut state, probe.as_ref(), &sessions);
-                    let (outcome, interrupted) = run_command_hooks(
-                        &mut hooks.command,
-                        &mut context,
-                        &mut controls,
-                        &request.command,
-                    )
-                    .await?;
-                    if outcome == CommandOutcome::Ignored {
-                        state
-                            .persist_events(&[NewEvent::new(EventType::Log(Log {
-                                error: true,
-                                message: "No installed hook handled this command.".into(),
-                            }))])
+                    let (record, reply, interrupted) = match request.work {
+                        CommandWork::Record(record) => (record, None, false),
+                        CommandWork::Run { command, reply } => {
+                            let probe = probes.handle(state.session.probe_id).await.ok();
+                            let mut context = AgentContext::with_optional_probe(
+                                &mut state,
+                                probe.as_ref(),
+                                &sessions,
+                            );
+                            let (handled, interrupted) = run_command_hooks(
+                                &mut hooks.command,
+                                &mut context,
+                                &mut controls,
+                                &command,
+                            )
                             .await?;
+                            let result = match handled {
+                                Some(result) => result,
+                                None if interrupted => CommandResult {
+                                    outcome: CommandOutcome::Interrupted,
+                                    output: None,
+                                },
+                                None => CommandResult {
+                                    outcome: CommandOutcome::Failed,
+                                    output: Some("No installed hook handled this command.".into()),
+                                },
+                            };
+                            (
+                                CommandRecord::new(&command, result),
+                                Some(reply),
+                                interrupted,
+                            )
+                        }
+                    };
+
+                    // Recorded after execution, so the record carries its outcome
+                    // and follows the events the command produced.
+                    state
+                        .persist_events(&[NewEvent::new(EventType::Command(record.clone()))])
+                        .await?;
+                    if let Some(reply) = reply {
+                        let _ = reply.send(CommandResult {
+                            outcome: record.outcome,
+                            output: record.output,
+                        });
                     }
                     if interrupted {
                         state.interrupt().await?;

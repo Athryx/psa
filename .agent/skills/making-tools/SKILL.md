@@ -313,7 +313,7 @@ to reach around their ownership or lifecycle rules.
 
 Existing async operations cover agent-definition create/get/list/update;
 session create/get/list/update/fork; agent create/get/list (including immutable
-`subagent_parent_id`); typed `send_subagent_message`; busy queries; and
+`subagent_parent_id`); attributed `send_subagent_message`; busy queries; and
 submit/steer/resume/interrupt requests. `wait_for_steering(session, agent,
 &mut cancellation)` is a cancellation-safe, non-consuming, level-triggered wait
 for queued steering; it returns `Cancelled` on cancellation and `Unavailable` on

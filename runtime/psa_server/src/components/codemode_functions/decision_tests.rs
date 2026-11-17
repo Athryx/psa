@@ -89,9 +89,9 @@ fn access(endpoint: Option<&FakeEndpoint>, include_global: bool, slugs: &[&str])
             Decisions::with_url(ProviderType::Openrouter, &endpoint.url, "key").unwrap(),
         ])
     });
-    let slugs: Vec<String> = slugs.iter().map(|slug| slug.to_string()).collect();
+    let models: Vec<Model> = slugs.iter().map(|slug| slug.parse().unwrap()).collect();
     DecisionAccess {
-        policy: Arc::new(DecisionPolicy::parse(include_global, &slugs).unwrap()),
+        policy: Arc::new(DecisionPolicy::new(include_global, &models)),
         handle: DecisionHandle::new(providers, None),
     }
 }
@@ -209,20 +209,16 @@ async fn recorded_calls(context: &AgentContext<'_>) -> Vec<psa_api::DecisionCall
 async fn legal_models_are_configured_models_plus_the_session_model_when_included() {
     with_context(async |context| {
         let session = context.session();
-        let configured = DecisionPolicy::parse(false, &["openrouter/vendor/a".into()]).unwrap();
+        let configured = DecisionPolicy::new(false, &[decider("vendor/a")]);
         assert_eq!(configured.legal_models(session), vec![decider("vendor/a")]);
 
-        let with_global = DecisionPolicy::parse(
-            true,
-            &["openrouter/vendor/a".into(), "openrouter/vendor/a".into()],
-        )
-        .unwrap();
+        let with_global = DecisionPolicy::new(true, &[decider("vendor/a"), decider("vendor/a")]);
         assert_eq!(
             with_global.legal_models(session),
             vec![decider("vendor/a"), decider("vendor/session")]
         );
 
-        let only_global = DecisionPolicy::parse(true, &[]).unwrap();
+        let only_global = DecisionPolicy::new(true, &[]);
         assert_eq!(
             only_global.legal_models(session),
             vec![decider("vendor/session")]
@@ -234,16 +230,8 @@ async fn legal_models_are_configured_models_plus_the_session_model_when_included
             Some(decider("vendor/session")),
             "the session model is the default when included"
         );
-        let several = DecisionPolicy::parse(
-            false,
-            &["openrouter/vendor/a".into(), "openrouter/vendor/b".into()],
-        )
-        .unwrap();
+        let several = DecisionPolicy::new(false, &[decider("vendor/a"), decider("vendor/b")]);
         assert_eq!(several.default_model(session), None);
-        assert!(
-            DecisionPolicy::parse(false, &["not a slug".into()]).is_err(),
-            "invalid slugs are rejected"
-        );
     })
     .await;
 }
@@ -311,24 +299,21 @@ async fn decide_returns_answers_records_a_public_event_and_reports_cost() {
         let calls = recorded_calls(context).await;
         assert_eq!(calls.len(), 1);
         let call = &calls[0];
-        assert_eq!(call.model, decider("vendor/decider"));
-        assert_eq!(call.outcome, psa_api::DecisionOutcome::PartlyAnswered);
-        assert_eq!(call.usage.input_tokens, Some(128));
-        assert_eq!(call.usage.cost, Some(0.25));
-        assert_eq!(call.request_id.as_deref(), Some("gen-dec-1"));
+        assert_eq!(call.model(), &decider("vendor/decider"));
+        assert_eq!(call.request.state, "The package never arrived.");
         assert_eq!(
-            call.questions
-                .iter()
-                .map(|question| (question.key.as_str(), question.kind.as_str()))
-                .collect::<Vec<_>>(),
-            vec![("action", "choice"), ("angry", "noul"), ("tone", "score")]
+            call.request.questions.keys().collect::<Vec<_>>(),
+            ["action", "angry", "tone"]
         );
-        let tone = call
-            .answers
-            .iter()
-            .find(|answer| answer.key == "tone")
-            .unwrap();
-        assert_eq!(tone.result, psa_api::DecisionAnswerResult::Refused);
+        let response = call.response.as_ref().unwrap();
+        assert!(!response.is_complete(&call.request));
+        assert_eq!(response.usage.input_tokens, Some(128));
+        assert_eq!(response.usage.cost, Some(0.25));
+        assert_eq!(response.response_id.as_deref(), Some("gen-dec-1"));
+        assert_eq!(
+            response.answers.get("tone"),
+            Some(&llm_api::api::decisions::DecisionAnswer::Refusal)
+        );
         assert!(call.duration > std::time::Duration::ZERO);
     })
     .await;
@@ -404,18 +389,24 @@ async fn failed_calls_raise_and_are_recorded() {
     )
     .await;
     with_context(async |context| {
-        let function = decide::Decide::new(access(Some(&endpoint), false, &["openrouter/vendor/a"]));
+        let function =
+            decide::Decide::new(access(Some(&endpoint), false, &["openrouter/vendor/a"]));
         let error = run(&function, context, arguments(None)).await.unwrap_err();
         assert!(error.message.contains("boom"), "{}", error.message);
 
         let calls = recorded_calls(context).await;
         assert_eq!(calls.len(), 1);
-        assert!(matches!(&calls[0].outcome, psa_api::DecisionOutcome::Failed(message) if message.contains("boom")));
-        assert!(calls[0].answers.is_empty());
+        assert!(matches!(&calls[0].response, Err(message) if message.contains("boom")));
 
         let unavailable = decide::Decide::new(access(None, false, &["openrouter/vendor/a"]));
-        let error = run(&unavailable, context, arguments(None)).await.unwrap_err();
-        assert!(error.message.contains("No credentials"), "{}", error.message);
+        let error = run(&unavailable, context, arguments(None))
+            .await
+            .unwrap_err();
+        assert!(
+            error.message.contains("No credentials"),
+            "{}",
+            error.message
+        );
     })
     .await;
 }
@@ -552,7 +543,7 @@ async fn bundle_installs_help_only_functions_and_validates_its_configuration() {
     definition.bundles = vec![
         BundleConfig::DecisionModels {
             include_global: true,
-            models: vec!["openrouter/vendor/a".into()],
+            models: vec![decider("vendor/a")],
         },
         BundleConfig::CodeMode,
     ];
@@ -581,11 +572,6 @@ async fn bundle_installs_help_only_functions_and_validates_its_configuration() {
     );
     components.cleanup().await.unwrap();
 
-    let invalid = BundleConfig::DecisionModels {
-        include_global: false,
-        models: vec!["not a slug".into()],
-    };
-    assert!(BundleKind::from_config(&invalid, Some(&resources.handle())).is_err());
     let valid = BundleConfig::DecisionModels {
         include_global: false,
         models: Vec::new(),

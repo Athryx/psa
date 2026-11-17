@@ -1,11 +1,12 @@
 use super::*;
+use crate::db::NewEvent;
 use crate::{
     agents::{NewAgent, session_manager::Runtime},
     providers::ProviderRegistry,
     sessions,
 };
 use futures_util::StreamExt;
-use psa_api::events::{Log, NewEvent};
+use psa_api::events::Log;
 
 pub(super) async fn fixture() -> (
     tempfile::TempDir,
@@ -111,9 +112,8 @@ async fn context_pages_start_at_the_marker_opening_the_requested_context() {
                 session.id,
                 Some(agent.id),
                 &api::EventsQuery {
-                    through: Some(through),
+                    span: api::EventSpan::ContextOf { through },
                     limit,
-                    from_context_start: true,
                     ..Default::default()
                 },
             )
@@ -148,8 +148,10 @@ async fn context_pages_start_at_the_marker_opening_the_requested_context() {
         session.id,
         Some(agent.id),
         &api::EventsQuery {
-            after: page.next_after,
-            through: Some(second_marker - 1),
+            span: api::EventSpan::Forward {
+                after: page.next_after,
+                through: Some(second_marker - 1),
+            },
             ..Default::default()
         },
     )
@@ -160,27 +162,15 @@ async fn context_pages_start_at_the_marker_opening_the_requested_context() {
         (first_marker + 2..second_marker).collect::<Vec<_>>()
     );
 
+    // Context pages need an agent route and every event.
     let context_query = || api::EventsQuery {
-        through: Some(second_marker),
-        from_context_start: true,
+        span: api::EventSpan::ContextOf {
+            through: second_marker,
+        },
         ..Default::default()
     };
     for (scope, query) in [
         (None, context_query()),
-        (
-            Some(agent.id),
-            api::EventsQuery {
-                through: None,
-                ..context_query()
-            },
-        ),
-        (
-            Some(agent.id),
-            api::EventsQuery {
-                after: 1,
-                ..context_query()
-            },
-        ),
         (
             Some(agent.id),
             api::EventsQuery {
@@ -209,7 +199,7 @@ async fn recent_backward_pages_and_forward_replay_cover_both_cursor_scopes() {
             session.id,
             scope,
             &api::EventsQuery {
-                recent: true,
+                span: api::EventSpan::Latest,
                 limit: 3,
                 ..Default::default()
             },
@@ -229,7 +219,7 @@ async fn recent_backward_pages_and_forward_replay_cover_both_cursor_scopes() {
             session.id,
             scope,
             &api::EventsQuery {
-                before: recent.next_before,
+                span: api::EventSpan::Before(recent.next_before.unwrap()),
                 limit: 3,
                 ..Default::default()
             },
@@ -242,7 +232,7 @@ async fn recent_backward_pages_and_forward_replay_cover_both_cursor_scopes() {
             session.id,
             scope,
             &api::EventsQuery {
-                before: older.next_before,
+                span: api::EventSpan::Before(older.next_before.unwrap()),
                 limit: 3,
                 ..Default::default()
             },
@@ -272,7 +262,10 @@ async fn recent_backward_pages_and_forward_replay_cover_both_cursor_scopes() {
             session.id,
             scope,
             &api::EventsQuery {
-                after: head,
+                span: api::EventSpan::Forward {
+                    after: head,
+                    through: None,
+                },
                 ..Default::default()
             },
         )
@@ -286,7 +279,7 @@ async fn recent_backward_pages_and_forward_replay_cover_both_cursor_scopes() {
         session.id,
         Some(agent.id),
         &api::EventsQuery {
-            recent: true,
+            span: api::EventSpan::Latest,
             limit: 10_000,
             ..Default::default()
         },
@@ -299,25 +292,6 @@ async fn recent_backward_pages_and_forward_replay_cover_both_cursor_scopes() {
         agent_page.events[0].event.id.0
     );
     assert!(!agent_page.has_older);
-    for query in [
-        api::EventsQuery {
-            recent: true,
-            after: 1,
-            ..Default::default()
-        },
-        api::EventsQuery {
-            recent: true,
-            before: Some(2),
-            ..Default::default()
-        },
-        api::EventsQuery {
-            before: Some(2),
-            through: Some(3),
-            ..Default::default()
-        },
-    ] {
-        assert!(load_page(&state, session.id, None, &query).await.is_err());
-    }
     let mut headers = HeaderMap::new();
     headers.insert("accept", "text/event-stream".parse().unwrap());
     assert!(
@@ -326,7 +300,7 @@ async fn recent_backward_pages_and_forward_replay_cover_both_cursor_scopes() {
             session.id,
             None,
             api::EventsQuery {
-                recent: true,
+                span: api::EventSpan::Latest,
                 ..Default::default()
             },
             headers

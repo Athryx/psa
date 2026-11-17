@@ -426,7 +426,7 @@ pub(super) fn parse_usage(value: &Value, chat: bool) -> Usage {
             .get(format!("{input}_details"))
             .and_then(|details| details.get("cached_tokens"))
             .and_then(Value::as_u64),
-        cache_write_input_tokens: value
+        cache_write_tokens: value
             .get(format!("{input}_details"))
             .and_then(|details| details.get("cache_write_tokens"))
             .and_then(Value::as_u64),

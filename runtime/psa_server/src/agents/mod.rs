@@ -1,10 +1,11 @@
 //! Main agent runtime
 
 use crate::{agents::agent_projection::ProjectionError, db::DbError, sessions::SessionId};
+use llm_api::api::Usage;
 use psa_api::events::{EventId, ToolDefinition};
 use time::OffsetDateTime;
 
-pub use psa_api::{AgentDefinition, AgentDefinitionId, AgentId, AgentState, AgentUsage};
+pub use psa_api::{AgentDefinition, AgentDefinitionId, AgentId, AgentState};
 
 pub mod agent_context;
 pub mod agent_manager;
@@ -44,7 +45,7 @@ pub struct Agent {
     pub interactive: bool,
     pub hidden: bool,
     pub state: AgentState,
-    pub usage: AgentUsage,
+    pub usage: Usage,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }

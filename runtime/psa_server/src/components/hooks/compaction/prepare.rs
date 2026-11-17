@@ -2,11 +2,12 @@
 //! Adapted from earendil-works/pi (MIT); see docs/PI_LICENSE.txt.
 
 use super::prompts;
+use crate::db::NewEvent;
 use llm_api::{
     api::{ContentBlock, Outcome, Usage},
     providers::ModelConfig,
 };
-use psa_api::events::{CompactionSummary, Event, EventType, MessageType, NewEvent};
+use psa_api::events::{CompactionSummary, Event, EventType, MessageType};
 use std::collections::{BTreeSet, HashSet};
 
 #[derive(Debug)]
@@ -393,14 +394,10 @@ fn text_content(content: &[ContentBlock], separator: &str) -> String {
 }
 
 fn subagent_prefix(message: &psa_api::events::Message) -> String {
-    if message.message_type != MessageType::Subagent {
-        return String::new();
+    match &message.source {
+        Some(source) => crate::prompts::agent_message_header(&source.sender_name),
+        None => String::new(),
     }
-    let sender = message
-        .source
-        .as_ref()
-        .and_then(|source| source.name.as_deref());
-    crate::prompts::agent_message_header(sender)
 }
 
 fn serialize_conversation(events: &[Event]) -> String {

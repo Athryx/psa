@@ -206,7 +206,7 @@ fn parse_status_line(line: &str) -> Option<ContainerStatus> {
 }
 
 fn validate_spec(spec: &SandboxSpec) -> Result<()> {
-    if !psa_api::sandboxes::is_valid_sandbox_name(&spec.name) {
+    if !psa_api::is_valid_sandbox_name(&spec.name) {
         return Err(invalid(
             "sandbox name must be 1-64 ASCII letters, digits, '-', '_' or '.'",
         ));

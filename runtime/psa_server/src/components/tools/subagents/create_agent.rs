@@ -9,7 +9,6 @@ use crate::{
     prompts,
 };
 use llm_api::api::{ToolDefinition, ToolSchema};
-use psa_api::{AgentMessageSource, events::MessageDelivery};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -147,7 +146,7 @@ impl CreateAgent {
                 .sessions()
                 .create_agent_with_model(
                     context.session().id,
-                    psa_api::CreateAgent {
+                    crate::agents::NewAgent {
                         subagent_parent_id: Some(caller),
                         definition_id,
                         name,
@@ -162,11 +161,8 @@ impl CreateAgent {
                 .sessions()
                 .send_subagent_message(
                     context.session().id,
-                    agent.id,
-                    Some(AgentMessageSource {
-                        agent_id: Some(caller),
-                        name: None,
-                    }),
+                    &agent,
+                    context.agent(),
                     crate::prompts::text(task),
                 )
                 .await;
@@ -189,7 +185,7 @@ impl CreateAgent {
                     agent.name
                 ));
             }
-            let submitted = submitted.map_err(|error| {
+            let link = submitted.map_err(|error| {
                 format!(
                     "Agent \"{}\" was created but its task could not be sent: {error}",
                     agent.name
@@ -201,10 +197,7 @@ impl CreateAgent {
                     "Started agent \"{}\". Its final answer will arrive as a message.",
                     agent.name
                 ),
-                MessageDelivery {
-                    agent_id: agent.id,
-                    request_id: submitted.request_id,
-                },
+                link,
             ))
         }
         .await;

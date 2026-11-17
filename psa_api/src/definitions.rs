@@ -1,218 +1,96 @@
-//! Mutable named configuration and metadata for immutable definition snapshots.
-//! Executable snapshot fields are defined by `AgentDefinition`.
-use crate::{
-    AgentDefinition, AgentDefinitionId, AgentId, BundleConfig, HookConfigs, ProbeId, SessionId,
-};
-use llm_api::providers::Effort;
+//! Immutable agent definition snapshots and their model policy.
+
+use crate::{AgentConfig, BundleConfig, HookConfigs, SkillId};
+use llm_api::providers::{Effort, Model, ModelConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Server options safe to expose to authenticated clients.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClientConfig {
-    /// Name of the agent configuration suggested for new sessions.
-    pub default_agent_name: String,
-    /// Docker image used for new sandboxes that do not name one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_sandbox_image: Option<String>,
-}
-
-/// Namespace for named agent configurations and skills.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub enum ConfigGroup {
-    /// Caller-managed namespace, independent of filesystem discovery.
-    Custom(#[doc = "Namespace name."] String),
-    /// Server-wide filesystem-discovered namespace.
-    Global,
-    /// Probe-local project namespace discovered from an `.agents` directory.
-    Project {
-        /// Absolute project configuration directory path.
-        path: String,
-        /// Probe that owns the project directory.
-        probe_id: ProbeId,
-    },
-}
-
-/// Mutable configuration identity, distinct from an immutable snapshot ID.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigId {
-    /// Namespace containing the configuration.
-    pub config_group: ConfigGroup,
-    /// Name unique within the namespace.
-    pub name: String,
-}
-
-/// Name-keyed inclusion selection; later groups override earlier groups,
-/// then explicit items override groups. Omitted lists select nothing.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct IncludedItems {
-    /// Ordered namespaces whose registered items are included.
-    pub groups: Vec<ConfigGroup>,
-    /// Explicit identities overriding group selections with the same name.
-    pub items: Vec<ConfigId>,
-}
-
-/// Allowed model policy. `Global` parts keep following the session model after
-/// creation; `Parent` is fixed to the parent's policy when the agent is created.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub enum ModelSelection {
-    /// Use an explicit provider/model with a separate effort policy.
-    Fixed {
-        /// Provider slug followed by the API name, such as `openrouter/vendor/model`.
-        model: String,
-        /// Reasoning effort policy for this model.
-        effort: EffortSelection,
-    },
-    /// Follow the session's model configuration.
-    Global,
-    /// Use the parent's model policy; root agents follow the session.
-    Parent,
-}
-
-/// Reasoning effort policy for a fixed model.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub enum EffortSelection {
-    /// Use the specified effort.
-    Fixed(#[doc = "Configured reasoning effort."] Effort),
-    /// Use the parent's effort policy; root agents follow the session.
-    Parent,
-    /// Follow the session's effort.
-    Global,
-}
-
-/// Unresolved current input, upserted by `config_id`. Models must be nonempty.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentConfig {
-    /// Identity to create or replace on upsert.
-    pub config_id: ConfigId,
-    /// Human-readable description; defaults to empty.
-    #[serde(default)]
-    pub description: String,
-    /// Selection metadata; defaults to false and does not install tools or hooks.
-    #[serde(default)]
-    pub selectable: bool,
-    /// Ordered bundle construction configurations; omitted lists are empty, not inherited.
-    #[serde(default)]
-    pub bundles: Vec<BundleConfig>,
-    /// Explicit lifecycle hook configurations; omitted stages are empty.
-    #[serde(default)]
-    pub hooks: HookConfigs,
-    /// Required nonempty ordered list of allowed model policies.
-    pub models: Vec<ModelSelection>,
-    /// Allow the first model when no choice is supplied; defaults to true.
-    /// Registration normalizes this to true when there is only one choice.
-    #[serde(default = "default_model_choice")]
-    pub default: bool,
-    /// Permitted subagent configuration selection; defaults to empty.
-    #[serde(default)]
-    pub subagents: IncludedItems,
-    /// Skill selection for snapshot resolution; defaults to empty.
-    #[serde(default)]
-    pub skills: IncludedItems,
-}
-
-fn default_model_choice() -> bool {
-    true
-}
-
-/// Stable mutable skill record identity, not a content revision.
+/// Identifier of an immutable agent definition version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct SkillId(#[doc = "Numeric skill record identifier."] pub u64);
+pub struct AgentDefinitionId(pub u64);
 
-/// Trusted filesystem source of a skill's content.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SkillLocation {
-    /// Server-owned skill source, materialized on probes before use.
-    Global(#[doc = "Server-local skill path."] PathBuf),
-    /// Skill source already owned by a probe.
-    Probe {
-        /// Probe holding the source.
-        id: ProbeId,
-        /// Probe-local skill path.
-        path: PathBuf,
-    },
-}
-
-/// Registered mutable skill metadata and its trusted source location.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Skill {
-    /// Stable record identity retained across updates.
-    pub id: SkillId,
-    /// Named configuration identity used for inclusion.
-    pub config_id: ConfigId,
-    /// Skill name parsed from its metadata.
-    pub name: String,
-    /// Skill description parsed from its metadata.
-    pub description: String,
-    /// Filesystem source used for materialization.
-    pub skill_location: SkillLocation,
-    /// Exclude from the model-facing skill catalogue; defaults to false.
-    #[serde(default)]
-    pub disable_model_invocation: bool,
-}
-
-/// Trusted source registration after reading and validating SKILL.md.
-/// Network upload callers use `NewSkill`, not arbitrary server-local paths.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillRegistration {
-    /// Named identity to create or update.
-    pub config_id: ConfigId,
-    /// Validated skill name.
-    pub name: String,
-    /// Validated skill description.
-    pub description: String,
-    /// Trusted server or probe source location.
-    pub skill_location: SkillLocation,
-    /// Exclude from the model-facing catalogue; defaults to false.
-    #[serde(default)]
-    pub disable_model_invocation: bool,
-}
-
-/// Upload a skill archive rather than asserting a server-local path.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NewSkill {
-    /// Destination identity; its name must match the skill metadata name.
-    pub config_id: ConfigId,
-    /// Uncompressed tar archive containing a root `SKILL.md` and support files.
-    pub tar_data: Vec<u8>,
-}
-
-/// Unresolved explicit dependency of a configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MissingComponent {
-    /// Referenced agent configuration is unavailable.
-    Agent {
-        /// Missing configuration identity.
-        config_id: ConfigId,
-    },
-    /// Referenced skill is unavailable.
-    Skill {
-        /// Missing skill configuration identity.
-        config_id: ConfigId,
-    },
-}
-
-/// Current dependency-resolution status, separate from snapshot identity.
+/// Model policy of an agent definition version.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentDefinitionStatus {
-    /// Missing dependencies; empty when all selected dependencies are available.
-    pub missing_components: Vec<MissingComponent>,
+pub enum AgentModel {
+    /// Follow the session's current model and effort.
+    #[default]
+    Global,
+    /// Use a pinned model with its own effort policy.
+    Fixed {
+        /// Pinned provider model.
+        model: Model,
+        /// Reasoning effort policy for the pinned model.
+        effort: AgentEffort,
+    },
 }
 
-/// Current named configuration paired with its dependency status.
+/// Reasoning effort policy of a pinned agent model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentEffort {
+    /// Follow the session's current effort.
+    Global,
+    /// Use the specified effort.
+    Fixed(Effort),
+}
+
+impl AgentModel {
+    /// The concrete configuration this policy selects under the session model.
+    pub fn resolve(&self, session: &ModelConfig) -> ModelConfig {
+        match self {
+            Self::Global => session.clone(),
+            Self::Fixed { model, effort } => ModelConfig {
+                model: model.clone(),
+                effort: match effort {
+                    AgentEffort::Global => session.effort,
+                    AgentEffort::Fixed(effort) => *effort,
+                },
+            },
+        }
+    }
+
+    /// The effort policy this model policy applies.
+    pub fn effort(&self) -> AgentEffort {
+        match self {
+            Self::Global => AgentEffort::Global,
+            Self::Fixed { effort, .. } => *effort,
+        }
+    }
+}
+
+impl From<ModelConfig> for AgentModel {
+    fn from(config: ModelConfig) -> Self {
+        Self::Fixed {
+            model: config.model,
+            effort: AgentEffort::Fixed(config.effort),
+        }
+    }
+}
+
+/// An immutable, versioned agent configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentConfigStatus {
-    /// Current registered configuration.
-    pub config: AgentConfig,
-    /// Current dependency availability.
-    pub status: AgentDefinitionStatus,
+pub struct AgentDefinition {
+    /// Identifier of this definition version.
+    pub id: AgentDefinitionId,
+    /// Previous immutable version, if this definition replaces one.
+    pub previous_version_id: Option<AgentDefinitionId>,
+    /// Version number within the definition's version chain.
+    pub version: u64,
+    pub name: String,
+    /// Human-readable description.
+    pub description: String,
+    /// Whether this definition is offered for selection.
+    pub selectable: bool,
+    /// Ordered feature bundle construction configurations.
+    pub bundles: Vec<BundleConfig>,
+    /// Ordered hook construction configurations for each lifecycle stage.
+    pub hooks: HookConfigs,
+    /// Model policy, re-resolved against the session model whenever it changes.
+    pub model: AgentModel,
+    /// Paths to skill files or directories.
+    pub skills: Vec<PathBuf>,
+    /// Definition versions this agent may use for subagents.
+    pub permitted_subagents: Vec<AgentDefinitionId>,
 }
 
 /// Resolved references kept separate from executable snapshot fields.
@@ -234,90 +112,4 @@ pub struct ResolvedAgentConfig {
     pub definition: AgentDefinition,
     /// Resolved subagent snapshots and mutable skill record IDs.
     pub references: ResolvedDefinitionReferences,
-}
-
-/// Create an agent by resolving and pinning a current named configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NewConfiguredAgent {
-    /// Configuration whose current reachable graph is resolved.
-    pub config_id: ConfigId,
-    /// Display name for this agent instance.
-    pub name: String,
-    /// Optional subagent parent; omission means no parent.
-    #[serde(default)]
-    pub subagent_parent_id: Option<AgentId>,
-    /// Metadata available to hooks and tools; defaults to false.
-    #[serde(default)]
-    pub interactive: bool,
-    /// Client visibility metadata only; defaults to false without server filtering.
-    #[serde(default)]
-    pub hidden: bool,
-    /// Selection that must exactly match an allowed entry, including effort policy.
-    /// Omission/null selects the sole entry, or the first entry when defaults are enabled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<ModelSelection>,
-}
-
-/// Discovery refresh followed by a listing of all registered skills.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RefreshAndListSkills {
-    /// Refresh this session's project in addition to globals before listing the entire
-    /// registry. `None` refreshes only globals; registered project records remain listed.
-    pub refresh_session_id: Option<SessionId>,
-}
-
-/// Discovery refresh followed by a listing of all registered configurations.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RefreshAndListAgentConfigs {
-    /// Refresh this session's project in addition to globals before listing the entire
-    /// registry. `None` refreshes only globals; registered project records remain listed.
-    pub refresh_session_id: Option<SessionId>,
-}
-
-/// Consistent reachable selection for adapters to materialize outside a DB lock.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentConfigGraph {
-    /// Reachable source configurations.
-    pub configs: Vec<AgentConfig>,
-    /// Selected mutable skill records to materialize.
-    pub skills: Vec<Skill>,
-    /// Dependency statuses captured with the graph.
-    pub statuses: Vec<AgentConfigStatus>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn configuration_requests_have_explicit_models_and_closed_nested_inputs() {
-        let id = json!({"config_group": {"Custom": "test"}, "name": "agent"});
-        let config: AgentConfig =
-            serde_json::from_value(json!({"config_id": id, "models": ["Global"]})).unwrap();
-        assert!(config.default);
-        assert!(config.subagents.groups.is_empty());
-        assert!(serde_json::from_value::<AgentConfig>(json!({"config_id": id})).is_err());
-        assert!(
-            serde_json::from_value::<ConfigId>(
-                json!({"config_group": "Global", "name": "x", "typo": true})
-            )
-            .is_err()
-        );
-        assert!(serde_json::from_value::<ModelSelection>(json!({"Fixed": {"model": "openrouter/example/model", "effort": "Global", "typo": true}})).is_err());
-        assert!(
-            serde_json::from_value::<NewSkill>(
-                json!({"config_id": id, "tar_data": [], "path": "/server/path"})
-            )
-            .is_err()
-        );
-        let create: NewConfiguredAgent =
-            serde_json::from_value(json!({"config_id": id, "name": "instance"})).unwrap();
-        assert!(create.model.is_none());
-        assert!(!create.interactive);
-        assert!(!create.hidden);
-    }
 }

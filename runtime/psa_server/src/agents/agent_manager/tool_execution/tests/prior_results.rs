@@ -8,6 +8,7 @@ use crate::components::{
     },
     tools::CodeMode,
 };
+use crate::db::NewEvent;
 use llm_api::api::ContentBlock;
 use serde_json::{Value, json};
 

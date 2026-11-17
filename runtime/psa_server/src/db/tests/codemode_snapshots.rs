@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::{EventRange, NewEvent};
 use crate::{
     agents::AgentId,
     db::{

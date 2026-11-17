@@ -6,7 +6,6 @@ use time::OffsetDateTime;
 /// Supported provider and its live credential-configuration status.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderInfo {
-    /// Provider identifier.
     pub id: ProviderType,
     /// Credentials are configured; this does not verify validity or entitlement.
     pub authed: bool,

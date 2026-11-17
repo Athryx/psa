@@ -151,16 +151,19 @@ impl SandboxAction {
     }
 }
 
-/// Transcript label for a recorded agent command, in its slash-command form.
-pub fn describe_agent_command(command: &psa_api::AgentCommand) -> String {
-    match command {
-        psa_api::AgentCommand::Compact { instructions } => match instructions.as_deref() {
-            Some(instructions) if !instructions.trim().is_empty() => {
-                format!("/compact {instructions}")
-            }
-            _ => "/compact".into(),
-        },
+/// Transcript label for a recorded command: the command line, with the outcome
+/// and output on following lines when it did not simply succeed.
+pub fn describe_command(command: &psa_api::events::CommandRecord) -> String {
+    let mut text = command.command_line();
+    match command.outcome {
+        psa_api::CommandOutcome::Succeeded => {}
+        psa_api::CommandOutcome::Failed => text.push_str("\nFailed"),
+        psa_api::CommandOutcome::Interrupted => text.push_str("\nInterrupted"),
     }
+    if let Some(output) = &command.output {
+        text = format!("{text}\n{output}");
+    }
+    text
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComposerInput {
@@ -343,11 +346,15 @@ mod tests {
                 arguments: "try another approach".into(),
             }
         );
+        let record = psa_api::events::CommandRecord {
+            name: "compact".into(),
+            args: "tests".into(),
+            outcome: psa_api::CommandOutcome::Failed,
+            output: Some("no summary".into()),
+        };
         assert_eq!(
-            describe_agent_command(&psa_api::AgentCommand::Compact {
-                instructions: Some("tests".into())
-            }),
-            "/compact tests"
+            describe_command(&record),
+            "/compact tests\nFailed\nno summary"
         );
     }
     #[test]

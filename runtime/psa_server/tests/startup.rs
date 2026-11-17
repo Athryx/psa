@@ -153,7 +153,10 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
     assert!(!resolved.host);
     assert_eq!(resolved.default_agent_name, "root");
     // Existing files without a defaults section keep their original behavior.
-    assert_eq!(resolved.agent_defaults, psa_api::AgentDefaults::default());
+    assert_eq!(
+        resolved.agent_defaults,
+        psa_server::config::AgentDefaults::default()
+    );
     assert_eq!(
         resolved.session_defaults,
         psa_server::config::default_model_config()

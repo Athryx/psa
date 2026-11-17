@@ -1,40 +1,42 @@
-//! Shared wire types and a small asynchronous client for trusted PSA clients.
+//! Wire types shared by the PSA server, its clients and probes, and an async
+//! HTTP/SSE [`Client`].
 //!
-//! Use [`Client`] for HTTP requests and server-sent events. The [`probes`] module
-//! defines the separate server/probe protocol; shared runtime utilities live in
-//! the `psa_shared` crate.
+//! Most types are re-exported at the crate root. Three modules stay namespaced:
+//! [`events`] (transcript events), [`probes`] (the server/probe protocol), and
+//! [`routes`] (HTTP route templates).
 
-#![warn(missing_docs)]
-
-pub mod agent_defaults;
-pub mod client;
-pub mod client_queries;
-pub mod completion;
-pub mod components;
-pub mod decisions;
-pub mod definitions;
 pub mod events;
-pub mod models;
 pub mod probes;
-pub mod results;
 pub mod routes;
-pub mod sandboxes;
-mod types;
+
+mod agents;
+mod client;
+mod client_queries;
+mod components;
+mod configs;
+mod decisions;
+mod definitions;
+mod feeds;
+mod models;
+mod results;
+mod sandboxes;
+mod sessions;
+mod skills;
 
 #[cfg(test)]
 mod tests;
 
-pub use agent_defaults::{AgentConfigInput, AgentDefaults, HookOverrides};
-pub use client::{
-    Client, ClientError, EventStream, GlobalEventStream, GlobalStreamEvent, StreamEvent,
-};
+pub use agents::*;
+pub use client::*;
 pub use client_queries::*;
-pub use completion::{CompletionConfigurationError, validate_completion_modes};
-pub use components::{BundleConfig, HookConfig, HookConfigs};
+pub use components::*;
+pub use configs::*;
 pub use decisions::*;
 pub use definitions::*;
+pub use feeds::*;
 pub use models::*;
 pub use probes::{Probe, ProbeId, ProbeMetadata};
 pub use results::*;
-pub use sandboxes::{CreateSandbox, ListSandboxes, Mount, Sandbox, SandboxState};
-pub use types::*;
+pub use sandboxes::*;
+pub use sessions::*;
+pub use skills::*;

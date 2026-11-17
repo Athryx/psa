@@ -4,6 +4,7 @@ use super::{
     Agent, AgentError, agent_manager::AgentManagerState, agent_projection::AgentProjection,
     client_queries::ClientQueryError, sessions::Sessions,
 };
+use crate::db::{EventRange, NewEvent};
 use crate::{
     components::cancellation::Cancellation,
     db::{Database, DbError, EventBatchItem, InferenceResultEvents},

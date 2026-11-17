@@ -455,13 +455,9 @@ fn invalid(message: &str) -> ProjectionError {
 
 fn build_message_content(message: &psa_api::events::Message) -> Vec<api::ContentBlock> {
     let mut content = Vec::new();
-    if message.message_type == MessageType::Subagent {
-        let sender = message
-            .source
-            .as_ref()
-            .and_then(|source| source.name.as_deref());
+    if let Some(source) = &message.source {
         content.extend(crate::prompts::text(crate::prompts::agent_message_header(
-            sender,
+            &source.sender_name,
         )));
     }
     content.extend(message.content.clone());

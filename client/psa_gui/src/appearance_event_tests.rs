@@ -78,8 +78,11 @@ fn interrupted_status_is_always_visible_as_error() {
 
 #[test]
 fn commands_render_as_right_aligned_command_rows() {
-    let kind = EventType::Command(AgentCommand::Compact {
-        instructions: Some("tests".into()),
+    let kind = EventType::Command(psa_api::events::CommandRecord {
+        name: "compact".into(),
+        args: "tests".into(),
+        outcome: psa_api::CommandOutcome::Succeeded,
+        output: None,
     });
     let html = dioxus_ssr::render_element(
         rsx! { AppearanceRoot { kind, hide_results: true, hide_statuses: true } },
@@ -92,10 +95,12 @@ fn commands_render_as_right_aligned_command_rows() {
 #[test]
 fn received_messages_are_collapsed_rows_naming_the_sender() {
     let kind = EventType::Message(psa_api::events::Message {
-        source: Some(psa_api::events::MessageSender {
-            agent_id: Some(AgentId(7)),
-            name: Some("researcher".into()),
+        source: Some(psa_api::events::AgentMessageLink {
             request_id: "r1".into(),
+            sender: AgentId(7),
+            sender_name: "researcher".into(),
+            recipient: AgentId(1),
+            recipient_name: "recipient".into(),
         }),
         ..psa_api::events::Message::text(psa_api::events::MessageType::Subagent, "found it\nmore")
     });
@@ -113,10 +118,12 @@ fn linked_row_root() -> Element {
     use_context_provider(|| ui);
     let payload = use_hook(|| {
         let message = psa_api::events::Message {
-            source: Some(psa_api::events::MessageSender {
-                agent_id: Some(AgentId(7)),
-                name: Some("researcher".into()),
+            source: Some(psa_api::events::AgentMessageLink {
                 request_id: "r1".into(),
+                sender: AgentId(7),
+                sender_name: "researcher".into(),
+                recipient: AgentId(1),
+                recipient_name: "recipient".into(),
             }),
             ..psa_api::events::Message::text(psa_api::events::MessageType::Subagent, "found it")
         };

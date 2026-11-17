@@ -16,8 +16,8 @@ nonblank and session-unique at child creation; existing API-created root agents
 may have duplicate names, in which case name-based messaging rejects ambiguity.
 There are no group IDs, fixed child concurrency/depth limits, or interrupt cascades.
 
-Messages use `AgentRequest::SubagentMessage` with ordinary steering semantics.
-Optional source metadata contains agent ID/name; the server validates supplied
+Messages use `AgentRequest::Message` with `Steer` delivery and a `source`.
+The source contains agent ID/name; the server validates supplied
 IDs against the session and resolves names from core state. Persisted messages
 have `MessageType::Subagent`. Projection renders them as attributed user-role
 context, preserving structured source metadata in transcript/API events. Initial

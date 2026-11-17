@@ -1,6 +1,7 @@
 //! Publishes the codemode function catalogue as its own system-prompt section.
 //! Installed by the CodeMode bundle; forks preserve their inherited prompt.
 use super::{Hook, HookError};
+use crate::db::NewEvent;
 use crate::{
     agents::agent_context::AgentContext,
     components::{
@@ -8,7 +9,7 @@ use crate::{
         codemode_functions::{CodeModeEntry, CodeModeFunction, CodeModeListing},
     },
 };
-use psa_api::events::{EventType, Message, NewEvent};
+use psa_api::events::{EventType, Message};
 use std::{collections::BTreeSet, time::Duration};
 
 pub struct CodeModeFunctionsHook;

@@ -80,8 +80,10 @@ macro_rules! typed_tool_execute {
 
 pub(crate) use typed_tool_execute;
 
+pub use psa_api::ToolId;
+
 /// Tool output content, independent of call IDs and event metadata.
-pub use psa_api::{ToolId, ToolResult};
+pub type ToolResult = Vec<llm_api::api::ContentBlock>;
 
 /// Optional human-facing tool directions and shared rules for the system prompt.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -121,7 +123,7 @@ pub struct ToolOutput {
     /// Private events committed atomically with this tool result.
     pub(crate) private_events: Vec<crate::db::PrivateEvent>,
     /// Agent message this call delivered; client-facing only.
-    pub(crate) delivery: Option<psa_api::events::MessageDelivery>,
+    pub(crate) delivery: Option<psa_api::events::AgentMessageLink>,
 }
 
 impl ToolOutput {

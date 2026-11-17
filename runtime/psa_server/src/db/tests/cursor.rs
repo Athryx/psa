@@ -1,4 +1,5 @@
 use super::{fixture, log, state_change};
+use crate::db::{EventRange, NewEvent};
 use crate::{
     agents::{AgentState, NewAgent},
     db::DbError,

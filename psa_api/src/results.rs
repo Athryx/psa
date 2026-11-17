@@ -7,22 +7,13 @@ use crate::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use time::OffsetDateTime;
 
-/// Default number of result-correction retries configured by the typed-result bundle.
-pub const DEFAULT_RESULT_RETRIES: u32 = 3;
-
 /// A durable agent-produced result, distinct from ordinary conversation messages.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentResult {
     /// A plain-text result; decoding treats it as a JSON string, not JSON source.
-    Text(
-        /// Result text.
-        String,
-    ),
+    Text(String),
     /// A structured JSON result.
-    Json(
-        /// Result value without an additional wrapper around the payload.
-        serde_json::Value,
-    ),
+    Json(serde_json::Value),
 }
 
 impl AgentResult {
@@ -281,11 +272,15 @@ mod tests {
         let client = crate::Client::new("http://example.invalid", "test-client-key").unwrap();
         let session = SessionId(3);
         let agent = AgentId(5);
-        returns::<Vec<ResultRecord>>(client.results(session, agent, 5));
-        returns::<Option<ResultRecord>>(client.last_result_raw(session, agent));
-        returns::<Option<ResultRecord<Answer>>>(client.last_result::<Answer>(session, agent));
-        returns::<Vec<ResultRecord<Answer>>>(client.last_results::<Answer>(session, agent, 5));
-        returns::<Option<ResultRecord<String>>>(client.last_result::<String>(session, agent));
+        returns::<Vec<ResultRecord>>(client.list_results(session, agent, 5));
+        returns::<Option<ResultRecord>>(client.get_last_result(session, agent));
+        returns::<Option<ResultRecord<Answer>>>(
+            client.get_last_result_as::<Answer>(session, agent),
+        );
+        returns::<Vec<ResultRecord<Answer>>>(client.list_results_as::<Answer>(session, agent, 5));
+        returns::<Option<ResultRecord<String>>>(
+            client.get_last_result_as::<String>(session, agent),
+        );
     }
 
     #[test]

@@ -63,12 +63,11 @@ async fn root_effort_picker_only_offers_current_model_options() {
 
 #[test]
 fn effort_options_require_known_model_and_valid_catalog_entry() {
-    let config: ModelConfig = serde_json::from_value(
-        serde_json::json!({"model":{"provider":"Openrouter","api_name":"model"},"effort":"Low"}),
-    )
-    .unwrap();
+    let config: ModelConfig =
+        serde_json::from_value(serde_json::json!({"model":"openrouter/model","effort":"Low"}))
+            .unwrap();
     let mut model: ModelInfo = serde_json::from_value(serde_json::json!({
-        "model":{"provider":"Openrouter","api_name":"model"}, "name":"model",
+        "model":"openrouter/model", "name":"model",
         "input_modalities":[], "context_window":null, "max_output_tokens":null,
         "cost":{"tiers":[]}, "reasoning":true,
         "reasoning_options":[{"effort":"Low","wire_effort":"Low"},{"effort":"High","wire_effort":"High"}],
@@ -132,12 +131,13 @@ async fn effort_update_sends_session_model_and_selected_effort() {
     let mut settings = DesktopSettings::default();
     settings.active_profile_mut().connection.api_url = format!("http://{address}");
     let ui = dom.in_scope(ScopeId::ROOT, || Signal::new(Ui::new(settings)));
-    let config: ModelConfig = serde_json::from_value(serde_json::json!({"model":{"provider":"Openrouter","api_name":"favorite"},"effort":"High"})).unwrap();
+    let config: ModelConfig =
+        serde_json::from_value(serde_json::json!({"model":"openrouter/favorite","effort":"High"}))
+            .unwrap();
     let mut run = Box::pin(change_model(ui, SessionId(1), config));
     std::future::poll_fn(|cx| dom.in_scope(ScopeId::ROOT, || run.as_mut().poll(cx))).await;
     let request = server.join().unwrap();
-    assert_eq!(request["model_config"]["model"]["provider"], "Openrouter");
-    assert_eq!(request["model_config"]["model"]["api_name"], "favorite");
+    assert_eq!(request["model_config"]["model"], "openrouter/favorite");
     assert_eq!(request["model_config"]["effort"], "High");
     assert!(ui.read().notice.is_some());
 }
@@ -149,7 +149,7 @@ fn root_model_labels_describe_equivalent_policies() {
         draft_model_label(&ModelSelection::Global)
     );
     let fixed = |effort| ModelSelection::Fixed {
-        model: "provider/model".into(),
+        model: "openrouter/model".parse().unwrap(),
         effort,
     };
     assert_eq!(
@@ -158,7 +158,7 @@ fn root_model_labels_describe_equivalent_policies() {
     );
     assert_eq!(
         draft_model_label(&fixed(EffortSelection::Fixed(Effort::High))),
-        "provider/model · high"
+        "openrouter/model · high"
     );
 }
 
@@ -362,7 +362,7 @@ fn root_fixture() -> Element {
         serde_json::from_value(serde_json::json!({
             "id":1,"parent_id":null,"name":"test","working_directory":"/tmp",
             "probe_id":"00000000-0000-0000-0000-000000000001",
-            "model_config":{"model":{"provider":"Openrouter","api_name":"favorite"},"effort":"Low"},
+            "model_config":{"model":"openrouter/favorite","effort":"Low"},
             "busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"
         }))
         .unwrap(),
@@ -374,7 +374,7 @@ fn root_fixture() -> Element {
     for (name, pinned) in [("Favorite", true), ("Other", false)] {
         state.models.push(
             serde_json::from_value(serde_json::json!({
-                "model":{"provider":"Openrouter","api_name":name.to_lowercase()}, "name":name,
+                "model":format!("openrouter/{}", name.to_lowercase()), "name":name,
                 "input_modalities":[], "context_window":null, "max_output_tokens":null,
                 "cost":{"tiers":[]}, "reasoning":true, "reasoning_options":[{"effort":"Low","wire_effort":"Low"},{"effort":"High","wire_effort":"High"}],
                 "authed":true, "pinned":pinned, "refreshed_at":"2026-01-01T00:00:00Z"

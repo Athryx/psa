@@ -116,7 +116,7 @@ async fn native_ask_question_roundtrips_structured_answers_without_probe_or_inte
     assert!(!waiting.is_finished());
     let page = fixture
         .client
-        .events(agent.session_id, Some(agent.id), &EventsQuery::default())
+        .list_events(agent.session_id, Some(agent.id), &EventsQuery::default())
         .await
         .unwrap();
     assert_eq!(page.queries, vec![query.clone()]);
@@ -139,7 +139,7 @@ async fn native_ask_question_roundtrips_structured_answers_without_probe_or_inte
     assert_eq!(decoded, expected);
     let page = fixture
         .client
-        .events(agent.session_id, None, &EventsQuery::default())
+        .list_events(agent.session_id, None, &EventsQuery::default())
         .await
         .unwrap();
     assert!(page.queries.is_empty());
@@ -174,7 +174,7 @@ async fn cancelling_native_ask_question_removes_its_pending_client_query() {
     );
     let page = fixture
         .client
-        .events(agent.session_id, None, &EventsQuery::default())
+        .list_events(agent.session_id, None, &EventsQuery::default())
         .await
         .unwrap();
     assert!(page.queries.is_empty());
@@ -255,7 +255,7 @@ async fn context_client_query_roundtrip_survives_sse_reconnect_and_validates_res
     };
     let page = fixture
         .client
-        .events(agent.session_id, Some(agent.id), &options)
+        .list_events(agent.session_id, Some(agent.id), &options)
         .await
         .unwrap();
     assert_eq!(page.queries, [query.clone()]);
@@ -319,7 +319,7 @@ async fn context_client_query_roundtrip_survives_sse_reconnect_and_validates_res
     ));
     let page = fixture
         .client
-        .events(agent.session_id, None, &options)
+        .list_events(agent.session_id, None, &options)
         .await
         .unwrap();
     assert_eq!(page.queries, [query.clone()]);
@@ -357,7 +357,7 @@ async fn context_client_query_roundtrip_survives_sse_reconnect_and_validates_res
     assert!(
         fixture
             .client
-            .events(agent.session_id, None, &options)
+            .list_events(agent.session_id, None, &options)
             .await
             .unwrap()
             .queries
@@ -407,7 +407,7 @@ async fn context_query_snapshots_are_scoped_and_cancellation_removes_the_query()
     ] {
         let page = fixture
             .client
-            .events(session, Some(agent), &options)
+            .list_events(session, Some(agent), &options)
             .await
             .unwrap();
         assert!(page.queries.is_empty());
@@ -445,7 +445,7 @@ async fn context_query_snapshots_are_scoped_and_cancellation_removes_the_query()
     assert!(
         fixture
             .client
-            .events(agent.session_id, None, &options)
+            .list_events(agent.session_id, None, &options)
             .await
             .unwrap()
             .queries
@@ -601,7 +601,7 @@ async fn aborting_context_query_future_removes_pending_client_ui() {
     assert!(
         fixture
             .client
-            .events(agent.session_id, None, &Default::default())
+            .list_events(agent.session_id, None, &Default::default())
             .await
             .unwrap()
             .queries

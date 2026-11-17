@@ -1,0 +1,134 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT p.event_pk, p.message_type, p.delivery, p.content, p.metadata, p.description, p.source_agent_id, p.source_name, p.recipient_name, p.request_id FROM event_message p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "event_pk",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "event_pk"
+          }
+        }
+      },
+      {
+        "name": "message_type",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "message_type"
+          }
+        }
+      },
+      {
+        "name": "delivery",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "delivery"
+          }
+        }
+      },
+      {
+        "name": "content",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "content"
+          }
+        }
+      },
+      {
+        "name": "metadata",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "metadata"
+          }
+        }
+      },
+      {
+        "name": "description",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "name": "source_agent_id",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "source_agent_id"
+          }
+        }
+      },
+      {
+        "name": "source_name",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "source_name"
+          }
+        }
+      },
+      {
+        "name": "recipient_name",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "recipient_name"
+          }
+        }
+      },
+      {
+        "name": "request_id",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_message",
+            "name": "request_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "7dab21c66bc795f424f52379ca75d2240cefeda8cb2c73d4485c5f3959f110e6"
+}

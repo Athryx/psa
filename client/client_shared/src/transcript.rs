@@ -1,6 +1,6 @@
 use psa_api::events::{EventType, MessageType, ToolCall, ToolResult};
 use psa_api::{
-    Agent, AgentId, AgentStatusSnapshot, ClientQueryId, ClientQueryRequest, EventEnvelope,
+    Agent, AgentContextState, AgentId, ClientQueryId, ClientQueryRequest, EventEnvelope,
     EventsPage, PendingEvent, Session, SessionId, StreamMessage,
 };
 use std::{
@@ -200,7 +200,7 @@ pub struct Transcript {
     pub agents: HashMap<AgentId, Agent>,
     pub session: Option<Session>,
     /// Server projection at a committed agent event boundary.
-    pub status_snapshot: Option<AgentStatusSnapshot>,
+    pub context_state: Option<AgentContextState>,
     pub request_failures: HashMap<String, String>,
     pub cursor: u64,
     pub needs_resync: bool,
@@ -213,7 +213,7 @@ pub struct Transcript {
     inference_starts: Arc<Vec<RowId>>,
     inference_ends: Arc<Vec<RowId>>,
     context_resets: Arc<Vec<RowId>>,
-    fallback_status: Arc<OnceLock<AgentStatusSnapshot>>,
+    fallback_context_state: Arc<OnceLock<AgentContextState>>,
 }
 impl Transcript {
     pub fn new(session_id: SessionId, agent_id: Option<AgentId>) -> Self {
@@ -225,7 +225,7 @@ impl Transcript {
             queries: BTreeMap::new(),
             agents: HashMap::new(),
             session: None,
-            status_snapshot: None,
+            context_state: None,
             request_failures: HashMap::new(),
             cursor: 0,
             needs_resync: false,
@@ -238,7 +238,7 @@ impl Transcript {
             inference_starts: Arc::default(),
             inference_ends: Arc::default(),
             context_resets: Arc::default(),
-            fallback_status: Arc::default(),
+            fallback_context_state: Arc::default(),
         }
     }
     fn matches(&self, session: SessionId, agent: AgentId) -> bool {
@@ -254,14 +254,14 @@ impl Transcript {
     fn insert_event(&mut self, event: EventEnvelope) {
         if self.matches(event.session_id, event.agent_id) {
             let key = self.position(&event);
-            if let Some(status) = &mut self.status_snapshot {
-                status.apply_event(&event.event);
+            if let Some(state) = &mut self.context_state {
+                state.apply_event(&event.event);
             }
             if self.committed.contains_key(&key) {
                 return;
             }
             self.committed.insert(key, event);
-            self.fallback_status = Arc::default();
+            self.fallback_context_state = Arc::default();
             let payload = RowPayload::Committed(key, self.committed[&key].clone());
             self.index_display_row(&payload);
             self.index_human_message(&payload);
@@ -271,18 +271,18 @@ impl Transcript {
     }
     /// Cache the ordered fallback for this committed set. Pending-only clones
     /// share its initialization; late history invalidates it just like live commits.
-    pub(crate) fn fallback_status_snapshot(&self) -> &AgentStatusSnapshot {
-        self.fallback_status.get_or_init(|| {
-            let mut status = AgentStatusSnapshot::default();
+    pub(crate) fn fallback_context_state(&self) -> &AgentContextState {
+        self.fallback_context_state.get_or_init(|| {
+            let mut state = AgentContextState::default();
             let Some(agent_id) = self.agent_id else {
-                return status;
+                return state;
             };
             for envelope in self.committed.values() {
                 if envelope.session_id == self.session_id && envelope.agent_id == agent_id {
-                    status.apply_event(&envelope.event);
+                    state.apply_event(&envelope.event);
                 }
             }
-            status
+            state
         })
     }
 
@@ -703,7 +703,7 @@ impl Transcript {
     /// Call only before connecting the stream. The captured head is its replay cursor.
     pub fn bootstrap(&mut self, mut page: EventsPage) {
         self.cursor = page.head;
-        self.status_snapshot = None;
+        self.context_state = None;
         self.clear_pending();
         self.queries.clear();
         self.retired_pending = Arc::default();

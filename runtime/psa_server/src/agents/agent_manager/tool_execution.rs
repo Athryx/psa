@@ -7,6 +7,7 @@ use crate::components::{
     tools::{ExecutionMode, Tool, ToolOutput},
 };
 use crate::db::DbError;
+use crate::db::NewEvent;
 use futures_util::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use std::collections::VecDeque;
 use tokio::sync::watch;

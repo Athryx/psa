@@ -1,16 +1,25 @@
 //! Async HTTP/SSE client, transport errors, and probe connection URL parsing.
 use crate::{
     Agent, AgentConfigInput, AgentConfigStatus, AgentDefinitionId, AgentId, AgentRequest,
-    AgentResult, ApiError, ClientQueryId, ClientQueryResponse, ConfigId, CreateSession, EventsPage,
-    EventsQuery, ForkSession, ForkedSession, NewConfiguredAgent, NewSkill, ProjectId,
-    RequestAccepted, ResolvedAgentConfig, ResultRecord, ResultsQuery, Session, SessionId,
-    SessionsPage, SessionsQuery, Skill, StreamMessage, UpdateSession, routes,
+    AgentResult, ClientQueryId, ClientQueryResponse, ConfigId, CreateAgent, CreateSession,
+    EventsPage, EventsQuery, ForkSession, ForkedSession, NewSkill, ProjectId, RequestAccepted,
+    ResolvedAgentConfig, ResultRecord, ResultsQuery, Session, SessionId, SessionsPage,
+    SessionsQuery, Skill, StreamMessage, UpdateSession, routes,
 };
 use eventsource_stream::Eventsource;
 use futures_util::{Stream, StreamExt};
 use reqwest::{Method, Response};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::pin::Pin;
+
+/// Structured error returned by an API endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiError {
+    /// Machine-readable error code.
+    pub code: String,
+    /// Human-readable error description.
+    pub message: String,
+}
 
 /// Transport, server-response, or event-decoding failure for a client operation.
 #[derive(Debug, thiserror::Error)]
@@ -278,8 +287,10 @@ impl Client {
 
     /// Remove a sandbox container and its record; sessions on its probe remain.
     pub async fn delete_sandbox(&self, id: crate::ProbeId) -> Result<(), ClientError> {
-        let path = routes::probe_path(routes::SANDBOX, id);
-        let response = self.request(Method::DELETE, &path).send().await?;
+        let response = self
+            .request(Method::DELETE, &routes::probe_path(routes::SANDBOX, id))
+            .send()
+            .await?;
         require_success(response).await?;
         Ok(())
     }
@@ -296,18 +307,10 @@ impl Client {
             .await
     }
 
-    /// Refresh discovery, then list all configurations and dependency statuses.
-    /// Global discovery is always refreshed; `Some(refresh_session_id)` also
-    /// refreshes that session's selected project. This is not a result filter.
-    pub async fn refresh_and_list_agent_configs(
-        &self,
-        refresh_session_id: Option<SessionId>,
-    ) -> Result<Vec<AgentConfigStatus>, ClientError> {
-        self.get(
-            routes::AGENT_CONFIGS,
-            &crate::RefreshAndListAgentConfigs { refresh_session_id },
-        )
-        .await
+    /// List all registered configurations and their dependency statuses.
+    /// Does not rescan the filesystem; see [`Self::refresh_configs`].
+    pub async fn list_agent_configs(&self) -> Result<Vec<AgentConfigStatus>, ClientError> {
+        self.get(routes::AGENT_CONFIGS, &()).await
     }
 
     /// Fetch the current named configuration and its dependency status.
@@ -318,11 +321,11 @@ impl Client {
     }
 
     /// Fetch an immutable definition snapshot and its source policies/references.
-    /// Returns `None` if the snapshot ID is unknown.
+    /// Returns HTTP 404 if the snapshot ID is unknown.
     pub async fn get_resolved_agent_config(
         &self,
         id: AgentDefinitionId,
-    ) -> Result<Option<ResolvedAgentConfig>, ClientError> {
+    ) -> Result<ResolvedAgentConfig, ClientError> {
         self.get(&routes::agent_snapshot_path(id), &()).await
     }
 
@@ -332,18 +335,21 @@ impl Client {
         self.send(Method::POST, routes::SKILLS, request).await
     }
 
-    /// Refresh discovery, then list all registered skills.
-    /// Global discovery is always refreshed; `Some(refresh_session_id)` also
-    /// refreshes that session's selected project. This is not a result filter.
-    pub async fn refresh_and_list_skills(
-        &self,
-        refresh_session_id: Option<SessionId>,
-    ) -> Result<Vec<Skill>, ClientError> {
-        self.get(
-            routes::SKILLS,
-            &crate::RefreshAndListSkills { refresh_session_id },
-        )
-        .await
+    /// List all registered skills. Does not rescan the filesystem; see
+    /// [`Self::refresh_configs`].
+    pub async fn list_skills(&self) -> Result<Vec<Skill>, ClientError> {
+        self.get(routes::SKILLS, &()).await
+    }
+
+    /// Rescan the server's global configuration directory and the `.agents`
+    /// directory of each listed session, finding a session's directory on
+    /// first use. Waits for the rescan; success has no response body.
+    pub async fn refresh_configs(&self, session_ids: &[SessionId]) -> Result<(), ClientError> {
+        let request = crate::RefreshConfigs {
+            session_ids: session_ids.to_vec(),
+        };
+        self.send_no_content(Method::POST, routes::CONFIGS_REFRESH, &request)
+            .await
     }
 
     /// Create a session with a registered probe and optional model configuration.
@@ -407,7 +413,7 @@ impl Client {
     pub async fn create_agent(
         &self,
         session: SessionId,
-        request: &NewConfiguredAgent,
+        request: &CreateAgent,
     ) -> Result<Agent, ClientError> {
         self.send(
             Method::POST,
@@ -435,13 +441,13 @@ impl Client {
     }
 
     /// Fetch the effective model and last inference usage for one agent.
-    pub async fn get_agent_status(
+    pub async fn get_agent_context_state(
         &self,
         session: SessionId,
         agent: AgentId,
-    ) -> Result<crate::AgentStatusSnapshot, ClientError> {
+    ) -> Result<crate::AgentContextState, ClientError> {
         self.get(
-            &routes::agent_path(routes::AGENT_STATUS, session, agent),
+            &routes::agent_path(routes::AGENT_CONTEXT_STATE, session, agent),
             &(),
         )
         .await
@@ -477,34 +483,60 @@ impl Client {
         .await
     }
 
-    /// Send attributed context using normal steering delivery.
-    /// `source: None` leaves sender attribution absent; this does not create an
-    /// agent or establish parentage.
-    pub async fn send_subagent_message(
+    /// Request interruption of the agent's current run.
+    pub async fn interrupt(
         &self,
         session: SessionId,
         agent: AgentId,
-        source: Option<crate::AgentMessageSource>,
-        content: Vec<llm_api::api::ContentBlock>,
     ) -> Result<RequestAccepted, ClientError> {
-        self.submit_request(
-            session,
-            agent,
-            &AgentRequest::SubagentMessage { source, content },
-        )
-        .await
+        self.submit_request(session, agent, &AgentRequest::Interrupt)
+            .await
     }
 
-    /// Submit a command for the agent's installed command hooks. The server rejects
-    /// commands no installed bundle supports; execution failures are reported later.
+    /// Send a human message. Use [`Self::submit_request`] with
+    /// [`AgentRequest::Message`] to attribute it to a sending agent.
+    pub async fn send_message(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        delivery: crate::MessageDelivery,
+        content: Vec<llm_api::api::ContentBlock>,
+    ) -> Result<RequestAccepted, ClientError> {
+        let request = AgentRequest::Message {
+            delivery,
+            content,
+            source: None,
+        };
+        self.submit_request(session, agent, &request).await
+    }
+
+    /// Run a command with the agent's installed command hooks and wait for it to
+    /// finish. The server rejects commands no installed bundle supports, and
+    /// records the command and its result in the agent's transcript. A command
+    /// queued behind a run keeps this request open until it executes.
     pub async fn send_command(
         &self,
         session: SessionId,
         agent: AgentId,
         delivery: crate::CommandDelivery,
         command: crate::AgentCommand,
+    ) -> Result<crate::CommandResult, ClientError> {
+        self.send(
+            Method::POST,
+            &routes::agent_path(routes::COMMANDS, session, agent),
+            &crate::RunCommand { delivery, command },
+        )
+        .await
+    }
+
+    /// Record a finished client-side slash command in the agent's transcript.
+    pub async fn record_command(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        record: crate::events::CommandRecord,
     ) -> Result<RequestAccepted, ClientError> {
-        self.submit_request(session, agent, &AgentRequest::Command { delivery, command })
+        self.submit_request(session, agent, &AgentRequest::RecordCommand(record))
             .await
     }
 
@@ -526,9 +558,9 @@ impl Client {
         .await
     }
 
-    /// Fetch up to `limit` raw durable results, newest first, from an agent's lineage.
-    /// Retains each result's text-or-JSON tag and durable event provenance.
-    pub async fn results(
+    /// Fetch up to `limit` durable results, newest first, from an agent's lineage.
+    /// Each keeps its text-or-JSON tag and event provenance.
+    pub async fn list_results(
         &self,
         session: SessionId,
         agent: AgentId,
@@ -541,43 +573,43 @@ impl Client {
         .await
     }
 
-    /// Fetch the newest raw durable result, or `None` if the agent has no results.
-    /// Use this rather than a typed helper to preserve the [`AgentResult`] wire tag.
-    pub async fn last_result_raw(
+    /// Fetch the newest durable result, or `None` if the agent has no results.
+    pub async fn get_last_result(
         &self,
         session: SessionId,
         agent: AgentId,
     ) -> Result<Option<ResultRecord<AgentResult>>, ClientError> {
-        Ok(self.results(session, agent, 1).await?.into_iter().next())
+        Ok(self
+            .list_results(session, agent, 1)
+            .await?
+            .into_iter()
+            .next())
     }
 
-    /// Fetch the newest durable result and decode its inner payload into `T`.
-    /// Text results decode as strings, not JSON source. A type mismatch returns
-    /// [`ClientError::Json`]; no result returns `None`. Provenance is retained.
-    /// Use [`Self::last_result_raw`] to retain the original text-or-JSON tag.
-    pub async fn last_result<T: DeserializeOwned>(
+    /// [`Self::get_last_result`], decoding the payload into `T`. Text results
+    /// decode as JSON strings. A payload that does not match `T` is
+    /// [`ClientError::Json`].
+    pub async fn get_last_result_as<T: DeserializeOwned>(
         &self,
         session: SessionId,
         agent: AgentId,
     ) -> Result<Option<ResultRecord<T>>, ClientError> {
-        self.last_result_raw(session, agent)
+        self.get_last_result(session, agent)
             .await?
             .map(|record| record.decode::<T>())
             .transpose()
             .map_err(ClientError::from)
     }
 
-    /// Fetch up to `limit` durable results newest first and decode their payloads.
-    /// Retains provenance and returns [`ClientError::Json`] if any payload does not
-    /// match `T`, rather than skipping that result. Text results decode as strings.
-    /// Use [`Self::results`] to retrieve the raw text-or-JSON representations.
-    pub async fn last_results<T: DeserializeOwned>(
+    /// [`Self::list_results`], decoding each payload into `T`. Fails with
+    /// [`ClientError::Json`] if any payload does not match, rather than skipping it.
+    pub async fn list_results_as<T: DeserializeOwned>(
         &self,
         session: SessionId,
         agent: AgentId,
         limit: u32,
     ) -> Result<Vec<ResultRecord<T>>, ClientError> {
-        self.results(session, agent, limit)
+        self.list_results(session, agent, limit)
             .await?
             .into_iter()
             .map(|record| record.decode::<T>().map_err(ClientError::from))
@@ -591,36 +623,20 @@ impl Client {
         query: &crate::GlobalEventsQuery,
         last_event_id: Option<&str>,
     ) -> Result<GlobalEventStream, ClientError> {
-        let mut request = self
+        let request = self
             .request(Method::GET, routes::GLOBAL_EVENTS)
-            .header("Accept", "text/event-stream")
             .query(query);
-        if let Some(id) = last_event_id {
-            request = request.header("Last-Event-ID", id);
-        }
-        let response = require_success(request.send().await?).await?;
-        if !response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.starts_with("text/event-stream"))
-        {
-            return Err(ClientError::Stream("expected text/event-stream".into()));
-        }
-        let stream = response.bytes_stream().eventsource().map(|event| {
-            let event = event.map_err(|error| ClientError::Stream(error.to_string()))?;
-            Ok(GlobalStreamEvent {
-                id: event.id,
-                message: serde_json::from_str(&event.data)?,
-            })
-        });
-        Ok(Box::pin(stream))
+        let stream = open_event_stream(request, last_event_id).await?;
+        Ok(Box::pin(stream.map(|event| {
+            let (id, message) = event?;
+            Ok(GlobalStreamEvent { id, message })
+        })))
     }
 
     /// Fetch one event page for a session or, with `Some(agent)`, one agent.
     /// Session cursors are session positions; agent cursors are event IDs.
     /// Requests `Accept: application/json`; paginate using the returned `next_after`.
-    pub async fn events(
+    pub async fn list_events(
         &self,
         session: SessionId,
         agent: Option<AgentId>,
@@ -651,33 +667,14 @@ impl Client {
         query: &EventsQuery,
         last_event_id: Option<&str>,
     ) -> Result<EventStream, ClientError> {
-        let mut request = self
+        let request = self
             .request(Method::GET, &events_path(session, agent))
-            .header("Accept", "text/event-stream")
             .query(query);
-        if let Some(id) = last_event_id {
-            request = request.header("Last-Event-ID", id);
-        }
-
-        let response = require_success(request.send().await?).await?;
-        if !response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.starts_with("text/event-stream"))
-        {
-            return Err(ClientError::Stream("expected text/event-stream".into()));
-        }
-
-        let stream = response.bytes_stream().eventsource().map(|event| {
-            let event = event.map_err(|error| ClientError::Stream(error.to_string()))?;
-            Ok(StreamEvent {
-                id: event.id,
-                message: serde_json::from_str(&event.data)?,
-            })
-        });
-
-        Ok(Box::pin(stream))
+        let stream = open_event_stream(request, last_event_id).await?;
+        Ok(Box::pin(stream.map(|event| {
+            let (id, message) = event?;
+            Ok(StreamEvent { id, message })
+        })))
     }
 }
 
@@ -686,6 +683,31 @@ fn events_path(session: SessionId, agent: Option<AgentId>) -> String {
         Some(agent) => routes::agent_path(routes::AGENT_EVENTS, session, agent),
         None => routes::session_path(routes::SESSION_EVENTS, session),
     }
+}
+
+/// Open an SSE response and decode each event's data as `T`, paired with its ID.
+async fn open_event_stream<T: DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+    last_event_id: Option<&str>,
+) -> Result<impl Stream<Item = Result<(String, T), ClientError>> + Send + use<T>, ClientError> {
+    let mut request = request.header("Accept", "text/event-stream");
+    if let Some(id) = last_event_id {
+        request = request.header("Last-Event-ID", id);
+    }
+    let response = require_success(request.send().await?).await?;
+    let is_event_stream = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream"));
+    if !is_event_stream {
+        return Err(ClientError::Stream("expected text/event-stream".into()));
+    }
+
+    Ok(response.bytes_stream().eventsource().map(|event| {
+        let event = event.map_err(|error| ClientError::Stream(error.to_string()))?;
+        Ok((event.id, serde_json::from_str(&event.data)?))
+    }))
 }
 
 async fn require_success(response: Response) -> Result<Response, ClientError> {
@@ -700,57 +722,9 @@ async fn require_success(response: Response) -> Result<Response, ClientError> {
     Err(ClientError::Api { status, error })
 }
 
-/// Build a probe WebSocket connection URL, preserving any server path prefix.
-///
-/// Accepts HTTP(S) or WS(S), converts to WS(S), and appends the probe connect path.
-/// Rejects malformed URLs, unsupported schemes, credentials, missing hosts,
-/// queries, and fragments with [`ClientError::InvalidBaseUrl`].
-pub fn parse_probe_server_url(value: &str) -> Result<String, ClientError> {
-    let mut url = reqwest::Url::parse(value).map_err(|_| ClientError::InvalidBaseUrl)?;
-    if url.query().is_some()
-        || url.fragment().is_some()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.host_str().is_none()
-    {
-        return Err(ClientError::InvalidBaseUrl);
-    }
-    let scheme = match url.scheme() {
-        "http" | "ws" => "ws",
-        "https" | "wss" => "wss",
-        _ => return Err(ClientError::InvalidBaseUrl),
-    };
-    url.set_scheme(scheme)
-        .map_err(|_| ClientError::InvalidBaseUrl)?;
-    // Accept an already-resolved connect URL too, as written for sandbox probes.
-    let base = url.path().trim_end_matches('/');
-    if !base.ends_with(routes::PROBES_CONNECT) {
-        url.set_path(&format!("{base}{}", routes::PROBES_CONNECT));
-    }
-    Ok(url.into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn probe_server_urls_append_the_connect_route_once() {
-        for input in [
-            "http://127.0.0.1:8080",
-            "http://127.0.0.1:8080/",
-            "ws://127.0.0.1:8080/probes/connect",
-        ] {
-            assert_eq!(
-                parse_probe_server_url(input).unwrap(),
-                "ws://127.0.0.1:8080/probes/connect"
-            );
-        }
-        assert_eq!(
-            parse_probe_server_url("https://psa.example/prefix").unwrap(),
-            "wss://psa.example/prefix/probes/connect"
-        );
-    }
 
     #[test]
     fn client_requests_include_bearer_key_and_preserve_base_prefix() {

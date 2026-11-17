@@ -6,12 +6,10 @@ use super::{
     payloads::parse_model,
     schema::{decode_integer, decode_time, encode_integer},
 };
-use crate::{
-    agents::{AgentId, AgentUsage},
-    sessions::SessionId,
-};
-use llm_api::providers::Model;
-use psa_api::{DecisionCall, DecisionOutcome, EventEnvelope, ModelUsage, ResultRecord, events::*};
+use crate::db::EventRange;
+use crate::{agents::AgentId, sessions::SessionId};
+use llm_api::{api::Usage, providers::Model};
+use psa_api::{DecisionCall, EventEnvelope, ModelUsage, ResultRecord, events::*};
 use sqlx::{Row, SqliteConnection, sqlite::SqliteRow};
 use std::collections::BTreeMap;
 
@@ -100,12 +98,12 @@ impl DatabaseCursor {
         model_usage_at(self.connection(), agent, EventId(through)).await
     }
 
-    /// Project status from the newest relevant markers across the bounded fork lineage.
-    pub async fn load_agent_status(
+    /// Project the context state from the newest relevant markers across the bounded fork lineage.
+    pub async fn load_agent_context_state(
         &mut self,
         session: SessionId,
         agent: AgentId,
-    ) -> Result<psa_api::AgentStatusSnapshot, DbError> {
+    ) -> Result<psa_api::AgentContextState, DbError> {
         let metadata = self.require_agent_session(session, agent).await?;
         let mut markers = Vec::new();
         for kind in ["new_context", "model", "compaction", "inference_end"] {
@@ -114,7 +112,7 @@ impl DatabaseCursor {
             }
         }
         markers.sort_unstable();
-        let mut status = psa_api::AgentStatusSnapshot::default();
+        let mut state = psa_api::AgentContextState::default();
         for id in markers {
             let events = self
                 .load_events(
@@ -127,11 +125,11 @@ impl DatabaseCursor {
                 )
                 .await?;
             if let Some(event) = events.first() {
-                status.apply_event(event);
+                state.apply_event(event);
             }
         }
-        status.head = metadata.next_event_id.0.saturating_sub(1);
-        Ok(status)
+        state.head = metadata.next_event_id.0.saturating_sub(1);
+        Ok(state)
     }
 
     /// Includes staged appends in this cursor. Never silently truncates a window.
@@ -544,8 +542,8 @@ pub(super) async fn usage_at(
     conn: &mut SqliteConnection,
     agent: AgentId,
     through: EventId,
-) -> Result<AgentUsage, DbError> {
-    let mut total = AgentUsage::default();
+) -> Result<Usage, DbError> {
+    let mut total = Usage::zero();
     for (owner, lower, upper) in load_segments(conn, agent, EventId(0), Some(through)).await? {
         let rows = sqlx::query(
             "SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.cache_write_tokens, p.reasoning_tokens, p.cost, p.usage_details FROM event_inference_result_end p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ? UNION ALL SELECT p.input_tokens, p.output_tokens, p.total_tokens, p.cached_tokens, p.cache_write_tokens, p.reasoning_tokens, p.cost, p.usage_details FROM event_compaction p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ? AND (p.input_tokens IS NOT NULL OR p.output_tokens IS NOT NULL OR p.total_tokens IS NOT NULL OR p.cached_tokens IS NOT NULL OR p.cache_write_tokens IS NOT NULL OR p.reasoning_tokens IS NOT NULL OR p.cost IS NOT NULL OR p.usage_details <> '{}')",
@@ -601,43 +599,37 @@ pub(super) async fn model_usage_at(
         }
 
         for call in load_decision_calls(conn, owner, lower, upper).await? {
-            if matches!(call.outcome, DecisionOutcome::Failed(_)) {
+            let Ok(response) = call.response else {
                 continue;
-            }
-            let usage = llm_api::api::Usage {
-                input_tokens: call.usage.input_tokens,
-                cached_input_tokens: call.usage.cached_tokens,
-                cost: call.usage.cost,
-                ..Default::default()
             };
-            add_usage(model_entry(&mut totals, call.model), &usage)?;
+            add_usage(model_entry(&mut totals, response.model), &response.usage)?;
         }
     }
     Ok(totals.into_values().collect())
 }
 
-fn model_entry(totals: &mut BTreeMap<String, ModelUsage>, model: Model) -> &mut AgentUsage {
+fn model_entry(totals: &mut BTreeMap<String, ModelUsage>, model: Model) -> &mut Usage {
     &mut totals
         .entry(model.slug())
         .or_insert_with(|| ModelUsage {
             model,
-            usage: AgentUsage::default(),
+            usage: Usage::zero(),
         })
         .usage
 }
 
-fn parse_usage_row(row: &SqliteRow) -> Result<llm_api::api::Usage, DbError> {
+fn parse_usage_row(row: &SqliteRow) -> Result<Usage, DbError> {
     let count = |column: &str| -> Result<Option<u64>, DbError> {
         row.try_get::<Option<i64>, _>(column)?
             .map(decode_integer)
             .transpose()
     };
-    Ok(llm_api::api::Usage {
+    Ok(Usage {
         input_tokens: count("input_tokens")?,
         output_tokens: count("output_tokens")?,
         total_tokens: count("total_tokens")?,
         cached_input_tokens: count("cached_tokens")?,
-        cache_write_input_tokens: count("cache_write_tokens")?,
+        cache_write_tokens: count("cache_write_tokens")?,
         reasoning_output_tokens: count("reasoning_tokens")?,
         cost: row.try_get("cost")?,
         provider_details: serde_json::from_str(row.try_get("usage_details")?)?,

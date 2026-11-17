@@ -1,5 +1,6 @@
 use super::{ConfigRegistry, DiscoveryError, skills::parse_skill};
-use psa_api::{NewSkill, SkillLocation, SkillRegistration};
+use crate::db::SkillRegistration;
+use psa_api::{NewSkill, SkillLocation};
 use sha2::{Digest, Sha256};
 use std::{
     io::Cursor,

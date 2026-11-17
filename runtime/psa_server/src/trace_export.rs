@@ -6,6 +6,7 @@
 //! and retained conversation events are skipped, leaving a single compaction event.
 
 use crate::agents::{Agent, session_manager::RuntimeError, sessions::Sessions};
+use crate::db::EventRange;
 use agent_trace::{
     AgentMeta, AgentTrace, Event as TraceEvent, EventKind, FinishOutcome, ImageRef, Inference,
     SessionTrace, Source, ToolDefinition, ToolResult as TraceToolResult, attach_tool_result,
@@ -16,7 +17,7 @@ use llm_api::{
 };
 use psa_api::{
     AgentState, SessionId,
-    events::{CompactionSummary, Event, EventId, EventRange, EventType, MessageType},
+    events::{CompactionSummary, Event, EventId, EventType, MessageType},
 };
 use std::collections::HashMap;
 use time::OffsetDateTime;
@@ -196,14 +197,10 @@ impl Converter<'_> {
                         text,
                     },
                     MessageType::Subagent => {
-                        let source = message.source.as_ref();
-                        let from = source
-                            .and_then(|source| {
-                                source
-                                    .name
-                                    .clone()
-                                    .or_else(|| source.agent_id.map(|id| id.0.to_string()))
-                            })
+                        let from = message
+                            .source
+                            .as_ref()
+                            .map(|source| source.sender_name.clone())
                             .unwrap_or_default();
                         EventKind::AgentMessage {
                             from,
@@ -341,7 +338,7 @@ impl Converter<'_> {
                 t,
                 EventKind::Context {
                     kind: "command".into(),
-                    text: serde_json::to_string(command).unwrap_or_default(),
+                    text: describe_command(command),
                 },
             ),
             EventType::DecisionCall(call) => self.push(
@@ -425,6 +422,18 @@ fn stop_reason_name(reason: &StopReason) -> String {
     }
 }
 
+/// The command line, then the outcome when it did not succeed, then any output.
+fn describe_command(command: &psa_api::events::CommandRecord) -> String {
+    let mut text = command.command_line();
+    if command.outcome != psa_api::CommandOutcome::Succeeded {
+        text = format!("{text} ({:?})", command.outcome);
+    }
+    if let Some(output) = &command.output {
+        text = format!("{text}\n{output}");
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,7 +444,7 @@ mod tests {
     use psa_api::{
         AgentDefinitionId, AgentId,
         events::{
-            InferenceResultEnd, InferenceResultStart, Message, MessageSender, StatusChange,
+            AgentMessageLink, InferenceResultEnd, InferenceResultStart, Message, StatusChange,
             ToolCall, ToolResult,
         },
     };
@@ -487,10 +496,12 @@ mod tests {
     #[test]
     fn converts_conversation_inference_and_runs() {
         let mut subagent_message = Message::text(MessageType::Subagent, "do it");
-        subagent_message.source = Some(MessageSender {
-            agent_id: Some(AgentId(2)),
-            name: Some("main".into()),
+        subagent_message.source = Some(AgentMessageLink {
             request_id: "r".into(),
+            sender: AgentId(2),
+            sender_name: "main".into(),
+            recipient: AgentId(1),
+            recipient_name: "recipient".into(),
         });
         let events = [
             event(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::NewEvent;
 use llm_api::providers::Effort;
 
 #[tokio::test]

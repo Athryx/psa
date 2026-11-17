@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::{EventRange, NewEvent};
 use psa_api::AgentResult;
 
 fn completion(value: AgentResult) -> [NewEvent; 3] {
@@ -252,7 +253,7 @@ async fn recovery_of_a_structured_result_fork_acknowledges_only_its_producer_and
             "required": ["count"], "additionalProperties": false,
         });
         let definition = cursor
-            .create_agent_definition(psa_api::CreateAgentDefinition {
+            .create_agent_definition(crate::db::CreateAgentDefinition {
                 name: "typed checkpoint".into(),
                 bundles: vec![
                     psa_api::BundleConfig::TypedResult {

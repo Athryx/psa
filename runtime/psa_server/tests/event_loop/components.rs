@@ -1,5 +1,5 @@
 use super::*;
-use wire::{AgentConfig, BundleConfig, HookConfig, HookConfigs, NewConfiguredAgent};
+use wire::{AgentConfig, BundleConfig, CreateAgent, HookConfig, HookConfigs};
 
 fn hooks() -> HookConfigs {
     HookConfigs {
@@ -24,7 +24,7 @@ async fn create_session(harness: &Harness) -> wire::Session {
         .unwrap()
 }
 
-fn text(result: &wire::ToolResult) -> String {
+fn text(result: &[llm_api::api::ContentBlock]) -> String {
     result
         .iter()
         .filter_map(|block| match block {
@@ -76,7 +76,7 @@ async fn goal_continues_after_a_final_answer_and_stops_after_explicit_completion
         .client
         .create_agent(
             session.id,
-            &NewConfiguredAgent {
+            &CreateAgent {
                 model: None,
                 subagent_parent_id: None,
                 interactive: true,
@@ -96,7 +96,7 @@ async fn goal_continues_after_a_final_answer_and_stops_after_explicit_completion
 
     let page = harness
         .client
-        .events(session.id, Some(agent.id), &Default::default())
+        .list_events(session.id, Some(agent.id), &Default::default())
         .await
         .unwrap();
     let results: Vec<_> = page
@@ -130,7 +130,7 @@ async fn goal_continues_after_a_final_answer_and_stops_after_explicit_completion
     );
     let results = harness
         .client
-        .results(session.id, agent.id, 10)
+        .list_results(session.id, agent.id, 10)
         .await
         .unwrap();
     assert_eq!(results.len(), 1);
@@ -183,7 +183,7 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
         .client
         .create_agent(
             session.id,
-            &NewConfiguredAgent {
+            &CreateAgent {
                 model: None,
                 subagent_parent_id: None,
                 interactive: true,
@@ -214,14 +214,13 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
         .client
         .get_resolved_agent_config(child.definition_id)
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(child_snapshot.config.config_id, worker.config_id);
     assert_eq!(child.subagent_parent_id, Some(parent.id));
     assert_eq!(child.state, AgentState::Idle);
     let page = harness
         .client
-        .events(session.id, Some(parent.id), &Default::default())
+        .list_events(session.id, Some(parent.id), &Default::default())
         .await
         .unwrap();
     let results: Vec<_> = page
@@ -247,7 +246,7 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
         .unwrap();
     assert_steering_wait(wait);
     assert!(page.events.iter().any(|event| matches!(&event.event.kind,
-        EventType::Message(message) if message.message_type == MessageType::Subagent && message.source.as_ref().and_then(|source| source.agent_id) == Some(child.id) && text(&message.content).contains("hello"))));
+        EventType::Message(message) if message.message_type == MessageType::Subagent && message.source.as_ref().map(|source| source.sender) == Some(child.id) && text(&message.content).contains("hello"))));
     for _ in 0..3 {
         tokio::time::timeout(Duration::from_secs(5), harness.requests.recv())
             .await
@@ -260,7 +259,7 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
     );
     let child_page = harness
         .client
-        .events(session.id, Some(child.id), &Default::default())
+        .list_events(session.id, Some(child.id), &Default::default())
         .await
         .unwrap();
     assert!(
@@ -308,7 +307,7 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
     );
     let parent_page = harness
         .client
-        .events(session.id, Some(parent.id), &Default::default())
+        .list_events(session.id, Some(parent.id), &Default::default())
         .await
         .unwrap();
     let resumed_wait = parent_page
@@ -322,11 +321,11 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
     assert_steering_wait(resumed_wait);
     let child_page = harness
         .client
-        .events(session.id, Some(child.id), &Default::default())
+        .list_events(session.id, Some(child.id), &Default::default())
         .await
         .unwrap();
     assert!(child_page.events.iter().any(|event| matches!(&event.event.kind,
-        EventType::Message(message) if message.message_type == MessageType::Subagent && message.source.as_ref().and_then(|source| source.agent_id) == Some(parent.id) && text(&message.content).contains("Run a second task"))));
+        EventType::Message(message) if message.message_type == MessageType::Subagent && message.source.as_ref().map(|source| source.sender) == Some(parent.id) && text(&message.content).contains("Run a second task"))));
     for _ in 0..3 {
         tokio::time::timeout(Duration::from_secs(5), harness.requests.recv())
             .await
@@ -373,7 +372,7 @@ async fn subagent_creation_checks_permitted_definitions_without_creating_a_child
         .client
         .create_agent(
             session.id,
-            &NewConfiguredAgent {
+            &CreateAgent {
                 model: None,
                 subagent_parent_id: None,
                 interactive: true,
@@ -396,7 +395,7 @@ async fn subagent_creation_checks_permitted_definitions_without_creating_a_child
     );
     let page = harness
         .client
-        .events(session.id, Some(parent.id), &Default::default())
+        .list_events(session.id, Some(parent.id), &Default::default())
         .await
         .unwrap();
     assert!(page.events.iter().any(|event| matches!(&event.event.kind,
@@ -431,7 +430,7 @@ async fn subagent_tools_list_and_message_unrelated_roots_in_the_same_session() {
         .client
         .create_agent(
             session.id,
-            &NewConfiguredAgent {
+            &CreateAgent {
                 model: None,
                 subagent_parent_id: None,
                 config_id: definition.config_id,
@@ -446,7 +445,7 @@ async fn subagent_tools_list_and_message_unrelated_roots_in_the_same_session() {
         .client
         .create_agent(
             session.id,
-            &NewConfiguredAgent {
+            &CreateAgent {
                 model: None,
                 subagent_parent_id: None,
                 config_id: config_id("default"),
@@ -466,7 +465,7 @@ async fn subagent_tools_list_and_message_unrelated_roots_in_the_same_session() {
     harness.wait_stopped(session.id).await;
     let page = harness
         .client
-        .events(session.id, Some(parent.id), &Default::default())
+        .list_events(session.id, Some(parent.id), &Default::default())
         .await
         .unwrap();
     let list = page
@@ -481,12 +480,12 @@ async fn subagent_tools_list_and_message_unrelated_roots_in_the_same_session() {
     assert_eq!(text(&list.content).lines().count(), 2);
     let page = harness
         .client
-        .events(session.id, Some(peer.id), &Default::default())
+        .list_events(session.id, Some(peer.id), &Default::default())
         .await
         .unwrap();
     assert!(page.events.iter().any(|event| matches!(&event.event.kind,
         EventType::Message(message) if message.message_type == MessageType::Subagent
-            && message.source.as_ref().and_then(|source| source.agent_id) == Some(parent.id)
+            && message.source.as_ref().map(|source| source.sender) == Some(parent.id)
             && text(&message.content) == "hello peer")));
     harness.close().await;
 }

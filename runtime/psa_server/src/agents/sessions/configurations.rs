@@ -1,6 +1,5 @@
 //! Named configuration refresh, materialization, and creation-time snapshots.
 use super::*;
-use llm_api::providers::Model;
 use psa_api::{
     AgentConfig, AgentEffort, AgentModel, ConfigGroup, ConfigId, EffortSelection, ModelSelection,
 };
@@ -15,7 +14,9 @@ fn invalid(error: impl std::fmt::Display) -> RuntimeError {
 }
 
 impl Sessions {
-    pub(super) async fn discover_session_project(
+    /// `Some(None)` is a completed scan that found no `.agents` directory;
+    /// `None` defers discovery because the probe is offline.
+    pub(super) async fn discover_session_agents_dir(
         &self,
         probe_id: api::ProbeId,
         cwd: &Path,
@@ -30,52 +31,75 @@ impl Sessions {
         }
         let probe = probes.handle(probe_id).await.map_err(invalid)?;
         configuration
-            .discover_project(&probe, probe_id, cwd)
+            .discover_agents_dir(&probe, probe_id, cwd)
             .await
             .map(Some)
             .map_err(invalid)
     }
 
-    async fn refresh_configuration(&self, session: Option<SessionId>) -> Result<(), RuntimeError> {
+    /// The session's `.agents` directory, discovering it on first use.
+    async fn ensure_session_agents_dir(
+        &self,
+        id: SessionId,
+    ) -> Result<Option<ConfigGroup>, RuntimeError> {
+        let mut cursor = self.database.cursor().await?;
+        let session = cursor.get_session(id).await?;
+        let known = cursor.has_session_agents_dir_discovery(id).await?;
+        let agents_dir = cursor.get_session_agents_dir(id).await?;
+        cursor.rollback().await?;
+        if known {
+            return Ok(agents_dir);
+        }
+
+        let Some(discovered) = self
+            .discover_session_agents_dir(session.probe_id, &session.working_directory)
+            .await?
+        else {
+            return Ok(agents_dir);
+        };
+        let mut cursor = self.database.cursor().await?;
+        cursor
+            .set_session_agents_dir(id, discovered.clone())
+            .await?;
+        cursor.commit().await?;
+        Ok(discovered)
+    }
+
+    /// Rescan globals and each distinct `.agents` directory of the sessions.
+    /// Callers hold `configuration_gate`.
+    async fn refresh_configuration(&self, sessions: &[SessionId]) -> Result<(), RuntimeError> {
         let Some(configuration) = &self.configuration else {
             return Ok(());
         };
-        let project = if let Some(id) = session {
-            let mut cursor = self.database.cursor().await?;
-            let session = cursor.get_session(id).await?;
-            let known = cursor.has_session_project_discovery(id).await?;
-            let mut project = cursor.get_session_project(id).await?;
-            cursor.rollback().await?;
-            if !known {
-                if let Some(discovered) = self
-                    .discover_session_project(session.probe_id, &session.working_directory)
-                    .await?
-                {
-                    let mut cursor = self.database.cursor().await?;
-                    cursor.set_session_project(id, discovered.clone()).await?;
-                    cursor.commit().await?;
-                    project = discovered;
-                }
+        let mut agents_dirs = Vec::new();
+        for &id in sessions {
+            let Some(group) = self.ensure_session_agents_dir(id).await? else {
+                continue;
+            };
+            let ConfigGroup::AgentsDir { probe_id, .. } = &group else {
+                continue;
+            };
+            if agents_dirs.iter().any(|(_, known)| known == &group) {
+                continue;
             }
-            project
-        } else {
-            None
-        };
-        let probe = match &project {
-            Some(ConfigGroup::Project { probe_id, .. }) => Some(
-                self.probes
-                    .as_ref()
-                    .ok_or(RuntimeError::Unavailable)?
-                    .handle(*probe_id)
-                    .await
-                    .map_err(invalid)?,
-            ),
-            _ => None,
-        };
+            let probe = self
+                .probes
+                .as_ref()
+                .ok_or(RuntimeError::Unavailable)?
+                .handle(*probe_id)
+                .await
+                .map_err(invalid)?;
+            agents_dirs.push((probe, group));
+        }
         configuration
-            .refresh(&self.database, probe.as_ref().zip(project.as_ref()))
+            .refresh(&self.database, &agents_dirs)
             .await
             .map_err(invalid)
+    }
+
+    pub async fn refresh_configs(&self, sessions: &[SessionId]) -> Result<(), RuntimeError> {
+        let _guard = self.configuration_gate.lock().await;
+        self.refresh_configuration(sessions).await
     }
 
     pub async fn upsert_agent_configs<I: Into<api::AgentConfigInput>>(
@@ -90,7 +114,7 @@ impl Sessions {
             .unwrap_or_default();
         let configs = configs
             .into_iter()
-            .map(|config| config.into().resolve(&defaults))
+            .map(|config| defaults.resolve(config.into()))
             .collect();
         let mut cursor = self.database.cursor().await?;
         let configs = cursor.upsert_agent_configs(configs).await?;
@@ -98,12 +122,7 @@ impl Sessions {
         Ok(configs)
     }
 
-    pub async fn refresh_and_list_agent_configs(
-        &self,
-        refresh_session_id: Option<SessionId>,
-    ) -> Result<Vec<api::AgentConfigStatus>, RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
-        self.refresh_configuration(refresh_session_id).await?;
+    pub async fn list_agent_configs(&self) -> Result<Vec<api::AgentConfigStatus>, RuntimeError> {
         let mut cursor = self.database.cursor().await?;
         let configs = cursor.list_agent_configs().await?;
         cursor.rollback().await?;
@@ -170,12 +189,7 @@ impl Sessions {
         result
     }
 
-    pub async fn refresh_and_list_skills(
-        &self,
-        refresh_session_id: Option<SessionId>,
-    ) -> Result<Vec<api::Skill>, RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
-        self.refresh_configuration(refresh_session_id).await?;
+    pub async fn list_skills(&self) -> Result<Vec<api::Skill>, RuntimeError> {
         let mut cursor = self.database.cursor().await?;
         let skills = cursor.list_skills().await?;
         cursor.rollback().await?;
@@ -236,10 +250,10 @@ impl Sessions {
     pub async fn create_configured_agent(
         &self,
         id: SessionId,
-        request: api::NewConfiguredAgent,
+        request: api::CreateAgent,
     ) -> Result<Agent, RuntimeError> {
         let _guard = self.configuration_gate.lock().await;
-        self.refresh_configuration(Some(id)).await?;
+        self.refresh_configuration(&[id]).await?;
         let session = self.get_session(id).await?;
         let mut cursor = self.database.cursor().await?;
         let graph = cursor.get_agent_config_graph(&request.config_id).await?;
@@ -266,7 +280,7 @@ impl Sessions {
         cursor.commit().await?;
         self.commit_agent(
             id,
-            api::CreateAgent {
+            crate::agents::NewAgent {
                 definition_id: snapshot.definition.id,
                 name: request.name,
                 subagent_parent_id: request.subagent_parent_id,
@@ -281,7 +295,7 @@ impl Sessions {
     pub async fn create_agent_with_model(
         &self,
         id: SessionId,
-        mut request: api::CreateAgent,
+        mut request: crate::agents::NewAgent,
         model: Option<ModelSelection>,
     ) -> Result<Agent, RuntimeError> {
         let _guard = self.configuration_gate.lock().await;
@@ -289,7 +303,7 @@ impl Sessions {
             .get_resolved_agent_config(request.definition_id)
             .await?;
         if let Some(snapshot) = snapshot {
-            self.refresh_configuration(Some(id)).await?;
+            self.refresh_configuration(&[id]).await?;
             let session = self.get_session(id).await?;
             let model = self
                 .creation_model(
@@ -323,7 +337,7 @@ impl Sessions {
     pub(crate) async fn create_agent(
         &self,
         id: SessionId,
-        request: api::CreateAgent,
+        request: crate::agents::NewAgent,
     ) -> Result<Agent, RuntimeError> {
         self.create_agent_with_model(id, request, None).await
     }
@@ -356,13 +370,15 @@ fn select_model(
         ModelSelection::Global => Ok(AgentModel::Global),
         ModelSelection::Parent => Ok(parent.clone()),
         ModelSelection::Fixed { model, effort } => {
-            let model = Model::parse_slug(model).map_err(invalid)?;
             let effort = match effort {
                 EffortSelection::Fixed(effort) => AgentEffort::Fixed(*effort),
                 EffortSelection::Parent => parent.effort(),
                 EffortSelection::Global => AgentEffort::Global,
             };
-            Ok(AgentModel::Fixed { model, effort })
+            Ok(AgentModel::Fixed {
+                model: model.clone(),
+                effort,
+            })
         }
     }
 }

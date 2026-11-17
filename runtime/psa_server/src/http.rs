@@ -1,5 +1,6 @@
 //! Trusted-client HTTP/SSE API. Transcript mutations share the publication gate.
 
+use crate::db::{DatabaseCursor, EventRange};
 use crate::{
     agents::{
         client_queries::ClientQueryError, publication::Publication, session_manager::RuntimeError,
@@ -208,18 +209,19 @@ pub fn router(state: AppState) -> Router {
         .route(routes::CONFIG, get(get_config))
         .route(
             routes::AGENT_CONFIGS,
-            post(upsert_agent_configs).get(refresh_and_list_agent_configs),
+            post(upsert_agent_configs).get(list_agent_configs),
         )
         .route(routes::AGENT_CONFIG_LOOKUP, post(get_agent_config))
         .route(routes::AGENT_SNAPSHOT, get(get_resolved_agent_config))
         .route(
             routes::SKILLS,
-            post(upload_skill).get(refresh_and_list_skills).layer(
+            post(upload_skill).get(list_skills).layer(
                 // A 64 MiB archive encoded as a JSON byte array uses up to
                 // four bytes per element, plus configuration metadata.
                 axum::extract::DefaultBodyLimit::max(256 * 1024 * 1024 + 64 * 1024),
             ),
         )
+        .route(routes::CONFIGS_REFRESH, post(refresh_configs))
         .route(routes::SESSIONS, post(create_session))
         .route(routes::SESSIONS_QUERY, post(list_sessions))
         .route(routes::PROJECTS, get(list_projects))
@@ -228,10 +230,11 @@ pub fn router(state: AppState) -> Router {
         .route(routes::FORK, post(fork_session))
         .route(routes::AGENTS, post(create_agent).get(list_agents))
         .route(routes::AGENT, get(get_agent))
-        .route(routes::AGENT_STATUS, get(get_agent_status))
+        .route(routes::AGENT_CONTEXT_STATE, get(get_agent_context_state))
         .route(routes::AGENT_USAGE, get(get_agent_model_usage))
         .route(routes::AGENT_RESULTS, get(get_agent_results))
         .route(routes::REQUESTS, post(submit_request))
+        .route(routes::COMMANDS, post(run_command))
         .route(routes::CLIENT_QUERY_RESPONSE, post(respond_to_client_query))
         .route(routes::SESSION_EVENTS, get(session_events))
         .route(routes::AGENT_EVENTS, get(agent_events))
@@ -353,16 +356,19 @@ async fn upsert_agent_configs(
     Ok(Json(state.runtime.upsert_agent_configs(configs).await?))
 }
 
-async fn refresh_and_list_agent_configs(
+async fn list_agent_configs(
     State(state): State<AppState>,
-    ApiQuery(query): ApiQuery<api::RefreshAndListAgentConfigs>,
 ) -> Result<Json<Vec<api::AgentConfigStatus>>, HttpError> {
-    Ok(Json(
-        state
-            .runtime
-            .refresh_and_list_agent_configs(query.refresh_session_id)
-            .await?,
-    ))
+    Ok(Json(state.runtime.list_agent_configs().await?))
+}
+
+async fn refresh_configs(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<api::RefreshConfigs>,
+) -> Result<StatusCode, HttpError> {
+    state.require_accepting()?;
+    state.runtime.refresh_configs(&request.session_ids).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn get_agent_config(
@@ -375,13 +381,16 @@ async fn get_agent_config(
 async fn get_resolved_agent_config(
     State(state): State<AppState>,
     ApiPath(id): ApiPath<u64>,
-) -> Result<Json<Option<api::ResolvedAgentConfig>>, HttpError> {
-    Ok(Json(
-        state
-            .runtime
-            .get_resolved_agent_config(api::AgentDefinitionId(id))
-            .await?,
-    ))
+) -> Result<Json<api::ResolvedAgentConfig>, HttpError> {
+    let config = state
+        .runtime
+        .get_resolved_agent_config(api::AgentDefinitionId(id))
+        .await?
+        .ok_or(DbError::NotFound {
+            entity: "agent definition",
+            id,
+        })?;
+    Ok(Json(config))
 }
 
 async fn upload_skill(
@@ -393,16 +402,8 @@ async fn upload_skill(
     Ok((StatusCode::CREATED, Json(skill)))
 }
 
-async fn refresh_and_list_skills(
-    State(state): State<AppState>,
-    ApiQuery(query): ApiQuery<api::RefreshAndListSkills>,
-) -> Result<Json<Vec<api::Skill>>, HttpError> {
-    Ok(Json(
-        state
-            .runtime
-            .refresh_and_list_skills(query.refresh_session_id)
-            .await?,
-    ))
+async fn list_skills(State(state): State<AppState>) -> Result<Json<Vec<api::Skill>>, HttpError> {
+    Ok(Json(state.runtime.list_skills().await?))
 }
 
 async fn create_session(
@@ -586,7 +587,7 @@ async fn fork_session(
 async fn create_agent(
     State(state): State<AppState>,
     ApiPath(session): ApiPath<u64>,
-    ApiJson(request): ApiJson<api::NewConfiguredAgent>,
+    ApiJson(request): ApiJson<api::CreateAgent>,
 ) -> Result<impl IntoResponse, HttpError> {
     state.require_accepting()?;
 
@@ -616,13 +617,13 @@ async fn get_agent(
     Ok(Json(agent.into()))
 }
 
-async fn get_agent_status(
+async fn get_agent_context_state(
     State(state): State<AppState>,
     ApiPath((session, agent)): ApiPath<(u64, u64)>,
-) -> Result<Json<api::AgentStatusSnapshot>, HttpError> {
+) -> Result<Json<api::AgentContextState>, HttpError> {
     let mut cursor = state.database.cursor().await?;
     let status = cursor
-        .load_agent_status(SessionId(session), AgentId(agent))
+        .load_agent_context_state(SessionId(session), AgentId(agent))
         .await?;
     Ok(Json(status))
 }
@@ -663,6 +664,21 @@ async fn submit_request(
         .await?;
 
     Ok((StatusCode::ACCEPTED, Json(accepted)))
+}
+
+async fn run_command(
+    State(state): State<AppState>,
+    ApiPath((session, agent)): ApiPath<(u64, u64)>,
+    ApiJson(request): ApiJson<api::RunCommand>,
+) -> Result<Json<api::CommandResult>, HttpError> {
+    state.require_accepting()?;
+
+    let result = state
+        .runtime
+        .run_command(SessionId(session), AgentId(agent), request)
+        .await?;
+
+    Ok(Json(result))
 }
 
 async fn respond_to_client_query(
@@ -713,156 +729,176 @@ async fn load_page(
     agent: Option<AgentId>,
     query: &api::EventsQuery,
 ) -> Result<api::EventsPage, HttpError> {
-    if query.limit == 0
-        || query.limit > 10_000
-        || query.through.is_some_and(|through| through < query.after)
-        || ((query.recent || query.before.is_some())
-            && (query.after != 0 || query.through.is_some()))
-        || (query.recent && query.before.is_some())
-        || (query.from_context_start
-            && (agent.is_none()
-                || query.through.is_none()
-                || query.after != 0
-                || query.recent
-                || query.before.is_some()
-                || query.results_only))
+    if query.limit == 0 || query.limit > 10_000 {
+        return Err(HttpError::Invalid(
+            "page limit must be 1 through 10000".into(),
+        ));
+    }
+    if matches!(query.span, api::EventSpan::ContextOf { .. })
+        && (agent.is_none() || query.results_only)
     {
         return Err(HttpError::Invalid(
-            "invalid event range or page limit".into(),
+            "context pages require an agent route and all events".into(),
         ));
     }
 
     let mut cursor = state.database.cursor().await?;
-    let backward = query.recent || query.before.is_some();
-    if backward {
-        let head = match agent {
-            Some(agent) => {
-                cursor
-                    .require_agent_session(session, agent)
-                    .await?
-                    .next_event_id
-                    .0
-                    - 1
-            }
-            None => cursor.get_session(session).await?.next_position - 1,
-        };
-        let through = query
-            .before
-            .map_or(head, |before| before.saturating_sub(1).min(head));
-        let events = match agent {
-            Some(agent) => {
-                cursor
-                    .load_recent_agent_events(
-                        session,
-                        agent,
-                        through,
-                        query.limit,
-                        query.results_only,
-                    )
-                    .await?
-            }
-            None => {
-                cursor
-                    .load_recent_session_events(session, through, query.limit, query.results_only)
-                    .await?
-            }
-        };
-        let older_through = events
-            .first()
-            .map(|event| event_cursor(event, agent).saturating_sub(1));
-        let has_older = if let Some(older_through) = older_through {
-            let older = match agent {
+    let page = match query.span {
+        api::EventSpan::Latest => {
+            load_backward_page(&mut cursor, session, agent, None, query).await?
+        }
+        api::EventSpan::Before(before) => {
+            load_backward_page(&mut cursor, session, agent, Some(before), query).await?
+        }
+        api::EventSpan::Forward { after, through } => {
+            load_forward_page(&mut cursor, session, agent, after, through, query).await?
+        }
+        api::EventSpan::ContextOf { through } => {
+            // Start just before the marker that opened the context, so the
+            // page leads with that marker.
+            let marker = match agent {
                 Some(agent) => {
                     cursor
-                        .load_recent_agent_events(
-                            session,
-                            agent,
-                            older_through,
-                            1,
-                            query.results_only,
-                        )
+                        .find_context_start(session, agent, EventId(through))
                         .await?
                 }
-                None => {
-                    cursor
-                        .load_recent_session_events(session, older_through, 1, query.results_only)
-                        .await?
-                }
+                None => None,
             };
-            !older.is_empty()
-        } else {
-            false
-        };
-        cursor.rollback().await?;
-        let next_before = if has_older {
-            events.first().map(|event| event_cursor(event, agent))
-        } else {
-            None
-        };
-        return Ok(api::EventsPage {
-            events,
-            pending: Vec::new(),
-            queries: Vec::new(),
-            next_after: head,
-            next_before,
-            has_older,
-            head,
-            has_more: false,
-        });
-    }
-    // A context query resolves its own lower bound: just before the marker
-    // that opened the context, so the page leads with that marker.
-    let after = match (agent, query.through) {
-        (Some(agent), Some(through)) if query.from_context_start => cursor
-            .find_context_start(session, agent, EventId(through))
-            .await?
-            .map_or(0, |marker| marker.0 - 1),
-        _ => query.after,
+            let after = marker.map_or(0, |marker| marker.0 - 1);
+            load_forward_page(&mut cursor, session, agent, after, Some(through), query).await?
+        }
     };
-    let (head, events) = match agent {
+    cursor.rollback().await?;
+    Ok(page)
+}
+
+async fn load_head(
+    cursor: &mut DatabaseCursor,
+    session: SessionId,
+    agent: Option<AgentId>,
+) -> Result<u64, HttpError> {
+    let next = match agent {
         Some(agent) => {
-            let head = cursor
+            cursor
                 .require_agent_session(session, agent)
                 .await?
                 .next_event_id
                 .0
-                - 1;
+        }
+        None => cursor.get_session(session).await?.next_position,
+    };
+    Ok(next - 1)
+}
+
+async fn load_recent_events(
+    cursor: &mut DatabaseCursor,
+    session: SessionId,
+    agent: Option<AgentId>,
+    through: u64,
+    limit: u32,
+    results_only: bool,
+) -> Result<Vec<api::EventEnvelope>, HttpError> {
+    Ok(match agent {
+        Some(agent) => {
+            cursor
+                .load_recent_agent_events(session, agent, through, limit, results_only)
+                .await?
+        }
+        None => {
+            cursor
+                .load_recent_session_events(session, through, limit, results_only)
+                .await?
+        }
+    })
+}
+
+/// The newest page ending before `before`, or at the head.
+async fn load_backward_page(
+    cursor: &mut DatabaseCursor,
+    session: SessionId,
+    agent: Option<AgentId>,
+    before: Option<u64>,
+    query: &api::EventsQuery,
+) -> Result<api::EventsPage, HttpError> {
+    let head = load_head(cursor, session, agent).await?;
+    let through = before.map_or(head, |before| before.saturating_sub(1).min(head));
+    let events = load_recent_events(
+        cursor,
+        session,
+        agent,
+        through,
+        query.limit,
+        query.results_only,
+    )
+    .await?;
+
+    let has_older = match events.first() {
+        Some(first) => {
+            let older_through = event_cursor(first, agent).saturating_sub(1);
+            !load_recent_events(cursor, session, agent, older_through, 1, query.results_only)
+                .await?
+                .is_empty()
+        }
+        None => false,
+    };
+    let next_before = events
+        .first()
+        .filter(|_| has_older)
+        .map(|event| event_cursor(event, agent));
+    Ok(api::EventsPage {
+        events,
+        pending: Vec::new(),
+        queries: Vec::new(),
+        next_after: head,
+        next_before,
+        has_older,
+        head,
+        has_more: false,
+    })
+}
+
+/// Events after `after`, up to `through` or the head.
+async fn load_forward_page(
+    cursor: &mut DatabaseCursor,
+    session: SessionId,
+    agent: Option<AgentId>,
+    after: u64,
+    through: Option<u64>,
+    query: &api::EventsQuery,
+) -> Result<api::EventsPage, HttpError> {
+    let head = load_head(cursor, session, agent).await?;
+    let events = match agent {
+        Some(agent) => {
             let range = EventRange {
                 after: EventId(after),
-                through: query.through.map(EventId),
+                through: through.map(EventId),
                 limit: query.limit,
             };
-            let events = if query.results_only {
+            if query.results_only {
                 cursor
                     .load_agent_result_envelopes(session, agent, range)
                     .await?
             } else {
                 cursor.load_agent_envelopes(session, agent, range).await?
-            };
-            (head, events)
+            }
+        }
+        None if query.results_only => {
+            cursor
+                .load_session_result_events(session, after, through, query.limit)
+                .await?
         }
         None => {
-            let head = cursor.get_session(session).await?.next_position - 1;
-            let events = if query.results_only {
-                cursor
-                    .load_session_result_events(session, after, query.through, query.limit)
-                    .await?
-            } else {
-                cursor
-                    .load_session_events(session, after, query.through, query.limit)
-                    .await?
-            };
-            (head, events)
+            cursor
+                .load_session_events(session, after, through, query.limit)
+                .await?
         }
     };
-    cursor.rollback().await?;
 
-    let head = query.through.unwrap_or(head).min(head);
+    let head = through.unwrap_or(head).min(head);
     let last_cursor = events
         .last()
         .map_or(after, |event| event_cursor(event, agent));
     let has_more = events.len() == query.limit as usize && last_cursor < head;
-
     Ok(api::EventsPage {
         events,
         pending: Vec::new(),
@@ -901,14 +937,17 @@ async fn events_response(
                 .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
         });
 
-    if stream_events && (query.recent || query.before.is_some() || query.from_context_start) {
+    if stream_events && !matches!(query.span, api::EventSpan::Forward { .. }) {
         return Err(HttpError::Invalid(
             "SSE requires forward event pagination".into(),
         ));
     }
 
-    if stream_events && let Some(id) = headers.get("last-event-id") {
-        query.after = decode_cursor(
+    if stream_events
+        && let Some(id) = headers.get("last-event-id")
+        && let api::EventSpan::Forward { after, .. } = &mut query.span
+    {
+        *after = decode_cursor(
             id.to_str()
                 .map_err(|_| HttpError::Invalid("invalid Last-Event-ID".into()))?,
             session,
@@ -930,7 +969,7 @@ async fn events_response(
     drop(publication);
 
     if !stream_events {
-        if query.before.is_none() {
+        if !matches!(query.span, api::EventSpan::Before(_)) {
             page.pending = pending;
             page.queries = queries;
         }
@@ -939,7 +978,13 @@ async fn events_response(
 
     let mut shutdown = state.publication.shutdown_receiver();
     let head = page.head;
-    let finite = query.through.is_some();
+    let finite = matches!(
+        query.span,
+        api::EventSpan::Forward {
+            through: Some(_),
+            ..
+        }
+    );
     let stream = async_stream::stream! {
         loop {
             for event in page.events {
@@ -956,8 +1001,10 @@ async fn events_response(
                 break;
             }
 
-            query.after = page.next_after;
-            query.through = Some(head);
+            query.span = api::EventSpan::Forward {
+                after: page.next_after,
+                through: Some(head),
+            };
             match load_page(&state, session, agent, &query).await {
                 Ok(next) => page = next,
                 Err(_) => {
@@ -1215,6 +1262,7 @@ mod tests {
             ("GET", routes::AGENT_SNAPSHOT),
             ("GET", routes::SKILLS),
             ("POST", routes::SKILLS),
+            ("POST", routes::CONFIGS_REFRESH),
             ("POST", routes::SESSIONS),
             ("POST", routes::SESSIONS_QUERY),
             ("GET", routes::PROJECTS),
@@ -1225,9 +1273,10 @@ mod tests {
             ("GET", routes::AGENTS),
             ("POST", routes::AGENTS),
             ("GET", routes::AGENT),
-            ("GET", routes::AGENT_STATUS),
+            ("GET", routes::AGENT_CONTEXT_STATE),
             ("GET", routes::AGENT_USAGE),
             ("POST", routes::REQUESTS),
+            ("POST", routes::COMMANDS),
             ("POST", routes::CLIENT_QUERY_RESPONSE),
             ("GET", routes::SESSION_EVENTS),
             ("GET", routes::AGENT_EVENTS),
@@ -1291,7 +1340,7 @@ mod tests {
             .unwrap();
         let publication = Publication::default();
         let probes = crate::probes::ProbeRegistry::start("test".into());
-        let defaults = api::AgentDefaults {
+        let defaults = crate::config::AgentDefaults {
             bundles: vec![
                 api::BundleConfig::FileTools { read_only: false },
                 api::BundleConfig::Noop,
@@ -1357,7 +1406,8 @@ mod tests {
         assert_eq!(upserted.len(), 1);
         assert_eq!(upserted[0].config.config_id, id);
 
-        let listed = client.refresh_and_list_agent_configs(None).await.unwrap();
+        client.refresh_configs(&[]).await.unwrap();
+        let listed = client.list_agent_configs().await.unwrap();
         assert!(listed.iter().any(|config| config.config.config_id == id));
         let found = client.get_agent_config(&id).await.unwrap();
         assert_eq!(found.config.config_id, id);
@@ -1366,25 +1416,16 @@ mod tests {
         let upserted = client.upsert_agent_configs(&[updated]).await.unwrap();
         assert_eq!(upserted[0].config.description, "updated");
         assert_eq!(
-            client
-                .refresh_and_list_agent_configs(None)
-                .await
-                .unwrap()
-                .len(),
+            client.list_agent_configs().await.unwrap().len(),
             listed.len()
         );
-        let snapshot = client
-            .get_resolved_agent_config(api::AgentDefinitionId(999_999))
-            .await
-            .unwrap();
-        assert!(snapshot.is_none());
-        assert!(
+        assert!(matches!(
             client
-                .refresh_and_list_skills(None)
-                .await
-                .unwrap()
-                .is_empty()
-        );
+                .get_resolved_agent_config(api::AgentDefinitionId(999_999))
+                .await,
+            Err(psa_api::ClientError::Api { status: 404, .. })
+        ));
+        assert!(client.list_skills().await.unwrap().is_empty());
 
         // The typed input preserves omissions over the client wire, while a
         // normalized AgentConfig (as above) remains fully explicit.
@@ -1613,7 +1654,10 @@ mod tests {
                 session.id,
                 None,
                 api::EventsQuery {
-                    through: Some(0),
+                    span: api::EventSpan::Forward {
+                        after: 0,
+                        through: Some(0),
+                    },
                     ..Default::default()
                 },
                 accepted,

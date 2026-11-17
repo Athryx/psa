@@ -12,13 +12,44 @@ pub const CHUNK_SIZE: usize = 64 * 1024;
 /// Maximum number of concurrent operations on one probe connection.
 pub const MAX_OPERATIONS: usize = 128;
 
+/// A server URL a probe cannot connect to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("server URL must be an HTTP(S) or WS(S) URL without credentials, query, or fragment")]
+pub struct InvalidServerUrl;
+
+/// Build the probe WebSocket connection URL for a server URL, preserving any path prefix.
+///
+/// Accepts HTTP(S) or WS(S), converts to WS(S), and appends the probe connect path.
+/// Rejects malformed URLs, unsupported schemes, credentials, missing hosts,
+/// queries, and fragments with [`InvalidServerUrl`].
+pub fn parse_connect_url(value: &str) -> Result<String, InvalidServerUrl> {
+    let mut url = reqwest::Url::parse(value).map_err(|_| InvalidServerUrl)?;
+    if url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.host_str().is_none()
+    {
+        return Err(InvalidServerUrl);
+    }
+    let scheme = match url.scheme() {
+        "http" | "ws" => "ws",
+        "https" | "wss" => "wss",
+        _ => return Err(InvalidServerUrl),
+    };
+    url.set_scheme(scheme).map_err(|_| InvalidServerUrl)?;
+    // Accept an already-resolved connect URL too, as written for sandbox probes.
+    let base = url.path().trim_end_matches('/');
+    if !base.ends_with(crate::routes::PROBES_CONNECT) {
+        url.set_path(&format!("{base}{}", crate::routes::PROBES_CONNECT));
+    }
+    Ok(url.into())
+}
+
 /// Persistent identity of a probe, retained across reconnections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct ProbeId(
-    /// UUID identifying the probe.
-    pub Uuid,
-);
+pub struct ProbeId(pub Uuid);
 
 impl std::fmt::Display for ProbeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -132,7 +163,7 @@ mod metadata_tests {
     }
 
     #[test]
-    fn optional_home_dir_supports_legacy_and_round_trip_json() {
+    fn optional_home_dir_round_trips() {
         let mut value = serde_json::to_value(metadata()).unwrap();
         assert!(value.get("home_dir").is_none());
         assert!(
@@ -506,4 +537,27 @@ pub enum Control {
         /// Identifier of the operation to cancel.
         id: u64,
     },
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::*;
+
+    #[test]
+    fn probe_server_urls_append_the_connect_route_once() {
+        for input in [
+            "http://127.0.0.1:8080",
+            "http://127.0.0.1:8080/",
+            "ws://127.0.0.1:8080/probes/connect",
+        ] {
+            assert_eq!(
+                parse_connect_url(input).unwrap(),
+                "ws://127.0.0.1:8080/probes/connect"
+            );
+        }
+        assert_eq!(
+            parse_connect_url("https://psa.example/prefix").unwrap(),
+            "wss://psa.example/prefix/probes/connect"
+        );
+    }
 }
