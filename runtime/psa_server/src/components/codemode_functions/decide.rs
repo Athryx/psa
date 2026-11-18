@@ -38,8 +38,8 @@ pub struct Decide {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct DecideArgs {
-    /// Decision model from list_decision_models(). May be omitted when exactly
-    /// one model is available or the session's decision model is allowed.
+    /// Decision model from list_decision_models(). May be omitted when the
+    /// agent has a default decision model.
     #[serde(default)]
     pub(super) model: Option<String>,
     /// What to evaluate: a string, a JSON object, or a list of parts
@@ -60,7 +60,9 @@ impl Decide {
         context: &mut AgentContext<'_>,
         mut cancellation: Cancellation,
     ) -> CodeModeFunctionResult {
-        let model = self.select_model(arguments.model.as_deref(), context)?;
+        let model = self
+            .select_model(arguments.model.as_deref(), context)
+            .await?;
         self.access
             .handle
             .describe(&model)
@@ -106,17 +108,20 @@ impl Decide {
     }
 
     /// An explicit name must be legal; otherwise the policy's default is used.
-    fn select_model(
+    async fn select_model(
         &self,
         requested: Option<&str>,
         context: &AgentContext<'_>,
     ) -> Result<Model, CodeModeError> {
-        let policy = &self.access.policy;
-        let legal = policy.legal_models(context.session());
+        let legal = self
+            .access
+            .legal_models(context.session())
+            .await
+            .map_err(CodeModeError::runtime)?;
         let listing = || legal.iter().map(Model::slug).collect::<Vec<_>>().join(", ");
 
         let Some(requested) = requested else {
-            if let Some(model) = policy.default_model(context.session()) {
+            if let Some(model) = self.access.policy.default_model(&legal) {
                 return Ok(model);
             }
             if legal.is_empty() {

@@ -180,7 +180,7 @@ async fn summary_connection(mut ui: Signal<Ui>, generation: u64) -> Result<(), C
     if ui.peek().generation != generation {
         return Ok(());
     }
-    if let Ok(models) = api.list_models(&chat_models_query()).await {
+    if let Ok(models) = api.list_models(&ListModels::default()).await {
         if ui.read().generation != generation {
             return Ok(());
         }
@@ -583,11 +583,20 @@ fn apply_probe_refresh(
     }
 }
 
+/// Split the catalog by kind: agents can only run chat models, while decision
+/// models are called from CodeMode and listed separately in settings.
 fn apply_models(mut ui: Signal<Ui>, models: Vec<ModelInfo>) {
+    let (decision, chat): (Vec<_>, Vec<_>) = models
+        .into_iter()
+        .partition(|model| model.kind == ModelKind::Decision);
+
     // Catalog refreshes are infrequent; wire equality includes pricing and all
     // optional metadata without teaching the GUI a second model schema.
-    if serde_json::to_vec(&*ui.peek().models).ok() != serde_json::to_vec(&models).ok() {
-        ui.write().models = models.into();
+    if serde_json::to_vec(&*ui.peek().models).ok() != serde_json::to_vec(&chat).ok() {
+        ui.write().models = chat.into();
+    }
+    if serde_json::to_vec(&*ui.peek().decision_models).ok() != serde_json::to_vec(&decision).ok() {
+        ui.write().decision_models = decision.into();
     }
 }
 
@@ -600,12 +609,19 @@ pub async fn refresh_metadata(mut ui: Signal<Ui>) {
     if ui.read().generation != generation {
         return;
     }
-    match api.list_models(&chat_models_query()).await {
+    match api.list_models(&ListModels::default()).await {
         Ok(models) if ui.read().generation == generation => apply_models(ui, models),
         Err(_) if ui.read().generation == generation => {
             ui.write().error = Some("Unable to refresh model catalog".into())
         }
         _ => {}
+    }
+}
+
+fn models_of_kind(state: &Ui, kind: ModelKind) -> &[ModelInfo] {
+    match kind {
+        ModelKind::Chat => &state.models,
+        ModelKind::Decision => &state.decision_models,
     }
 }
 
@@ -625,20 +641,17 @@ pub async fn pin_model(mut ui: Signal<Ui>, model: ModelInfo) {
     }
     match result {
         Ok(_) => {
-            let changed = ui
-                .peek()
-                .models
+            // Leave the list alone when a refresh already applied a newer state.
+            let current = models_of_kind(&ui.peek(), model.kind)
                 .iter()
-                .any(|found| found.model == model.model && found.pinned == model.pinned);
-            if changed {
-                if let Some(found) = ui
-                    .write()
-                    .models
-                    .iter_mut()
-                    .find(|found| found.model == model.model)
-                {
-                    found.pinned = !model.pinned;
-                }
+                .position(|found| found.model == model.model && found.pinned == model.pinned);
+            if let Some(index) = current {
+                let mut state = ui.write();
+                let models = match model.kind {
+                    ModelKind::Chat => &mut state.models,
+                    ModelKind::Decision => &mut state.decision_models,
+                };
+                models[index].pinned = !model.pinned;
             }
         }
         Err(_) => ui.write().error = Some("Unable to update server model pin".into()),
@@ -2291,7 +2304,7 @@ mod draft_root_tests {
         let requests = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
         let recorded = requests.clone();
         let server = std::thread::spawn(move || {
-            for _ in 0..6 {
+            for _ in 0..7 {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -2329,7 +2342,9 @@ mod draft_root_tests {
                         "200 OK",
                         serde_json::json!({"default_agent_name":"default"}),
                     )
-                } else if line.starts_with("GET /agent-configs?") {
+                } else if line.starts_with("POST /configs/refresh ") {
+                    ("204 No Content", serde_json::Value::Null)
+                } else if line.starts_with("GET /agent-configs") {
                     (
                         "200 OK",
                         serde_json::json!([
@@ -2347,7 +2362,11 @@ mod draft_root_tests {
                 } else {
                     panic!("unexpected request: {line}")
                 };
-                let body = response.to_string();
+                let body = if response.is_null() {
+                    String::new()
+                } else {
+                    response.to_string()
+                };
                 write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
         });
@@ -2358,14 +2377,11 @@ mod draft_root_tests {
         let mut ui = dom.in_scope(ScopeId::ROOT, || Signal::new(Ui::new(settings)));
         let mut run = Box::pin(async move {
             open_session(ui, SessionId(1), true).await;
-            assert_eq!(requests.lock().unwrap().len(), 3);
-            assert!(
-                requests
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .all(|(line, _)| line.starts_with("GET "))
-            );
+            assert_eq!(requests.lock().unwrap().len(), 4);
+            // Opening only reads, apart from rescanning the session's configs.
+            assert!(requests.lock().unwrap().iter().all(|(line, _)| {
+                line.starts_with("GET ") || line.starts_with("POST /configs/refresh ")
+            }));
             let target = TranscriptTarget {
                 session_id: SessionId(1),
                 agent_id: crate::app::DRAFT_ROOT,
@@ -2374,7 +2390,7 @@ mod draft_root_tests {
             submit_draft_root(ui, SessionId(1)).await;
             assert_eq!(
                 requests.lock().unwrap().len(),
-                3,
+                4,
                 "slash command must not create an agent"
             );
             {
@@ -2403,10 +2419,10 @@ mod draft_root_tests {
             assert!(ui.read().uncertain_submissions.contains(&real));
             submit(ui, real, false).await;
             let requests = requests.lock().unwrap();
-            assert_eq!(requests.len(), 6);
-            let create: serde_json::Value = serde_json::from_str(&requests[4].1).unwrap();
+            assert_eq!(requests.len(), 7);
+            let create: serde_json::Value = serde_json::from_str(&requests[5].1).unwrap();
             assert_eq!(create["config_id"]["name"], "alternate");
-            assert!(requests[5].1.contains("first message"));
+            assert!(requests[6].1.contains("first message"));
         });
         std::future::poll_fn(|cx| dom.in_scope(ScopeId::ROOT, || run.as_mut().poll(cx))).await;
         server.join().unwrap();
@@ -2415,7 +2431,7 @@ mod draft_root_tests {
     #[test]
     fn required_model_policy_is_not_implicitly_selected() {
         let status: AgentConfigStatus = serde_json::from_value(serde_json::json!({
-            "config": {"config_id":{"config_group":"Global","name":"root"}, "selectable":true, "models":["Global",{"Fixed":{"model":"provider/model","effort":"Global"}}], "default":false},
+            "config": {"config_id":{"config_group":"Global","name":"root"}, "selectable":true, "models":["Global",{"Fixed":{"model":"openrouter/vendor/model","effort":"Global"}}], "default":false},
             "status": {"missing_components":[]}
         })).unwrap();
         let id = status.config.config_id.clone();
@@ -2423,7 +2439,7 @@ mod draft_root_tests {
         draft.configs.push(status);
         draft.select_config(id.clone());
         assert!(draft.model.is_none());
-        draft.configs[0].config.default = true;
+        draft.configs[0].config.first_model_default = true;
         draft.select_config(id);
         assert_eq!(draft.model, Some(ModelSelection::Global));
     }
@@ -2431,7 +2447,7 @@ mod draft_root_tests {
     #[test]
     fn refresh_preserves_valid_root_selection_and_policy() {
         let status: AgentConfigStatus = serde_json::from_value(serde_json::json!({
-            "config": {"config_id":{"config_group":"Global","name":"root"}, "selectable":true, "models":["Global",{"Fixed":{"model":"provider/model","effort":"Global"}}], "default":false},
+            "config": {"config_id":{"config_group":"Global","name":"root"}, "selectable":true, "models":["Global",{"Fixed":{"model":"openrouter/vendor/model","effort":"Global"}}], "default":false},
             "status": {"missing_components":[]}
         })).unwrap();
         let id = status.config.config_id.clone();
@@ -2458,9 +2474,9 @@ mod draft_root_tests {
         let status: AgentConfigStatus = serde_json::from_value(serde_json::json!({
             "config": {"config_id":{"config_group":"Global","name":"root"}, "models":[
                 "Parent", "Global",
-                {"Fixed":{"model":"provider/model","effort":"Parent"}},
-                {"Fixed":{"model":"provider/model","effort":"Global"}},
-                {"Fixed":{"model":"provider/other","effort":"Global"}}
+                {"Fixed":{"model":"openrouter/vendor/model","effort":"Parent"}},
+                {"Fixed":{"model":"openrouter/vendor/model","effort":"Global"}},
+                {"Fixed":{"model":"openrouter/vendor/other","effort":"Global"}}
             ], "default":false},
             "status": {"missing_components":[]}
         }))
@@ -2501,13 +2517,5 @@ mod draft_root_tests {
             Some("first message")
         );
         assert!(!ui.drafts.contains_key(&from));
-    }
-}
-
-/// Agents can only run chat models; decision models are called from CodeMode.
-fn chat_models_query() -> ListModels {
-    ListModels {
-        kind: Some(psa::api::ModelKind::Chat),
-        ..ListModels::default()
     }
 }

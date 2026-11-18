@@ -24,6 +24,7 @@ fn upload(version: &str) -> NewSkill {
             name: "uploaded".into(),
         },
         tar_data: archive.into_inner().unwrap(),
+        compression: Default::default(),
     }
 }
 

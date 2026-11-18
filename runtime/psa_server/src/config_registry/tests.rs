@@ -184,12 +184,12 @@ fn file_tools_payloads_parse_read_only_and_noop_bundle_selection() {
 #[test]
 fn file_defaults_and_explicit_values() {
     let config: AgentDefinitionConfig = toml::from_str("name = 'example'").unwrap();
-    assert!(config.default);
+    assert!(config.first_model_default);
     assert_eq!(config.models, vec![ModelSelection::Global]);
     assert!(config.skills.global_defaults && config.skills.group_defaults);
     assert!(config.subagents.global_defaults && config.subagents.group_defaults);
     let config: AgentDefinitionConfig = toml::from_str("name = 'example'\ndefault = false\nmodels = []\n[skills]\nglobal_defaults = false\n[subagents]\ngroup_defaults = false").unwrap();
-    assert!(!config.default);
+    assert!(!config.first_model_default);
     assert!(config.models.is_empty());
     assert!(!config.skills.global_defaults && config.skills.group_defaults);
     assert!(config.subagents.global_defaults && !config.subagents.group_defaults);

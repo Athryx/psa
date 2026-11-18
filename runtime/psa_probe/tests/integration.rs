@@ -369,7 +369,7 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
                 ..Default::default()
             },
             models: vec![psa::api::ModelSelection::Global],
-            default: true,
+            first_model_default: true,
             subagents: Default::default(),
             skills: psa::api::IncludedItems {
                 groups: vec![],

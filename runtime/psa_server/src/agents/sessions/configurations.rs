@@ -356,7 +356,7 @@ fn select_model(
             .iter()
             .find(|selection| *selection == choice)
             .ok_or_else(|| invalid("model choice is not permitted by this agent definition"))?,
-        None if config.models.len() == 1 || config.default => config
+        None if config.models.len() == 1 || config.first_model_default => config
             .models
             .first()
             .ok_or_else(|| invalid("models must not be empty"))?,

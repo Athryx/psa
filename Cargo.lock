@@ -4494,6 +4494,7 @@ dependencies = [
 name = "psa"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "eventsource-stream",
  "futures-util",
  "llm_api",
@@ -4501,9 +4502,14 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
+ "sha2 0.10.9",
+ "tar",
  "thiserror 2.0.21",
  "time",
+ "tokio",
  "uuid",
+ "zstd",
 ]
 
 [[package]]

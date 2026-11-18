@@ -6,6 +6,8 @@ mod compaction_features;
 mod component_features;
 #[path = "support/fake_probe.rs"]
 mod fake_probe;
+#[path = "event_loop/library.rs"]
+mod library_features;
 #[path = "event_loop/model_choices.rs"]
 mod model_choices;
 #[path = "event_loop/results.rs"]
@@ -67,7 +69,7 @@ fn agent_config(name: &str) -> wire::AgentConfig {
         bundles: vec![],
         hooks: Default::default(),
         models: vec![wire::ModelSelection::Global],
-        default: true,
+        first_model_default: true,
         subagents: Default::default(),
         skills: Default::default(),
     }

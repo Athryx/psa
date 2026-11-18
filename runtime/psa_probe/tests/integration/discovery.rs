@@ -84,6 +84,7 @@ async fn host_global_skills_leave_sources_and_existing_cache_untouched() {
         description: "useful".into(),
         skill_location: SkillLocation::Global(source.clone()),
         disable_model_invocation: false,
+        archive_sha256: None,
     };
 
     let cache = harness.metadata.data_dir.join("skill-cache");
@@ -205,6 +206,7 @@ async fn remote_global_skills_sync_all_content_and_probe_skills_remain_in_place(
         description: "useful".into(),
         skill_location: SkillLocation::Global(source.clone()),
         disable_model_invocation: false,
+        archive_sha256: None,
     };
     assert!(!harness.metadata.host);
     let paths = service

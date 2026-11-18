@@ -140,7 +140,7 @@ struct ParsedSkill {
 }
 
 fn parse_skill(path: &Path, bytes: &[u8]) -> Result<ParsedSkill, String> {
-    let parsed = crate::config_registry::skills::parse_skill(path, bytes)?;
+    let parsed = psa::api::parse_skill_metadata(path, bytes)?;
     Ok(ParsedSkill {
         description: SkillDescription {
             name: parsed.name,

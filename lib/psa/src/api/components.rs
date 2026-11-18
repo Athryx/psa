@@ -11,6 +11,23 @@ use serde::{Deserialize, Serialize};
 /// Default number of result-correction retries for the TypedResult bundle.
 pub const DEFAULT_RESULT_RETRIES: u32 = 3;
 
+fn enabled() -> bool {
+    true
+}
+
+/// One entry of a `DecisionModels` bundle's allowed models, resolved each time
+/// the agent calls a decision model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub enum DecisionModelSelection {
+    /// This decision model, written as its slug, such as `openrouter/vendor/model`.
+    Fixed(llm_api::providers::Model),
+    /// The session's decision model, when the session has one.
+    Global,
+    /// Every pinned decision model in the catalog, in catalog order.
+    Pinned,
+}
+
 /// Construction configuration for a lifecycle hook.
 ///
 /// Hooks run in the order configured for their stage. Each installation carries
@@ -90,16 +107,16 @@ pub enum BundleConfig {
     /// Installs tools for listing psa sessions and exporting them as traces.
     Traces,
     /// Installs the CodeMode functions for calling decision models, restricted to
-    /// the models configured here and, optionally, the session's decision model.
+    /// the models selected here.
     DecisionModels {
-        /// Also allow the session's decision model, which follows session updates.
-        /// Defaults to false.
+        /// Allowed decision models in order, resolved at each call; repeated
+        /// models keep their first position. Defaults to empty.
         #[serde(default)]
-        include_global: bool,
-        /// Decision models allowed regardless of the session. Each must be a
-        /// decision model in the catalog. Defaults to empty.
-        #[serde(default)]
-        models: Vec<llm_api::providers::Model>,
+        models: Vec<DecisionModelSelection>,
+        /// Use the first allowed model when a call names none; otherwise calls
+        /// must name a model. Defaults to true.
+        #[serde(default = "enabled")]
+        first_model_default: bool,
     },
     /// Summarizes older context before inference once it nears the context window,
     /// and handles the manual `Compact` command, using a hidden summarizer agent.
@@ -333,8 +350,14 @@ mod tests {
             (BundleConfig::Traces, BundleId::Traces),
             (
                 BundleConfig::DecisionModels {
-                    include_global: true,
-                    models: vec![Model::parse_slug("openrouter/vendor/decider").unwrap()],
+                    models: vec![
+                        DecisionModelSelection::Global,
+                        DecisionModelSelection::Fixed(
+                            Model::parse_slug("openrouter/vendor/decider").unwrap(),
+                        ),
+                        DecisionModelSelection::Pinned,
+                    ],
+                    first_model_default: false,
                 },
                 BundleId::DecisionModels,
             ),
@@ -377,9 +400,28 @@ mod tests {
         assert_eq!(
             config,
             BundleConfig::DecisionModels {
-                include_global: false,
                 models: Vec::new(),
+                first_model_default: true,
             }
+        );
+
+        let config: BundleConfig = serde_json::from_value(json!({"DecisionModels": {
+            "models": [{"Fixed": "openrouter/vendor/a"}, "Global", "Pinned"],
+        }}))
+        .unwrap();
+        let BundleConfig::DecisionModels { models, .. } = config else {
+            panic!("not a DecisionModels bundle");
+        };
+        assert_eq!(
+            models[0],
+            DecisionModelSelection::Fixed(Model::parse_slug("openrouter/vendor/a").unwrap())
+        );
+        assert_eq!(
+            models[1..],
+            [
+                DecisionModelSelection::Global,
+                DecisionModelSelection::Pinned
+            ]
         );
     }
 

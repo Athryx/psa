@@ -241,10 +241,9 @@ impl DraftRoot {
     pub fn select_config(&mut self, id: ConfigId) {
         self.selected = Some(id);
         let choices = self.model_choices();
-        let has_default = self
-            .configs
-            .iter()
-            .any(|c| Some(&c.config.config_id) == self.selected.as_ref() && c.config.default);
+        let has_default = self.configs.iter().any(|c| {
+            Some(&c.config.config_id) == self.selected.as_ref() && c.config.first_model_default
+        });
         self.model = if has_default || choices.len() == 1 {
             choices.into_iter().next()
         } else {
@@ -306,7 +305,10 @@ pub struct Ui {
     /// Sandboxes with a lifecycle request in flight.
     pub sandbox_pending: HashSet<ProbeId>,
     pub agents: Shared<HashMap<SessionId, Shared<Vec<Agent>>>>,
+    /// Chat models from the catalog; the only kind agents can run.
     pub models: Shared<Vec<ModelInfo>>,
+    /// Decision models from the catalog, called from CodeMode.
+    pub decision_models: Shared<Vec<ModelInfo>>,
     pub transcripts: HashMap<TranscriptTarget, Shared<Transcript>>,
     pub transcript_status: HashMap<TranscriptTarget, String>,
     pub history_requests: HashMap<TranscriptTarget, u64>,
@@ -358,6 +360,7 @@ impl Ui {
             sandbox_pending: HashSet::new(),
             agents: Shared::default(),
             models: Shared::default(),
+            decision_models: Shared::default(),
             transcripts: HashMap::new(),
             transcript_status: HashMap::new(),
             history_requests: HashMap::new(),

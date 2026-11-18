@@ -2,8 +2,9 @@
 //!
 //! Decision models answer typed questions with probabilities in one request
 //! and are called only from CodeMode, so this bundle installs functions and no
-//! model-facing tools. The legal set is the definition's own models plus,
-//! optionally, the session's decision model, which follows session updates.
+//! model-facing tools. The legal set is the definition's ordered selections of
+//! fixed models, the session's decision model, and the catalog's pinned
+//! decision models, resolved at each call so it follows session and pin changes.
 
 mod handle;
 
@@ -18,57 +19,57 @@ use crate::{
     sessions::Session,
 };
 use llm_api::providers::Model;
+use psa::api::DecisionModelSelection;
 use std::sync::Arc;
 
-/// Which models an agent may call, resolved against its session at call time.
+/// Which models an agent may call, resolved against its session and the
+/// catalog's pinned models at call time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DecisionPolicy {
-    include_global: bool,
-    models: Vec<Model>,
+    models: Vec<DecisionModelSelection>,
+    first_model_default: bool,
 }
 
 impl DecisionPolicy {
-    /// Policy over the configured models, dropping repeats.
-    pub(crate) fn new(include_global: bool, configured: &[Model]) -> Self {
-        let mut models = Vec::new();
-        for model in configured {
-            if !models.contains(model) {
-                models.push(model.clone());
-            }
-        }
+    pub(crate) fn new(models: &[DecisionModelSelection], first_model_default: bool) -> Self {
         Self {
-            include_global,
-            models,
+            models: models.to_vec(),
+            first_model_default,
         }
     }
 
-    /// Configured models first, then the session's decision model when included.
-    pub(crate) fn legal_models(&self, session: &Session) -> Vec<Model> {
-        let mut models = self.models.clone();
-        let global = session
-            .decision_model
-            .as_ref()
-            .filter(|_| self.include_global);
-        if let Some(global) = global {
-            if !models.contains(global) {
-                models.push(global.clone());
+    /// The selections expanded in order, keeping the first of repeated models.
+    /// `pinned` is called once, at the first `Pinned` selection; later ones
+    /// could only repeat its models.
+    pub(crate) async fn legal_models(
+        &self,
+        session: &Session,
+        pinned: impl AsyncFnOnce() -> Result<Vec<Model>, String>,
+    ) -> Result<Vec<Model>, String> {
+        let mut pinned = Some(pinned);
+        let mut models = Vec::new();
+        for selection in &self.models {
+            let expanded = match selection {
+                DecisionModelSelection::Fixed(model) => vec![model.clone()],
+                DecisionModelSelection::Global => session.decision_model.iter().cloned().collect(),
+                DecisionModelSelection::Pinned => match pinned.take() {
+                    Some(load) => load().await?,
+                    None => Vec::new(),
+                },
+            };
+            for model in expanded {
+                if !models.contains(&model) {
+                    models.push(model);
+                }
             }
         }
-        models
+        Ok(models)
     }
 
-    /// The model used when a call names none: the session's decision model
-    /// when included, otherwise the only configured model.
-    pub(crate) fn default_model(&self, session: &Session) -> Option<Model> {
-        if self.include_global
-            && let Some(global) = &session.decision_model
-        {
-            return Some(global.clone());
-        }
-        match self.legal_models(session).as_slice() {
-            [only] => Some(only.clone()),
-            _ => None,
-        }
+    /// The model used when a call names none: the first legal model when the
+    /// policy makes it the default.
+    pub(crate) fn default_model(&self, legal: &[Model]) -> Option<Model> {
+        legal.first().filter(|_| self.first_model_default).cloned()
     }
 }
 
@@ -79,15 +80,28 @@ pub(crate) struct DecisionAccess {
     pub(crate) handle: DecisionHandle,
 }
 
+impl DecisionAccess {
+    /// The models this agent may call right now, in policy order.
+    pub(crate) async fn legal_models(&self, session: &Session) -> Result<Vec<Model>, String> {
+        self.policy
+            .legal_models(session, async || self.handle.pinned_models().await)
+            .await
+    }
+}
+
 pub struct DecisionModelsBundle {
     access: DecisionAccess,
 }
 
 impl DecisionModelsBundle {
-    pub fn new(include_global: bool, models: &[Model], resources: &SessionBundleHandle) -> Self {
+    pub fn new(
+        models: &[DecisionModelSelection],
+        first_model_default: bool,
+        resources: &SessionBundleHandle,
+    ) -> Self {
         Self {
             access: DecisionAccess {
-                policy: Arc::new(DecisionPolicy::new(include_global, models)),
+                policy: Arc::new(DecisionPolicy::new(models, first_model_default)),
                 handle: resources.decisions(),
             },
         }

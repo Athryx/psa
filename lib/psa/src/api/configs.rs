@@ -103,10 +103,11 @@ pub struct AgentConfig {
     pub hooks: HookConfigs,
     /// Required nonempty ordered list of allowed model policies.
     pub models: Vec<ModelSelection>,
-    /// Allow the first model when no choice is supplied; defaults to true.
+    /// Use the first model when no choice is supplied; defaults to true.
     /// Registration normalizes this to true when there is only one choice.
-    #[serde(default = "default_model_choice")]
-    pub default: bool,
+    /// Accepts the former name `default`.
+    #[serde(default = "default_model_choice", alias = "default")]
+    pub first_model_default: bool,
     /// Permitted subagent configuration selection; defaults to empty.
     #[serde(default)]
     pub subagents: IncludedItems,
@@ -140,10 +141,11 @@ pub struct AgentConfigInput {
     pub hooks: HookOverrides,
     /// Required nonempty ordered list of allowed model policies.
     pub models: Vec<ModelSelection>,
-    /// Select the first model when no choice is supplied; defaults to true.
+    /// Use the first model when no choice is supplied; defaults to true.
     /// Registration normalizes this to true when there is only one choice.
-    #[serde(default = "enabled")]
-    pub default: bool,
+    /// Accepts the former name `default`.
+    #[serde(default = "enabled", alias = "default")]
+    pub first_model_default: bool,
     /// Permitted subagent selection; defaults to empty.
     #[serde(default)]
     pub subagents: IncludedItems,
@@ -168,7 +170,7 @@ impl AgentConfigInput {
             selectable: false,
             bundles: None,
             hooks: HookOverrides::default(),
-            default: true,
+            first_model_default: true,
             subagents: IncludedItems::default(),
             skills: IncludedItems::default(),
         }
@@ -185,7 +187,7 @@ impl From<AgentConfig> for AgentConfigInput {
             bundles: Some(config.bundles),
             hooks: config.hooks.into(),
             models: config.models,
-            default: config.default,
+            first_model_default: config.first_model_default,
             subagents: config.subagents,
             skills: config.skills,
         }
@@ -273,7 +275,12 @@ mod tests {
         let id = json!({"config_group": {"Custom": "test"}, "name": "agent"});
         let config: AgentConfig =
             serde_json::from_value(json!({"config_id": id, "models": ["Global"]})).unwrap();
-        assert!(config.default);
+        assert!(config.first_model_default);
+        let legacy: AgentConfig = serde_json::from_value(
+            json!({"config_id": id, "models": ["Global"], "default": false}),
+        )
+        .unwrap();
+        assert!(!legacy.first_model_default);
         assert!(config.subagents.groups.is_empty());
         assert!(serde_json::from_value::<AgentConfig>(json!({"config_id": id})).is_err());
         assert!(
@@ -285,7 +292,7 @@ mod tests {
         assert!(serde_json::from_value::<ModelSelection>(json!({"Fixed": {"model": "openrouter/example/model", "effort": "Global", "typo": true}})).is_err());
         assert!(
             serde_json::from_value::<NewSkill>(
-                json!({"config_id": id, "tar_data": [], "path": "/server/path"})
+                json!({"config_id": id, "tar_data": "", "path": "/server/path"})
             )
             .is_err()
         );

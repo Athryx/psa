@@ -296,9 +296,10 @@ Creating an agent takes `config_id`, `name`, optional `interactive` and `hidden`
 The model selector must exactly match an allowed entry, including its effort
 policy. Other selectors are `"Global"` and `"Parent"`; fixed effort policies can
 be `"Global"` or `"Parent"` only when configured exactly that way. Omitted/null
-selects the sole entry, or the first when `default` is true. Registration/upsert
-normalizes stored `AgentConfig.default` to true for single-model configurations;
-multiple entries with `default = false` require explicit selection.
+selects the sole entry, or the first when `first_model_default` is true (formerly
+`default`, still accepted). Registration/upsert normalizes stored
+`AgentConfig.first_model_default` to true for single-model configurations;
+multiple entries with `first_model_default = false` require explicit selection.
 Native `create_agent` uses the same
 typed selector, and its allowed-template identity prompt includes full selectors.
 

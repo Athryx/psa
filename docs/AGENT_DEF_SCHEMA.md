@@ -119,10 +119,11 @@ they are never copied to another probe. Cross-probe use fails explicitly.
 `SkillRegistration` is the trusted library/discovery registration form with
 parsed metadata and location; HTTP upload callers cannot assert server paths.
 
-Uploads contain an uncompressed tar of the complete skill directory, including
-supporting files, with `SKILL.md` at its root. `tar_data` serializes as a JSON
-array of bytes, not base64 or multipart data. Archives are limited to 64 MiB
-and 10,000 entries; the skills route allows the larger JSON byte-array envelope.
+Uploads contain a tar of the complete skill directory, including supporting
+files, with `SKILL.md` at its root. `tar_data` serializes as a standard base64
+string; `compression` is `None` (default) or `Zstd`. Archives are limited to
+256 MiB uncompressed and 10,000 entries. `archive_sha256` on the registered
+skill is the SHA-256 of the uncompressed tar.
 Links, special files, escaping and
 duplicate archive paths are rejected. Metadata uses the same parser as discovery;
 its name must match `config_id.name`. `disable-model-invocation` is preserved.
@@ -156,13 +157,15 @@ with Goal and `StopWithoutTools`, including default-inherited hooks. Override
 `hooks.after_request` with `[]` to disable an inherited ordinary completion hook.
 See [durable results](AGENT_RESULTS.md) for validation, retry limits, typed
 configuration helpers, and retrieval.
-`DecisionModels { include_global, models }` installs the help-only CodeMode
+`DecisionModels { models, first_model_default }` installs the help-only CodeMode
 functions `list_decision_models()` and `await decide(model, state, questions)`.
-`models` lists `provider/model` slugs the agent may call; `include_global`
-(default false) also allows the session's decision model and makes it the default
-when `model` is omitted. Without it, `model` may be omitted only when exactly one
-model is legal. For example,
-`{"DecisionModels":{"include_global":true,"models":["openrouter/typesafe/jev-1.14"]}}`.
+`models` is an ordered list of `{"Fixed": "provider/model"}`, `"Global"` (the
+session's decision model, when set) and `"Pinned"` (every pinned decision model,
+in catalog order), expanded at each call so it follows session and pin changes;
+a model listed more than once keeps its first position. `first_model_default`
+(default true) makes the first allowed model the one used when `model` is
+omitted; when false, every call must name a model. For example,
+`{"DecisionModels":{"models":["Global",{"Fixed":"openrouter/typesafe/jev-1.14"},"Pinned"]}}`.
 Each call is recorded as a public `DecisionCall` event holding the complete
 request (including `state`), the provider response or failure message, and the
 duration. A session runs at most

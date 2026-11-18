@@ -53,7 +53,7 @@ const DEFAULT_AGENTS: [(&str, &str); 2] = [
 description = "General-purpose assistant"
 selectable = true
 models = ["Global"]
-default = true
+first_model_default = true
 
 [subagents]
 global_defaults = false
@@ -357,7 +357,7 @@ impl AgentDefaults {
             bundles: input.bundles.unwrap_or_else(|| self.bundles.clone()),
             hooks: self.resolve_hooks(input.hooks),
             models: input.models,
-            default: input.default,
+            first_model_default: input.first_model_default,
             subagents: input.subagents,
             skills: input.skills,
         }

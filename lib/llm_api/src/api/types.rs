@@ -293,6 +293,7 @@ pub struct Usage {
     /// Charge reported by the provider, such as OpenRouter credits.
     pub cost: Option<f64>,
     /// The provider's raw usage object, including fields not modeled above.
+    #[serde(default)]
     pub provider_details: ProviderFields,
 }
 

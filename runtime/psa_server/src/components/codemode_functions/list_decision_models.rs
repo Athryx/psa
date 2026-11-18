@@ -8,7 +8,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{
-    CodeModeFunction, CodeModeFunctionDefinition, CodeModeFunctionResult, typed_codemode_execute,
+    CodeModeError, CodeModeFunction, CodeModeFunctionDefinition, CodeModeFunctionResult,
+    typed_codemode_execute,
 };
 use crate::{
     agents::agent_context::AgentContext,
@@ -34,8 +35,13 @@ impl ListDecisionModels {
         context: &mut AgentContext<'_>,
         _cancellation: Cancellation,
     ) -> CodeModeFunctionResult {
+        let legal = self
+            .access
+            .legal_models(context.session())
+            .await
+            .map_err(CodeModeError::runtime)?;
         let mut entries = Vec::new();
-        for model in self.access.policy.legal_models(context.session()) {
+        for model in legal {
             // Models without credentials or outside the catalog's decision
             // models cannot be called, so they are not offered.
             if !self.access.handle.is_available(&model) {

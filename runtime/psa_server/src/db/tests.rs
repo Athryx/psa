@@ -1021,10 +1021,10 @@ async fn backfills_agent_states_from_bounded_legacy_history() {
     let path = dir.path().join("legacy.sqlite3");
     let pool = create_legacy_database(&path).await;
     sqlx::raw_sql(
-        "INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (1,NULL,1,5,'root','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":{\"provider\":\"Openrouter\",\"api_name\":\"test-model\"},\"effort\":\"High\"}');
-         INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (2,1,4,5,'child','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":{\"provider\":\"Openrouter\",\"api_name\":\"test-model\"},\"effort\":\"High\"}');
-         INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (3,2,4,4,'grandchild','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":{\"provider\":\"Openrouter\",\"api_name\":\"test-model\"},\"effort\":\"High\"}');
-         INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (4,1,4,4,'sibling','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":{\"provider\":\"Openrouter\",\"api_name\":\"test-model\"},\"effort\":\"High\"}');
+        "INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (1,NULL,1,5,'root','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":\"openrouter/test-model\",\"effort\":\"High\"}');
+         INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (2,1,4,5,'child','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":\"openrouter/test-model\",\"effort\":\"High\"}');
+         INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (3,2,4,4,'grandchild','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":\"openrouter/test-model\",\"effort\":\"High\"}');
+         INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (4,1,4,4,'sibling','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":\"openrouter/test-model\",\"effort\":\"High\"}');
          INSERT INTO agents (id,session_id,parent_agent_id,first_event_seq,next_event_seq,created_position,name,created_at_us,updated_at_us,definition_id) VALUES (1,1,NULL,1,3,1,'root',0,0,1);
          INSERT INTO agents (id,session_id,parent_agent_id,first_event_seq,next_event_seq,created_position,name,created_at_us,updated_at_us,definition_id) VALUES (2,2,1,2,3,1,'child',0,0,1);
          INSERT INTO agents (id,session_id,parent_agent_id,first_event_seq,next_event_seq,created_position,name,created_at_us,updated_at_us,definition_id) VALUES (3,3,2,2,2,1,'grandchild',0,0,1);
@@ -1085,8 +1085,8 @@ async fn upgrades_legacy_delimiters_and_backfills_inherited_model_snapshots() {
     // Parent appends a newer model after the fork. The child must inherit the
     // model visible at its fork, not the parent's later configuration.
     sqlx::raw_sql(
-        "INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (1,NULL,1,4,'parent','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":{\"provider\":\"Openrouter\",\"api_name\":\"test-model\"},\"effort\":\"High\"}');
-         INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (2,1,3,4,'child','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":{\"provider\":\"Openrouter\",\"api_name\":\"test-model\"},\"effort\":\"High\"}');
+        "INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (1,NULL,1,4,'parent','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":\"openrouter/test-model\",\"effort\":\"High\"}');
+         INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (2,1,3,4,'child','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":\"openrouter/test-model\",\"effort\":\"High\"}');
          INSERT INTO agents (id,session_id,parent_agent_id,first_event_seq,next_event_seq,created_position,name,created_at_us,updated_at_us,definition_id) VALUES (1,1,NULL,1,3,1,'parent agent',0,0,1);
          INSERT INTO agents (id,session_id,parent_agent_id,first_event_seq,next_event_seq,created_position,name,created_at_us,updated_at_us,definition_id) VALUES (2,2,1,2,3,1,'child agent',0,0,1);
          INSERT INTO events VALUES (1,1,1,2,0,'model');
@@ -1133,7 +1133,7 @@ async fn upgrades_legacy_tool_results_to_content_blocks() {
     let path = dir.path().join("legacy.sqlite3");
     let pool = create_legacy_database(&path).await;
     sqlx::raw_sql(
-        "INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (1,NULL,1,5,'test','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":{\"provider\":\"Openrouter\",\"api_name\":\"test-model\"},\"effort\":\"High\"}');
+        "INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (1,NULL,1,5,'test','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":\"openrouter/test-model\",\"effort\":\"High\"}');
          INSERT INTO agents (id,session_id,parent_agent_id,first_event_seq,next_event_seq,created_position,name,created_at_us,updated_at_us,definition_id) VALUES (1,1,NULL,1,4,1,'main',0,0,1);
          INSERT INTO events VALUES (1,1,1,2,0,'tool_result');
          INSERT INTO events VALUES (2,1,2,3,0,'tool_result');
@@ -1203,7 +1203,7 @@ async fn upgrades_legacy_messages_to_content_blocks() {
     let path = dir.path().join("legacy.sqlite3");
     let pool = create_legacy_database(&path).await;
     sqlx::raw_sql(
-        "INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (1,NULL,1,5,'test','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":{\"provider\":\"Openrouter\",\"api_name\":\"test-model\"},\"effort\":\"High\"}');
+        "INSERT INTO sessions (id,parent_session_id,first_position,next_position,name,working_directory,probe_id,created_at_us,updated_at_us,model_config) VALUES (1,NULL,1,5,'test','/work','00000000-0000-0000-0000-000000000000',0,0,'{\"model\":\"openrouter/test-model\",\"effort\":\"High\"}');
          INSERT INTO agents (id,session_id,parent_agent_id,first_event_seq,next_event_seq,created_position,name,created_at_us,updated_at_us,definition_id) VALUES (1,1,NULL,1,4,1,'main',0,0,1);
          INSERT INTO events VALUES (1,1,1,2,0,'message');
          INSERT INTO events VALUES (2,1,2,3,0,'message');

@@ -281,6 +281,75 @@ fn settings_test_root() -> Element {
     rsx! { crate::views::Settings {} }
 }
 
+fn catalog_model(slug: &str, name: &str, kind: &str, pinned: bool) -> psa::api::ModelInfo {
+    serde_json::from_value(serde_json::json!({
+        "model": slug,
+        "kind": kind, "name": name, "input_modalities": ["text"],
+        "context_window": null, "max_output_tokens": null, "cost": {"tiers": []},
+        "reasoning": false, "reasoning_options": [], "authed": true,
+        "pinned": pinned, "refreshed_at": "2026-01-01T00:00:00Z"
+    }))
+    .unwrap()
+}
+
+fn decision_settings_test_root() -> Element {
+    let ui = use_signal(|| {
+        let mut state = crate::app::Ui::new(DesktopSettings::default());
+        state.settings_open = true;
+        state.models = vec![catalog_model(
+            "openrouter/vendor/chat",
+            "Chat Model",
+            "Chat",
+            true,
+        )]
+        .into();
+        state.decision_models = vec![
+            catalog_model(
+                "openrouter/vendor/plain",
+                "Plain Decider",
+                "Decision",
+                false,
+            ),
+            catalog_model(
+                "openrouter/vendor/fav",
+                "Favorite Decider",
+                "Decision",
+                true,
+            ),
+        ]
+        .into();
+        state
+    });
+    use_context_provider(|| ui);
+    rsx! { crate::views::Settings {} }
+}
+
+#[test]
+fn settings_decision_model_tab_lists_only_decision_models_pinned_first() {
+    dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+    let bootstrap = GuiBootstrap {
+        config: GuiConfig {
+            settings: DesktopSettings::default(),
+        },
+        platform: Rc::new(FakePlatform::default()),
+    };
+    let mut dom = VirtualDom::new(decision_settings_test_root).with_root_context(bootstrap);
+    dom.rebuild_in_place();
+    // Without the modal fixture's outer div, ids are one lower than there:
+    // model favorites is 5 and decision model favorites is 6.
+    click(&dom, 6);
+    dom.render_immediate_to_vec();
+    let html = dioxus_ssr::render(&dom);
+    assert!(html.contains("<h3>Decision model favorites</h3>"), "{html}");
+    assert!(!html.contains("Chat Model"), "{html}");
+    let favorite = html
+        .find("Favorite Decider")
+        .expect("pinned decision model");
+    let plain = html.find("Plain Decider").expect("unpinned decision model");
+    assert!(favorite < plain, "{html}");
+    assert!(html.contains("favorites-divider"), "{html}");
+}
+
 fn modal_settings_test_root() -> Element {
     let mut ui = use_signal(|| {
         let mut state = crate::app::Ui::new(DesktopSettings::default());
@@ -469,7 +538,7 @@ fn settings_keybinds_navigation_renders_read_only_shortcuts() {
     };
     let mut dom = VirtualDom::new(modal_settings_test_root).with_root_context(bootstrap);
     dom.rebuild_in_place();
-    click(&dom, 9);
+    click(&dom, 10);
     dom.render_immediate_to_vec();
     let html = dioxus_ssr::render(&dom);
     for expected in [
@@ -500,7 +569,7 @@ fn settings_tab_switch_replaces_scroll_container() {
     };
     let mut dom = VirtualDom::new(modal_settings_test_root).with_root_context(bootstrap);
     dom.rebuild_in_place();
-    click(&dom, 9);
+    click(&dom, 10);
     let first = dom.render_immediate_to_vec();
     let scroll_container = first
         .edits
@@ -515,14 +584,14 @@ fn settings_tab_switch_replaces_scroll_container() {
             _ => None,
         })
         .expect("keybinds scroll container mounted");
-    click(&dom, 9);
+    click(&dom, 10);
     let same_tab = dom.render_immediate_to_vec();
     assert!(
         !same_tab.edits.iter().any(
             |edit| matches!(edit, Mutation::ReplaceWith { id, .. } if *id == scroll_container)
         )
     );
-    click(&dom, 8);
+    click(&dom, 9);
     let second = dom.render_immediate_to_vec();
     assert!(
         second.edits.iter().any(

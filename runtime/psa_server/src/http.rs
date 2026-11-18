@@ -216,9 +216,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             routes::SKILLS,
             post(upload_skill).get(list_skills).layer(
-                // A 64 MiB archive encoded as a JSON byte array uses up to
-                // four bytes per element, plus configuration metadata.
-                axum::extract::DefaultBodyLimit::max(256 * 1024 * 1024 + 64 * 1024),
+                // A maximal archive in base64 is 4/3 its size, plus
+                // configuration metadata.
+                axum::extract::DefaultBodyLimit::max(
+                    crate::config_registry::MAX_SKILL_ARCHIVE_BYTES / 3 * 4 + 64 * 1024,
+                ),
             ),
         )
         .route(routes::CONFIGS_REFRESH, post(refresh_configs))

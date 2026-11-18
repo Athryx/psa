@@ -178,7 +178,7 @@ impl DatabaseCursor {
             for agent in agents {
                 let mut agent = agent.clone();
                 if agent.models.len() == 1 {
-                    agent.default = true;
+                    agent.first_model_default = true;
                 }
                 sqlx::query("INSERT INTO agent_configs(config_key,config_group,payload,discovered) VALUES(?,?,?,?) ON CONFLICT(config_key) DO UPDATE SET payload=excluded.payload,discovered=excluded.discovered")
                     .bind(key(&agent.config_id)?).bind(key(&agent.config_id.config_group)?).bind(key(&agent)?).bind(discovered)
@@ -334,6 +334,7 @@ impl DatabaseCursor {
                     description: input.description,
                     skill_location: input.skill_location,
                     disable_model_invocation: input.disable_model_invocation,
+                    archive_sha256: input.archive_sha256,
                 })
             })
             .collect()
@@ -776,6 +777,9 @@ pub struct SkillRegistration {
     /// Exclude from the model-facing catalogue; defaults to false.
     #[serde(default)]
     pub disable_model_invocation: bool,
+    /// SHA-256 of the uploaded archive; absent for discovered skills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_sha256: Option<String>,
 }
 
 /// Consistent reachable selection for adapters to materialize outside a DB lock.

@@ -5,7 +5,7 @@ fn session(id: u64, path: &str) -> Session {
     serde_json::from_value(json!({"id":id,"parent_id":null,"name":format!("session{id}"),"working_directory":path,"probe_id":"00000000-0000-0000-0000-000000000001","model_config":{"model":"openrouter/test/model","effort":"Medium"},"busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"})).unwrap()
 }
 fn agent(id: u64, parent: Option<u64>, hidden: bool, interactive: bool) -> Agent {
-    serde_json::from_value(json!({"id":id,"definition_id":1,"session_id":1,"parent_id":99,"subagent_parent_id":parent,"name":format!("a{id}"),"hidden":hidden,"interactive":interactive,"state":"Idle","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"cached_input_tokens":0,"reasoning_output_tokens":0},"next_event_id":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"})).unwrap()
+    serde_json::from_value(json!({"id":id,"definition_id":1,"session_id":1,"parent_id":99,"subagent_parent_id":parent,"name":format!("a{id}"),"hidden":hidden,"interactive":interactive,"state":"Idle","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"cached_input_tokens":0,"reasoning_output_tokens":0,"provider_details":{}},"next_event_id":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"})).unwrap()
 }
 #[test]
 fn view_ids_are_not_reused_and_drafts_are_not_persisted() {

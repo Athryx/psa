@@ -8,7 +8,7 @@ use llm_api::{
     api::decisions::{DecisionRequest, DecisionResponse},
     providers::Model,
 };
-use psa::api::{ModelInfo, ModelKind};
+use psa::api::{ListModels, ModelInfo, ModelKind};
 use std::{num::NonZeroUsize, sync::Arc};
 use tokio::sync::Semaphore;
 
@@ -89,6 +89,23 @@ impl DecisionHandle {
             Some(_) => Err(format!("{} is not a decision model", model.api_name)),
             None => Err(format!("{} is not in the model catalog", model.api_name)),
         }
+    }
+
+    /// Pinned decision models in catalog order; none without a catalog.
+    pub(crate) async fn pinned_models(&self) -> Result<Vec<Model>, String> {
+        let Some(catalog) = &self.inner.catalog else {
+            return Ok(Vec::new());
+        };
+        let query = ListModels {
+            pinned: Some(true),
+            kind: Some(ModelKind::Decision),
+            ..Default::default()
+        };
+        let models = catalog
+            .list_models(query)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(models.into_iter().map(|info| info.model).collect())
     }
 
     /// Send one request, waiting for a free slot first.

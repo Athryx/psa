@@ -61,7 +61,7 @@ pub struct Session {
     /// Default model configuration for agents without a pinned model.
     pub model_config: ModelConfig,
     /// Session decision model, called from CodeMode by agents whose
-    /// `DecisionModels` bundle includes the global model. `None` when unset.
+    /// `DecisionModels` bundle selects `Global`. `None` when unset.
     pub decision_model: Option<Model>,
     /// Whether the runtime reports active work for this session.
     pub busy: bool,
@@ -92,7 +92,7 @@ pub struct CreateSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_config: Option<ModelConfig>,
     /// Session decision model, if any; must be a decision model in the catalog.
-    /// Only `DecisionModels` bundles with `include_global` use it.
+    /// Only `DecisionModels` bundles selecting `Global` use it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision_model: Option<Model>,
 }

@@ -202,6 +202,7 @@ let agent = client.create_agent(session.id, &CreateAgent {
 client.submit_request(session.id, agent.id, &AgentRequest::Message {
     delivery: MessageDelivery::Queue,
     content: vec![ContentBlock::Text(TextBlock { text: "Hello".into(), annotations: vec![] })],
+    source: None, // Or a sending agent in the same session.
 }).await?;
 # Ok(())
 # }
@@ -450,9 +451,10 @@ methods are removed.
 and a name, not a `definition_id`. Its optional `model: Option<ModelSelection>`
 must exactly match a configured selector: `"Global"`, `"Parent"`, or a `Fixed`
 object including both model and effort policy. Omitted/null selects the sole
-choice, or the first choice when `default` is true. Registration/upsert normalizes
-`default` to true for single-model configurations; multiple choices with
-`default = false` require explicit selection. Model and effort inheritance resolve
+choice, or the first choice when `first_model_default` is true (formerly
+`default`, still accepted). Registration/upsert normalizes `first_model_default`
+to true for single-model configurations; multiple choices with
+`first_model_default = false` require explicit selection. Model and effort inheritance resolve
 at creation.
 
 `POST /skills` uploads `NewSkill { config_id, tar_data }`, a complete skill tar

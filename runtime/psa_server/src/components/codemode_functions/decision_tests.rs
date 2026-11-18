@@ -19,7 +19,7 @@ use llm_api::{
     api::decisions::Decisions,
     providers::{Model, ProviderType},
 };
-use psa::api::events::EventType;
+use psa::api::{DecisionModelSelection, events::EventType};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use tokio::{
@@ -83,15 +83,22 @@ async fn fake_endpoint(status: &'static str, body: serde_json::Value) -> FakeEnd
     FakeEndpoint { url, requests }
 }
 
-fn access(endpoint: Option<&FakeEndpoint>, include_global: bool, slugs: &[&str]) -> DecisionAccess {
+fn fixed(slug: &str) -> DecisionModelSelection {
+    DecisionModelSelection::Fixed(slug.parse().unwrap())
+}
+
+fn access(
+    endpoint: Option<&FakeEndpoint>,
+    models: &[DecisionModelSelection],
+    first_model_default: bool,
+) -> DecisionAccess {
     let providers = endpoint.map(|endpoint| {
         ProviderRegistry::default().with_decisions(vec![
             Decisions::with_url(ProviderType::Openrouter, &endpoint.url, "key").unwrap(),
         ])
     });
-    let models: Vec<Model> = slugs.iter().map(|slug| slug.parse().unwrap()).collect();
     DecisionAccess {
-        policy: Arc::new(DecisionPolicy::new(include_global, &models)),
+        policy: Arc::new(DecisionPolicy::new(models, first_model_default)),
         handle: DecisionHandle::new(providers, None),
     }
 }
@@ -206,32 +213,48 @@ async fn recorded_calls(context: &AgentContext<'_>) -> Vec<psa::api::DecisionCal
 }
 
 #[tokio::test]
-async fn legal_models_are_configured_models_plus_the_session_model_when_included() {
+async fn legal_models_expand_selections_in_order_keeping_the_first_of_repeats() {
+    use DecisionModelSelection::{Global, Pinned};
     with_context(async |context| {
         let session = context.session();
-        let configured = DecisionPolicy::new(false, &[decider("vendor/a")]);
-        assert_eq!(configured.legal_models(session), vec![decider("vendor/a")]);
+        let a = || DecisionModelSelection::Fixed(decider("vendor/a"));
 
-        let with_global = DecisionPolicy::new(true, &[decider("vendor/a"), decider("vendor/a")]);
+        let policy = DecisionPolicy::new(&[a(), Pinned, Global, a(), Pinned], true);
+        let legal = policy
+            .legal_models(session, async || {
+                Ok(vec![decider("vendor/pinned"), decider("vendor/a")])
+            })
+            .await
+            .unwrap();
         assert_eq!(
-            with_global.legal_models(session),
-            vec![decider("vendor/a"), decider("vendor/session")]
+            legal,
+            [
+                decider("vendor/a"),
+                decider("vendor/pinned"),
+                decider("vendor/session")
+            ]
+        );
+        assert_eq!(policy.default_model(&legal), Some(decider("vendor/a")));
+        let no_default = DecisionPolicy::new(&[a()], false);
+        assert_eq!(no_default.default_model(&legal), None);
+
+        let global_first = DecisionPolicy::new(&[Global, a()], true);
+        let legal = global_first
+            .legal_models(session, async || Err("pins are not needed".to_owned()))
+            .await
+            .unwrap();
+        assert_eq!(
+            global_first.default_model(&legal),
+            Some(decider("vendor/session"))
         );
 
-        let only_global = DecisionPolicy::new(true, &[]);
-        assert_eq!(
-            only_global.legal_models(session),
-            vec![decider("vendor/session")]
-        );
-
-        assert_eq!(configured.default_model(session), Some(decider("vendor/a")));
-        assert_eq!(
-            with_global.default_model(session),
-            Some(decider("vendor/session")),
-            "the session model is the default when included"
-        );
-        let several = DecisionPolicy::new(false, &[decider("vendor/a"), decider("vendor/b")]);
-        assert_eq!(several.default_model(session), None);
+        let pinned_only = DecisionPolicy::new(&[Pinned], true);
+        let error = pinned_only
+            .legal_models(session, async || Err("catalog down".to_owned()))
+            .await
+            .unwrap_err();
+        assert_eq!(error, "catalog down");
+        assert_eq!(pinned_only.default_model(&[]), None);
     })
     .await;
 }
@@ -242,8 +265,8 @@ async fn listing_offers_only_legal_models_with_credentials() {
     with_context(async |context| {
         let function = list_decision_models::ListDecisionModels::new(access(
             Some(&endpoint),
+            &[fixed("openrouter/vendor/a"), DecisionModelSelection::Global],
             true,
-            &["openrouter/vendor/a"],
         ));
         let listed = run(&function, context, json!({})).await.unwrap();
         assert_eq!(
@@ -256,8 +279,8 @@ async fn listing_offers_only_legal_models_with_credentials() {
 
         let unavailable = list_decision_models::ListDecisionModels::new(access(
             None,
+            &[fixed("openrouter/vendor/a"), DecisionModelSelection::Global],
             true,
-            &["openrouter/vendor/a"],
         ));
         assert_eq!(
             run(&unavailable, context, json!({})).await.unwrap(),
@@ -271,7 +294,14 @@ async fn listing_offers_only_legal_models_with_credentials() {
 async fn decide_returns_answers_records_a_public_event_and_reports_cost() {
     let endpoint = fake_endpoint("200 OK", response_body(0.25)).await;
     with_context(async |context| {
-        let access = access(Some(&endpoint), true, &["openrouter/vendor/decider"]);
+        let access = access(
+            Some(&endpoint),
+            &[
+                fixed("openrouter/vendor/decider"),
+                DecisionModelSelection::Global,
+            ],
+            true,
+        );
         let function = decide::Decide::new(access.clone());
 
         let value = run(
@@ -320,11 +350,14 @@ async fn decide_returns_answers_records_a_public_event_and_reports_cost() {
 }
 
 #[tokio::test]
-async fn decide_defaults_to_the_only_model_and_rejects_models_outside_the_policy() {
+async fn decide_defaults_to_the_first_model_and_rejects_models_outside_the_policy() {
     let endpoint = fake_endpoint("200 OK", response_body(0.0)).await;
     with_context(async |context| {
-        let function =
-            decide::Decide::new(access(Some(&endpoint), false, &["openrouter/vendor/a"]));
+        let function = decide::Decide::new(access(
+            Some(&endpoint),
+            &[fixed("openrouter/vendor/a")],
+            true,
+        ));
 
         run(&function, context, arguments(None)).await.unwrap();
         assert_eq!(endpoint.requests.lock().unwrap()[0]["model"], "vendor/a");
@@ -345,8 +378,8 @@ async fn decide_defaults_to_the_only_model_and_rejects_models_outside_the_policy
 
         let ambiguous = decide::Decide::new(access(
             Some(&endpoint),
+            &[fixed("openrouter/vendor/a"), fixed("openrouter/vendor/b")],
             false,
-            &["openrouter/vendor/a", "openrouter/vendor/b"],
         ));
         let error = run(&ambiguous, context, arguments(None)).await.unwrap_err();
         assert!(
@@ -357,8 +390,12 @@ async fn decide_defaults_to_the_only_model_and_rejects_models_outside_the_policy
 
         let with_global = decide::Decide::new(access(
             Some(&endpoint),
+            &[
+                DecisionModelSelection::Global,
+                fixed("openrouter/vendor/a"),
+                fixed("openrouter/vendor/b"),
+            ],
             true,
-            &["openrouter/vendor/a", "openrouter/vendor/b"],
         ));
         run(&with_global, context, arguments(None)).await.unwrap();
         assert_eq!(
@@ -389,8 +426,11 @@ async fn failed_calls_raise_and_are_recorded() {
     )
     .await;
     with_context(async |context| {
-        let function =
-            decide::Decide::new(access(Some(&endpoint), false, &["openrouter/vendor/a"]));
+        let function = decide::Decide::new(access(
+            Some(&endpoint),
+            &[fixed("openrouter/vendor/a")],
+            true,
+        ));
         let error = run(&function, context, arguments(None)).await.unwrap_err();
         assert!(error.message.contains("boom"), "{}", error.message);
 
@@ -398,7 +438,7 @@ async fn failed_calls_raise_and_are_recorded() {
         assert_eq!(calls.len(), 1);
         assert!(matches!(&calls[0].response, Err(message) if message.contains("boom")));
 
-        let unavailable = decide::Decide::new(access(None, false, &["openrouter/vendor/a"]));
+        let unavailable = decide::Decide::new(access(None, &[fixed("openrouter/vendor/a")], true));
         let error = run(&unavailable, context, arguments(None))
             .await
             .unwrap_err();
@@ -483,8 +523,11 @@ async fn calls_beyond_the_concurrency_limit_queue_until_a_slot_frees() {
 async fn cancelled_calls_stop_without_recording() {
     let endpoint = fake_endpoint("200 OK", response_body(0.0)).await;
     with_context(async |context| {
-        let function =
-            decide::Decide::new(access(Some(&endpoint), false, &["openrouter/vendor/a"]));
+        let function = decide::Decide::new(access(
+            Some(&endpoint),
+            &[fixed("openrouter/vendor/a")],
+            true,
+        ));
         let (sender, cancellation) = Cancellation::channel();
         drop(sender);
         let error = function
@@ -499,7 +542,7 @@ async fn cancelled_calls_stop_without_recording() {
 
 #[test]
 fn stubs_declare_dict_results_and_decide_is_async() {
-    let access = access(None, false, &[]);
+    let access = access(None, &[], true);
     let decide = CodeModeFunctionKind::Decide(decide::Decide::new(access.clone()));
     let list = CodeModeFunctionKind::ListDecisionModels(
         list_decision_models::ListDecisionModels::new(access),
@@ -542,8 +585,11 @@ async fn bundle_installs_help_only_functions_and_validates_its_configuration() {
     let mut resources = SessionBundleResources::start(session.id, runtime.handle.clone(), None);
     definition.bundles = vec![
         BundleConfig::DecisionModels {
-            include_global: true,
-            models: vec![decider("vendor/a")],
+            models: vec![
+                DecisionModelSelection::Global,
+                DecisionModelSelection::Fixed(decider("vendor/a")),
+            ],
+            first_model_default: true,
         },
         BundleConfig::CodeMode,
     ];
@@ -573,8 +619,8 @@ async fn bundle_installs_help_only_functions_and_validates_its_configuration() {
     components.cleanup().await.unwrap();
 
     let valid = BundleConfig::DecisionModels {
-        include_global: false,
         models: Vec::new(),
+        first_model_default: true,
     };
     assert!(
         BundleKind::from_config(&valid, None).is_err(),

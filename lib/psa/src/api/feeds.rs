@@ -290,7 +290,7 @@ pub enum GlobalEventKind {
 /// Global summary subscription selection, independent of transcript routes.
 ///
 /// The feed carries every session so clients see sessions leave a filter too;
-/// apply [`SessionFilter::matches`] to decide which updates to display.
+/// apply [`SessionFilter::matches`](crate::api::SessionFilter::matches) to decide which updates to display.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GlobalEventsQuery {

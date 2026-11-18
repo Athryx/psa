@@ -22,14 +22,14 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
     };
     let mut config = agent_config("explicit-model");
     config.models = vec![allowed.clone()];
-    config.default = false;
+    config.first_model_default = false;
     let registered = harness
         .client
         .upsert_agent_configs(std::slice::from_ref(&config))
         .await
         .unwrap();
     assert!(
-        registered[0].config.default,
+        registered[0].config.first_model_default,
         "a sole model is normalized to an implicit default"
     );
     assert!(
@@ -39,7 +39,7 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
             .await
             .unwrap()
             .config
-            .default
+            .first_model_default
     );
     let request = |choice| CreateAgent {
         name: "exact selection".into(),
@@ -124,7 +124,7 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
         effort: EffortSelection::Global,
     };
     let mut dynamic = agent_config("dynamic-model");
-    dynamic.default = false;
+    dynamic.first_model_default = false;
     dynamic.models = vec![
         ModelSelection::Global,
         ModelSelection::Parent,
@@ -136,7 +136,7 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
         .upsert_agent_configs(std::slice::from_ref(&dynamic))
         .await
         .unwrap();
-    assert!(!registered[0].config.default);
+    assert!(!registered[0].config.first_model_default);
     let dynamic_request = |choice| CreateAgent {
         name: "dynamic selection".into(),
         config_id: dynamic.config_id.clone(),
@@ -198,7 +198,7 @@ async fn configured_creation_requires_an_exact_full_model_selection() {
 
     // Multiple choices require explicit default permission before the first can be implicit.
     let mut with_default = dynamic.clone();
-    with_default.default = true;
+    with_default.first_model_default = true;
     harness.upsert_config(with_default).await;
     let defaulted = harness
         .client

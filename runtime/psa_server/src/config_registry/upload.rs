@@ -1,8 +1,9 @@
-use super::{ConfigRegistry, DiscoveryError, skills::parse_skill};
+use super::{ConfigRegistry, DiscoveryError};
 use crate::db::SkillRegistration;
-use psa::api::{NewSkill, SkillLocation};
+use psa::api::{ArchiveCompression, NewSkill, SkillLocation, parse_skill_metadata};
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Cow,
     io::Cursor,
     path::{Component, Path, PathBuf},
 };
@@ -29,12 +30,29 @@ struct UploadEntry {
     mode: u32,
 }
 
-fn validate_archive(data: &[u8]) -> Result<Vec<UploadEntry>, DiscoveryError> {
-    if data.len() > 64 * 1024 * 1024 {
-        return Err(DiscoveryError::Invalid(
-            "skill upload exceeds 64 MiB".into(),
-        ));
+/// The plain tar archive of an upload, decompressed if needed. Decompression is
+/// bounded, so an archive expanding past the limit is rejected, not buffered.
+async fn decode_archive(upload: &NewSkill) -> Result<Cow<'_, [u8]>, DiscoveryError> {
+    let too_large = || DiscoveryError::Invalid("skill archive exceeds 256 MiB uncompressed".into());
+    if upload.tar_data.len() > super::MAX_SKILL_ARCHIVE_BYTES {
+        return Err(too_large());
     }
+    match upload.compression {
+        ArchiveCompression::None => Ok(Cow::Borrowed(&upload.tar_data)),
+        ArchiveCompression::Zstd => {
+            let compressed = upload.tar_data.clone();
+            tokio::task::spawn_blocking(move || {
+                zstd::bulk::decompress(&compressed, super::MAX_SKILL_ARCHIVE_BYTES)
+            })
+            .await
+            .map_err(|error| DiscoveryError::Invalid(error.to_string()))?
+            .map(Cow::Owned)
+            .map_err(|_| too_large())
+        }
+    }
+}
+
+fn validate_archive(data: &[u8]) -> Result<Vec<UploadEntry>, DiscoveryError> {
     let mut archive = tar::Archive::new(Cursor::new(data));
     let mut result = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -149,8 +167,9 @@ impl ConfigRegistry {
         &self,
         upload: &NewSkill,
     ) -> Result<SkillRegistration, DiscoveryError> {
+        let data = decode_archive(upload).await?;
         let _guard = self.gate.lock().await;
-        let entries = validate_archive(&upload.tar_data)?;
+        let entries = validate_archive(&data)?;
         let metadata = entries
             .iter()
             .find(|entry| entry.path == Path::new("SKILL.md") && !entry.directory)
@@ -161,9 +180,9 @@ impl ConfigRegistry {
             return Err(DiscoveryError::Invalid("SKILL.md exceeds 1 MiB".into()));
         }
         let fallback = PathBuf::from(&upload.config_id.name).join("SKILL.md");
-        let parsed = parse_skill(
+        let parsed = parse_skill_metadata(
             &fallback,
-            &upload.tar_data[metadata.start..metadata.start + metadata.size],
+            &data[metadata.start..metadata.start + metadata.size],
         )
         .map_err(DiscoveryError::Invalid)?;
         if parsed.name != upload.config_id.name {
@@ -183,7 +202,7 @@ impl ConfigRegistry {
         builder.mode(0o700);
         builder.create(&destination).await?;
         let mut staging = UploadStaging(Some(destination.clone()));
-        let result = write_entries(&destination, &entries, &upload.tar_data).await;
+        let result = write_entries(&destination, &entries, &data).await;
         if let Err(error) = result {
             cleanup_upload(&destination).await;
             staging.0 = None;
@@ -196,6 +215,7 @@ impl ConfigRegistry {
             description: parsed.description,
             disable_model_invocation: parsed.disable_model_invocation,
             skill_location: SkillLocation::Global(destination),
+            archive_sha256: Some(format!("{:x}", Sha256::digest(&data))),
         })
     }
 }
@@ -295,6 +315,7 @@ mod tests {
                 name: "example".into(),
             },
             tar_data: archive.into_inner().unwrap(),
+            compression: ArchiveCompression::None,
         };
         let skill = registry.upload_skill(&upload).await.unwrap();
         let SkillLocation::Global(path) = skill.skill_location else {

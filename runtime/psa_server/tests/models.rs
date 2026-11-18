@@ -246,7 +246,7 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
             selectable: true,
             bundles: vec![],
             models: vec![api::ModelSelection::Global],
-            default: true,
+            first_model_default: true,
             subagents: Default::default(),
             skills: Default::default(),
             hooks: api::HookConfigs {

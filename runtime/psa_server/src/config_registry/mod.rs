@@ -1,6 +1,5 @@
 //! Async file discovery adapters for the shared configuration registry.
 //! A failed scan never publishes a partial batch or deletes previous records.
-pub mod skills;
 #[cfg(test)]
 mod tests;
 mod transfer;
@@ -27,6 +26,8 @@ use std::{
 use tokio::sync::Mutex;
 
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+/// Largest accepted skill upload archive.
+pub const MAX_SKILL_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DiscoveryError {
@@ -160,9 +161,13 @@ impl ConfigRegistry {
                 continue;
             };
             let file = path.join("SKILL.md");
-            let parsed = skills::parse_skill(&file, &Source::Local.read(&file).await?).map_err(
-                |message| DiscoveryError::Invalid(format!("{}: {message}", file.display())),
-            )?;
+            // Upload directories have generated names, so a missing metadata
+            // name falls back to the config name, as it did on upload.
+            let fallback = PathBuf::from(&skill.config_id.name).join("SKILL.md");
+            let bytes = Source::Local.read(&file).await?;
+            let parsed = psa::api::parse_skill_metadata(&fallback, &bytes).map_err(|message| {
+                DiscoveryError::Invalid(format!("{}: {message}", file.display()))
+            })?;
             if parsed.name != skill.config_id.name {
                 return Err(DiscoveryError::Invalid(format!(
                     "{}: metadata name must match registered config ID",
@@ -175,6 +180,7 @@ impl ConfigRegistry {
                 description: parsed.description,
                 skill_location: skill.skill_location.clone(),
                 disable_model_invocation: parsed.disable_model_invocation,
+                archive_sha256: skill.archive_sha256.clone(),
             });
         }
         let mut agent_ids: HashSet<_> = existing_agents
@@ -541,7 +547,7 @@ async fn add_skill(
     paths: &mut HashMap<String, PathBuf>,
 ) -> Result<ConfigId, DiscoveryError> {
     let file = path.join("SKILL.md");
-    let parsed = skills::parse_skill(&file, &source.read(&file).await?)
+    let parsed = psa::api::parse_skill_metadata(&file, &source.read(&file).await?)
         .map_err(|message| DiscoveryError::Invalid(format!("{}: {message}", file.display())))?;
     let config_id = ConfigId {
         config_group: group.clone(),
@@ -577,6 +583,7 @@ async fn add_skill(
         description: parsed.description,
         skill_location,
         disable_model_invocation: parsed.disable_model_invocation,
+        archive_sha256: None,
     });
     Ok(config_id)
 }
@@ -596,8 +603,8 @@ pub struct AgentDefinitionConfig {
     pub hooks: HookOverrides,
     #[serde(default = "default_models")]
     pub models: Vec<ModelSelection>,
-    #[serde(default = "yes")]
-    pub default: bool,
+    #[serde(default = "yes", alias = "default")]
+    pub first_model_default: bool,
     #[serde(default)]
     pub subagents: SubagentInclusionsConfig,
     #[serde(default)]
@@ -682,7 +689,7 @@ impl AgentDefinitionConfig {
             bundles: self.bundles,
             hooks: self.hooks,
             models: self.models,
-            default: self.default,
+            first_model_default: self.first_model_default,
             subagents,
             skills: included_skills,
         }))

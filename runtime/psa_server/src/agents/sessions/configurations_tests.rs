@@ -34,7 +34,7 @@ fn config(models: Vec<ModelSelection>, default: bool) -> AgentConfig {
         bundles: vec![],
         hooks: HookConfigs::default(),
         models,
-        default,
+        first_model_default: default,
         subagents: IncludedItems::default(),
         skills: IncludedItems::default(),
     }
@@ -58,7 +58,7 @@ fn model_choices_enforce_allowed_list_and_default_policy() {
         select_model(&config, Some(&ModelSelection::Global), &parent).unwrap(),
         AgentModel::Global
     );
-    config.default = true;
+    config.first_model_default = true;
     assert_eq!(
         select_model(&config, None, &parent).unwrap(),
         AgentModel::Global

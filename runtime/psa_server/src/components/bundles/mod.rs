@@ -127,15 +127,15 @@ impl BundleKind {
             )),
             BundleConfig::Traces => Self::Traces(TracesBundle),
             BundleConfig::DecisionModels {
-                include_global,
                 models,
+                first_model_default,
             } => {
                 let resources = resources.ok_or_else(|| {
                     InstallError::new("DecisionModels requires session bundle resources")
                 })?;
                 Self::DecisionModels(DecisionModelsBundle::new(
-                    *include_global,
                     models,
+                    *first_model_default,
                     resources,
                 ))
             }

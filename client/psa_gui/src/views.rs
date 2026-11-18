@@ -726,31 +726,12 @@ pub fn Settings() -> Element {
     use_ui_subscription(|state| {
         (
             state.settings.clone(),
-            state.models.clone(),
             state.error.clone(),
             state.generation,
         )
     });
     let state = ui.peek();
     let profile_id = state.settings.active_profile_id.clone();
-    let mut filter = use_signal(String::new);
-    let needle = filter().to_lowercase();
-    let mut models: Vec<_> = if tab() == "models" {
-        state
-            .models
-            .iter()
-            .filter(|model| {
-                model.name.to_lowercase().contains(&needle)
-                    || model.model.api_name.to_lowercase().contains(&needle)
-            })
-            .cloned()
-            .collect()
-    } else {
-        Vec::new()
-    };
-    models.sort_by_key(|model| !model.pinned);
-    let favorite_count = models.iter().take_while(|model| model.pinned).count();
-    let show_divider = favorite_count > 0 && favorite_count < models.len();
     rsx! {div{class:"modal-backdrop",onclick:move |event|{event.stop_propagation();ui.write().settings_open=false;},section{class:"settings settings-dialog",role:"dialog","aria-modal":"true","aria-label":"Settings",tabindex:"-1",onclick:move |event|event.stop_propagation(),
         onmounted:move |event| { spawn(async move { let _ = event.data().set_focus(true).await; }); },
         onkeydown:move |event| { if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); ui.write().settings_open=false; } },
@@ -763,26 +744,17 @@ pub fn Settings() -> Element {
             button { class:if tab() == "profiles" { "active" } else { "" }, "aria-current":if tab() == "profiles" { "page" } else { "false" }, onclick:move |_|tab.set("profiles".into()), "Profiles" }
             button { class:if tab() == "providers" { "active" } else { "" }, "aria-current":if tab() == "providers" { "page" } else { "false" }, onclick:move |_|tab.set("providers".into()), "Providers" }
             button { class:if tab() == "models" { "active" } else { "" }, "aria-current":if tab() == "models" { "page" } else { "false" }, onclick:move |_|tab.set("models".into()), "Model favorites" }
+            button { class:if tab() == "decision-models" { "active" } else { "" }, "aria-current":if tab() == "decision-models" { "page" } else { "false" }, onclick:move |_|tab.set("decision-models".into()), "Decision model favorites" }
             button { class:if tab() == "appearance" { "active" } else { "" }, "aria-current":if tab() == "appearance" { "page" } else { "false" }, onclick:move |_|tab.set("appearance".into()), "Appearance" }
             button { class:if tab() == "keybinds" { "active" } else { "" }, "aria-current":if tab() == "keybinds" { "page" } else { "false" }, onclick:move |_|tab.set("keybinds".into()), "Keybinds" }
         }
         // A keyed list makes Dioxus replace the scrolling element when the tab changes.
         for active_tab in [tab()] {
-        div { key:"{active_tab}", class:if active_tab == "models" { "settings-content models-settings" } else { "settings-content" },
+        div { key:"{active_tab}", class:if active_tab == "models" || active_tab == "decision-models" { "settings-content models-settings" } else { "settings-content" },
         if tab() == "profiles" { ProfileSettings { key:"{profile_id}" } }
         if tab() == "providers" { ProviderSettings { key:"{profile_id}" } }
-        if tab() == "models" {
-            h3{"Model favorites"}p{class:"muted","Pins are stored on this server and shared with its other clients."}
-            button{onclick:move |_|{spawn(network::refresh_metadata(ui));},"Refresh probes and model catalog"}
-            crate::input::BrowserInput { placeholder:"Filter models", initial_value:filter(), onedit:move |snapshot: crate::input::InputSnapshot| { if *filter.peek() != snapshot.text { filter.set(snapshot.text); } }, aria_label:"Filter model favorites" }
-            div{class:"models",for (index, model) in models.iter().cloned().enumerate(){
-                if show_divider && index == favorite_count { div { class:"favorites-divider", role:"separator" } }
-                div{class:"model-row",
-                    div{strong{"{model.name}"}div{class:"muted","{model.model.provider.as_str()}/{model.model.api_name}"}}
-                    button{"aria-label":if model.pinned{"Unpin model"}else{"Pin model"},onclick:move |_|{spawn(network::pin_model(ui,model.clone()));},if model.pinned{"★"}else{"☆"}}
-                }
-            }}
-        }
+        if tab() == "models" { ModelFavorites { kind:ModelKind::Chat } }
+        if tab() == "decision-models" { ModelFavorites { kind:ModelKind::Decision } }
         if tab() == "keybinds" { KeybindSettings {} }
         if tab() == "appearance" {
             h3{"Appearance"}
@@ -830,6 +802,62 @@ pub fn Settings() -> Element {
         }
         }
     }}}
+}
+
+/// Server-wide pins for one kind of catalog model, favorites first.
+#[component]
+fn ModelFavorites(kind: ModelKind) -> Element {
+    let ui = use_context::<Signal<Ui>>();
+    use_ui_subscription(move |state| match kind {
+        ModelKind::Chat => state.models.clone(),
+        ModelKind::Decision => state.decision_models.clone(),
+    });
+    let mut filter = use_signal(String::new);
+    let (title, filter_label, empty) = match kind {
+        ModelKind::Chat => (
+            "Model favorites",
+            "Filter model favorites",
+            "No chat models in the catalog.",
+        ),
+        ModelKind::Decision => (
+            "Decision model favorites",
+            "Filter decision model favorites",
+            "No decision models in the catalog.",
+        ),
+    };
+
+    let needle = filter().to_lowercase();
+    let state = ui.peek();
+    let catalog = match kind {
+        ModelKind::Chat => &state.models,
+        ModelKind::Decision => &state.decision_models,
+    };
+    let catalog_is_empty = catalog.is_empty();
+    let mut models: Vec<_> = catalog
+        .iter()
+        .filter(|model| {
+            model.name.to_lowercase().contains(&needle)
+                || model.model.api_name.to_lowercase().contains(&needle)
+        })
+        .cloned()
+        .collect();
+    models.sort_by_key(|model| !model.pinned);
+    let favorite_count = models.iter().take_while(|model| model.pinned).count();
+    let show_divider = favorite_count > 0 && favorite_count < models.len();
+
+    rsx! {
+        h3{"{title}"}p{class:"muted","Pins are stored on this server and shared with its other clients."}
+        button{onclick:move |_|{spawn(network::refresh_metadata(ui));},"Refresh probes and model catalog"}
+        crate::input::BrowserInput { placeholder:"Filter models", initial_value:filter(), onedit:move |snapshot: crate::input::InputSnapshot| { if *filter.peek() != snapshot.text { filter.set(snapshot.text); } }, aria_label:filter_label }
+        if catalog_is_empty { p{class:"muted","{empty}"} }
+        div{class:"models",for (index, model) in models.iter().cloned().enumerate(){
+            if show_divider && index == favorite_count { div { class:"favorites-divider", role:"separator" } }
+            div{class:"model-row",
+                div{strong{"{model.name}"}div{class:"muted","{model.model.provider.as_str()}/{model.model.api_name}"}}
+                button{"aria-label":if model.pinned{"Unpin model"}else{"Pin model"},onclick:move |_|{spawn(network::pin_model(ui,model.clone()));},if model.pinned{"★"}else{"☆"}}
+            }
+        }}
+    }
 }
 
 #[component]

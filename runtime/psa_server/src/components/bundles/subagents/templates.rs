@@ -173,7 +173,7 @@ pub async fn load_child_templates(
         let (models, default) = match snapshot {
             Some(snapshot) => (
                 build_model_choices(snapshot.config.models),
-                snapshot.config.default,
+                snapshot.config.first_model_default,
             ),
             None => (Vec::new(), true),
         };

@@ -11,7 +11,16 @@ schemars = "1"
 time = { version = "0.3.55", features = ["serde-well-known"] }
 reqwest = { version = "0.13.5", features = ["json", "stream", "query"] }
 futures-util = "0.3"
+tokio = { version = "1", features = ["fs", "rt", "time"] }
 eventsource-stream = "0.2"
 thiserror = "2"
 
 uuid = { version = "1", features = ["v4", "serde"] }
+base64 = "0.22"
+serde_yaml_ng = "0.10"
+sha2 = "0.10"
+tar = "0.4"
+zstd = "0.13"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

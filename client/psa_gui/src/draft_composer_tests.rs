@@ -355,7 +355,7 @@ fn root_fixture() -> Element {
     let mut state = Ui::new(DesktopSettings::default());
     let status: AgentConfigStatus = serde_json::from_value(serde_json::json!({
         "config": {"config_id":{"config_group":"Global","name":"root"}, "selectable":true,
-          "models":["Parent","Global",{"Fixed":{"model":"provider/model","effort":"Global"}}], "default":false},
+          "models":["Parent","Global",{"Fixed":{"model":"openrouter/vendor/model","effort":"Global"}}], "default":false},
         "status":{"missing_components":[]}
     })).unwrap();
     state.sessions.push(
@@ -511,7 +511,7 @@ fn root_completion_and_two_step_selection() {
         !html.contains("Choose the root agent model policy"),
         "{html}"
     );
-    assert!(!html.contains("Model: provider/model"), "{html}");
+    assert!(!html.contains("Model: openrouter/vendor/model"), "{html}");
     // Reselecting the configuration still exposes its model policies.
     root_input(&mut dom, textarea, "/agent ");
     root_key(&mut dom, textarea, Key::Enter);

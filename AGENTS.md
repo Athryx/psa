@@ -17,7 +17,7 @@ The following crates are present in the workspace. Runtime crates live under
 - `psa_desktop`: desktop executable and settings persistence; enable `native` for the WebView renderer.
 - `llm_api`: a generic wrapper over different llm api types, like OpenAI responses and completions, low level close to the api.
 - `psa_server`: main server managing sessions and calling into `llm_api` to make inference requests.
-- `psa`: client library for the psa server. `psa::api` defines the wire types and routes clients and probes use, plus a thin HTTP/SSE `Client`.
+- `psa`: client library for the psa server. `psa::api` defines the wire types and routes clients and probes use, plus a thin HTTP/SSE `Client`; the crate root adds a higher-level layer (`Context`, session and agent handles, agent specs, event ranges) for programs driving agents.
 - `psa_shared`: shared implementation utilities for the server and probe, including probe transport and local configuration locking.
 - `psa_probe`: standalone Linux probe providing remote file, directory, and process operations over an authenticated WebSocket.
 - `actors`: provides async mailboxes and handles for actor-style message passing, with the `#[mailbox]` macro supplied by `actors_macros`.
@@ -33,6 +33,18 @@ Prefer shared middle truncation unless the
 tool's specified behavior requires another policy. If existing capabilities are
 insufficient, stop and propose the needed additions to the user
 instead of expanding the harness to support the tool.
+
+# Client library API stability
+
+- The high-level `psa` API (everything at the crate root: `Context`, `SessionHandle`,
+  `AgentHandle`, specs, event ranges, `Error`) is a stable surface for external
+  programs. Do not change it unless the user asks. If a task seems to need a change
+  there, stop and ask the user first, describing the change and why.
+- `psa::api` (wire types, routes, raw `Client`) can change more freely, but keep it
+  similar in shape: prefer additive changes over renames and restructuring.
+- Before using or extending the high-level API, read
+  `.agent/skills/psa-client/SKILL.md`, and keep that skill in sync with any
+  approved change.
 
 # Architecture
 

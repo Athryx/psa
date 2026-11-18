@@ -150,3 +150,71 @@ async fn sandboxes_follow_manager_lifecycle_and_report_errors() {
     let _ = stop.send(());
     server.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn contexts_restricted_to_a_manager_list_and_manage_its_sandboxes() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = Database::open(directory.path().join("test.sqlite3"))
+        .await
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let client = api::Client::new(&format!("http://{address}"), "test-client-key").unwrap();
+    let probes = ProbeRegistry::start(fake_probe::PROBE_KEY.into());
+    let (stop, stopped) = oneshot::channel();
+    let server = tokio::spawn(psa_server::server::serve_with_configuration(
+        listener,
+        database,
+        Default::default(),
+        probes.clone(),
+        psa_server::config_registry::ConfigRegistry::new(directory.path().join("config")),
+        psa_server::config::default_model_config(),
+        "test-client-key".into(),
+        async {
+            let _ = stopped.await;
+        },
+    ));
+    let files = fake_probe::FakeFiles::default().with_sandboxes();
+    let probe = fake_probe::FakeProbe::connect_with_files(address, &probes, files).await;
+    let manager = support::probe_metadata().id;
+
+    let context = psa::Context::builder(client.clone(), "sandboxed")
+        .probe(psa::ProbeSelector::Id(manager))
+        .build()
+        .await
+        .unwrap();
+    assert_eq!(context.probe_restriction(), Some(manager));
+
+    // The new sandbox's probe has not connected, so it has no probe record yet.
+    let mut sandbox = context
+        .create_sandbox(&request(Some("img"), "worker"))
+        .await
+        .unwrap();
+    assert!(sandbox.is_sandbox() && !sandbox.is_live());
+    assert!(sandbox.info().is_none());
+    let found = context
+        .find_probe(psa::ProbeSelector::Sandbox("worker".into()))
+        .await
+        .unwrap();
+    assert_eq!(found.id(), sandbox.id());
+    assert_eq!(context.probes().await.unwrap().len(), 2);
+
+    sandbox.stop().await.unwrap();
+    assert_eq!(sandbox.sandbox().unwrap().state, SandboxState::Stopped);
+
+    // Deleted sandboxes are hidden from listings and cannot be brought up.
+    client.delete_sandbox(sandbox.id()).await.unwrap();
+    assert_eq!(context.probes().await.unwrap().len(), 1);
+    let mut deleted = context.probe(sandbox.id()).await.unwrap();
+    assert!(matches!(
+        deleted.ensure_up().await,
+        Err(psa::Error::SandboxUnavailable {
+            state: SandboxState::Deleted,
+            ..
+        })
+    ));
+
+    probe.disconnect(&probes).await;
+    let _ = stop.send(());
+    server.await.unwrap().unwrap();
+}

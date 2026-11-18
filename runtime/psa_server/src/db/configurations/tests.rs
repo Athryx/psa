@@ -15,7 +15,7 @@ fn config(name: &str, children: &[&str]) -> AgentConfig {
         bundles: vec![],
         hooks: HookConfigs::default(),
         models: vec![ModelSelection::Global],
-        default: true,
+        first_model_default: true,
         subagents: IncludedItems {
             groups: vec![],
             items: children.iter().map(|name| id(name)).collect(),
@@ -30,6 +30,7 @@ fn skill(name: &str) -> SkillRegistration {
         description: name.into(),
         skill_location: SkillLocation::Global(PathBuf::from(format!("/skills/{name}"))),
         disable_model_invocation: false,
+        archive_sha256: None,
     }
 }
 async fn database() -> (tempfile::TempDir, Database) {
@@ -320,27 +321,27 @@ async fn single_model_defaults_are_normalized_for_api_and_discovered_registratio
     let (directory, db) = database().await;
     let mut cursor = db.cursor().await.unwrap();
     let mut api = config("single-api", &[]);
-    api.default = false;
+    api.first_model_default = false;
     let mut multiple = config("multiple-api", &[]);
     multiple.models = vec![ModelSelection::Global, ModelSelection::Parent];
-    multiple.default = false;
+    multiple.first_model_default = false;
     let registered = cursor
         .upsert_agent_configs(vec![api.clone(), multiple])
         .await
         .unwrap();
-    assert!(registered[0].config.default);
-    assert!(!registered[1].config.default);
+    assert!(registered[0].config.first_model_default);
+    assert!(!registered[1].config.first_model_default);
     assert!(
-        !api.default,
+        !api.first_model_default,
         "registration must not mutate the caller's input"
     );
 
     let mut discovered = config("single-discovered", &[]);
     discovered.models = vec![ModelSelection::Parent];
-    discovered.default = false;
+    discovered.first_model_default = false;
     let mut discovered_multiple = config("multiple-discovered", &[]);
     discovered_multiple.models = vec![ModelSelection::Global, ModelSelection::Parent];
-    discovered_multiple.default = false;
+    discovered_multiple.first_model_default = false;
     cursor
         .replace_discovered_group(
             &ConfigGroup::Global,
@@ -355,7 +356,7 @@ async fn single_model_defaults_are_normalized_for_api_and_discovered_registratio
             .await
             .unwrap()
             .config
-            .default
+            .first_model_default
     );
     assert!(
         !cursor
@@ -363,7 +364,7 @@ async fn single_model_defaults_are_normalized_for_api_and_discovered_registratio
             .await
             .unwrap()
             .config
-            .default
+            .first_model_default
     );
     cursor.commit().await.unwrap();
     db.close().await;
@@ -379,7 +380,7 @@ async fn single_model_defaults_are_normalized_for_api_and_discovered_registratio
                 .await
                 .unwrap()
                 .config
-                .default
+                .first_model_default
         );
     }
     for name in ["multiple-api", "multiple-discovered"] {
@@ -389,7 +390,7 @@ async fn single_model_defaults_are_normalized_for_api_and_discovered_registratio
                 .await
                 .unwrap()
                 .config
-                .default
+                .first_model_default
         );
     }
     cursor.rollback().await.unwrap();
