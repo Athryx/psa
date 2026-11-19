@@ -148,9 +148,9 @@ impl Publication {
         }
 
         let result = async {
-            let mut cursor = db.cursor().await?;
+            let mut cursor = db.read().await?;
             let session = cursor.get_session(session_id).await?;
-            cursor.rollback().await?;
+            cursor.close().await?;
             Ok::<_, DbError>(session)
         }
         .await;
@@ -217,7 +217,7 @@ impl Publication {
     ) -> Result<(AddEventResult, AgentProjection), AgentError> {
         // Commit order, not the projection, is held across the write.
         let _commits = self.commits.lock().await;
-        let mut cursor = db.cursor().await?;
+        let mut cursor = db.write().await?;
         let result = cursor.add_event_batch(agent, events).await?;
 
         let mut context = context.clone();

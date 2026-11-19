@@ -2,7 +2,7 @@
 
 Subagent ancestry is core agent metadata. `Agent.subagent_parent_id` records an
 immutable parent in the same session and is saved atomically with agent creation.
-`Agent.parent_id` continues to mean fork lineage. The create/get/list API and
+`Agent.forked_from` continues to mean fork lineage. The create/get/list API and
 agent snapshot events expose ancestry without requiring this bundle. Session
 forks remap subagent links to copied agents and clear links to absent parents.
 Existing agents default to no subagent parent; legacy `psa.subagents/v1:` logs

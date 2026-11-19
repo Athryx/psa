@@ -17,7 +17,7 @@ async fn create_agent_record(
         .await
         .unwrap();
     crate::test_support::register_probe(&database).await;
-    let mut cursor = database.cursor().await.unwrap();
+    let mut cursor = database.write().await.unwrap();
     let definition = cursor.create_agent_definition(definition).await.unwrap();
     let session = cursor
         .create_session(NewSession {

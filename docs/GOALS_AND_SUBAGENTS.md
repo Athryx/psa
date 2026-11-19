@@ -97,7 +97,7 @@ widgets, slash-command control endpoints, or request-history filtering in this p
 
 Agent ancestry is persisted as `Agent.subagent_parent_id` and exposed through
 agent create/get/list responses and snapshot events, including without the bundle.
-The parent must be in the same session. `Agent.parent_id` remains fork lineage.
+The parent must be in the same session. `Agent.forked_from` remains fork lineage.
 Session forks remap ancestry to copied agent IDs. Existing checkpoint logs are
 not imported; preexisting agents default to no subagent parent.
 

@@ -159,9 +159,9 @@ async fn enqueued_saves_survive_a_sibling_panic_before_mailbox_handling() {
     state.persist_events(&events).await.unwrap();
     assert!(state.outstanding_calls().is_empty());
     assert_eq!(state.agent.state, AgentState::Interrupted);
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     let events = cursor.load_all_events(state.agent.id).await.unwrap();
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     assert_eq!(
         events
             .iter()
@@ -222,9 +222,9 @@ async fn timed_out_save_waiter_does_not_cancel_its_enqueued_commit() {
     drop(publication);
     let state = finish(run).await;
     assert_eq!(state.agent.state, AgentState::Interrupted);
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     let events = cursor.load_all_events(state.agent.id).await.unwrap();
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     assert_eq!(
         events
             .iter()

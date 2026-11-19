@@ -4,7 +4,7 @@ use super::*;
 async fn hidden_round_trips_reloads_and_is_inherited_by_forks() {
     let (dir, db, session, default_agent) = fixture().await;
     assert!(!default_agent.hidden);
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let mut originals = Vec::new();
     for hidden in [false, true] {
         let agent = cursor
@@ -41,7 +41,7 @@ async fn hidden_round_trips_reloads_and_is_inherited_by_forks() {
     let db = Database::open(dir.path().join("events.sqlite3"))
         .await
         .unwrap();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     for agent in &originals {
         assert_eq!(
             cursor.get_agent(agent.id).await.unwrap().hidden,
@@ -62,7 +62,7 @@ async fn hidden_round_trips_reloads_and_is_inherited_by_forks() {
         let child = fork
             .agents
             .iter()
-            .find(|copy| copy.parent_id == Some(agent.id))
+            .find(|copy| copy.forked_from == Some(agent.id))
             .unwrap();
         assert_eq!(child.hidden, agent.hidden);
         assert_eq!(
@@ -89,7 +89,7 @@ async fn migration_defaults_legacy_agents_to_visible_and_checks_values() {
     pool.close().await;
 
     let db = Database::open(&path).await.unwrap();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     assert!(
         !cursor
             .get_agent(crate::agents::AgentId(1))

@@ -1,6 +1,6 @@
 //! Trusted-client HTTP/SSE API. Transcript mutations share the publication gate.
 
-use crate::db::{DatabaseCursor, EventRange};
+use crate::db::{EventRange, ReadCursor};
 use crate::{
     agents::{
         client_queries::ClientQueryError, publication::Publication, runtime_handle::RuntimeHandle,
@@ -461,9 +461,9 @@ async fn list_sessions(
         .transpose()?;
 
     let publication = state.publication.lock().await;
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let mut sessions = cursor.query_sessions(&query, before).await?;
-    cursor.rollback().await?;
+    cursor.close().await?;
 
     let more = sessions.len() > query.limit as usize;
     sessions.truncate(query.limit as usize);
@@ -499,9 +499,9 @@ async fn list_sessions(
 async fn list_projects(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<api::ProjectId>>, HttpError> {
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let projects = cursor.list_projects().await?;
-    cursor.rollback().await?;
+    cursor.close().await?;
     Ok(Json(projects))
 }
 
@@ -624,7 +624,7 @@ async fn get_agent_context_state(
     State(state): State<AppState>,
     ApiPath((session, agent)): ApiPath<(u64, u64)>,
 ) -> Result<Json<api::AgentContextState>, HttpError> {
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let status = cursor
         .load_agent_context_state(SessionId(session), AgentId(agent))
         .await?;
@@ -635,7 +635,7 @@ async fn get_agent_model_usage(
     State(state): State<AppState>,
     ApiPath((session, agent)): ApiPath<(u64, u64)>,
 ) -> Result<Json<Vec<api::ModelUsage>>, HttpError> {
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let usage = cursor
         .load_agent_model_usage(SessionId(session), AgentId(agent))
         .await?;
@@ -745,7 +745,7 @@ async fn load_page(
         ));
     }
 
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let page = match query.span {
         api::EventSpan::Latest => {
             load_backward_page(&mut cursor, session, agent, None, query).await?
@@ -771,12 +771,12 @@ async fn load_page(
             load_forward_page(&mut cursor, session, agent, after, Some(through), query).await?
         }
     };
-    cursor.rollback().await?;
+    cursor.close().await?;
     Ok(page)
 }
 
 async fn load_head(
-    cursor: &mut DatabaseCursor,
+    cursor: &mut ReadCursor,
     session: SessionId,
     agent: Option<AgentId>,
 ) -> Result<u64, HttpError> {
@@ -794,7 +794,7 @@ async fn load_head(
 }
 
 async fn load_recent_events(
-    cursor: &mut DatabaseCursor,
+    cursor: &mut ReadCursor,
     session: SessionId,
     agent: Option<AgentId>,
     through: u64,
@@ -817,7 +817,7 @@ async fn load_recent_events(
 
 /// The newest page ending before `before`, or at the head.
 async fn load_backward_page(
-    cursor: &mut DatabaseCursor,
+    cursor: &mut ReadCursor,
     session: SessionId,
     agent: Option<AgentId>,
     before: Option<u64>,
@@ -862,7 +862,7 @@ async fn load_backward_page(
 
 /// Events after `after`, up to `through` or the head.
 async fn load_forward_page(
-    cursor: &mut DatabaseCursor,
+    cursor: &mut ReadCursor,
     session: SessionId,
     agent: Option<AgentId>,
     after: u64,
@@ -1521,7 +1521,7 @@ mod tests {
             .await
             .unwrap();
         crate::test_support::register_probe(&db).await;
-        let mut cursor = db.cursor().await.unwrap();
+        let mut cursor = db.write().await.unwrap();
         let session = cursor
             .create_session(sessions::NewSession {
                 decision_model: None,

@@ -176,8 +176,9 @@ working directory hierarchy, adds the working directory, and loads the skill
 catalogue. Forks keep their inherited startup and tool definitions but rerun
 the enabled optional context. It also follows session model updates unless the
 definition pins its model. All four flags default to true (`{"Startup":{}}`);
-bare `"Startup"` is invalid. Startup's creation hooks run before every other
-bundle's, wherever it is listed; other bundles install in list order.
+bare `"Startup"` is invalid. Bundles install, and their hooks run, in list
+order. List `Startup` first: its `NewContext` clears context written at
+creation by any bundle listed before it.
 
 `StopWithoutTools` is the ordinary completion policy: stop after a response
 without tool calls. `ExtraSystemPrompt { prompt }` owns its prompt and adds it
@@ -420,7 +421,7 @@ These fields have distinct purposes:
 
 - `config` preserves source identity, model policies, and inclusion requests.
 - `definition` is the existing internal executable snapshot. It contains `id`,
-  `previous_version_id`, `version`, `name`, ordinary executable fields,
+  `name`, ordinary executable fields,
   `model_config: Option<ModelConfig>`, `skills: Vec<PathBuf>` (materialized
   probe-local `SKILL.md` paths), and
   `permitted_subagents: Vec<AgentDefinitionId>`. Its `skills` are **paths**, not

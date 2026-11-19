@@ -189,7 +189,8 @@ model catalog. Generated server configs enable it. See
 true; `base_prompt = false` omits DefaultStartup's base instructions) installs,
 in order, the `DefaultStartup`, `ToolDefinitions`, and enabled `ProjectContext`,
 `Cwd`, and `Skills` creation hooks, plus the `SessionModelUpdate` session-update
-hook. Its creation hooks run before every other bundle's, wherever it is listed.
+hook. Hooks run in bundle order, so list `Startup` first: its `NewContext`
+clears context written at creation by any bundle listed before it.
 
 `DefaultStartup` emits `NewContext`, the resolved `Model`, and (unless
 `base_prompt` is false) a base assistant
@@ -313,7 +314,7 @@ is optional: omission or null uses server `session_defaults`, and an explicit
 persisted configuration; session updates can replace it explicitly. Reloads,
 updates, and forks do not reapply creation defaults.
 
-`ForkedSession.agents` is a flat `Vec<Agent>`; each returned agent's `parent_id`
+`ForkedSession.agents` is a flat `Vec<Agent>`; each returned agent's `forked_from`
 is the source agent ID, rather than a separate source/child tuple.
 
 TODO: other stuff from client like configs, mcp, etc

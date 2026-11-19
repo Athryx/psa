@@ -189,8 +189,10 @@ additional_paths = ["/path/to/my-skill"]
 ### Bundles
 
 Bundles install all tools and lifecycle hooks, in list order, and own their
-shared state. The exception is `Startup`: its creation hooks run before every
-other bundle's, wherever it is listed. Each bundle may appear once. Unit
+shared state; hooks run in that same order. List `Startup` first: its creation
+hooks start a new context, which clears anything that bundles listed before it
+wrote at creation (the extra system prompt, subagent identity, codemode function
+list). Each bundle may appear once. Unit
 bundles are written as a string (`"Bash"`); bundles with fields as a table
 (`{ Goal = { interactive_only = true } }`).
 

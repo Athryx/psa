@@ -118,12 +118,12 @@ async fn session_defaults_resolve_once_and_survive_updates_forks_and_server_rest
                     client.get_session(session.id).await.unwrap().model_config,
                     default
                 );
-                let mut cursor = database.cursor().await.unwrap();
+                let mut cursor = database.read().await.unwrap();
                 assert_eq!(
                     cursor.get_session(session.id).await.unwrap().model_config,
                     default
                 );
-                cursor.rollback().await.unwrap();
+                cursor.close().await.unwrap();
                 earlier_sessions.push(session);
             }
 

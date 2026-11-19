@@ -126,7 +126,7 @@ impl RuntimeHandle {
         &self,
         request: crate::db::CreateAgentDefinition,
     ) -> Result<api::AgentDefinition, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.write().await?;
         let definition = cursor.create_agent_definition(request).await?;
         cursor.commit().await?;
         Ok(definition)
@@ -136,31 +136,9 @@ impl RuntimeHandle {
         &self,
         id: api::AgentDefinitionId,
     ) -> Result<api::AgentDefinition, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let definition = cursor.get_agent_definition(id).await?;
-        cursor.rollback().await?;
-        Ok(definition)
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn list_agent_definitions(
-        &self,
-    ) -> Result<Vec<api::AgentDefinition>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
-        let definitions = cursor.list_agent_definitions().await?;
-        cursor.rollback().await?;
-        Ok(definitions)
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn update_agent_definition(
-        &self,
-        id: api::AgentDefinitionId,
-        request: crate::db::UpdateAgentDefinition,
-    ) -> Result<api::AgentDefinition, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
-        let definition = cursor.update_agent_definition(id, request).await?;
-        cursor.commit().await?;
+        cursor.close().await?;
         Ok(definition)
     }
 
@@ -177,7 +155,7 @@ impl RuntimeHandle {
             .discover_session_agents_dir(request.probe_id, &request.working_directory)
             .await?;
         let publication = self.publication.lock().await;
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.write().await?;
         let session = cursor
             .create_session(sessions::NewSession {
                 name: request.name,
@@ -202,9 +180,9 @@ impl RuntimeHandle {
     }
 
     pub async fn get_session(&self, id: SessionId) -> Result<sessions::Session, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let session = cursor.get_session(id).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         Ok(session)
     }
@@ -214,9 +192,9 @@ impl RuntimeHandle {
         &self,
         parent: Option<SessionId>,
     ) -> Result<Vec<sessions::Session>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let sessions = cursor.list_sessions(parent).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         Ok(sessions)
     }
@@ -241,7 +219,7 @@ impl RuntimeHandle {
         let notification = self.commands.reserve_notification().await?;
 
         let publication = self.publication.lock().await;
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.write().await?;
         let session = cursor
             .update_session(
                 id,
@@ -283,15 +261,15 @@ impl RuntimeHandle {
             self.discover_session_agents_dir(source.probe_id, cwd)
                 .await?
         } else {
-            let mut cursor = self.database.cursor().await?;
+            let mut cursor = self.database.read().await?;
             let known = cursor.has_session_agents_dir_discovery(id).await?;
             let agents_dir = cursor.get_session_agents_dir(id).await?;
-            cursor.rollback().await?;
+            cursor.close().await?;
             known.then_some(agents_dir)
         };
         let notification = self.commands.reserve_notification().await?;
         let publication = self.publication.lock().await;
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.write().await?;
         let fork = cursor
             .fork_session(
                 id,
@@ -362,7 +340,7 @@ impl RuntimeHandle {
     ) -> Result<Agent, RuntimeError> {
         let notification = self.commands.reserve_notification().await?;
         let publication = self.publication.lock().await;
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.write().await?;
         cursor.get_agent_definition(request.definition_id).await?;
         let agent = cursor
             .create_agent(
@@ -396,9 +374,9 @@ impl RuntimeHandle {
     }
 
     pub async fn list_agents(&self, session: SessionId) -> Result<Vec<Agent>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let agents = cursor.list_agents(session).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         Ok(agents)
     }
@@ -408,9 +386,9 @@ impl RuntimeHandle {
         session: SessionId,
         agent: AgentId,
     ) -> Result<Agent, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let agent = cursor.require_agent_session(session, agent).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         Ok(agent)
     }
@@ -422,10 +400,10 @@ impl RuntimeHandle {
         agent: AgentId,
         range: crate::db::EventRange,
     ) -> Result<Vec<api::events::Event>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         cursor.require_agent_session(session, agent).await?;
         let events = cursor.load_events(agent, range).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(events)
     }
 
@@ -435,9 +413,9 @@ impl RuntimeHandle {
         session: SessionId,
         agent: AgentId,
     ) -> Result<Option<api::ResultRecord>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let result = cursor.load_last_result(session, agent).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(result)
     }
 
@@ -448,9 +426,9 @@ impl RuntimeHandle {
         agent: AgentId,
         limit: u32,
     ) -> Result<Vec<api::ResultRecord>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let results = cursor.load_last_results(session, agent, limit).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(results)
     }
 
@@ -729,7 +707,7 @@ mod tests {
 
         // The fake manager does not run startup hooks. Seed an explicit transcript
         // so both head recovery and an earlier model-only fork can be tested.
-        let mut cursor = sessions.database.cursor().await.unwrap();
+        let mut cursor = sessions.database.write().await.unwrap();
         cursor
             .add_events(
                 agent.id,
@@ -758,12 +736,12 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(fork.session.parent_id, Some(session.id));
+        assert_eq!(fork.session.forked_from, Some(session.id));
         assert_eq!(fork.session.probe_id, session.probe_id);
         assert_eq!(fork.session.name, "fork");
         assert_eq!(fork.session.first_position, 5);
         assert_eq!(fork.session.next_position, 6);
-        assert_eq!(fork.agents[0].parent_id, Some(agent.id));
+        assert_eq!(fork.agents[0].forked_from, Some(agent.id));
         assert_eq!(fork.agents[0].created_position, agent.created_position);
         assert_eq!(fork.agents[0].first_event_id, EventId(4));
         assert_eq!(fork.agents[0].next_event_id, EventId(5));
@@ -808,76 +786,15 @@ mod tests {
         assert_eq!(earlier.session.next_position, 3);
         assert_eq!(earlier.agents[0].created_position, agent.created_position);
         assert_eq!(earlier.agents[0].first_event_id, EventId(2));
-        let mut cursor = sessions.database.cursor().await.unwrap();
+        let mut cursor = sessions.database.read().await.unwrap();
         let events = cursor.load_all_events(earlier.agents[0].id).await.unwrap();
-        cursor.rollback().await.unwrap();
+        cursor.close().await.unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0].kind, EventType::Model(_)));
         assert!(matches!(
             sessions.get_agent(session.id, fork.agents[0].id).await,
             Err(RuntimeError::Database(DbError::NotFound { .. }))
         ));
-    }
-
-    #[tokio::test]
-    async fn definition_updates_create_immutable_versions_without_manager_access() {
-        let fixture = Fixture::new().await;
-        let sessions = &fixture.sessions;
-        let initial = sessions
-            .create_agent_definition(crate::db::CreateAgentDefinition {
-                name: "custom".into(),
-                description: "first version".into(),
-                selectable: true,
-                model: crate::test_support::model_config().into(),
-                bundles: vec![api::BundleConfig::ExtraSystemPrompt {
-                    prompt: "original instructions".into(),
-                }],
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(initial.version, 1);
-        assert_eq!(initial.previous_version_id, None);
-        let updated = sessions
-            .update_agent_definition(
-                initial.id,
-                crate::db::UpdateAgentDefinition {
-                    name: "replacement".into(),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_ne!(updated.id, initial.id);
-        assert_eq!(updated.previous_version_id, Some(initial.id));
-        assert_eq!(updated.version, 2);
-        assert_eq!(updated.name, "replacement");
-        assert!(updated.description.is_empty());
-        assert!(!updated.selectable);
-        assert_eq!(updated.model, api::AgentModel::Global);
-        assert!(updated.bundles.is_empty());
-        let original = sessions.get_agent_definition(initial.id).await.unwrap();
-        assert_eq!(original.name, "custom");
-        assert_eq!(original.description, "first version");
-        assert!(original.selectable);
-        assert_eq!(original.model, crate::test_support::model_config().into());
-        assert_eq!(
-            original.bundles,
-            vec![api::BundleConfig::ExtraSystemPrompt {
-                prompt: "original instructions".into()
-            }]
-        );
-        let definitions = sessions.list_agent_definitions().await.unwrap();
-        assert!(
-            definitions
-                .iter()
-                .any(|definition| definition.id == initial.id)
-        );
-        assert!(
-            definitions
-                .iter()
-                .any(|definition| definition.id == updated.id)
-        );
     }
 
     #[tokio::test]
@@ -913,7 +830,7 @@ mod tests {
                 let _publication = sessions.publication.lock().await;
                 sessions
                     .database
-                    .cursor()
+                    .write()
                     .await
                     .unwrap()
                     .rollback()
@@ -929,12 +846,12 @@ mod tests {
             assert_eq!(updated.name, "renamed");
             assert_eq!(updated.working_directory.to_str(), Some("/new"));
             let _publication = sessions.publication.lock().await;
-            let mut cursor = sessions.database.cursor().await.unwrap();
+            let mut cursor = sessions.database.read().await.unwrap();
             assert_eq!(
                 cursor.get_session(session.id).await.unwrap().name,
                 "renamed"
             );
-            cursor.rollback().await.unwrap();
+            cursor.close().await.unwrap();
         };
         let query_and_update = async {
             assert!(sessions.is_busy(session.id).await.unwrap());

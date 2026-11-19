@@ -1,5 +1,5 @@
 use super::{
-    DatabaseCursor, DbError,
+    DbError, ReadCursor, WriteCursor,
     agents::get_agent,
     payloads::{event_kind, insert_payload, load_payloads},
     schema::{
@@ -122,7 +122,99 @@ pub struct AddEventResult {
     pub new_usage: Option<Usage>,
 }
 
-impl DatabaseCursor {
+impl ReadCursor {
+    /// Load the latest private event of this kind visible through the agent's
+    /// fork lineage, optionally bounded by an inclusive public event sequence.
+    pub async fn load_latest_private_event(
+        &mut self,
+        agent: AgentId,
+        through: Option<EventId>,
+        kind: PrivateEventKind,
+    ) -> Result<Option<PrivateEvent>, DbError> {
+        let conn = self.connection();
+        let segments = load_segments(conn, agent, EventId(0), through).await?;
+        for (owner, lower, upper) in segments.into_iter().rev() {
+            let event = query_private_event(conn, kind, owner, lower, upper).await?;
+            if event.is_some() {
+                return Ok(event);
+            }
+        }
+        Ok(None)
+    }
+
+    /// Load the private event of this kind attached to exactly `event`,
+    /// resolving the owning agent through the fork lineage.
+    pub async fn load_private_event_at(
+        &mut self,
+        agent: AgentId,
+        event: EventId,
+        kind: PrivateEventKind,
+    ) -> Result<Option<PrivateEvent>, DbError> {
+        let conn = self.connection();
+        let after = EventId(event.0.saturating_sub(1));
+        let segments = load_segments(conn, agent, after, Some(event)).await?;
+        let Some((owner, lower, upper)) = segments.into_iter().next() else {
+            return Ok(None);
+        };
+        query_private_event(conn, kind, owner, lower, upper).await
+    }
+
+    pub async fn load_events(
+        &mut self,
+        agent: AgentId,
+        range: EventRange,
+    ) -> Result<Vec<Event>, DbError> {
+        if range.limit == 0 || range.limit > 10_000 {
+            return Err(DbError::InvalidInput(
+                "event page size must be between 1 and 10000".into(),
+            ));
+        }
+
+        let conn = self.connection();
+        let rows = load_event_rows(conn, agent, &range).await?;
+        let mut result = Vec::with_capacity(rows.len());
+
+        // A page can span multiple ancestors. Load each owner's payloads in a batch.
+        let mut owners = Vec::new();
+        for row in &rows {
+            if !owners.contains(&row.agent_id) {
+                owners.push(row.agent_id);
+            }
+        }
+        let mut payloads = std::collections::HashMap::new();
+        for owner in owners {
+            let first = rows.iter().find(|r| r.agent_id == owner).unwrap().event_seq;
+            let last = rows
+                .iter()
+                .rev()
+                .find(|r| r.agent_id == owner)
+                .unwrap()
+                .event_seq;
+            payloads.extend(load_payloads(conn, owner, first, last).await?);
+        }
+
+        for row in rows {
+            let kind = payloads.remove(&row.event_pk).ok_or_else(|| {
+                DbError::Corrupt(format!("event {} has no payload", row.event_pk))
+            })?;
+            if event_kind(&kind) != row.kind {
+                return Err(DbError::Corrupt(
+                    "payload kind differs from envelope".into(),
+                ));
+            }
+            result.push(Event {
+                id: EventId(decode_integer(row.event_seq)?),
+                source_agent_id: AgentId(decode_integer(row.agent_id)?),
+                timestamp: decode_time(row.timestamp_us)?,
+                kind,
+            });
+        }
+
+        Ok(result)
+    }
+}
+
+impl WriteCursor {
     pub async fn add_events(
         &mut self,
         agent: AgentId,
@@ -337,96 +429,6 @@ impl DatabaseCursor {
             new_usage,
         })
     }
-
-    /// Load the latest private event of this kind visible through the agent's
-    /// fork lineage, optionally bounded by an inclusive public event sequence.
-    pub async fn load_latest_private_event(
-        &mut self,
-        agent: AgentId,
-        through: Option<EventId>,
-        kind: PrivateEventKind,
-    ) -> Result<Option<PrivateEvent>, DbError> {
-        let conn = self.connection();
-        let segments = load_segments(conn, agent, EventId(0), through).await?;
-        for (owner, lower, upper) in segments.into_iter().rev() {
-            let event = query_private_event(conn, kind, owner, lower, upper).await?;
-            if event.is_some() {
-                return Ok(event);
-            }
-        }
-        Ok(None)
-    }
-
-    /// Load the private event of this kind attached to exactly `event`,
-    /// resolving the owning agent through the fork lineage.
-    pub async fn load_private_event_at(
-        &mut self,
-        agent: AgentId,
-        event: EventId,
-        kind: PrivateEventKind,
-    ) -> Result<Option<PrivateEvent>, DbError> {
-        let conn = self.connection();
-        let after = EventId(event.0.saturating_sub(1));
-        let segments = load_segments(conn, agent, after, Some(event)).await?;
-        let Some((owner, lower, upper)) = segments.into_iter().next() else {
-            return Ok(None);
-        };
-        query_private_event(conn, kind, owner, lower, upper).await
-    }
-
-    pub async fn load_events(
-        &mut self,
-        agent: AgentId,
-        range: EventRange,
-    ) -> Result<Vec<Event>, DbError> {
-        if range.limit == 0 || range.limit > 10_000 {
-            return Err(DbError::InvalidInput(
-                "event page size must be between 1 and 10000".into(),
-            ));
-        }
-
-        let conn = self.connection();
-        let rows = load_event_rows(conn, agent, &range).await?;
-        let mut result = Vec::with_capacity(rows.len());
-
-        // A page can span multiple ancestors. Load each owner's payloads in a batch.
-        let mut owners = Vec::new();
-        for row in &rows {
-            if !owners.contains(&row.agent_id) {
-                owners.push(row.agent_id);
-            }
-        }
-        let mut payloads = std::collections::HashMap::new();
-        for owner in owners {
-            let first = rows.iter().find(|r| r.agent_id == owner).unwrap().event_seq;
-            let last = rows
-                .iter()
-                .rev()
-                .find(|r| r.agent_id == owner)
-                .unwrap()
-                .event_seq;
-            payloads.extend(load_payloads(conn, owner, first, last).await?);
-        }
-
-        for row in rows {
-            let kind = payloads.remove(&row.event_pk).ok_or_else(|| {
-                DbError::Corrupt(format!("event {} has no payload", row.event_pk))
-            })?;
-            if event_kind(&kind) != row.kind {
-                return Err(DbError::Corrupt(
-                    "payload kind differs from envelope".into(),
-                ));
-            }
-            result.push(Event {
-                id: EventId(decode_integer(row.event_seq)?),
-                source_agent_id: AgentId(decode_integer(row.agent_id)?),
-                timestamp: decode_time(row.timestamp_us)?,
-                kind,
-            });
-        }
-
-        Ok(result)
-    }
 }
 
 fn validate_result_transitions(mut state: AgentState, events: &[&NewEvent]) -> Result<(), DbError> {
@@ -565,17 +567,17 @@ pub(super) async fn load_segments(
             ));
         }
         upper = upper.min(first - 1);
-        let Some(parent_id) = current.parent_id else {
+        let Some(source_id) = current.forked_from else {
             break;
         };
-        let parent = match get_agent(conn, parent_id).await {
+        let parent = match get_agent(conn, source_id).await {
             Err(DbError::NotFound { .. }) => {
                 return Err(DbError::Corrupt("missing agent parent".into()));
             }
             result => result?,
         };
         let owner = get_session(conn, current.session_id).await?;
-        if owner.parent_id != Some(parent.session_id)
+        if owner.forked_from != Some(parent.session_id)
             || current.first_event_id.0 > parent.next_event_id.0
         {
             return Err(DbError::Corrupt(

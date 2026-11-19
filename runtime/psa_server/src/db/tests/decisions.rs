@@ -52,7 +52,7 @@ async fn decision_call_events_round_trip_through_the_database() {
         duration: Duration::from_millis(1250),
     };
 
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor
         .add_events(
             agent.id,
@@ -62,7 +62,7 @@ async fn decision_call_events_round_trip_through_the_database() {
         .unwrap();
     cursor.commit().await.unwrap();
 
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     let events = cursor.load_all_events(agent.id).await.unwrap();
     let stored: Vec<_> = events
         .into_iter()
@@ -79,7 +79,7 @@ async fn session_decision_models_are_updated_without_clearing_and_inherited_by_f
     let (_dir, db, session, _agent) = fixture().await;
     assert_eq!(session.decision_model, None);
 
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let updated = cursor
         .update_session(
             session.id,
@@ -133,7 +133,7 @@ async fn session_decision_models_are_updated_without_clearing_and_inherited_by_f
     assert_eq!(overridden.session.decision_model, Some(decider("vendor/b")));
     cursor.commit().await.unwrap();
 
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     let stored = cursor.get_session(session.id).await.unwrap();
     assert_eq!(stored.decision_model, Some(decider("vendor/a")));
 }

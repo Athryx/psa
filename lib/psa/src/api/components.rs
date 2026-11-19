@@ -31,8 +31,9 @@ pub enum DecisionModelSelection {
 
 /// Construction configuration for a feature bundle that owns related components.
 ///
-/// Bundles install their tools and hooks in list order, except that `Startup`
-/// creation hooks run before every other creation hook. Bundle ownership keeps
+/// Bundles install their tools and hooks in list order, and hooks run in that
+/// order. `Startup` must be listed first: its creation hooks start a new
+/// context, clearing anything earlier creation hooks wrote. Bundle ownership keeps
 /// shared state and cleanup together instead of independently constructing each
 /// component from its identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -60,7 +61,8 @@ pub enum BundleConfig {
     /// Stops after a response without tool calls. This is the ordinary completion
     /// policy, incompatible with Goal and TypedResult.
     StopWithoutTools,
-    /// Appends a configured system message when the agent is created, after startup.
+    /// Appends a configured system message when a root agent is created, after
+    /// startup. Forks inherit it with the rest of their context.
     ExtraSystemPrompt {
         /// System prompt text owned by this bundle installation.
         prompt: String,

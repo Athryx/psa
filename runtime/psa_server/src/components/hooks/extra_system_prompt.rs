@@ -25,8 +25,9 @@ impl Hook for ExtraSystemPromptHook {
         context: &mut AgentContext<'_>,
         _cancellation: Cancellation,
     ) -> Result<(), HookError> {
+        // Forks inherit the prompt with the rest of their context.
         let prompt = &self.prompt;
-        if prompt.is_empty() {
+        if prompt.is_empty() || context.agent().forked_from.is_some() {
             return Ok(());
         }
 

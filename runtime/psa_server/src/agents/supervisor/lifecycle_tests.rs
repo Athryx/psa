@@ -103,7 +103,7 @@ impl Fixture {
         let probe = ProbeId(Uuid::new_v4());
         let mut metadata = crate::test_support::probe_metadata();
         metadata.id = probe;
-        let mut cursor = db.cursor().await.unwrap();
+        let mut cursor = db.write().await.unwrap();
         cursor.upsert_probe(&metadata).await.unwrap();
         crate::test_support::create_agent_definition(&mut cursor).await;
         cursor.commit().await.unwrap();
@@ -162,9 +162,9 @@ impl Fixture {
     }
 
     async fn identity_prompt(&self, agent: AgentId) -> String {
-        let mut cursor = self.db.cursor().await.unwrap();
+        let mut cursor = self.db.read().await.unwrap();
         let events = cursor.load_all_events(agent).await.unwrap();
-        cursor.rollback().await.unwrap();
+        cursor.close().await.unwrap();
         assert_eq!(
             serde_json::to_string(&events)
                 .unwrap()
@@ -269,29 +269,23 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
     .unwrap();
     let definition = runtime
         .handle
-        .update_agent_definition(
-            psa::api::AgentDefinitionId(1),
-            crate::db::CreateAgentDefinition {
-                name: "explicit".into(),
-                model: explicit_model.clone().into(),
-                bundles: vec![
-                    psa::api::BundleConfig::Startup {
-                        base_prompt: true,
-                        project_context: false,
-                        cwd: false,
-                        skills: false,
-                    },
-                    psa::api::BundleConfig::StopWithoutTools,
-                ],
-                ..Default::default()
-            },
-        )
+        .create_agent_definition(crate::db::CreateAgentDefinition {
+            name: "explicit".into(),
+            model: explicit_model.clone().into(),
+            bundles: vec![
+                psa::api::BundleConfig::Startup {
+                    base_prompt: true,
+                    project_context: false,
+                    cwd: false,
+                    skills: false,
+                },
+                psa::api::BundleConfig::StopWithoutTools,
+            ],
+            ..Default::default()
+        })
         .await
         .unwrap();
-    assert_eq!(
-        definition.previous_version_id,
-        Some(inherited.definition_id)
-    );
+    assert_ne!(definition.id, inherited.definition_id);
     let explicit = runtime
         .handle
         .create_agent(
@@ -314,7 +308,7 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
         .unwrap();
     fixture.wait_idle(&runtime.handle, session.id).await;
 
-    let mut cursor = fixture.db.cursor().await.unwrap();
+    let mut cursor = fixture.db.read().await.unwrap();
     for (agent, expected) in [
         (&inherited, &session.model_config),
         (&explicit, &explicit_model),
@@ -328,7 +322,7 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
             matches!(&events[2].kind, EventType::Message(message) if message.message_type == psa::api::events::MessageType::System)
         );
     }
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
     let mut updated_model = session.model_config.clone();
     updated_model.model = llm_api::providers::Model::new(
@@ -389,7 +383,7 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
     assert!(unchanged_agents.contains(&explicit.id));
     fixture.wait_idle(&runtime.handle, session.id).await;
 
-    let mut cursor = fixture.db.cursor().await.unwrap();
+    let mut cursor = fixture.db.read().await.unwrap();
     for (agent, expected, model_count) in [
         (&inherited, &updated_model, 2),
         (&explicit, &explicit_model, 1),
@@ -405,7 +399,7 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
         assert_eq!(models.len(), model_count);
         assert_eq!(*models.last().unwrap(), expected);
     }
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     runtime.shutdown().await.unwrap();
     fixture.probes.shutdown().await;
 }
@@ -464,23 +458,20 @@ async fn subagent_identity_is_created_once_and_preserved_on_reload_restart_and_f
     let runtime = fixture.start().await;
     let definition = runtime
         .handle
-        .update_agent_definition(
-            psa::api::AgentDefinitionId(1),
-            crate::db::CreateAgentDefinition {
-                name: "subagents".into(),
-                bundles: vec![
-                    psa::api::BundleConfig::Startup {
-                        base_prompt: true,
-                        project_context: false,
-                        cwd: false,
-                        skills: false,
-                    },
-                    psa::api::BundleConfig::Subagents,
-                    psa::api::BundleConfig::StopWithoutTools,
-                ],
-                ..Default::default()
-            },
-        )
+        .create_agent_definition(crate::db::CreateAgentDefinition {
+            name: "subagents".into(),
+            bundles: vec![
+                psa::api::BundleConfig::Startup {
+                    base_prompt: true,
+                    project_context: false,
+                    cwd: false,
+                    skills: false,
+                },
+                psa::api::BundleConfig::Subagents,
+                psa::api::BundleConfig::StopWithoutTools,
+            ],
+            ..Default::default()
+        })
         .await
         .unwrap();
     let session = fixture.create_session(&runtime.handle).await;
@@ -614,12 +605,12 @@ async fn fork_runs_creation_only_for_the_new_child_agent() {
         .await
         .unwrap();
     assert_eq!(fork.agents.len(), 1);
-    assert_eq!(fork.agents[0].parent_id, Some(parent.id));
+    assert_eq!(fork.agents[0].forked_from, Some(parent.id));
     let child = &fork.agents[0];
     assert_ne!(child.id, parent.id);
     let created = fixture.next("create", child.id).await;
     assert_eq!(created.session.id, fork.session.id);
-    assert_eq!(created.session.parent_id, Some(session.id));
+    assert_eq!(created.session.forked_from, Some(session.id));
     assert_eq!(created.session.name, "child");
     assert_eq!(created.state, AgentState::Idle);
     assert_eq!(

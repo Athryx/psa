@@ -3,12 +3,12 @@ use crate::db::{EventRange, NewEvent};
 use crate::{
     agents::AgentId,
     db::{
-        DatabaseCursor, EventBatchItem, MAX_CODEMODE_SNAPSHOT_BYTES, PrivateEvent, PrivateEventKind,
+        EventBatchItem, MAX_CODEMODE_SNAPSHOT_BYTES, PrivateEvent, PrivateEventKind, WriteCursor,
     },
 };
 
 // Exercise the generic batch API while keeping lineage scenarios concise.
-impl DatabaseCursor {
+impl WriteCursor {
     async fn add_snapshot(
         &mut self,
         agent: AgentId,
@@ -39,7 +39,7 @@ fn tool_result(id: &str) -> NewEvent {
 #[tokio::test]
 async fn snapshots_follow_fork_lineage_and_never_enter_public_events() {
     let (dir, db, session, parent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let first = cursor
         .add_snapshot(parent.id, &tool_result("one"), b"private-first\0")
         .await
@@ -174,7 +174,7 @@ async fn snapshots_follow_fork_lineage_and_never_enter_public_events() {
     let reopened = Database::open(dir.path().join("events.sqlite3"))
         .await
         .unwrap();
-    let mut cursor = reopened.cursor().await.unwrap();
+    let mut cursor = reopened.write().await.unwrap();
     assert_eq!(
         cursor
             .load_latest_private_event(grandchild, None, PrivateEventKind::CodeModeSnapshot)
@@ -195,7 +195,7 @@ async fn snapshots_follow_fork_lineage_and_never_enter_public_events() {
 #[tokio::test]
 async fn snapshot_failures_and_cursor_rollback_leave_no_event_or_sequence_gap() {
     let (_dir, db, _session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     assert!(
         cursor
             .add_snapshot(agent.id, &log("wrong kind"), b"x")
@@ -244,7 +244,7 @@ async fn snapshot_failures_and_cursor_rollback_leave_no_event_or_sequence_gap() 
         .unwrap();
     assert_eq!(saved.events[0].id, EventId(1));
     cursor.rollback().await.unwrap();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     assert!(
         cursor
             .load_events(agent.id, EventRange::default())
@@ -277,7 +277,7 @@ async fn snapshot_failures_and_cursor_rollback_leave_no_event_or_sequence_gap() 
 #[tokio::test]
 async fn mixed_batches_validate_and_commit_public_events_without_gaps() {
     let (_dir, db, _session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let private =
         |bytes: &[u8]| EventBatchItem::Private(PrivateEvent::CodeModeSnapshot(bytes.to_vec()));
     let public = |id| EventBatchItem::Public(tool_result(id));
@@ -357,7 +357,7 @@ async fn mixed_batches_validate_and_commit_public_events_without_gaps() {
 #[tokio::test]
 async fn mixed_batch_failure_rolls_back_all_preceding_items() {
     let (_dir, db, _session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     sqlx::query("CREATE TEMP TRIGGER reject_second_snapshot BEFORE INSERT ON codemode_snapshots WHEN (SELECT count(*) FROM codemode_snapshots) >= 1 BEGIN SELECT RAISE(ABORT, 'test failure'); END")
         .execute(cursor.connection()).await.unwrap();
     let batch = [
@@ -392,7 +392,7 @@ async fn mixed_batch_failure_rolls_back_all_preceding_items() {
 #[tokio::test]
 async fn snapshots_are_compressed_at_rest() {
     let (_dir, db, _session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let mut snapshot = b"MONTY\0".to_vec();
     snapshot.extend(std::iter::repeat_n(b'y', 1024 * 1024));
     let event = cursor

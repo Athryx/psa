@@ -112,9 +112,9 @@ impl ConfigRegistry {
         let _guard = self.gate.write().await;
         tokio::fs::create_dir_all(&self.data_dir).await?;
         let global_root = tokio::fs::canonicalize(&self.data_dir).await?;
-        let mut cursor = database.cursor().await?;
+        let mut cursor = database.read().await?;
         let previous_skills = cursor.list_skill_sources().await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         let mut batches = vec![
             scan_group(
                 Source::Local,
@@ -143,7 +143,7 @@ impl ConfigRegistry {
             );
         }
 
-        let mut cursor = database.cursor().await?;
+        let mut cursor = database.write().await?;
         let existing_agents = cursor.list_agent_configs().await?;
         let existing_skills = cursor.list_skills().await?;
         let (discovered_agents, discovered_skills) = cursor.list_discovered_config_ids().await?;

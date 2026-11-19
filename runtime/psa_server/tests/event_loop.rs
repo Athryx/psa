@@ -412,12 +412,12 @@ async fn interactive_and_hidden_metadata_survive_http_create_get_list_and_fork()
         let child = fork
             .agents
             .iter()
-            .find(|agent| agent.parent_id == Some(source.id))
+            .find(|agent| agent.forked_from == Some(source.id))
             .unwrap();
         assert_eq!(child.interactive, source.interactive);
         assert_eq!(child.hidden, source.hidden);
         assert_eq!(child.definition_id, source.definition_id);
-        assert_eq!(child.parent_id, Some(source.id));
+        assert_eq!(child.forked_from, Some(source.id));
         let loaded = harness
             .client
             .get_agent(fork.session.id, child.id)
@@ -459,12 +459,12 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
         path: "/work/project/.agents".into(),
         probe_id: support::probe_metadata().id,
     });
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     assert_eq!(
         cursor.get_session_agents_dir(session.id).await.unwrap(),
         expected
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
     let inherited = harness
         .client
@@ -491,7 +491,7 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
         )
         .await
         .unwrap();
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     assert_eq!(
         cursor
             .get_session_agents_dir(inherited.session.id)
@@ -513,7 +513,7 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
         cursor.get_session_agents_dir(session.id).await.unwrap(),
         expected
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
     harness
         .client
@@ -526,7 +526,7 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
         )
         .await
         .unwrap();
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     assert_eq!(
         cursor.get_session_agents_dir(session.id).await.unwrap(),
         None
@@ -538,7 +538,7 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
             .unwrap(),
         expected
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     harness.close().await;
 }
 
@@ -984,9 +984,9 @@ async fn startup_bundle_orders_offline_context_hooks() {
             .await
             .unwrap();
         harness.wait_stopped(session.id).await;
-        let mut cursor = harness.db.cursor().await.unwrap();
+        let mut cursor = harness.db.read().await.unwrap();
         let events = cursor.load_all_events(agent.id).await.unwrap();
-        cursor.rollback().await.unwrap();
+        cursor.close().await.unwrap();
 
         if name == "omitted" {
             assert!(
@@ -1050,7 +1050,7 @@ async fn startup_bundle_orders_offline_context_hooks() {
         .iter()
         .find(|agent| agent.name == "ordered")
         .unwrap();
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     let events = cursor.load_all_events(ordered.id).await.unwrap();
     assert_eq!(
         events.len(),
@@ -1071,7 +1071,7 @@ async fn startup_bundle_orders_offline_context_hooks() {
         serde_json::to_value(&cwd.content).unwrap(),
         serde_json::to_value(psa_server::prompts::text("<cwd>\n/fork\n</cwd>")).unwrap()
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     harness.close().await;
 }
 
@@ -1097,7 +1097,7 @@ async fn offline_probe_interrupts_before_calling_the_provider() {
     );
     assert!(harness.requests.try_recv().is_err());
 
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     let events = cursor.load_all_events(agent.id).await.unwrap();
     assert!(events.iter().any(|event| matches!(
         &event.kind,
@@ -1109,7 +1109,7 @@ async fn offline_probe_interrupts_before_calling_the_provider() {
             .iter()
             .any(|event| matches!(&event.kind, EventType::InferenceResultStart(_)))
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     harness.close().await;
 }
 
@@ -1151,7 +1151,7 @@ async fn disconnected_probe_interrupts_the_next_request_before_provider_call() {
     assert_eq!(agent.usage.total_tokens, Some(7));
     assert!(harness.requests.try_recv().is_err());
 
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     let events = cursor.load_all_events(agent.id).await.unwrap();
     assert_eq!(
         events
@@ -1160,7 +1160,7 @@ async fn disconnected_probe_interrupts_the_next_request_before_provider_call() {
             .count(),
         1
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     harness.close().await;
 }
 
@@ -1190,14 +1190,14 @@ async fn queued_requests_and_worker_retirement_do_not_lose_messages() {
         harness.requests.recv().await.unwrap();
     }
     harness.wait_stopped(session.id).await;
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     let events = cursor.load_all_events(agent.id).await.unwrap();
     assert_eq!(events.iter().filter(|event| matches!(&event.kind, EventType::Message(message) if message.message_type == MessageType::Human)).count(), 16);
     assert_eq!(
         cursor.get_agent(agent.id).await.unwrap().usage.total_tokens,
         Some(16 * 7)
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     harness.close().await;
 }
 
@@ -1596,7 +1596,7 @@ async fn shutdown_interrupts_inference_persists_partial_output_and_discards_queu
     assert!(harness.requests.try_recv().is_err());
     let db = Database::open(path).await.unwrap();
     support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     assert_eq!(
         cursor.get_agent(agent.id).await.unwrap().state,
         AgentState::Interrupted
@@ -1605,7 +1605,7 @@ async fn shutdown_interrupts_inference_persists_partial_output_and_discards_queu
     assert_eq!(events.iter().filter(|event| matches!(&event.kind, EventType::Message(message) if message.message_type == MessageType::Human)).count(), 1);
     assert!(events.iter().any(|event| matches!(&event.kind, EventType::Message(message) if message.message_type == MessageType::Agent)));
     assert!(events.iter().any(|event| matches!(&event.kind, EventType::InferenceResultEnd(end) if matches!(end.outcome, api::Outcome::Cancelled))));
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     db.close().await;
     harness.fake_stop.send_replace(true);
     harness.fake_server.await.unwrap();
@@ -1649,7 +1649,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::open(dir.path().join("db.sqlite3")).await.unwrap();
     support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let session = cursor
         .create_session(NewSession {
             decision_model: None,
@@ -1782,7 +1782,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
     )
     .await
     .unwrap();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     let child_events = cursor.load_all_events(child.id).await.unwrap();
     let repaired_len = child_events.len();
     assert_eq!(
@@ -1800,7 +1800,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
         cursor.get_agent(child.id).await.unwrap().usage.total_tokens,
         Some(15)
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     runtime.shutdown().await.unwrap();
     let runtime = Runtime::start(
         db.clone(),
@@ -1810,12 +1810,12 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
     )
     .await
     .unwrap();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     assert_eq!(
         cursor.load_all_events(child.id).await.unwrap().len(),
         repaired_len
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     runtime.shutdown().await.unwrap();
     probes.shutdown().await;
     db.close().await;
@@ -1828,7 +1828,7 @@ async fn persistence_failure_does_not_mutate_worker_memory() {
     let path = dir.path().join("db.sqlite3");
     let db = Database::open(&path).await.unwrap();
     support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let session = cursor
         .create_session(NewSession {
             decision_model: None,
@@ -1872,13 +1872,13 @@ async fn persistence_failure_does_not_mutate_worker_memory() {
     );
     assert_eq!(state.agent().state, AgentState::Idle);
     assert_eq!(state.context().last_event_id, EventId(0));
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     assert!(cursor.load_all_events(agent.id).await.unwrap().is_empty());
     assert_eq!(
         cursor.get_agent(agent.id).await.unwrap().state,
         AgentState::Idle
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     connection.close().await.unwrap();
     db.close().await;
 }
@@ -1903,7 +1903,7 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
         .await
         .unwrap();
     assert_eq!(child.subagent_parent_id, Some(parent.id));
-    assert_eq!(child.parent_id, None);
+    assert_eq!(child.forked_from, None);
     harness.wait_stopped(session.id).await;
     let mut stream = harness
         .client
@@ -1998,16 +1998,16 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
     let copied_parent = fork
         .agents
         .iter()
-        .find(|agent| agent.parent_id == Some(parent.id))
+        .find(|agent| agent.forked_from == Some(parent.id))
         .unwrap()
         .id;
     let copied_child = fork
         .agents
         .iter()
-        .find(|agent| agent.parent_id == Some(child.id))
+        .find(|agent| agent.forked_from == Some(child.id))
         .unwrap();
     assert_eq!(copied_child.subagent_parent_id, Some(copied_parent));
-    assert_eq!(copied_child.parent_id, Some(child.id));
+    assert_eq!(copied_child.forked_from, Some(child.id));
     harness.wait_stopped(fork.session.id).await;
     harness.close().await;
 }

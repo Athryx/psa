@@ -31,7 +31,7 @@ fn agent_composer_fixture() -> Element {
         use_signal(|| {
             let mut state = Ui::new(DesktopSettings::default());
             state.sessions.push(serde_json::from_value(serde_json::json!({
-            "id":1,"parent_id":null,"name":"test","working_directory":"/home/project",
+            "id":1,"forked_from":null,"name":"test","working_directory":"/home/project",
             "probe_id":"00000000-0000-0000-0000-000000000001",
             "model_config":{"model":"openrouter/default","effort":"Low"},
             "busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"
@@ -127,7 +127,7 @@ fn draft_status_fixture() -> Element {
         use_signal(|| {
             let mut state = Ui::new(DesktopSettings::default());
             state.sessions.push(serde_json::from_value(serde_json::json!({
-            "id":1,"parent_id":null,"name":"test","working_directory":"/tmp",
+            "id":1,"forked_from":null,"name":"test","working_directory":"/tmp",
             "probe_id":"00000000-0000-0000-0000-000000000001",
             "model_config":{"model":"openrouter/default","effort":"Low"},
             "busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"

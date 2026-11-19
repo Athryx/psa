@@ -68,7 +68,7 @@ async fn typed_bridge_validates_and_cancels_before_running() {
     )
     .await
     .unwrap();
-    let mut cursor = database.cursor().await.unwrap();
+    let mut cursor = database.write().await.unwrap();
     let session = cursor
         .create_session(NewSession {
             decision_model: None,

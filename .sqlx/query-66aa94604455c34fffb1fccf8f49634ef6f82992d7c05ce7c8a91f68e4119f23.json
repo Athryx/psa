@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO agent_definitions (name, description, selectable, model_config, skills, permitted_subagents, bundles) VALUES (?,?,?,?,?,?,?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "66aa94604455c34fffb1fccf8f49634ef6f82992d7c05ce7c8a91f68e4119f23"
+}

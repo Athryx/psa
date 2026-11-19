@@ -27,7 +27,7 @@ impl Hook for DefaultStartupHook {
         _cancellation: Cancellation,
     ) -> Result<(), HookError> {
         // Forks already have an inherited context, which must not be cleared.
-        if context.agent().parent_id.is_some() {
+        if context.agent().forked_from.is_some() {
             return Ok(());
         }
 

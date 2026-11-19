@@ -25,7 +25,7 @@ pub fn model_config() -> llm_api::providers::ModelConfig {
 }
 
 pub async fn create_agent_definition(
-    cursor: &mut psa_server::db::DatabaseCursor,
+    cursor: &mut psa_server::db::WriteCursor,
 ) -> psa::api::AgentDefinitionId {
     cursor
         .create_agent_definition(psa_server::db::CreateAgentDefinition {
@@ -48,7 +48,7 @@ pub async fn create_agent_definition(
 }
 
 pub async fn register_probe(database: &Database) {
-    let mut cursor = database.cursor().await.unwrap();
+    let mut cursor = database.write().await.unwrap();
     cursor.upsert_probe(&probe_metadata()).await.unwrap();
     if cursor.list_agent_definitions().await.unwrap().is_empty() {
         create_agent_definition(&mut cursor).await;

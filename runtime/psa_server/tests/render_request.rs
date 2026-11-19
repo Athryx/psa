@@ -39,7 +39,7 @@ async fn compacted_database_context_serializes_once_in_both_protocols() {
             .await
             .unwrap();
         support::register_probe(&db).await;
-        let mut cursor = db.cursor().await.unwrap();
+        let mut cursor = db.write().await.unwrap();
         let session = cursor
             .create_session(NewSession {
                 decision_model: None,

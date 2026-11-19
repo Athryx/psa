@@ -203,7 +203,7 @@ async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_ad
     assert_eq!(child.name, "worker-one");
     assert!(!child.interactive);
     assert_eq!(
-        child.parent_id, None,
+        child.forked_from, None,
         "subagent parentage must not be stored as fork ancestry"
     );
     let child_snapshot = harness

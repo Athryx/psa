@@ -15,9 +15,13 @@ mod sessions;
 mod snapshots;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use std::{path::Path, time::Duration};
+use std::{
+    ops::{Deref, DerefMut},
+    path::Path,
+    time::Duration,
+};
 
-pub use agent_definitions::{CreateAgentDefinition, UpdateAgentDefinition};
+pub use agent_definitions::CreateAgentDefinition;
 pub use configurations::{AgentConfigGraph, SkillRegistration};
 pub use error::DbError;
 pub use events::{
@@ -32,10 +36,23 @@ pub struct Database {
     pool: sqlx::SqlitePool,
 }
 
-/// A transaction-scoped view of the database. Dropping it rolls back all changes.
-#[must_use = "a database cursor must be committed to persist changes"]
-pub struct DatabaseCursor {
+/// A read-only transaction over a consistent snapshot of the database.
+///
+/// It is opened deferred, so under WAL it never takes the SQLite writer lock and
+/// does not wait on writers. Keep it short-lived: an open read transaction
+/// prevents WAL checkpoints from completing. Dropping it ends the transaction.
+pub struct ReadCursor {
     transaction: sqlx::Transaction<'static, sqlx::Sqlite>,
+}
+
+/// A write transaction that reserves the SQLite writer lock when it begins.
+///
+/// It dereferences to [`ReadCursor`], so every read is also available while
+/// writing. Taking the lock up front means a transaction that reads and then
+/// writes can never fail to upgrade. Dropping it rolls back all changes.
+#[must_use = "a write cursor must be committed to persist changes"]
+pub struct WriteCursor {
+    cursor: ReadCursor,
 }
 
 impl Database {
@@ -55,31 +72,61 @@ impl Database {
         Ok(Self { pool })
     }
 
-    /// Begin a transaction, reserving the SQLite writer lock up front.
-    pub async fn cursor(&self) -> Result<DatabaseCursor, DbError> {
-        let transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        Ok(DatabaseCursor { transaction })
+    /// Begin a read-only transaction that does not take the writer lock.
+    pub async fn read(&self) -> Result<ReadCursor, DbError> {
+        let transaction = self.pool.begin_with("BEGIN DEFERRED").await?;
+        Ok(ReadCursor { transaction })
     }
 
-    /// Close the pool after all active cursors have been committed or dropped.
+    /// Begin a write transaction, reserving the SQLite writer lock up front.
+    pub async fn write(&self) -> Result<WriteCursor, DbError> {
+        let transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        Ok(WriteCursor {
+            cursor: ReadCursor { transaction },
+        })
+    }
+
+    /// Close the pool after all active cursors have been closed, committed or dropped.
     pub async fn close(&self) {
         self.pool.close().await;
     }
 }
 
-impl DatabaseCursor {
+impl ReadCursor {
     fn connection(&mut self) -> &mut sqlx::SqliteConnection {
         &mut self.transaction
     }
 
+    /// End the transaction now instead of when the cursor is dropped.
+    pub async fn close(self) -> Result<(), DbError> {
+        self.transaction.rollback().await?;
+        Ok(())
+    }
+}
+
+impl WriteCursor {
     pub async fn commit(self) -> Result<(), DbError> {
-        self.transaction.commit().await?;
+        self.cursor.transaction.commit().await?;
         Ok(())
     }
 
     pub async fn rollback(self) -> Result<(), DbError> {
-        self.transaction.rollback().await?;
+        self.cursor.transaction.rollback().await?;
         Ok(())
+    }
+}
+
+impl Deref for WriteCursor {
+    type Target = ReadCursor;
+
+    fn deref(&self) -> &ReadCursor {
+        &self.cursor
+    }
+}
+
+impl DerefMut for WriteCursor {
+    fn deref_mut(&mut self) -> &mut ReadCursor {
+        &mut self.cursor
     }
 }
 

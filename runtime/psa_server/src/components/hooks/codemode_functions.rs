@@ -24,7 +24,7 @@ impl Hook for CodeModeFunctionsHook {
         context: &mut AgentContext<'_>,
         mut cancellation: Cancellation,
     ) -> Result<(), HookError> {
-        if context.agent().parent_id.is_some() {
+        if context.agent().forked_from.is_some() {
             return Ok(());
         }
 

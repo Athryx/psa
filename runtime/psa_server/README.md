@@ -649,13 +649,20 @@ now `agents::agent_projection::AgentProjection`, distinct from execution context
 
 ## Storage and replay API
 
-`db::Database` manages the pool and migrations. Call `db.cursor().await?` to get a
-`DatabaseCursor`; all session, agent, and event operations take `&mut self` on the
-cursor. Call `commit().await?` to persist changes or `rollback().await?` to discard
-them. Dropping the cursor also rolls back. Both methods consume the cursor.
+`db::Database` manages the pool and migrations. Call `db.read().await?` for a
+`ReadCursor` or `db.write().await?` for a `WriteCursor`; all session, agent, and
+event operations take `&mut self` on a cursor. Queries live on `ReadCursor`, and
+`WriteCursor` adds the writes and dereferences to `ReadCursor`, so it can read
+too. On a write cursor, call `commit().await?` to persist changes or
+`rollback().await?` to discard them; dropping it also rolls back. A read cursor
+ends with `close().await?` or on drop.
 
-A cursor begins an immediate transaction, including for reads. Keep cursors short
-lived and release them before model/tool/network work or closing the database.
+A read cursor begins a deferred transaction: under WAL it reads a consistent
+snapshot without taking the writer lock, so reads never wait on writers. A write
+cursor begins an immediate transaction, reserving the writer lock up front so a
+read-then-write can never fail to upgrade. Keep cursors short lived (an open read
+transaction also stalls WAL checkpoints) and release them before
+model/tool/network work or closing the database.
 Multiple operations share one coherent snapshot and can be committed atomically.
 Multi-step writes use savepoints: a failed operation rolls back its own changes,
 so callers can catch the error and still commit earlier successful operations.
@@ -694,7 +701,7 @@ use llm_api::{api::RequestConfig, providers::{Effort, Model, ModelConfig, Provid
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let db = Database::open("psa.sqlite3").await?;
-let mut cursor = db.cursor().await?;
+let mut cursor = db.write().await?;
 let probe = cursor.list_probes().await?.into_iter().next().ok_or("connect a probe first")?;
 let session = cursor.create_session(NewSession {
     probe_id: probe.metadata.id,
@@ -753,7 +760,7 @@ let fork = cursor.fork_session(session.id, SessionFork {
     metadata: SessionUpdate { name: Some("Alternative".into()), ..Default::default() },
 }).await?;
 // fork.agents is Vec<Agent>, including agents with empty streams.
-// Each child agent.parent_id identifies its source agent.
+// Each child agent.forked_from identifies its source agent.
 # let _ = (request, fork);
 cursor.commit().await?;
 db.close().await;

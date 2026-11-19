@@ -16,7 +16,7 @@ fn snapshots() -> (Agent, Session) {
         id: AgentId(1),
         session_id: SessionId(1),
         definition_id: AgentDefinitionId(1),
-        parent_id: None,
+        forked_from: None,
         subagent_parent_id: None,
         first_event_id: EventId(1),
         next_event_id: EventId(1),
@@ -30,7 +30,7 @@ fn snapshots() -> (Agent, Session) {
     let session = Session {
         decision_model: None,
         id: agent.session_id,
-        parent_id: None,
+        forked_from: None,
         first_position: 1,
         next_position: 1,
         name: "bundles".into(),
@@ -47,8 +47,6 @@ fn snapshots() -> (Agent, Session) {
 fn definition() -> AgentDefinition {
     AgentDefinition {
         id: AgentDefinitionId(1),
-        previous_version_id: None,
-        version: 1,
         name: "bundles".into(),
         description: String::new(),
         selectable: false,
@@ -101,18 +99,18 @@ async fn bundle_order_and_empty_component_configuration_are_preserved() {
 }
 
 #[tokio::test]
-async fn startup_creation_hooks_run_first_wherever_the_bundle_is_listed() {
+async fn creation_hooks_keep_bundle_list_order() {
     let (agent, session) = snapshots();
     let mut definition = definition();
     definition.bundles = vec![
-        BundleConfig::ExtraSystemPrompt {
-            prompt: "Extra".into(),
-        },
         BundleConfig::Startup {
             base_prompt: true,
             project_context: true,
             cwd: true,
             skills: true,
+        },
+        BundleConfig::ExtraSystemPrompt {
+            prompt: "Extra".into(),
         },
     ];
     let mut components = InstalledComponents::install(&definition, &agent, &session)

@@ -1,7 +1,7 @@
 //! Mutable source registry and lazy, cycle-aware immutable snapshot resolution.
 use super::agent_definitions::CreateAgentDefinition;
 use super::{
-    DatabaseCursor, DbError,
+    DbError, ReadCursor, WriteCursor,
     schema::{decode_integer, encode_integer},
 };
 use crate::components::bundles::validate_completion_config;
@@ -144,150 +144,7 @@ struct SelectedNode {
     model: AgentModel,
 }
 
-impl DatabaseCursor {
-    pub async fn upsert_agent_configs(
-        &mut self,
-        configs: Vec<AgentConfig>,
-    ) -> Result<Vec<AgentConfigStatus>, DbError> {
-        validate_batch(&configs, &[])?;
-        self.write_registry(&configs, &[], false).await?;
-        let all = self.list_agent_configs().await?;
-        Ok(configs
-            .iter()
-            .filter_map(|config| {
-                all.iter()
-                    .find(|item| item.config.config_id == config.config_id)
-                    .cloned()
-            })
-            .collect())
-    }
-
-    pub async fn upsert_skills(
-        &mut self,
-        skills: Vec<SkillRegistration>,
-    ) -> Result<Vec<Skill>, DbError> {
-        validate_batch(&[], &skills)?;
-        self.write_registry(&[], &skills, false).await?;
-        let all = self.list_skills().await?;
-        Ok(skills
-            .iter()
-            .filter_map(|skill| {
-                all.iter()
-                    .find(|item| item.config_id == skill.config_id)
-                    .cloned()
-            })
-            .collect())
-    }
-
-    async fn write_registry(
-        &mut self,
-        agents: &[AgentConfig],
-        skills: &[SkillRegistration],
-        discovered: bool,
-    ) -> Result<(), DbError> {
-        sqlx::query("SAVEPOINT registry_write")
-            .execute(self.connection())
-            .await?;
-        let result = async {
-            for agent in agents {
-                let mut agent = agent.clone();
-                if agent.models.len() == 1 {
-                    agent.first_model_default = true;
-                }
-                sqlx::query("INSERT INTO agent_configs(config_key,config_group,payload,discovered) VALUES(?,?,?,?) ON CONFLICT(config_key) DO UPDATE SET payload=excluded.payload,discovered=excluded.discovered")
-                    .bind(key(&agent.config_id)?).bind(key(&agent.config_id.config_group)?).bind(key(&agent)?).bind(discovered)
-                    .execute(self.connection()).await?;
-            }
-            for skill in skills {
-                sqlx::query("INSERT INTO registered_skills(config_key,config_group,payload,discovered) VALUES(?,?,?,?) ON CONFLICT(config_key) DO UPDATE SET payload=excluded.payload,active=TRUE,discovered=excluded.discovered")
-                    .bind(key(&skill.config_id)?).bind(key(&skill.config_id.config_group)?).bind(key(skill)?).bind(discovered)
-                    .execute(self.connection()).await?;
-            }
-            Ok::<_, DbError>(())
-        }.await;
-        self.finish_registry_savepoint(result).await
-    }
-
-    async fn finish_registry_savepoint<T>(
-        &mut self,
-        result: Result<T, DbError>,
-    ) -> Result<T, DbError> {
-        if result.is_err() {
-            sqlx::query("ROLLBACK TO registry_write")
-                .execute(self.connection())
-                .await?;
-        }
-        sqlx::query("RELEASE registry_write")
-            .execute(self.connection())
-            .await?;
-        result
-    }
-
-    /// Authoritative full-group replacement. Call only after a successful complete scan.
-    pub async fn replace_config_group(
-        &mut self,
-        group: &ConfigGroup,
-        agents: Vec<AgentConfig>,
-        skills: Vec<SkillRegistration>,
-    ) -> Result<(), DbError> {
-        self.replace_registry_group(group, agents, skills, false)
-            .await
-    }
-
-    /// Replace only discovery-owned records, preserving unrelated API registrations.
-    pub async fn replace_discovered_group(
-        &mut self,
-        group: &ConfigGroup,
-        agents: Vec<AgentConfig>,
-        skills: Vec<SkillRegistration>,
-    ) -> Result<(), DbError> {
-        self.replace_registry_group(group, agents, skills, true)
-            .await
-    }
-
-    async fn replace_registry_group(
-        &mut self,
-        group: &ConfigGroup,
-        agents: Vec<AgentConfig>,
-        skills: Vec<SkillRegistration>,
-        discovered: bool,
-    ) -> Result<(), DbError> {
-        validate_batch(&agents, &skills)?;
-        if agents
-            .iter()
-            .any(|item| &item.config_id.config_group != group)
-            || skills
-                .iter()
-                .any(|item| &item.config_id.config_group != group)
-        {
-            return Err(DbError::InvalidInput(
-                "replacement contains a different config group".into(),
-            ));
-        }
-        sqlx::query("SAVEPOINT registry_write")
-            .execute(self.connection())
-            .await?;
-        let result = async {
-            let agent_keys: HashSet<_> = agents.iter().map(|item| key(&item.config_id)).collect::<Result<_, _>>()?;
-            let skill_keys: HashSet<_> = skills.iter().map(|item| key(&item.config_id)).collect::<Result<_, _>>()?;
-            let group_key = key(group)?;
-            let rows = sqlx::query("SELECT config_key FROM agent_configs WHERE config_group=? AND (?=FALSE OR discovered=TRUE)")
-                .bind(&group_key).bind(discovered).fetch_all(self.connection()).await?;
-            for row in rows {
-                let id: String = row.try_get("config_key")?;
-                if !agent_keys.contains(&id) { sqlx::query("DELETE FROM agent_configs WHERE config_key=?").bind(id).execute(self.connection()).await?; }
-            }
-            let rows = sqlx::query("SELECT config_key FROM registered_skills WHERE config_group=? AND active=TRUE AND (?=FALSE OR discovered=TRUE)")
-                .bind(&group_key).bind(discovered).fetch_all(self.connection()).await?;
-            for row in rows {
-                let id: String = row.try_get("config_key")?;
-                if !skill_keys.contains(&id) { sqlx::query("UPDATE registered_skills SET active=FALSE WHERE config_key=?").bind(id).execute(self.connection()).await?; }
-            }
-            self.write_registry(&agents, &skills, discovered).await
-        }.await;
-        self.finish_registry_savepoint(result).await
-    }
-
+impl ReadCursor {
     /// Source manifest for adapters calculating the catalogue after a successful scan.
     /// The tuple contains agent IDs and active skill IDs respectively.
     pub async fn list_discovered_config_ids(
@@ -458,6 +315,202 @@ impl DatabaseCursor {
         Ok(graph)
     }
 
+    /// None means a legacy definition without registry metadata.
+    pub async fn get_resolved_agent_config(
+        &mut self,
+        id: AgentDefinitionId,
+    ) -> Result<Option<ResolvedAgentConfig>, DbError> {
+        let row =
+            sqlx::query("SELECT config,skill_ids FROM config_snapshots WHERE definition_id=?")
+                .bind(encode_integer(id.0)?)
+                .fetch_optional(self.connection())
+                .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let definition = self.get_agent_definition(id).await?;
+        Ok(Some(ResolvedAgentConfig {
+            config: serde_json::from_str(row.try_get("config")?)?,
+            references: ResolvedDefinitionReferences {
+                subagents: definition.permitted_subagents.clone(),
+                skills: serde_json::from_str(row.try_get("skill_ids")?)?,
+            },
+            definition,
+        }))
+    }
+
+    pub async fn has_session_agents_dir_discovery(
+        &mut self,
+        session: SessionId,
+    ) -> Result<bool, DbError> {
+        Ok(sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM session_agents_dirs WHERE session_id=?)",
+        )
+        .bind(encode_integer(session.0)?)
+        .fetch_one(self.connection())
+        .await?)
+    }
+
+    pub async fn get_session_agents_dir(
+        &mut self,
+        session: SessionId,
+    ) -> Result<Option<ConfigGroup>, DbError> {
+        let agents_dir: Option<String> =
+            sqlx::query_scalar("SELECT config_group FROM session_agents_dirs WHERE session_id=?")
+                .bind(encode_integer(session.0)?)
+                .fetch_optional(self.connection())
+                .await?;
+        let agents_dir: Option<Option<ConfigGroup>> = agents_dir
+            .map(|value| serde_json::from_str(&value).map_err(DbError::from))
+            .transpose()?;
+        Ok(agents_dir.flatten())
+    }
+}
+
+impl WriteCursor {
+    pub async fn upsert_agent_configs(
+        &mut self,
+        configs: Vec<AgentConfig>,
+    ) -> Result<Vec<AgentConfigStatus>, DbError> {
+        validate_batch(&configs, &[])?;
+        self.write_registry(&configs, &[], false).await?;
+        let all = self.list_agent_configs().await?;
+        Ok(configs
+            .iter()
+            .filter_map(|config| {
+                all.iter()
+                    .find(|item| item.config.config_id == config.config_id)
+                    .cloned()
+            })
+            .collect())
+    }
+
+    pub async fn upsert_skills(
+        &mut self,
+        skills: Vec<SkillRegistration>,
+    ) -> Result<Vec<Skill>, DbError> {
+        validate_batch(&[], &skills)?;
+        self.write_registry(&[], &skills, false).await?;
+        let all = self.list_skills().await?;
+        Ok(skills
+            .iter()
+            .filter_map(|skill| {
+                all.iter()
+                    .find(|item| item.config_id == skill.config_id)
+                    .cloned()
+            })
+            .collect())
+    }
+
+    async fn write_registry(
+        &mut self,
+        agents: &[AgentConfig],
+        skills: &[SkillRegistration],
+        discovered: bool,
+    ) -> Result<(), DbError> {
+        sqlx::query("SAVEPOINT registry_write")
+            .execute(self.connection())
+            .await?;
+        let result = async {
+            for agent in agents {
+                let mut agent = agent.clone();
+                if agent.models.len() == 1 {
+                    agent.first_model_default = true;
+                }
+                sqlx::query("INSERT INTO agent_configs(config_key,config_group,payload,discovered) VALUES(?,?,?,?) ON CONFLICT(config_key) DO UPDATE SET payload=excluded.payload,discovered=excluded.discovered")
+                    .bind(key(&agent.config_id)?).bind(key(&agent.config_id.config_group)?).bind(key(&agent)?).bind(discovered)
+                    .execute(self.connection()).await?;
+            }
+            for skill in skills {
+                sqlx::query("INSERT INTO registered_skills(config_key,config_group,payload,discovered) VALUES(?,?,?,?) ON CONFLICT(config_key) DO UPDATE SET payload=excluded.payload,active=TRUE,discovered=excluded.discovered")
+                    .bind(key(&skill.config_id)?).bind(key(&skill.config_id.config_group)?).bind(key(skill)?).bind(discovered)
+                    .execute(self.connection()).await?;
+            }
+            Ok::<_, DbError>(())
+        }.await;
+        self.finish_registry_savepoint(result).await
+    }
+
+    async fn finish_registry_savepoint<T>(
+        &mut self,
+        result: Result<T, DbError>,
+    ) -> Result<T, DbError> {
+        if result.is_err() {
+            sqlx::query("ROLLBACK TO registry_write")
+                .execute(self.connection())
+                .await?;
+        }
+        sqlx::query("RELEASE registry_write")
+            .execute(self.connection())
+            .await?;
+        result
+    }
+
+    /// Authoritative full-group replacement. Call only after a successful complete scan.
+    pub async fn replace_config_group(
+        &mut self,
+        group: &ConfigGroup,
+        agents: Vec<AgentConfig>,
+        skills: Vec<SkillRegistration>,
+    ) -> Result<(), DbError> {
+        self.replace_registry_group(group, agents, skills, false)
+            .await
+    }
+
+    /// Replace only discovery-owned records, preserving unrelated API registrations.
+    pub async fn replace_discovered_group(
+        &mut self,
+        group: &ConfigGroup,
+        agents: Vec<AgentConfig>,
+        skills: Vec<SkillRegistration>,
+    ) -> Result<(), DbError> {
+        self.replace_registry_group(group, agents, skills, true)
+            .await
+    }
+
+    async fn replace_registry_group(
+        &mut self,
+        group: &ConfigGroup,
+        agents: Vec<AgentConfig>,
+        skills: Vec<SkillRegistration>,
+        discovered: bool,
+    ) -> Result<(), DbError> {
+        validate_batch(&agents, &skills)?;
+        if agents
+            .iter()
+            .any(|item| &item.config_id.config_group != group)
+            || skills
+                .iter()
+                .any(|item| &item.config_id.config_group != group)
+        {
+            return Err(DbError::InvalidInput(
+                "replacement contains a different config group".into(),
+            ));
+        }
+        sqlx::query("SAVEPOINT registry_write")
+            .execute(self.connection())
+            .await?;
+        let result = async {
+            let agent_keys: HashSet<_> = agents.iter().map(|item| key(&item.config_id)).collect::<Result<_, _>>()?;
+            let skill_keys: HashSet<_> = skills.iter().map(|item| key(&item.config_id)).collect::<Result<_, _>>()?;
+            let group_key = key(group)?;
+            let rows = sqlx::query("SELECT config_key FROM agent_configs WHERE config_group=? AND (?=FALSE OR discovered=TRUE)")
+                .bind(&group_key).bind(discovered).fetch_all(self.connection()).await?;
+            for row in rows {
+                let id: String = row.try_get("config_key")?;
+                if !agent_keys.contains(&id) { sqlx::query("DELETE FROM agent_configs WHERE config_key=?").bind(id).execute(self.connection()).await?; }
+            }
+            let rows = sqlx::query("SELECT config_key FROM registered_skills WHERE config_group=? AND active=TRUE AND (?=FALSE OR discovered=TRUE)")
+                .bind(&group_key).bind(discovered).fetch_all(self.connection()).await?;
+            for row in rows {
+                let id: String = row.try_get("config_key")?;
+                if !skill_keys.contains(&id) { sqlx::query("UPDATE registered_skills SET active=FALSE WHERE config_key=?").bind(id).execute(self.connection()).await?; }
+            }
+            self.write_registry(&agents, &skills, discovered).await
+        }.await;
+        self.finish_registry_savepoint(result).await
+    }
+
     /// All required copies must complete before calling this method. Missing path
     /// mappings are errors, not missing-component warnings. Omitted model entries
     /// follow the session model.
@@ -592,30 +645,6 @@ impl DatabaseCursor {
         Ok(())
     }
 
-    /// None means a legacy definition without registry metadata.
-    pub async fn get_resolved_agent_config(
-        &mut self,
-        id: AgentDefinitionId,
-    ) -> Result<Option<ResolvedAgentConfig>, DbError> {
-        let row =
-            sqlx::query("SELECT config,skill_ids FROM config_snapshots WHERE definition_id=?")
-                .bind(encode_integer(id.0)?)
-                .fetch_optional(self.connection())
-                .await?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let definition = self.get_agent_definition(id).await?;
-        Ok(Some(ResolvedAgentConfig {
-            config: serde_json::from_str(row.try_get("config")?)?,
-            references: ResolvedDefinitionReferences {
-                subagents: definition.permitted_subagents.clone(),
-                skills: serde_json::from_str(row.try_get("skill_ids")?)?,
-            },
-            definition,
-        }))
-    }
-
     /// Select a creation-time model without consulting mutable current configs or
     /// advancing any pinned subagent edges. Existing snapshots remain unchanged.
     pub async fn resolve_pinned_agent_config(
@@ -716,18 +745,6 @@ impl DatabaseCursor {
         Ok(())
     }
 
-    pub async fn has_session_agents_dir_discovery(
-        &mut self,
-        session: SessionId,
-    ) -> Result<bool, DbError> {
-        Ok(sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM session_agents_dirs WHERE session_id=?)",
-        )
-        .bind(encode_integer(session.0)?)
-        .fetch_one(self.connection())
-        .await?)
-    }
-
     /// Mark discovery unknown, rather than a successful scan that found nothing.
     pub async fn clear_session_agents_dir(&mut self, session: SessionId) -> Result<(), DbError> {
         sqlx::query("DELETE FROM session_agents_dirs WHERE session_id=?")
@@ -735,21 +752,6 @@ impl DatabaseCursor {
             .execute(self.connection())
             .await?;
         Ok(())
-    }
-
-    pub async fn get_session_agents_dir(
-        &mut self,
-        session: SessionId,
-    ) -> Result<Option<ConfigGroup>, DbError> {
-        let agents_dir: Option<String> =
-            sqlx::query_scalar("SELECT config_group FROM session_agents_dirs WHERE session_id=?")
-                .bind(encode_integer(session.0)?)
-                .fetch_optional(self.connection())
-                .await?;
-        let agents_dir: Option<Option<ConfigGroup>> = agents_dir
-            .map(|value| serde_json::from_str(&value).map_err(DbError::from))
-            .transpose()?;
-        Ok(agents_dir.flatten())
     }
 }
 

@@ -105,14 +105,14 @@ impl RuntimeHandle {
         after: EventId,
         request_failed: bool,
     ) -> Result<Option<ResultRecord>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let snapshot = cursor.require_agent_session(session, agent).await?;
         let result = cursor
             .load_last_result(session, agent)
             .await?
             .filter(|result| result.event_id > after);
         if result.is_some() {
-            cursor.rollback().await?;
+            cursor.close().await?;
             return Ok(result);
         }
 
@@ -151,7 +151,7 @@ impl RuntimeHandle {
                 }
             }
         }
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(None)
     }
 }

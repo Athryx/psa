@@ -10,7 +10,7 @@ async fn persisted_model_updates_live_request_projection_and_survives_reload() {
         .await
         .unwrap();
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let session = cursor
         .create_session(NewSession {
             decision_model: None,
@@ -108,7 +108,7 @@ async fn repeated_status_changes_are_omitted_using_prior_transitions_in_the_batc
         .await
         .unwrap();
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let session = cursor
         .create_session(NewSession {
             decision_model: None,
@@ -212,13 +212,13 @@ async fn repeated_status_changes_are_omitted_using_prior_transitions_in_the_batc
         committed.iter().map(|(_, id)| *id).collect::<Vec<_>>(),
         vec![1, 2, 3, 4, 5, 6]
     );
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     assert_eq!(cursor.load_all_events(agent.id).await.unwrap().len(), 6);
     assert_eq!(
         cursor.get_agent(agent.id).await.unwrap().next_event_id,
         EventId(7)
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     db.close().await;
 }
 
@@ -229,7 +229,7 @@ async fn cancelled_persistence_finishes_before_the_next_append() {
         .await
         .unwrap();
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let session = cursor
         .create_session(NewSession {
             decision_model: None,
@@ -284,9 +284,9 @@ async fn cancelled_persistence_finishes_before_the_next_append() {
     assert!(!state.pending_persistence.as_ref().unwrap().is_finished());
     assert_eq!(state.agent().state, AgentState::Idle);
     assert_eq!(state.context().last_event_id, EventId(0));
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     assert!(cursor.load_all_events(agent.id).await.unwrap().is_empty());
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     drop(publication_guard);
 
     let appended = tokio::time::timeout(
@@ -311,7 +311,7 @@ async fn cancelled_persistence_finishes_before_the_next_append() {
     assert_eq!(state.context().last_event_id, EventId(3));
     assert_eq!(state.context().items().len(), 1);
 
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     let events = cursor.load_all_events(agent.id).await.unwrap();
     assert_eq!(
         events.iter().map(|event| event.id.0).collect::<Vec<_>>(),
@@ -329,7 +329,7 @@ async fn cancelled_persistence_finishes_before_the_next_append() {
     let persisted = cursor.get_agent(agent.id).await.unwrap();
     assert_eq!(persisted.state, state.agent().state);
     assert_eq!(persisted.next_event_id, state.agent().next_event_id);
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
     let mut committed = Vec::new();
     while let Ok(message) = published.try_recv() {
@@ -353,7 +353,7 @@ async fn committed_calls_get_not_run_results_when_interrupted_before_execution()
         .await
         .unwrap();
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let session = cursor
         .create_session(NewSession {
             decision_model: None,
@@ -421,7 +421,7 @@ async fn committed_calls_get_not_run_results_when_interrupted_before_execution()
     state.interrupt().await.unwrap();
     assert!(state.outstanding_calls().is_empty());
     assert_eq!(state.agent.state, AgentState::Interrupted);
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     let events = cursor
         .load_events_since_last_inference(agent.id)
         .await
@@ -439,6 +439,6 @@ async fn committed_calls_get_not_run_results_when_interrupted_before_execution()
         serde_json::to_value(&result.content).unwrap(),
         serde_json::to_value(prompts::tool_not_run()).unwrap()
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     db.close().await;
 }

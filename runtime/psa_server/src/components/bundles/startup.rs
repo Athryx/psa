@@ -10,6 +10,10 @@ use crate::{
 
 /// Initializes a new root agent's context and keeps its model following the
 /// session. Owns no resources.
+///
+/// Must be listed before every other bundle: hooks run in bundle order, and
+/// `DefaultStartup`'s `NewContext` clears context written by earlier creation
+/// hooks.
 pub struct StartupBundle {
     base_prompt: bool,
     project_context: bool,

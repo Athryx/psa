@@ -108,7 +108,7 @@ fn provider_info_only_transmits_identity_and_authentication() {
 }
 
 #[test]
-fn definitions_have_flat_versioned_wire_types_and_only_bundles() {
+fn definitions_have_flat_wire_types_and_only_bundles() {
     let bundles = vec![
         BundleConfig::Startup {
             base_prompt: true,
@@ -124,8 +124,6 @@ fn definitions_have_flat_versioned_wire_types_and_only_bundles() {
     ];
     let definition = AgentDefinition {
         id: AgentDefinitionId(9),
-        previous_version_id: Some(AgentDefinitionId(4)),
-        version: 2,
         name: "assistant".into(),
         description: "Reusable assistant".into(),
         selectable: true,
@@ -136,8 +134,7 @@ fn definitions_have_flat_versioned_wire_types_and_only_bundles() {
     };
     let json = serde_json::to_value(&definition).unwrap();
     assert_eq!(json["id"], 9);
-    assert_eq!(json["previous_version_id"], 4);
-    assert_eq!(json["version"], 2);
+    assert!(json.get("version").is_none());
     assert_eq!(
         json["bundles"],
         serde_json::json!([
@@ -436,7 +433,7 @@ fn attributed_message_requests_round_trip() {
 fn summary(name: &str, project: Option<&str>) -> Session {
     Session {
         id: SessionId(1),
-        parent_id: None,
+        forked_from: None,
         name: name.into(),
         working_directory: "/work".into(),
         probe_id: ProbeId(probes::Uuid::nil()),

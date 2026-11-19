@@ -120,7 +120,7 @@ async fn with_context<T>(test: impl AsyncFnOnce(&mut AgentContext<'_>) -> T) -> 
     )
     .await
     .unwrap();
-    let mut cursor = database.cursor().await.unwrap();
+    let mut cursor = database.write().await.unwrap();
     let session = cursor
         .create_session(NewSession {
             decision_model: Some(decider("vendor/session")),

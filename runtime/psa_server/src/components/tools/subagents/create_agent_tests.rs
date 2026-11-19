@@ -35,7 +35,7 @@ impl Fixture {
             .await
             .unwrap();
         crate::test_support::register_probe(&database).await;
-        let mut cursor = database.cursor().await.unwrap();
+        let mut cursor = database.write().await.unwrap();
         let worker = cursor
             .create_agent_definition(crate::db::CreateAgentDefinition {
                 name: "worker-template".into(),

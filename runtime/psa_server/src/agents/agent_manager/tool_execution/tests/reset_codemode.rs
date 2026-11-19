@@ -74,9 +74,9 @@ async fn invoke(
 }
 
 async fn load_events(fixture: &Fixture, state: &AgentManagerState) -> Vec<Event> {
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     let events = cursor.load_all_events(state.agent.id).await.unwrap();
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     events
 }
 
@@ -110,13 +110,13 @@ async fn load_snapshot(
     state: &AgentManagerState,
     through: Option<EventId>,
 ) -> Vec<u8> {
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     let event = cursor
         .load_latest_private_event(state.agent.id, through, PrivateEventKind::CodeModeSnapshot)
         .await
         .unwrap()
         .expect("private checkpoint persisted");
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     let PrivateEvent::CodeModeSnapshot(bytes) = event else {
         panic!("expected a codemode snapshot");
     };
@@ -432,7 +432,7 @@ async fn real_worker_reset_is_a_same_inference_barrier_and_forks_keep_their_stat
             "fresh fork\nbefore reset",
         ),
     ] {
-        let mut cursor = fixture.database.cursor().await.unwrap();
+        let mut cursor = fixture.database.write().await.unwrap();
         let fork = cursor
             .fork_session(
                 state.session.id,
@@ -449,7 +449,7 @@ async fn real_worker_reset_is_a_same_inference_barrier_and_forks_keep_their_stat
         let child_id = fork
             .agents
             .iter()
-            .find(|agent| agent.parent_id == Some(state.agent.id))
+            .find(|agent| agent.forked_from == Some(state.agent.id))
             .unwrap()
             .id;
         cursor.commit().await.unwrap();

@@ -67,7 +67,7 @@ fn event(agent: u64, id: u64) -> EventEnvelope {
 
 fn session_snapshot(id: u64, name: &str) -> Session {
     serde_json::from_value(serde_json::json!({
-        "id":id, "parent_id":null, "name":name, "working_directory":"/tmp",
+        "id":id, "forked_from":null, "name":name, "working_directory":"/tmp",
         "probe_id":"00000000-0000-0000-0000-000000000001",
         "model_config":{"model":"openrouter/model", "effort":"Medium"}, "busy":false,
         "created_at":"2026-01-01T00:00:00Z", "updated_at":"2026-01-01T00:00:00Z"
@@ -77,7 +77,7 @@ fn session_snapshot(id: u64, name: &str) -> Session {
 
 fn agent_snapshot(id: u64) -> Agent {
     serde_json::from_value(serde_json::json!({
-        "id":id, "definition_id":1, "session_id":1, "parent_id":null, "subagent_parent_id":null,
+        "id":id, "definition_id":1, "session_id":1, "forked_from":null, "subagent_parent_id":null,
         "name":"root", "interactive":true, "hidden":false, "state":"Idle",
         "usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"cached_input_tokens":0,"reasoning_output_tokens":0},
         "next_event_id":1, "created_at":"2026-01-01T00:00:00Z", "updated_at":"2026-01-01T00:00:00Z"

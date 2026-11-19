@@ -223,7 +223,7 @@ impl Fixture {
         tools: Vec<ToolKind>,
         calls: &[(&str, &str, serde_json::Value)],
     ) -> AgentManagerState {
-        let mut cursor = self.database.cursor().await.unwrap();
+        let mut cursor = self.database.write().await.unwrap();
         let session = cursor
             .create_session(NewSession {
                 decision_model: None,

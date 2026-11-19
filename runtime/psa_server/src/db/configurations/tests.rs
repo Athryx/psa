@@ -43,7 +43,7 @@ async fn database() -> (tempfile::TempDir, Database) {
 #[tokio::test]
 async fn cycles_forward_references_dedup_and_transitive_updates() {
     let (_dir, db) = database().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor
         .upsert_agent_configs(vec![
             config("a", &["b"]),
@@ -104,7 +104,7 @@ async fn cycles_forward_references_dedup_and_transitive_updates() {
 #[tokio::test]
 async fn missing_prunes_restoration_and_mutable_skill_identity() {
     let (_dir, db) = database().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let mut a = config("a", &["missing"]);
     a.skills.items = vec![id("s")];
     cursor.upsert_agent_configs(vec![a.clone()]).await.unwrap();
@@ -214,7 +214,7 @@ async fn missing_prunes_restoration_and_mutable_skill_identity() {
     let reopened = Database::open(_dir.path().join("registry.sqlite3"))
         .await
         .unwrap();
-    let mut cursor = reopened.cursor().await.unwrap();
+    let mut cursor = reopened.write().await.unwrap();
     assert_eq!(
         cursor.get_skill(registered.id).await.unwrap().id,
         registered.id
@@ -246,7 +246,7 @@ async fn missing_prunes_restoration_and_mutable_skill_identity() {
 #[tokio::test]
 async fn prompt_bundle_payload_roundtrips_and_changes_snapshot_identity() {
     let (directory, db) = database().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let mut initial = config("prompt-payload", &[]);
     initial.bundles = vec![psa::api::BundleConfig::ExtraSystemPrompt {
         prompt: "  Original instructions.\n<literal> & text\n".into(),
@@ -294,7 +294,7 @@ async fn prompt_bundle_payload_roundtrips_and_changes_snapshot_identity() {
     let reopened = Database::open(directory.path().join("registry.sqlite3"))
         .await
         .unwrap();
-    let mut cursor = reopened.cursor().await.unwrap();
+    let mut cursor = reopened.read().await.unwrap();
     assert_eq!(
         cursor
             .get_agent_definition(first.definition.id)
@@ -311,14 +311,14 @@ async fn prompt_bundle_payload_roundtrips_and_changes_snapshot_identity() {
             .bundles,
         changed.bundles
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     reopened.close().await;
 }
 
 #[tokio::test]
 async fn single_model_defaults_are_normalized_for_api_and_discovered_registration() {
     let (directory, db) = database().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let mut api = config("single-api", &[]);
     api.first_model_default = false;
     let mut multiple = config("multiple-api", &[]);
@@ -371,7 +371,7 @@ async fn single_model_defaults_are_normalized_for_api_and_discovered_registratio
     let reopened = Database::open(directory.path().join("registry.sqlite3"))
         .await
         .unwrap();
-    let mut cursor = reopened.cursor().await.unwrap();
+    let mut cursor = reopened.read().await.unwrap();
     for name in ["single-api", "single-discovered"] {
         assert!(
             cursor
@@ -392,14 +392,14 @@ async fn single_model_defaults_are_normalized_for_api_and_discovered_registratio
                 .first_model_default
         );
     }
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     reopened.close().await;
 }
 
 #[tokio::test]
 async fn atomic_batches_group_precedence_and_discovery_ownership() {
     let (_dir, db) = database().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor
         .upsert_agent_configs(vec![config("api", &[])])
         .await
@@ -465,7 +465,7 @@ async fn atomic_batches_group_precedence_and_discovery_ownership() {
 #[tokio::test]
 async fn session_placeholder_selects_the_session_group() {
     let (_dir, db) = database().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     // A Custom group stands in for the session's discovered `.agents` group.
     let project = ConfigGroup::Custom("project".into());
     let in_project = |name: &str| ConfigId {
@@ -530,7 +530,7 @@ async fn session_placeholder_selects_the_session_group() {
 async fn deferred_project_discovery_distinguishes_unknown_from_known_absent() {
     let (_dir, db) = database().await;
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let probe_id = psa::api::ProbeId(psa::api::probes::Uuid::nil());
     let session = cursor
         .create_session(crate::sessions::NewSession {
@@ -597,7 +597,7 @@ async fn deferred_project_discovery_distinguishes_unknown_from_known_absent() {
 #[tokio::test]
 async fn unchanged_leaf_reused_and_pinned_creation_does_not_advance_edges() {
     let (_dir, db) = database().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor
         .upsert_agent_configs(vec![config("a", &["b"]), config("b", &[])])
         .await

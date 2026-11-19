@@ -50,7 +50,7 @@ impl std::fmt::Display for ProjectId {
 pub struct Session {
     pub id: SessionId,
     /// Source session when this session is a fork.
-    pub parent_id: Option<SessionId>,
+    pub forked_from: Option<SessionId>,
     pub name: String,
     /// Working directory on the session's probe, which may be offline.
     pub working_directory: PathBuf,
@@ -139,12 +139,12 @@ pub struct ForkSession {
     pub metadata: UpdateSession,
 }
 
-/// Created session fork and its agents, each retaining its source in `parent_id`.
+/// Created session fork and its agents, each retaining its source in `forked_from`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForkedSession {
     /// Newly created session.
     pub session: Session,
-    /// Forked agents; each `parent_id` identifies the source agent.
+    /// Forked agents; each `forked_from` identifies the source agent.
     pub agents: Vec<Agent>,
 }
 

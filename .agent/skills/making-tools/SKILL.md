@@ -175,9 +175,9 @@ macro are unchanged.
   default; the fourth violation interrupts with a reason, not a fake result.
   Zero fails immediately. Reset only on a new non-Running to Running transition,
   never on midrun steering. See `docs/AGENT_RESULTS.md` for full semantics.
-  Bundles install in definition order, except that Startup's `agent_create`
-  hooks are moved before every other bundle's so startup initializes context
-  before bundle prompts, wherever Startup is listed.
+  Bundles install in definition order and their hooks run in that order.
+  Startup must be listed first: its `agent_create` hooks emit `NewContext`,
+  which clears context written by any earlier creation hook.
   Duplicate bundle IDs, tool IDs, or model-facing tool names fail installation.
   Hooks preserve their installed stage/order and are not silently deduplicated.
 - Implement `Bundle::install(&mut self, agent, session, &mut Installer)` without

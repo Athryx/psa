@@ -1,4 +1,4 @@
-use super::{DatabaseCursor, DbError, schema::SandboxRow};
+use super::{DbError, ReadCursor, WriteCursor, schema::SandboxRow};
 use psa::api::{Mount, ProbeId};
 use time::OffsetDateTime;
 
@@ -41,33 +41,7 @@ impl TryFrom<SandboxRow> for SandboxRecord {
     }
 }
 
-impl DatabaseCursor {
-    pub async fn insert_sandbox(&mut self, record: &SandboxRecord) -> Result<(), DbError> {
-        let probe_id = record.probe_id.to_string();
-        let manager_id = record.manager_id.to_string();
-        let mounts = serde_json::to_string(&record.mounts)?;
-        let created_at = record.created_at.unix_timestamp();
-        let result = sqlx::query!(
-            "INSERT INTO sandboxes (probe_id, manager_id, name, image, mounts, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
-            probe_id,
-            manager_id,
-            record.name,
-            record.image,
-            mounts,
-            created_at
-        )
-        .execute(self.connection())
-        .await;
-
-        match result {
-            Err(sqlx::Error::Database(error)) if error.is_unique_violation() => Err(
-                DbError::InvalidInput(format!("sandbox name {:?} is already in use", record.name)),
-            ),
-            result => result.map(|_| ()).map_err(Into::into),
-        }
-    }
-
+impl ReadCursor {
     pub async fn get_sandbox(&mut self, probe_id: ProbeId) -> Result<SandboxRecord, DbError> {
         let key = probe_id.to_string();
         let row = sqlx::query_as!(
@@ -101,6 +75,34 @@ impl DatabaseCursor {
         .await?;
 
         rows.into_iter().map(TryInto::try_into).collect()
+    }
+}
+
+impl WriteCursor {
+    pub async fn insert_sandbox(&mut self, record: &SandboxRecord) -> Result<(), DbError> {
+        let probe_id = record.probe_id.to_string();
+        let manager_id = record.manager_id.to_string();
+        let mounts = serde_json::to_string(&record.mounts)?;
+        let created_at = record.created_at.unix_timestamp();
+        let result = sqlx::query!(
+            "INSERT INTO sandboxes (probe_id, manager_id, name, image, mounts, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            probe_id,
+            manager_id,
+            record.name,
+            record.image,
+            mounts,
+            created_at
+        )
+        .execute(self.connection())
+        .await;
+
+        match result {
+            Err(sqlx::Error::Database(error)) if error.is_unique_violation() => Err(
+                DbError::InvalidInput(format!("sandbox name {:?} is already in use", record.name)),
+            ),
+            result => result.map(|_| ()).map_err(Into::into),
+        }
     }
 
     /// Mark a live sandbox deleted, freeing its name for reuse.
@@ -167,7 +169,7 @@ mod tests {
         let database = Database::open(&directory.path().join("db.sqlite3"))
             .await
             .unwrap();
-        let mut cursor = database.cursor().await.unwrap();
+        let mut cursor = database.write().await.unwrap();
         cursor.upsert_probe(&manager()).await.unwrap();
 
         cursor.insert_sandbox(&record(10, "a")).await.unwrap();

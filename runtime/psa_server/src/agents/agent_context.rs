@@ -237,9 +237,9 @@ impl<'a> AgentContext<'a> {
     }
 
     pub async fn load_events(&self, range: EventRange) -> Result<Vec<Event>, DbError> {
-        let mut cursor = self.database().cursor().await?;
+        let mut cursor = self.database().read().await?;
         let events = cursor.load_events(self.agent().id, range).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(events)
     }
 
@@ -248,11 +248,11 @@ impl<'a> AgentContext<'a> {
         &self,
         kind: crate::db::PrivateEventKind,
     ) -> Result<Option<crate::db::PrivateEvent>, DbError> {
-        let mut cursor = self.database().cursor().await?;
+        let mut cursor = self.database().read().await?;
         let event = cursor
             .load_latest_private_event(self.agent().id, None, kind)
             .await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(event)
     }
 
@@ -261,43 +261,43 @@ impl<'a> AgentContext<'a> {
         event: EventId,
         kind: crate::db::PrivateEventKind,
     ) -> Result<Option<crate::db::PrivateEvent>, DbError> {
-        let mut cursor = self.database().cursor().await?;
+        let mut cursor = self.database().read().await?;
         let private = cursor
             .load_private_event_at(self.agent().id, event, kind)
             .await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(private)
     }
 
     pub async fn load_all_events(&self) -> Result<Vec<Event>, DbError> {
-        let mut cursor = self.database().cursor().await?;
+        let mut cursor = self.database().read().await?;
         let events = cursor.load_all_events(self.agent().id).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(events)
     }
 
     pub async fn load_context_window(&self) -> Result<Vec<Event>, DbError> {
-        let mut cursor = self.database().cursor().await?;
+        let mut cursor = self.database().read().await?;
         let events = cursor.load_context_window(self.agent().id).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(events)
     }
 
     pub async fn load_events_since_last_inference(&self) -> Result<Option<Vec<Event>>, DbError> {
-        let mut cursor = self.database().cursor().await?;
+        let mut cursor = self.database().read().await?;
         let events = cursor
             .load_events_since_last_inference(self.agent().id)
             .await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(events)
     }
 
     pub async fn load_last_inference_result(
         &self,
     ) -> Result<Option<InferenceResultEvents>, DbError> {
-        let mut cursor = self.database().cursor().await?;
+        let mut cursor = self.database().read().await?;
         let result = cursor.load_last_inference_result(self.agent().id).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(result)
     }
 
@@ -305,11 +305,11 @@ impl<'a> AgentContext<'a> {
         &self,
         range: EventRange,
     ) -> Result<Vec<EventEnvelope>, DbError> {
-        let mut cursor = self.database().cursor().await?;
+        let mut cursor = self.database().read().await?;
         let events = cursor
             .load_agent_envelopes(self.session().id, self.agent().id, range)
             .await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(events)
     }
 }

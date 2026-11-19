@@ -106,16 +106,16 @@ impl Runtime {
         configuration: Option<crate::config_registry::ConfigRegistry>,
         default_model_config: llm_api::providers::ModelConfig,
     ) -> Result<Self, RuntimeError> {
-        let mut cursor = db.cursor().await?;
+        let mut cursor = db.read().await?;
         let agents = cursor.list_all_agents().await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         // Repair incomplete event streams left by a server crash.
         for agent in agents {
             publication.drain_appends(agent.id).await;
             recover_agent(&db, &publication, agent.id).await?;
         }
-        let mut cursor = db.cursor().await?;
+        let mut cursor = db.write().await?;
         let repaired = cursor.repair_unknown_usage().await?;
         cursor.commit().await?;
         if repaired > 0 {
@@ -539,9 +539,9 @@ impl Supervisor {
         if self.shutting_down {
             return Err(RuntimeError::Unavailable);
         }
-        let mut cursor = self.db.cursor().await?;
+        let mut cursor = self.db.read().await?;
         cursor.require_agent_session(session, agent).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         // Queue inspection and subscription happen in one actor turn. Channels
         // outlive worker generations; dropping a waiter drops only its receiver.
@@ -596,9 +596,9 @@ impl Supervisor {
         if self.runs.contains_key(&agent) {
             return Ok(());
         }
-        let mut cursor = self.db.cursor().await?;
+        let mut cursor = self.db.read().await?;
         let snapshot = cursor.require_agent_session(session, agent).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         let run_id = psa::api::probes::Uuid::new_v4().to_string();
         self.runs.insert(
             agent,
@@ -656,7 +656,7 @@ impl Supervisor {
         agent: AgentId,
         run: &ActiveRun,
     ) -> Result<RunSummary, RuntimeError> {
-        let mut cursor = self.db.cursor().await?;
+        let mut cursor = self.db.read().await?;
         let mut after = run.baseline;
         let mut summary = RunSummary::default();
         loop {
@@ -713,7 +713,7 @@ impl Supervisor {
                 }
             }
         }
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(summary)
     }
 
@@ -902,7 +902,7 @@ impl Supervisor {
             return Err(RuntimeError::Unavailable);
         }
 
-        let mut cursor = self.db.cursor().await?;
+        let mut cursor = self.db.read().await?;
         let snapshot = cursor.require_agent_session(session, agent).await?;
         if !allow_restart && snapshot.state == AgentState::Interrupted {
             return Err(RuntimeError::Invalid(
@@ -933,7 +933,7 @@ impl Supervisor {
                 )
             }
             AgentRequest::RecordCommand(record) => {
-                cursor.rollback().await?;
+                cursor.close().await?;
                 if record.name.trim().is_empty() || record.name.contains(char::is_whitespace) {
                     return Err(RuntimeError::Invalid(
                         "command name must be one nonempty word".into(),
@@ -950,7 +950,7 @@ impl Supervisor {
                     .await;
             }
             AgentRequest::Interrupt => {
-                cursor.rollback().await?;
+                cursor.close().await?;
                 if let Some(worker) = self.workers.get(&agent) {
                     let _ = worker.controls.interrupt();
                 }
@@ -964,7 +964,7 @@ impl Supervisor {
                 "message content must not be empty".into(),
             ));
         }
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         if delivery == MessageDelivery::Resume && snapshot.state != AgentState::Interrupted {
             return Err(RuntimeError::InvalidResume);
@@ -1016,10 +1016,10 @@ impl Supervisor {
             return Err(RuntimeError::Unavailable);
         }
 
-        let mut cursor = self.db.cursor().await?;
+        let mut cursor = self.db.read().await?;
         let snapshot = cursor.require_agent_session(session, agent).await?;
         let definition = cursor.get_agent_definition(snapshot.definition_id).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         crate::components::bundles::require_command_support(&definition, &request.command)
             .map_err(RuntimeError::Invalid)?;
 
@@ -1069,9 +1069,9 @@ impl Supervisor {
             return Err(RuntimeError::Unavailable);
         }
 
-        let mut cursor = self.db.cursor().await?;
+        let mut cursor = self.db.read().await?;
         let snapshot = cursor.get_agent(agent).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         self.ensure_worker(agent, snapshot.session_id).await?;
         self.workers
@@ -1087,9 +1087,9 @@ impl Supervisor {
             return Err(RuntimeError::Unavailable);
         }
 
-        let mut cursor = self.db.cursor().await?;
+        let mut cursor = self.db.read().await?;
         let agents = cursor.list_agents(session.id).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         for agent in agents {
             self.ensure_worker(agent.id, session.id).await?;

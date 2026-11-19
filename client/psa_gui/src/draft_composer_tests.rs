@@ -122,7 +122,7 @@ async fn effort_update_sends_session_model_and_selected_effort() {
         let headers = String::from_utf8_lossy(&data[..end]);
         assert!(headers.starts_with("PATCH /sessions/1 "), "{headers}");
         let request: serde_json::Value = serde_json::from_slice(&data[end..end + len]).unwrap();
-        let response = serde_json::json!({"id":1,"parent_id":null,"name":"test","working_directory":"/tmp","probe_id":"00000000-0000-0000-0000-000000000001","model_config":request["model_config"],"busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}).to_string();
+        let response = serde_json::json!({"id":1,"forked_from":null,"name":"test","working_directory":"/tmp","probe_id":"00000000-0000-0000-0000-000000000001","model_config":request["model_config"],"busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}).to_string();
         write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).unwrap();
         request
     });
@@ -283,7 +283,7 @@ async fn first_message_survives_draft_composer_unmount() {
                     wait_create.recv_timeout(Duration::from_secs(5)).unwrap();
                     (
                         "200 OK",
-                        serde_json::json!({"id":42,"definition_id":1,"session_id":1,"parent_id":null,"subagent_parent_id":null,"name":"root","hidden":false,"interactive":true,"state":"Idle","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"cached_input_tokens":0,"reasoning_output_tokens":0},"next_event_id":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}),
+                        serde_json::json!({"id":42,"definition_id":1,"session_id":1,"forked_from":null,"subagent_parent_id":null,"name":"root","hidden":false,"interactive":true,"state":"Idle","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"cached_input_tokens":0,"reasoning_output_tokens":0},"next_event_id":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}),
                     )
                 }
                 _ => {
@@ -360,7 +360,7 @@ fn root_fixture() -> Element {
     })).unwrap();
     state.sessions.push(
         serde_json::from_value(serde_json::json!({
-            "id":1,"parent_id":null,"name":"test","working_directory":"/tmp",
+            "id":1,"forked_from":null,"name":"test","working_directory":"/tmp",
             "probe_id":"00000000-0000-0000-0000-000000000001",
             "model_config":{"model":"openrouter/favorite","effort":"Low"},
             "busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"

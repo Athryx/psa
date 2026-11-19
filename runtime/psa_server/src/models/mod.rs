@@ -80,9 +80,9 @@ impl ModelCatalog {
     }
 
     pub async fn list_models(&self, query: ListModels) -> Result<Vec<ModelInfo>, CatalogError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let mut models = cursor.list_model_info().await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         for model in &mut models {
             model.authed = self.providers.provider(model.model.provider).is_some();
@@ -99,9 +99,9 @@ impl ModelCatalog {
     }
 
     pub async fn model_info(&self, model: &Model) -> Result<Option<ModelInfo>, CatalogError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let mut info = cursor.get_model_info(model).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         if let Some(info) = &mut info {
             info.authed = self.providers.provider(model.provider).is_some();
@@ -112,7 +112,7 @@ impl ModelCatalog {
     pub async fn set_pinned(&self, request: PinModel) -> Result<Option<ModelInfo>, CatalogError> {
         Model::new(request.model.provider, request.model.api_name.clone())
             .map_err(|error| CatalogError::Invalid(error.to_string()))?;
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.write().await?;
         let mut info = cursor.get_model_info(&request.model).await?;
         if request.pinned && info.is_none() {
             return Err(CatalogError::NotFound);
@@ -191,7 +191,7 @@ impl ModelCatalogRuntime {
         providers: &ProviderRegistry,
         source: CatalogSource,
     ) -> Result<Self, CatalogError> {
-        let mut cursor = database.cursor().await?;
+        let mut cursor = database.read().await?;
         let mut deadlines = HashMap::new();
         for provider in ProviderType::ALL {
             let stored = cursor.load_provider_sync(provider).await?;
@@ -209,7 +209,7 @@ impl ModelCatalogRuntime {
             });
             deadlines.insert(provider, Instant::now() + remaining);
         }
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         let (commands, mailbox) = actors::unbounded_channel();
         let handle = ModelCatalog {
@@ -378,13 +378,13 @@ async fn sync_provider(
     source: &CatalogSource,
     provider: ProviderType,
 ) -> Result<(), CatalogError> {
-    let mut cursor = database.cursor().await?;
+    let mut cursor = database.read().await?;
     let mut state = cursor.load_provider_sync(provider).await?;
-    cursor.rollback().await?;
+    cursor.close().await?;
 
     let update = source.fetch(provider, &state).await;
     state.checked_at = Some(OffsetDateTime::now_utc().unix_timestamp());
-    let mut cursor = database.cursor().await?;
+    let mut cursor = database.write().await?;
     match &update {
         Ok(CatalogUpdate::Models { models, etag }) => {
             cursor.replace_model_catalog(provider, models).await?;

@@ -20,7 +20,7 @@ pub(super) async fn fixture() -> (
         .await
         .unwrap();
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let session = cursor
         .create_session(sessions::NewSession {
             decision_model: None,
@@ -87,7 +87,7 @@ async fn context_pages_start_at_the_marker_opening_the_requested_context() {
     events.extend((3..6).map(log));
     events.push(new_context());
     events.push(log(6));
-    let mut cursor = state.database.cursor().await.unwrap();
+    let mut cursor = state.database.write().await.unwrap();
     cursor.add_events(agent.id, &events).await.unwrap();
     cursor.commit().await.unwrap();
 
@@ -186,7 +186,7 @@ async fn context_pages_start_at_the_marker_opening_the_requested_context() {
 #[tokio::test]
 async fn recent_backward_pages_and_forward_replay_cover_both_cursor_scopes() {
     let (_dir, state, runtime, session, agent) = fixture().await;
-    let mut cursor = state.database.cursor().await.unwrap();
+    let mut cursor = state.database.write().await.unwrap();
     cursor
         .add_events(agent.id, &(0..7).map(log).collect::<Vec<_>>())
         .await
@@ -253,7 +253,7 @@ async fn recent_backward_pages_and_forward_replay_cover_both_cursor_scopes() {
         heads.push((scope, recent.head));
     }
     // A commit after history capture is replayed from either scoped head.
-    let mut cursor = state.database.cursor().await.unwrap();
+    let mut cursor = state.database.write().await.unwrap();
     cursor.add_events(agent.id, &[log(99)]).await.unwrap();
     cursor.commit().await.unwrap();
     for (scope, head) in heads {
@@ -315,7 +315,7 @@ async fn recent_backward_pages_and_forward_replay_cover_both_cursor_scopes() {
 #[tokio::test]
 async fn summary_keysets_preserve_roots_include_forks_and_reject_cross_scope_cursors() {
     let (_dir, state, runtime, session, _agent) = fixture().await;
-    let mut cursor = state.database.cursor().await.unwrap();
+    let mut cursor = state.database.write().await.unwrap();
     let fork = cursor
         .fork_session(
             session.id,

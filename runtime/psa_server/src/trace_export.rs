@@ -462,7 +462,7 @@ mod tests {
             id: AgentId(7),
             session_id: SessionId(1),
             definition_id: AgentDefinitionId(1),
-            parent_id: None,
+            forked_from: None,
             subagent_parent_id: Some(AgentId(2)),
             first_event_id: EventId(0),
             next_event_id: EventId(0),

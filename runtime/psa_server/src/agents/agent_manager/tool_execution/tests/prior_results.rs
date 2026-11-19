@@ -359,7 +359,7 @@ async fn prior_results_respects_fork_cutoffs_and_reads_before_compaction() {
         true,
     )
     .await;
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.write().await.unwrap();
     let fork = cursor
         .fork_session(
             parent.session.id,
@@ -376,7 +376,7 @@ async fn prior_results_respects_fork_cutoffs_and_reads_before_compaction() {
     let child_id = fork
         .agents
         .iter()
-        .find(|agent| agent.parent_id == Some(parent.agent.id))
+        .find(|agent| agent.forked_from == Some(parent.agent.id))
         .unwrap()
         .id;
     cursor.commit().await.unwrap();
@@ -457,9 +457,9 @@ async fn invoke(
 }
 
 async fn tool_result(fixture: &Fixture, state: &AgentManagerState, id: &str) -> (bool, String) {
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     let events = cursor.load_all_events(state.agent.id).await.unwrap();
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     let result = events
         .iter()
         .find_map(|event| match &event.kind {
@@ -506,7 +506,7 @@ async fn real_worker_prior_results_is_synchronous_archived_and_restart_safe() {
     let (error, text) = tool_result(&fixture, &state, "archive-size").await;
     assert!(!error, "{text}");
     assert_eq!(text.trim(), "12000\n12000\n12000");
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     let snapshot = cursor
         .load_latest_private_event(
             state.agent.id,
@@ -524,7 +524,7 @@ async fn real_worker_prior_results_is_synchronous_archived_and_restart_safe() {
         "240k of archived results must not enter the checkpoint: {} bytes",
         bytes.len()
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
     state = invoke(
         &fixture,

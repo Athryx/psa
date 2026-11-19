@@ -64,7 +64,7 @@ impl TryFrom<SessionRow> for Session {
     fn try_from(row: SessionRow) -> Result<Self, DbError> {
         Ok(Self {
             id: SessionId(decode_integer(row.id)?),
-            parent_id: row
+            forked_from: row
                 .parent_session_id
                 .map(decode_integer)
                 .transpose()?
@@ -115,7 +115,7 @@ impl TryFrom<AgentRow> for Agent {
             id: AgentId(decode_integer(row.id)?),
             session_id: SessionId(decode_integer(row.session_id)?),
             definition_id: psa::api::AgentDefinitionId(decode_integer(row.definition_id)?),
-            parent_id: row
+            forked_from: row
                 .parent_agent_id
                 .map(decode_integer)
                 .transpose()?

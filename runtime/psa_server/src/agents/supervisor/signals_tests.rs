@@ -21,7 +21,7 @@ impl Fixture {
             .await
             .unwrap();
         crate::test_support::register_probe(&db).await;
-        let mut cursor = db.cursor().await.unwrap();
+        let mut cursor = db.write().await.unwrap();
         let definition = cursor
             .create_agent_definition(crate::db::CreateAgentDefinition {
                 name: "signals".into(),
@@ -146,7 +146,7 @@ impl Fixture {
     }
 
     async fn save_message(&self, text: &str) {
-        let mut cursor = self.manager.db.cursor().await.unwrap();
+        let mut cursor = self.manager.db.write().await.unwrap();
         cursor
             .add_events(
                 self.agent,
@@ -162,7 +162,7 @@ impl Fixture {
 
     async fn save_inference(&self, outcome: llm_api::api::Outcome) {
         use psa::api::events::{InferenceResultEnd, InferenceResultStart};
-        let mut cursor = self.manager.db.cursor().await.unwrap();
+        let mut cursor = self.manager.db.write().await.unwrap();
         let id = cursor.get_agent(self.agent).await.unwrap().next_event_id.0;
         cursor
             .add_events(
@@ -445,7 +445,7 @@ async fn logical_runs_keep_running_steering_but_restart_at_idle_or_interrupted_b
     assert!(
         matches!(&fixture.manager.lifecycle_events[1], AgentLifecycleEvent::Finished { run_id, outcome: AgentRunOutcome::Completed, final_text: Some(text), .. } if run_id == &first && text == "current output")
     );
-    let mut cursor = fixture.manager.db.cursor().await.unwrap();
+    let mut cursor = fixture.manager.db.write().await.unwrap();
     cursor
         .add_events(
             fixture.agent,
@@ -655,7 +655,7 @@ async fn subagent_steering_resolves_sender_and_shares_level_triggered_waits() {
 async fn subagent_steering_rejects_missing_and_cross_session_senders() {
     let mut fixture = Fixture::new().await;
     fixture.add_worker();
-    let mut cursor = fixture.manager.db.cursor().await.unwrap();
+    let mut cursor = fixture.manager.db.write().await.unwrap();
     let fork = cursor
         .fork_session(
             fixture.session,
@@ -705,7 +705,7 @@ async fn background_reports_cannot_restart_parent_even_if_interrupted_after_acce
     ));
     assert!(fixture.manager.workers[&fixture.agent].queue.is_empty());
 
-    let mut cursor = fixture.manager.db.cursor().await.unwrap();
+    let mut cursor = fixture.manager.db.write().await.unwrap();
     cursor
         .add_events(
             fixture.agent,
@@ -748,7 +748,7 @@ async fn background_reports_cannot_restart_parent_even_if_interrupted_after_acce
 async fn completion_hook_reports_children_without_bundle_and_preserves_outcomes() {
     use crate::components::hooks::subagent_completion::SubagentCompletion;
     let mut fixture = Fixture::with_bundles(vec![psa::api::BundleConfig::Subagents]).await;
-    let mut cursor = fixture.manager.db.cursor().await.unwrap();
+    let mut cursor = fixture.manager.db.write().await.unwrap();
     let definition = cursor
         .create_agent_definition(crate::db::CreateAgentDefinition {
             name: "plain child".into(),
@@ -833,7 +833,7 @@ async fn completion_hook_reports_children_without_bundle_and_preserves_outcomes(
 #[tokio::test]
 async fn starting_plain_child_restores_parent_bundle_lifecycle_callbacks() {
     let mut fixture = Fixture::with_bundles(vec![psa::api::BundleConfig::Subagents]).await;
-    let mut cursor = fixture.manager.db.cursor().await.unwrap();
+    let mut cursor = fixture.manager.db.write().await.unwrap();
     let definition = cursor
         .create_agent_definition(crate::db::CreateAgentDefinition {
             name: "plain child after restart".into(),

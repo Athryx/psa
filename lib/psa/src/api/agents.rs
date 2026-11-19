@@ -31,12 +31,12 @@ pub enum AgentState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agent {
     pub id: AgentId,
-    /// Immutable definition version pinned to this agent.
+    /// Immutable definition snapshot pinned to this agent.
     pub definition_id: AgentDefinitionId,
     /// Session containing this agent.
     pub session_id: SessionId,
     /// Fork lineage; independent of subagent ancestry.
-    pub parent_id: Option<AgentId>,
+    pub forked_from: Option<AgentId>,
     /// Immutable subagent parent, independent of fork lineage.
     pub subagent_parent_id: Option<AgentId>,
     pub name: String,

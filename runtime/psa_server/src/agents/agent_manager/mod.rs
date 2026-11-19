@@ -162,12 +162,12 @@ impl AgentManagerState {
         publication: Publication,
         id: AgentId,
     ) -> Result<Self, AgentError> {
-        let mut cursor = db.cursor().await?;
+        let mut cursor = db.read().await?;
         let agent = cursor.get_agent(id).await?;
         let session = cursor.get_session(agent.session_id).await?;
         let definition = cursor.get_agent_definition(agent.definition_id).await?;
         let context = AgentProjection::replay(&cursor.load_all_events(id).await?)?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         let (invocation_save_handle, invocation_saves) = actors::unbounded_channel();
 
         Ok(Self {

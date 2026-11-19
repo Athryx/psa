@@ -1,11 +1,11 @@
 //! Catalog transactions never encompass network requests.
-use super::{DatabaseCursor, DbError};
+use super::{DbError, ReadCursor, WriteCursor};
 use crate::models::ProviderSyncState;
 use llm_api::providers::{Model, ProviderType};
 use psa::api::ModelInfo;
 use sqlx::{Row, sqlite::SqliteRow};
 
-impl DatabaseCursor {
+impl ReadCursor {
     pub async fn list_model_info(&mut self) -> Result<Vec<ModelInfo>, DbError> {
         let rows = sqlx::query(
             "SELECT c.info, p.model IS NOT NULL AS pinned, s.state AS sync_state
@@ -34,6 +34,24 @@ impl DatabaseCursor {
         row.map(decode_model_info).transpose()
     }
 
+    pub(crate) async fn load_provider_sync(
+        &mut self,
+        provider: ProviderType,
+    ) -> Result<ProviderSyncState, DbError> {
+        let state: Option<String> =
+            sqlx::query_scalar("SELECT state FROM model_catalog_sync WHERE provider=?")
+                .bind(provider.as_str())
+                .fetch_optional(self.connection())
+                .await?;
+        state
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .map(Option::unwrap_or_default)
+            .map_err(Into::into)
+    }
+}
+
+impl WriteCursor {
     pub async fn set_model_pinned(&mut self, model: &Model, pinned: bool) -> Result<(), DbError> {
         if pinned {
             sqlx::query(
@@ -74,22 +92,6 @@ impl DatabaseCursor {
                 .await?;
         }
         Ok(())
-    }
-
-    pub(crate) async fn load_provider_sync(
-        &mut self,
-        provider: ProviderType,
-    ) -> Result<ProviderSyncState, DbError> {
-        let state: Option<String> =
-            sqlx::query_scalar("SELECT state FROM model_catalog_sync WHERE provider=?")
-                .bind(provider.as_str())
-                .fetch_optional(self.connection())
-                .await?;
-        state
-            .map(|value| serde_json::from_str(&value))
-            .transpose()
-            .map(Option::unwrap_or_default)
-            .map_err(Into::into)
     }
 
     pub(crate) async fn save_provider_sync(

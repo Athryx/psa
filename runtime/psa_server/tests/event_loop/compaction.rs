@@ -107,7 +107,7 @@ async fn compaction_runs_hidden_summarizers_preserves_snapshots_and_updates_prio
         assert!(!internal.interactive);
         assert_eq!(internal.state, AgentState::Idle);
     }
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     let context = cursor.load_context_window(agent.id).await.unwrap();
     assert_eq!(
         context
@@ -116,7 +116,7 @@ async fn compaction_runs_hidden_summarizers_preserves_snapshots_and_updates_prio
             .count(),
         1
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     harness.close().await;
 }
 
@@ -146,7 +146,7 @@ async fn cancelled_compaction_stops_its_summarizer_without_replacing_context() {
         agents.iter().find(|agent| agent.hidden).unwrap().state,
         AgentState::Interrupted
     );
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     let context = cursor.load_context_window(agent.id).await.unwrap();
     assert!(
         !context
@@ -154,7 +154,7 @@ async fn cancelled_compaction_stops_its_summarizer_without_replacing_context() {
             .any(|event| matches!(event.kind, EventType::Compaction(_)))
     );
     assert!(context.iter().any(|event| matches!(&event.kind, EventType::Message(message) if serde_json::to_string(message).unwrap().contains("old work"))));
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     harness.close().await;
 }
 
@@ -171,14 +171,14 @@ async fn incomplete_summary_never_replaces_parent_context() {
         .await
         .unwrap();
     assert_eq!(parent.state, AgentState::Interrupted);
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     let context = cursor.load_context_window(agent.id).await.unwrap();
     assert!(
         !context
             .iter()
             .any(|event| matches!(event.kind, EventType::Compaction(_)))
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     harness.close().await;
 }
 
@@ -236,7 +236,7 @@ async fn compact_command_summarizes_idle_agent_without_starting_a_run() {
         .unwrap();
     assert_eq!(worker.state, AgentState::Idle);
 
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     let events = cursor
         .load_events(agent.id, EventRange::default())
         .await
@@ -257,7 +257,7 @@ async fn compact_command_summarizes_idle_agent_without_starting_a_run() {
         &event.kind,
         EventType::StatusChange(change) if change.new_status == AgentState::Running
     )));
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
     submit_recent(&harness, session.id, agent.id).await;
     let next_request = harness.requests.recv().await.unwrap().to_string();

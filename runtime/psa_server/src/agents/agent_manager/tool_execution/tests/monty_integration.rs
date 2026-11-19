@@ -62,9 +62,9 @@ async fn load_tool_result(
     state: &AgentManagerState,
     id: &str,
 ) -> (bool, String) {
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     let events = cursor.load_all_events(state.agent.id).await.unwrap();
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     let result = events
         .iter()
         .find_map(|event| match &event.kind {
@@ -107,7 +107,7 @@ async fn real_worker_persists_snapshots_errors_output_and_registered_functions()
     let (error, text) = load_tool_result(&fixture, &state, "first").await;
     assert!(!error, "{text}");
     assert_eq!(text.trim(), "first");
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     assert!(
         cursor
             .load_latest_private_event(
@@ -119,7 +119,7 @@ async fn real_worker_persists_snapshots_errors_output_and_registered_functions()
             .unwrap()
             .is_some()
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
     state = invoke_codemode(&fixture, state, "second", "print(x + 1)").await;
     let (error, text) = load_tool_result(&fixture, &state, "second").await;
@@ -537,7 +537,7 @@ async fn real_worker_checkpoint_budget_failure_preserves_output_and_previous_sta
     state = invoke_codemode(&fixture, state, "seed-checkpoint", "x = 41").await;
     let (error, text) = load_tool_result(&fixture, &state, "seed-checkpoint").await;
     assert!(!error, "{text}");
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     let previous = cursor
         .load_latest_private_event(
             state.agent.id,
@@ -547,7 +547,7 @@ async fn real_worker_checkpoint_budget_failure_preserves_output_and_previous_sta
         .await
         .unwrap();
     assert!(previous.is_some());
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
     state = invoke_codemode(
         &fixture,
@@ -588,7 +588,7 @@ async fn real_worker_checkpoint_budget_failure_preserves_output_and_previous_sta
         !text.contains("external tool effects may have occurred"),
         "{text}"
     );
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     assert_eq!(
         cursor
             .load_latest_private_event(
@@ -601,7 +601,7 @@ async fn real_worker_checkpoint_budget_failure_preserves_output_and_previous_sta
         previous,
         "failed checkpoint must not replace the previous bytes"
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
     state = invoke_codemode(
         &fixture,
@@ -662,7 +662,7 @@ async fn preflight_missing_worker_and_oversized_source_do_not_claim_host_effects
             "{text}"
         );
     }
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     assert!(
         cursor
             .load_latest_private_event(
@@ -674,7 +674,7 @@ async fn preflight_missing_worker_and_oversized_source_do_not_claim_host_effects
             .unwrap()
             .is_none()
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
     drop(state);
     engine.close().await;

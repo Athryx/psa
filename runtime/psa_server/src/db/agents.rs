@@ -1,5 +1,5 @@
 use super::{
-    DatabaseCursor, DbError,
+    DbError, ReadCursor, WriteCursor,
     schema::{AgentRow, encode_integer, now_us, validate_name},
     sessions::get_session,
 };
@@ -9,7 +9,18 @@ use crate::{
 };
 use sqlx::{Acquire, SqliteConnection};
 
-impl DatabaseCursor {
+impl ReadCursor {
+    pub async fn get_agent(&mut self, id: AgentId) -> Result<Agent, DbError> {
+        get_agent(self.connection(), id).await
+    }
+
+    pub async fn list_agents(&mut self, session: SessionId) -> Result<Vec<Agent>, DbError> {
+        get_session(self.connection(), session).await?;
+        list_agents(self.connection(), session).await
+    }
+}
+
+impl WriteCursor {
     pub async fn create_agent(
         &mut self,
         session: SessionId,
@@ -87,15 +98,6 @@ impl DatabaseCursor {
 
         savepoint.commit().await?;
         Ok(agent)
-    }
-
-    pub async fn get_agent(&mut self, id: AgentId) -> Result<Agent, DbError> {
-        get_agent(self.connection(), id).await
-    }
-
-    pub async fn list_agents(&mut self, session: SessionId) -> Result<Vec<Agent>, DbError> {
-        get_session(self.connection(), session).await?;
-        list_agents(self.connection(), session).await
     }
 }
 

@@ -328,7 +328,7 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
                 EventType::InferenceResultEnd(end) if matches!(&end.outcome,llm_api::api::Outcome::Failed(error) if error.to_string().contains("Supported:")))));
         }
         // Trace reads retain the resolved request even through the core database API.
-        let mut cursor = database.cursor().await.unwrap();
+        let mut cursor = database.read().await.unwrap();
         assert!(
             !cursor
                 .load_events(agent.id, EventRange::default())
@@ -336,7 +336,7 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
                 .unwrap()
                 .is_empty()
         );
-        cursor.rollback().await.unwrap();
+        cursor.close().await.unwrap();
     }
     fail.store(true, Ordering::SeqCst);
     for provider in [Some(config.model.provider), None] {

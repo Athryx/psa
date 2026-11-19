@@ -26,7 +26,7 @@ fn result(usage: Usage) -> NewEvent {
 #[tokio::test]
 async fn cache_writes_count_only_reported_values() {
     let (_dir, db, _session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     assert_eq!(
         cursor
             .get_agent(agent.id)
@@ -68,7 +68,7 @@ async fn cache_writes_count_only_reported_values() {
 #[tokio::test]
 async fn usage_batches_unknown_fields_and_rollback() {
     let (_dir, db, _session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     assert_eq!(
         cursor.get_agent(agent.id).await.unwrap().usage,
         llm_api::api::Usage::zero()
@@ -98,7 +98,7 @@ async fn usage_batches_unknown_fields_and_rollback() {
     assert_eq!(usage.total_tokens, Some(10));
     cursor.commit().await.unwrap();
 
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let before = cursor.get_agent(agent.id).await.unwrap();
     assert!(
         cursor
@@ -119,7 +119,7 @@ async fn usage_batches_unknown_fields_and_rollback() {
         .await
         .unwrap();
     cursor.rollback().await.unwrap();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     assert_eq!(
         cursor.get_agent(agent.id).await.unwrap().usage,
         before.usage
@@ -143,7 +143,7 @@ async fn usage_updates_serialize_concurrent_writers_and_include_compaction() {
     for _ in 0..12 {
         let db = db.clone();
         writers.push(tokio::spawn(async move {
-            let mut cursor = db.cursor().await.unwrap();
+            let mut cursor = db.write().await.unwrap();
             cursor
                 .add_events(
                     agent.id,
@@ -163,7 +163,7 @@ async fn usage_updates_serialize_concurrent_writers_and_include_compaction() {
     for writer in writers {
         writer.await.unwrap();
     }
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     assert_eq!(
         cursor.get_agent(agent.id).await.unwrap().usage.total_tokens,
         Some(60)
@@ -196,7 +196,7 @@ async fn migration_backfills_usage_through_each_ancestor_cutoff() {
     pool.close().await;
     let db = Database::open(path).await.unwrap();
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let root = cursor.get_agent(crate::agents::AgentId(1)).await.unwrap();
     assert_eq!(root.usage.input_tokens, None);
     assert_eq!(root.usage.total_tokens, Some(30));
@@ -222,7 +222,7 @@ async fn migration_backfills_usage_through_each_ancestor_cutoff() {
 #[tokio::test]
 async fn status_projects_fork_bounded_markers_and_context_resets() {
     let (_dir, db, session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let completed = |tokens| {
         NewEvent::new(EventType::InferenceResultEnd(InferenceResultEnd {
             id: 1,
@@ -305,7 +305,7 @@ fn unreported_compaction() -> NewEvent {
 #[tokio::test]
 async fn unreported_compaction_usage_keeps_totals_known_and_poisoned_totals_are_repaired() {
     let (_dir, db, _session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor
         .add_events(
             agent.id,
@@ -409,7 +409,7 @@ async fn model_usage_groups_inference_and_decision_calls_by_model() {
         }))
     };
 
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let first = cursor.get_agent(agent.id).await.unwrap().next_event_id.0;
     let updated = cursor
         .add_events(

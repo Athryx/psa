@@ -6,7 +6,7 @@ async fn codemode_definition_round_trips_through_database() {
     let (_dir, db, _session, agent) = fixture().await;
     let mut definition = ToolDefinition::for_tool(ToolId::ListSessions).unwrap();
     definition.id = ToolId::CodeMode;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor
         .add_events(
             agent.id,

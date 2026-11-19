@@ -331,7 +331,7 @@ async fn lagged_subscription_resyncs_from_durable_state() {
     // in-progress read transaction, but cannot consume these notifications until
     // the bounded channel has lagged.
     let publication = sessions.publication.lock().await;
-    let mut cursor = sessions.database.cursor().await.unwrap();
+    let mut cursor = sessions.database.write().await.unwrap();
     cursor
         .add_events(
             agent,
@@ -402,14 +402,14 @@ async fn cancellation_and_shutdown_interrupt_gate_and_database_waits() {
     cancel.send(()).unwrap();
     assert!(matches!(finish(wait).await, Err(RuntimeError::Cancelled)));
     drop(publication);
-    let cursor = sessions.database.cursor().await.unwrap();
+    let cursor = sessions.database.read().await.unwrap();
     let (_cancel, cancellation) = Cancellation::channel();
     let wait = spawn_wait(sessions, session, agent, None, cancellation);
     tokio::pin!(wait);
     assert_pending(wait.as_mut()).await;
     sessions.publication.close();
     assert!(matches!(finish(wait).await, Err(RuntimeError::Unavailable)));
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     let (_cancel, mut cancellation) = Cancellation::channel();
     assert!(matches!(
         finish(sessions.await_result(session, agent, None, &mut cancellation)).await,

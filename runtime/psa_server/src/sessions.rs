@@ -8,7 +8,7 @@ pub use psa::api::SessionId;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub id: SessionId,
-    pub parent_id: Option<SessionId>,
+    pub forked_from: Option<SessionId>,
     pub first_position: u64,
     pub next_position: u64,
     pub name: String,
@@ -25,7 +25,7 @@ impl Session {
     pub fn into_api(self, busy: bool) -> psa::api::Session {
         psa::api::Session {
             id: self.id,
-            parent_id: self.parent_id,
+            forked_from: self.forked_from,
             name: self.name,
             working_directory: self.working_directory,
             probe_id: self.probe_id,

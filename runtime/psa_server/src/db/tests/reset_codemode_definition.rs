@@ -14,7 +14,7 @@ async fn reset_codemode_definition_round_trips_through_persistence_and_reopen() 
         .iter()
         .map(|definition| NewEvent::new(EventType::ToolDefinition(definition.clone())))
         .collect();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor.add_events(agent.id, &events).await.unwrap();
     cursor.commit().await.unwrap();
 
@@ -29,7 +29,7 @@ async fn reset_codemode_definition_round_trips_through_persistence_and_reopen() 
     let reopened = Database::open(directory.path().join("events.sqlite3"))
         .await
         .unwrap();
-    let mut cursor = reopened.cursor().await.unwrap();
+    let mut cursor = reopened.read().await.unwrap();
     let saved = cursor.load_all_events(agent.id).await.unwrap();
     assert_eq!(saved.len(), definitions.len());
     for (event, expected) in saved.iter().zip(definitions) {
@@ -42,7 +42,7 @@ async fn reset_codemode_definition_round_trips_through_persistence_and_reopen() 
             serde_json::to_value(&expected.definition).unwrap()
         );
     }
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     reopened.close().await;
 }
 

@@ -412,15 +412,7 @@ impl InstalledComponents {
                 if let BundleKind::Subagents(subagents) = &mut *bundle {
                     subagents.set_child_templates(child_templates.clone());
                 }
-                let create_hooks = installer.hooks.agent_create.len();
                 bundle.install(agent, session, &mut installer)?;
-
-                // Startup initializes context before any other bundle's creation
-                // prompts, wherever it is listed.
-                if matches!(bundle, BundleKind::Startup(_)) {
-                    let added = installer.hooks.agent_create.len() - create_hooks;
-                    installer.hooks.agent_create.rotate_right(added);
-                }
             }
             Ok(())
         };

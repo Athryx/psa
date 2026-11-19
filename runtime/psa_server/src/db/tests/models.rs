@@ -5,7 +5,7 @@ use llm_api::providers::Effort;
 #[tokio::test]
 async fn new_efforts_and_resolved_reasoning_snapshots_survive_restart() {
     let (directory, database, _session, agent) = fixture().await;
-    let mut cursor = database.cursor().await.unwrap();
+    let mut cursor = database.write().await.unwrap();
     for (index, effort) in [Effort::Off, Effort::Minimal, Effort::Max]
         .into_iter()
         .enumerate()
@@ -49,7 +49,7 @@ async fn new_efforts_and_resolved_reasoning_snapshots_survive_restart() {
     let database = Database::open(directory.path().join("events.sqlite3"))
         .await
         .unwrap();
-    let mut cursor = database.cursor().await.unwrap();
+    let mut cursor = database.read().await.unwrap();
     let events = cursor.load_all_events(agent.id).await.unwrap();
     let starts: Vec<_> = events
         .iter()
@@ -70,6 +70,6 @@ async fn new_efforts_and_resolved_reasoning_snapshots_survive_restart() {
         Some(api::ReasoningOverride::Effort(Effort::Low))
     );
     assert_eq!(starts[2].model_config.effort, Effort::Max);
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     database.close().await;
 }

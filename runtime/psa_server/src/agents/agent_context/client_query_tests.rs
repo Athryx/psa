@@ -381,7 +381,7 @@ async fn context_query_snapshots_are_scoped_and_cancellation_removes_the_query()
     let fixture = Fixture::new().await;
     let agent = fixture.create_agent(&[]).await;
     let other_session_agent = fixture.create_agent(&[]).await;
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.write().await.unwrap();
     let sibling = cursor
         .create_agent(
             agent.session_id,

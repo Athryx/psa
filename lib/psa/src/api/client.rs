@@ -412,7 +412,7 @@ impl Client {
     }
 
     /// Create a child session with inherited history through the requested boundary.
-    /// Returns the new session and forked agents, with source IDs in `parent_id`.
+    /// Returns the new session and forked agents, with source IDs in `forked_from`.
     pub async fn fork_session(
         &self,
         id: SessionId,

@@ -29,7 +29,7 @@ async fn native_tool_definitions_round_trip_through_persistence_and_reopen() {
             ))
         })
         .collect();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor.add_events(agent.id, &events).await.unwrap();
     cursor.commit().await.unwrap();
     db.close().await;
@@ -37,7 +37,7 @@ async fn native_tool_definitions_round_trip_through_persistence_and_reopen() {
     let reopened = Database::open(directory.path().join("events.sqlite3"))
         .await
         .unwrap();
-    let mut cursor = reopened.cursor().await.unwrap();
+    let mut cursor = reopened.read().await.unwrap();
     let saved = cursor.load_all_events(agent.id).await.unwrap();
     assert_eq!(saved.len(), ids.len());
     for (event, id) in saved.iter().zip(ids) {
@@ -50,7 +50,7 @@ async fn native_tool_definitions_round_trip_through_persistence_and_reopen() {
             serde_json::to_value(crate::components::tools::tool_definition(id).unwrap()).unwrap(),
         );
     }
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     reopened.close().await;
 }
 

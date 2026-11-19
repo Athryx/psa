@@ -23,7 +23,7 @@ fn set_connection(mut ui: Signal<Ui>, connection: &str) {
 
 fn sessions_match(left: &Session, right: &Session) -> bool {
     left.id == right.id
-        && left.parent_id == right.parent_id
+        && left.forked_from == right.forked_from
         && left.name == right.name
         && left.working_directory == right.working_directory
         && left.probe_id == right.probe_id
@@ -965,7 +965,7 @@ fn agents_match(left: &Agent, right: &Agent) -> bool {
     left.id == right.id
         && left.session_id == right.session_id
         && left.definition_id == right.definition_id
-        && left.parent_id == right.parent_id
+        && left.forked_from == right.forked_from
         && left.subagent_parent_id == right.subagent_parent_id
         && left.name == right.name
         && left.interactive == right.interactive
@@ -1495,7 +1495,7 @@ pub async fn fork_session(
         if let Some(agent) = fork
             .agents
             .iter()
-            .find(|agent| agent.parent_id == Some(target.agent_id))
+            .find(|agent| agent.forked_from == Some(target.agent_id))
         {
             state.last_agents.insert(id, agent.id);
         }
@@ -2355,7 +2355,7 @@ mod draft_root_tests {
                 } else if line.starts_with("POST /sessions/1/agents ") {
                     (
                         "200 OK",
-                        serde_json::json!({"id":42,"definition_id":1,"session_id":1,"parent_id":null,"subagent_parent_id":null,"name":"alternate","hidden":false,"interactive":true,"state":"Idle","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"cached_input_tokens":0,"reasoning_output_tokens":0},"next_event_id":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}),
+                        serde_json::json!({"id":42,"definition_id":1,"session_id":1,"forked_from":null,"subagent_parent_id":null,"name":"alternate","hidden":false,"interactive":true,"state":"Idle","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"cached_input_tokens":0,"reasoning_output_tokens":0},"next_event_id":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}),
                     )
                 } else if line.starts_with("POST /sessions/1/agents/42/requests ") {
                     ("500 Internal Server Error", serde_json::json!({}))
@@ -2508,7 +2508,7 @@ mod draft_root_tests {
         ui.open(from, true);
         let tab = ui.workspace.groups()[0].tabs[0].id;
         ui.drafts.insert(from, "first message".into());
-        let agent: Agent = serde_json::from_value(serde_json::json!({"id":42,"definition_id":1,"session_id":1,"parent_id":null,"subagent_parent_id":null,"name":"root","hidden":false,"interactive":true,"state":"Idle","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"cached_input_tokens":0,"reasoning_output_tokens":0},"next_event_id":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"})).unwrap();
+        let agent: Agent = serde_json::from_value(serde_json::json!({"id":42,"definition_id":1,"session_id":1,"forked_from":null,"subagent_parent_id":null,"name":"root","hidden":false,"interactive":true,"state":"Idle","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"cached_input_tokens":0,"reasoning_output_tokens":0},"next_event_id":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"})).unwrap();
         let to = promote_draft_root(&mut ui, SessionId(1), agent).unwrap();
         assert_eq!(ui.workspace.groups()[0].tabs[0].id, tab);
         assert_eq!(ui.workspace.groups()[0].tabs[0].target, to);

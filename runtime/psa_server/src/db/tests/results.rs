@@ -13,7 +13,7 @@ fn completion(value: AgentResult) -> [NewEvent; 3] {
 #[tokio::test]
 async fn result_history_is_newest_first_durable_and_bounded_by_every_fork() {
     let (directory, db, session, parent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     assert!(
         cursor
             .load_last_result(session.id, parent.id)
@@ -214,7 +214,7 @@ async fn result_history_is_newest_first_durable_and_bounded_by_every_fork() {
     let reopened = Database::open(directory.path().join("events.sqlite3"))
         .await
         .unwrap();
-    let mut cursor = reopened.cursor().await.unwrap();
+    let mut cursor = reopened.read().await.unwrap();
     assert_eq!(
         cursor
             .load_last_results(nested.session.id, descendant.id, 10)
@@ -226,7 +226,7 @@ async fn result_history_is_newest_first_durable_and_bounded_by_every_fork() {
         cursor.get_agent(descendant.id).await.unwrap().state,
         AgentState::Idle
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     reopened.close().await;
 }
 
@@ -247,7 +247,7 @@ async fn recovery_of_a_structured_result_fork_acknowledges_only_its_producer_and
         (true, true, false),
     ] {
         let (_directory, db, session, _ordinary_agent) = fixture().await;
-        let mut cursor = db.cursor().await.unwrap();
+        let mut cursor = db.write().await.unwrap();
         let schema = serde_json::json!({
             "type": "object", "properties": {"count": {"type": "integer"}},
             "required": ["count"], "additionalProperties": false,
@@ -292,7 +292,7 @@ async fn recovery_of_a_structured_result_fork_acknowledges_only_its_producer_and
             definition: record_tool.tool_definition(),
         };
         components.cleanup().await.unwrap();
-        let mut cursor = db.cursor().await.unwrap();
+        let mut cursor = db.write().await.unwrap();
         let ack = |call_id: &str| {
             NewEvent::new(EventType::ToolResult(ToolResult {
                 delivery: None,
@@ -416,7 +416,7 @@ async fn recovery_of_a_structured_result_fork_acknowledges_only_its_producer_and
         let child = fork
             .agents
             .iter()
-            .find(|child| child.parent_id == Some(agent.id))
+            .find(|child| child.forked_from == Some(agent.id))
             .unwrap();
         assert_eq!(child.state, AgentState::Idle);
         let visible = cursor.load_all_events(child.id).await.unwrap();
@@ -431,7 +431,7 @@ async fn recovery_of_a_structured_result_fork_acknowledges_only_its_producer_and
 
         let publication = Publication::default();
         recover_agent(&db, &publication, child.id).await.unwrap();
-        let mut cursor = db.cursor().await.unwrap();
+        let mut cursor = db.read().await.unwrap();
         let recovered = cursor.load_all_events(child.id).await.unwrap();
         assert_eq!(
             cursor.get_agent(child.id).await.unwrap().state,
@@ -495,7 +495,7 @@ async fn recovery_of_a_structured_result_fork_acknowledges_only_its_producer_and
             records[0].value,
             AgentResult::Json(serde_json::json!({"count":4}))
         );
-        cursor.rollback().await.unwrap();
+        cursor.close().await.unwrap();
         let state = AgentManagerState::load_persisted(db.clone(), publication.clone(), child.id)
             .await
             .unwrap();
@@ -515,7 +515,7 @@ async fn recovery_of_a_structured_result_fork_acknowledges_only_its_producer_and
 
         // Retrying recovery only acknowledges the checkpoint once and never records it again.
         recover_agent(&db, &publication, child.id).await.unwrap();
-        let mut cursor = db.cursor().await.unwrap();
+        let mut cursor = db.write().await.unwrap();
         assert_eq!(
             cursor.load_all_events(child.id).await.unwrap().len(),
             recovered.len()
@@ -535,7 +535,7 @@ async fn recovery_of_a_structured_result_fork_acknowledges_only_its_producer_and
 #[tokio::test]
 async fn results_require_running_and_an_immediate_idle_transition_in_one_batch() {
     let (_directory, db, session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     for invalid in [
         vec![
             NewEvent::new(EventType::Result(AgentResult::Text("not running".into()))),
