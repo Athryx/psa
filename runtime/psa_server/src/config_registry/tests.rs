@@ -1,15 +1,17 @@
 use super::*;
-use psa::api::{HookConfig, HookConfigs};
 
 fn configured_defaults() -> AgentDefaults {
     AgentDefaults {
-        bundles: vec![BundleConfig::FileTools { read_only: true }],
-        hooks: HookConfigs {
-            agent_create: vec![HookConfig::Skills],
-            session_update: vec![HookConfig::SessionModelUpdate],
-            before_request: vec![HookConfig::Noop],
-            after_request: vec![HookConfig::StopWithoutTools],
-        },
+        bundles: vec![
+            BundleConfig::Startup {
+                base_prompt: true,
+                project_context: false,
+                cwd: false,
+                skills: true,
+            },
+            BundleConfig::FileTools { read_only: true },
+            BundleConfig::StopWithoutTools,
+        ],
     }
 }
 
@@ -33,60 +35,43 @@ fn omitted_components_inherit_configured_defaults() {
         ConfigRegistry::new(PathBuf::from("/tmp/defaults")).with_agent_defaults(defaults.clone());
     let config = lower_config("name = 'example'", registry.agent_defaults());
     assert_eq!(config.bundles, defaults.bundles);
-    assert_eq!(config.hooks, defaults.hooks);
 }
 
 #[test]
 fn explicit_empty_components_disable_configured_defaults() {
     let defaults = configured_defaults();
-    let config = lower_config(
-        "name = 'example'\nbundles = []\n[hooks]\nagent_create = []\nsession_update = []\nbefore_request = []\nafter_request = []",
-        &defaults,
-    );
+    let config = lower_config("name = 'example'\nbundles = []", &defaults);
     assert!(config.bundles.is_empty());
-    assert_eq!(config.hooks, HookConfigs::default());
 }
 
 #[test]
-fn hook_stages_inherit_and_override_independently() {
-    let defaults = configured_defaults();
+fn parameterized_bundle_configuration_is_parsed_from_toml() {
     let config = lower_config(
-        "name = 'example'\n[hooks]\nagent_create = []\nafter_request = ['Noop']",
-        &defaults,
-    );
-    assert!(config.hooks.agent_create.is_empty());
-    assert_eq!(config.hooks.session_update, defaults.hooks.session_update);
-    assert_eq!(config.hooks.before_request, defaults.hooks.before_request);
-    assert_eq!(config.hooks.after_request, vec![HookConfig::Noop]);
-    assert_eq!(config.bundles, defaults.bundles);
-}
-
-#[test]
-fn parameterized_hook_configuration_is_local_to_each_stage() {
-    let config = lower_config(
-        "name = 'example'\n[hooks]\nagent_create = ['DefaultStartup', { ExtraSystemPrompt = { prompt = 'First prompt' } }]\nbefore_request = [{ ExtraSystemPrompt = { prompt = 'Second prompt' } }]",
+        "name = 'example'\nbundles = [{ Startup = { cwd = false } }, { ExtraSystemPrompt = { prompt = 'First prompt' } }, 'StopWithoutTools']",
         &AgentDefaults::default(),
     );
     assert_eq!(
-        config.hooks.agent_create,
+        config.bundles,
         vec![
-            HookConfig::DefaultStartup,
-            HookConfig::ExtraSystemPrompt {
+            BundleConfig::Startup {
+                base_prompt: true,
+                project_context: true,
+                cwd: false,
+                skills: true,
+            },
+            BundleConfig::ExtraSystemPrompt {
                 prompt: "First prompt".into()
-            }
+            },
+            BundleConfig::StopWithoutTools,
         ]
-    );
-    assert_eq!(
-        config.hooks.before_request,
-        vec![HookConfig::ExtraSystemPrompt {
-            prompt: "Second prompt".into()
-        }]
     );
     for invalid in [
         "extra_system_prompt = 'legacy agent field'",
-        "[hooks]\nagent_create = ['ExtraSystemPrompt']",
-        "[hooks]\nagent_create = [{ ExtraSystemPrompt = {} }]",
-        "[hooks]\nagent_create = [{ ExtraSystemPrompt = { prompt = 'text', unknown = true } }]",
+        "[hooks]\nagent_create = ['DefaultStartup']",
+        "bundles = ['ExtraSystemPrompt']",
+        "bundles = [{ ExtraSystemPrompt = {} }]",
+        "bundles = [{ ExtraSystemPrompt = { prompt = 'text', unknown = true } }]",
+        "bundles = ['Startup']",
         "tools = []",
         "tools = ['Bash']",
         "tools = ['CreateAgent']",
@@ -147,16 +132,16 @@ fn bundle_flag_payloads_parse_from_toml_and_default_to_interactive_only() {
 }
 
 #[test]
-fn file_tools_payloads_parse_read_only_and_noop_bundle_selection() {
+fn file_tools_payloads_parse_read_only_and_unit_bundle_selection() {
     let config = lower_config(
-        "name = 'example'\nbundles = [{ FileTools = {} }, 'Noop']",
+        "name = 'example'\nbundles = [{ FileTools = {} }, 'Bash']",
         &AgentDefaults::default(),
     );
     assert_eq!(
         config.bundles,
         vec![
             BundleConfig::FileTools { read_only: false },
-            BundleConfig::Noop
+            BundleConfig::Bash
         ]
     );
     let config = lower_config(
@@ -222,7 +207,7 @@ async fn relative_additional_paths_metadata_and_failed_scans_are_atomic() {
         .unwrap();
     let service = ConfigRegistry::new(global.clone());
     service.refresh(&database, &[]).await.unwrap();
-    let mut cursor = database.cursor().await.unwrap();
+    let mut cursor = database.read().await.unwrap();
     let skills = cursor.list_skills().await.unwrap();
     let configs = cursor.list_agent_configs().await.unwrap();
     assert_eq!(skills.len(), 1);
@@ -234,7 +219,7 @@ async fn relative_additional_paths_metadata_and_failed_scans_are_atomic() {
         vec![skills[0].config_id.clone()]
     );
     assert_eq!(configs[0].config.models, vec![ModelSelection::Global]);
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
     // Deleted additional_paths retain their metadata-derived reference and
     // become missing components; restoration reuses the mutable skill identity.
@@ -242,7 +227,7 @@ async fn relative_additional_paths_metadata_and_failed_scans_are_atomic() {
     let contents = tokio::fs::read(&skill_file).await.unwrap();
     tokio::fs::remove_file(&skill_file).await.unwrap();
     service.refresh(&database, &[]).await.unwrap();
-    let mut cursor = database.cursor().await.unwrap();
+    let mut cursor = database.read().await.unwrap();
     assert!(cursor.list_skills().await.unwrap().is_empty());
     let missing = cursor.list_agent_configs().await.unwrap();
     assert_eq!(
@@ -250,68 +235,73 @@ async fn relative_additional_paths_metadata_and_failed_scans_are_atomic() {
         vec![skills[0].config_id.clone()]
     );
     assert_eq!(missing[0].status.missing_components.len(), 1);
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     tokio::fs::write(&skill_file, &contents).await.unwrap();
     service.refresh(&database, &[]).await.unwrap();
-    let mut cursor = database.cursor().await.unwrap();
+    let mut cursor = database.read().await.unwrap();
     assert_eq!(cursor.list_skills().await.unwrap()[0].id, skills[0].id);
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
     // A syntax error must not publish deletions or partially replace good rows.
     tokio::fs::write(global.join("agents/example.toml"), "invalid = [")
         .await
         .unwrap();
     assert!(service.refresh(&database, &[]).await.is_err());
-    let mut cursor = database.cursor().await.unwrap();
+    let mut cursor = database.read().await.unwrap();
     assert_eq!(cursor.list_agent_configs().await.unwrap().len(), 1);
     assert_eq!(cursor.list_skills().await.unwrap()[0].id, skills[0].id);
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     // A successful empty source removes only discovery-owned records.
     tokio::fs::remove_file(global.join("agents/example.toml"))
         .await
         .unwrap();
     service.refresh(&database, &[]).await.unwrap();
-    let mut cursor = database.cursor().await.unwrap();
+    let mut cursor = database.read().await.unwrap();
     assert!(cursor.list_agent_configs().await.unwrap().is_empty());
     assert!(cursor.list_skills().await.unwrap().is_empty());
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     database.close().await;
 }
 
 #[tokio::test]
-async fn goal_source_must_explicitly_clear_inherited_ordinary_completion() {
+async fn goal_source_must_not_also_select_ordinary_completion() {
     let directory = tempfile::tempdir().unwrap();
     let global = directory.path().join("global");
     tokio::fs::create_dir_all(global.join("agents"))
         .await
         .unwrap();
     let path = global.join("agents/goal.toml");
-    let base = "name = 'goal'\nbundles = [{ Goal = { interactive_only = false } }]\n";
-    tokio::fs::write(&path, base).await.unwrap();
+    let goal = "{ Goal = { interactive_only = false } }";
+    tokio::fs::write(
+        &path,
+        format!("name = 'goal'\nbundles = [{goal}, 'StopWithoutTools']\n"),
+    )
+    .await
+    .unwrap();
     let db = Database::open(directory.path().join("registry.sqlite3"))
         .await
         .unwrap();
     let registry = ConfigRegistry::new(global).with_agent_defaults(configured_defaults());
     assert!(registry.refresh(&db, &[]).await.is_err());
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     assert!(cursor.list_agent_configs().await.unwrap().is_empty());
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
-    tokio::fs::write(&path, format!("{base}\n[hooks]\nafter_request = []\n"))
+    // An explicit list replaces the defaults, including their StopWithoutTools.
+    tokio::fs::write(&path, format!("name = 'goal'\nbundles = [{goal}]\n"))
         .await
         .unwrap();
     registry.refresh(&db, &[]).await.unwrap();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     let configs = cursor.list_agent_configs().await.unwrap();
     assert_eq!(configs.len(), 1);
-    assert!(configs[0].config.hooks.after_request.is_empty());
     assert_eq!(
         configs[0].config.bundles,
         vec![BundleConfig::Goal {
             interactive_only: false
         }]
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     db.close().await;
 }
 
@@ -360,4 +350,20 @@ async fn duplicate_metadata_names_and_empty_models_are_errors() {
         .await
         .is_err()
     );
+}
+
+#[test]
+fn global_group_defaults_include_the_session_group() {
+    let available = HashSet::new();
+    let global = expand_inclusions(true, true, &[], &ConfigGroup::Global, &available);
+    assert_eq!(
+        global.groups,
+        vec![ConfigGroup::Global, ConfigGroup::Session]
+    );
+    let global_only = expand_inclusions(true, false, &[], &ConfigGroup::Global, &available);
+    assert_eq!(global_only.groups, vec![ConfigGroup::Global]);
+
+    let project = ConfigGroup::Custom("project".into());
+    let own = expand_inclusions(true, true, &[], &project, &available);
+    assert_eq!(own.groups, vec![ConfigGroup::Global, project]);
 }

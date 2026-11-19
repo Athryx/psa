@@ -135,7 +135,7 @@ pub fn Sidebar() -> Element {
                         button{key:"{session.id.0}",class:"session",title:"{session.name}",
                             onclick:move |_|{spawn(network::open_session(ui,session.id,false));},
                             ondoubleclick:move |_|{spawn(network::double_click_session(ui,session.id));},
-                            if session.parent_id.is_some(){"⑂ "}
+                            if session.forked_from.is_some(){"⑂ "}
                             "{session.name}"
                             if session.busy{span{class:"tab-spinner inline-spinner",role:"img","aria-label":"Session running"}}else if state.connection!="Connected"{span{class:"muted"," ?"}}
                         }
@@ -451,7 +451,7 @@ fn Details() -> Element {
         .unwrap_or_default();
     let tree = agent_tree(&agents, state.settings.preferences.show_hidden_agents);
     // A fork's parent may be outside the loaded session list.
-    let parent = session.parent_id.map(|id| {
+    let parent = session.forked_from.map(|id| {
         let name = state
             .sessions
             .iter()

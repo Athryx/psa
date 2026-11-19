@@ -6,7 +6,7 @@ use super::{
 };
 use crate::agents::{
     lifecycle::{AgentLifecycleEvent, SessionLifecycleHook},
-    sessions::Sessions,
+    runtime_handle::RuntimeHandle,
 };
 use psa::api::SessionId;
 
@@ -33,7 +33,7 @@ impl SessionBundleResources {
     /// Without a provider registry, decision calls fail with a configuration error.
     pub fn start(
         session: SessionId,
-        sessions: Sessions,
+        sessions: RuntimeHandle,
         providers: Option<crate::providers::ProviderRegistry>,
     ) -> Self {
         let decisions = DecisionHandle::new(providers, sessions.model_catalog().cloned());

@@ -1,13 +1,13 @@
 use super::*;
 use crate::{
-    agents::{NewAgent, client_queries::ClientQueries, session_manager::ManagerCommand},
+    agents::{NewAgent, client_queries::ClientQueries, supervisor::SupervisorCommand},
     components::bundles::{
         BundleKind,
         testing::{CleanupBehavior, ProbeBundle, ProbeState, install_owned},
     },
     sessions::NewSession,
 };
-use std::{collections::VecDeque, sync::atomic::Ordering};
+use std::{collections::VecDeque, panic::AssertUnwindSafe, sync::atomic::Ordering};
 
 async fn create_agent_record(
     definition: crate::db::CreateAgentDefinition,
@@ -17,7 +17,7 @@ async fn create_agent_record(
         .await
         .unwrap();
     crate::test_support::register_probe(&database).await;
-    let mut cursor = database.cursor().await.unwrap();
+    let mut cursor = database.write().await.unwrap();
     let definition = cursor.create_agent_definition(definition).await.unwrap();
     let session = cursor
         .create_session(NewSession {
@@ -71,10 +71,10 @@ async fn run_test_worker(
     state: AgentManagerState,
     boundaries: Option<Vec<BoundaryReply>>,
 ) -> std::thread::Result<Result<(), AgentError>> {
-    let (commands, mut received) = actors::channel::<ManagerCommand>(8);
-    let manager = ManagerClient::new(commands);
+    let (commands, mut received) = actors::channel::<SupervisorCommand>(8);
+    let manager = SupervisorClient::new(commands);
     let mut client_queries = ClientQueries::start(state.publication.clone());
-    let sessions = Sessions::new(
+    let sessions = RuntimeHandle::new(
         state.db.clone(),
         state.publication.clone(),
         manager.clone(),
@@ -85,7 +85,7 @@ async fn run_test_worker(
         tokio::spawn(async move {
             while let Some(command) = received.recv().await {
                 match command {
-                    ManagerCommand::Boundary { reply, .. } => {
+                    SupervisorCommand::Boundary { reply, .. } => {
                         let _ = reply.send(boundaries.pop_front().unwrap_or(BoundaryReply::Stop));
                     }
                     _ => panic!("unexpected bundle test supervisor command"),

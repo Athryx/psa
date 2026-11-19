@@ -1,4 +1,4 @@
-use super::{Edit, Noop, Read, ToolId, ToolKind, Write, tool_definition};
+use super::{Edit, Read, ToolId, ToolKind, Write, tool_definition};
 use llm_api::api::{ToolDefinition, parse_tool_arguments};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -19,7 +19,6 @@ struct NestedEntry {
 #[test]
 fn concrete_unit_tools_have_their_registered_identities() {
     for (tool, id) in [
-        (ToolKind::Noop(Noop), ToolId::Noop),
         (ToolKind::Read(Read), ToolId::Read),
         (ToolKind::Edit(Edit), ToolId::Edit),
         (ToolKind::Write(Write), ToolId::Write),
@@ -36,7 +35,6 @@ fn concrete_unit_tools_have_their_registered_identities() {
 fn every_tool_identity_has_metadata_without_runtime_resources() {
     for (id, name) in [
         (ToolId::AskQuestion, "ask_question"),
-        (ToolId::Noop, "noop"),
         (ToolId::ResetCodeMode, "reset_codemode"),
         (ToolId::Read, "read"),
         (ToolId::Edit, "edit"),

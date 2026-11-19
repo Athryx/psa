@@ -3,7 +3,7 @@
 //! Loaded once at installation from the caller's pinned definition so that the
 //! create_agent schema, its validation, and the identity prompt agree.
 
-use crate::agents::sessions::Sessions;
+use crate::agents::runtime_handle::RuntimeHandle;
 use psa::api::{AgentDefinitionId, EffortSelection, ModelSelection};
 use std::collections::HashSet;
 
@@ -153,7 +153,7 @@ pub fn select_template<'a>(
 }
 
 pub async fn load_child_templates(
-    sessions: &Sessions,
+    sessions: &RuntimeHandle,
     ids: &[AgentDefinitionId],
 ) -> Result<Vec<ChildTemplate>, String> {
     let mut templates = Vec::new();

@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 use llm_api::providers::{Effort, Model, ModelConfig, ProviderType};
-use psa::api::{AgentConfig, AgentConfigInput, BundleConfig, HookConfigs, HookOverrides};
+use psa::api::{AgentConfig, AgentConfigInput, BundleConfig};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     net::SocketAddr,
@@ -32,16 +32,10 @@ path = "psa.sqlite3"
 model = "openai_codex/gpt-5"
 effort = "Medium"
 
-# Fallbacks for omitted fields in agent files and API registrations.
-# Explicit empty arrays override these defaults; hook stages inherit separately.
+# Fallback bundles for agent files and API registrations that omit them.
+# An explicit list, even an empty one, replaces these defaults.
 [agent_defaults]
-bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents", { Goal = { interactive_only = true } }, { Compaction = {} }]
-
-[agent_defaults.hooks]
-agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
-session_update = ["SessionModelUpdate"]
-before_request = []
-after_request = []
+bundles = [{ Startup = {} }, { FileTools = { read_only = false } }, "Bash", "Subagents", { Goal = { interactive_only = true } }, { Compaction = {} }]
 "#;
 
 /// Global agent files generated with a new configuration: a selectable default
@@ -232,10 +226,7 @@ impl StartOptions {
             return Err(ConfigError::EmptyDatabasePath);
         }
 
-        crate::components::bundles::validate_completion_config(
-            &config.agent_defaults.bundles,
-            &config.agent_defaults.hooks,
-        )?;
+        crate::components::bundles::validate_completion_config(&config.agent_defaults.bundles)?;
 
         let database_path = data_dir.join(config.database.path);
         Ok(ResolvedConfig {
@@ -341,13 +332,11 @@ async fn write_new_file(path: &Path, contents: &str) -> Result<bool, ConfigError
 pub struct AgentDefaults {
     /// Ordered fallback bundle configurations; defaults to empty.
     pub bundles: Vec<BundleConfig>,
-    /// Per-stage fallback hook configurations; all stages default to empty.
-    pub hooks: HookConfigs,
 }
 
 impl AgentDefaults {
-    /// Fill omitted bundle and hook lists from these defaults. Explicit lists,
-    /// even empty ones, replace the defaults rather than merging with them.
+    /// Fill an omitted bundle list from these defaults. An explicit list, even
+    /// an empty one, replaces the defaults rather than merging with them.
     /// Models and dependencies are not validated here.
     pub fn resolve(&self, input: AgentConfigInput) -> AgentConfig {
         AgentConfig {
@@ -355,30 +344,10 @@ impl AgentDefaults {
             description: input.description,
             selectable: input.selectable,
             bundles: input.bundles.unwrap_or_else(|| self.bundles.clone()),
-            hooks: self.resolve_hooks(input.hooks),
             models: input.models,
             first_model_default: input.first_model_default,
             subagents: input.subagents,
             skills: input.skills,
-        }
-    }
-
-    /// Each omitted stage inherits its default list independently.
-    fn resolve_hooks(&self, hooks: HookOverrides) -> HookConfigs {
-        let defaults = &self.hooks;
-        HookConfigs {
-            agent_create: hooks
-                .agent_create
-                .unwrap_or_else(|| defaults.agent_create.clone()),
-            session_update: hooks
-                .session_update
-                .unwrap_or_else(|| defaults.session_update.clone()),
-            before_request: hooks
-                .before_request
-                .unwrap_or_else(|| defaults.before_request.clone()),
-            after_request: hooks
-                .after_request
-                .unwrap_or_else(|| defaults.after_request.clone()),
         }
     }
 }
@@ -386,25 +355,21 @@ impl AgentDefaults {
 #[cfg(test)]
 mod agent_defaults_tests {
     use super::*;
-    use psa::api::{ConfigGroup, ConfigId, HookConfig, ModelSelection};
+    use psa::api::{ConfigGroup, ConfigId, ModelSelection};
     use serde_json::json;
 
     fn defaults() -> AgentDefaults {
         AgentDefaults {
             bundles: vec![
+                BundleConfig::Startup {
+                    base_prompt: true,
+                    project_context: true,
+                    cwd: true,
+                    skills: true,
+                },
                 BundleConfig::FileTools { read_only: false },
-                BundleConfig::Noop,
+                BundleConfig::StopWithoutTools,
             ],
-            hooks: HookConfigs {
-                agent_create: vec![
-                    HookConfig::DefaultStartup,
-                    HookConfig::ExtraSystemPrompt {
-                        prompt: "Inherited prompt".into(),
-                    },
-                ],
-                after_request: vec![HookConfig::StopWithoutTools],
-                ..Default::default()
-            },
         }
     }
 
@@ -415,36 +380,20 @@ mod agent_defaults_tests {
             serde_json::from_value(json!({"config_id": id, "models": ["Global"]})).unwrap();
         let resolved = defaults().resolve(input.clone());
         assert_eq!(resolved.bundles, defaults().bundles);
-        assert_eq!(resolved.hooks, defaults().hooks);
         let wire = serde_json::to_value(&input).unwrap();
         assert!(wire.get("bundles").is_none());
         assert!(wire.get("tools").is_none());
-        let input: AgentConfigInput = serde_json::from_value(json!({"config_id": id, "models": ["Global"], "bundles": [], "hooks": {"agent_create": []}})).unwrap();
-        let resolved = defaults().resolve(input);
-        assert!(resolved.bundles.is_empty());
-        assert!(resolved.hooks.agent_create.is_empty());
-        assert_eq!(resolved.hooks.after_request, defaults().hooks.after_request);
-    }
-
-    #[test]
-    fn explicit_hook_payloads_replace_only_their_stage() {
-        let input: AgentConfigInput = serde_json::from_value(json!({
-            "config_id": {"config_group": "Global", "name": "agent"},
-            "models": ["Global"],
-            "hooks": {"agent_create": [{"ExtraSystemPrompt": {"prompt": "Local prompt"}}]},
-        }))
-        .unwrap();
-        let serialized = serde_json::to_value(&input).unwrap();
-        assert!(serialized["hooks"].get("after_request").is_none());
-        let resolved = defaults().resolve(input);
-        assert_eq!(
-            resolved.hooks.agent_create,
-            vec![HookConfig::ExtraSystemPrompt {
-                prompt: "Local prompt".into(),
-            }]
+        assert!(wire.get("hooks").is_none());
+        let input: AgentConfigInput =
+            serde_json::from_value(json!({"config_id": id, "models": ["Global"], "bundles": []}))
+                .unwrap();
+        assert!(defaults().resolve(input).bundles.is_empty());
+        assert!(
+            serde_json::from_value::<AgentConfigInput>(
+                json!({"config_id": id, "models": ["Global"], "hooks": {}})
+            )
+            .is_err()
         );
-        assert_eq!(resolved.hooks.after_request, defaults().hooks.after_request);
-        assert_eq!(resolved.bundles, defaults().bundles);
     }
 
     #[test]
@@ -461,6 +410,5 @@ mod agent_defaults_tests {
         let roundtrip: AgentConfigInput = serde_json::from_value(serialized).unwrap();
         let resolved = defaults().resolve(roundtrip);
         assert!(resolved.bundles.is_empty());
-        assert_eq!(resolved.hooks, HookConfigs::default());
     }
 }

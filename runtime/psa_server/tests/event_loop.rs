@@ -31,7 +31,7 @@ use psa_server::db::NewEvent;
 use psa_server::{
     agents::{
         NewAgent, ToolDefinitionExt, agent_manager::AgentManagerState, publication::Publication,
-        session_manager::Runtime,
+        supervisor::Runtime,
     },
     components::tools::ToolId,
     db::{Database, DbError},
@@ -61,13 +61,22 @@ fn config_id(name: &str) -> wire::ConfigId {
     }
 }
 
+/// Startup without the optional context, matching bare startup and tool definitions.
+fn startup() -> psa::api::BundleConfig {
+    psa::api::BundleConfig::Startup {
+        base_prompt: true,
+        project_context: false,
+        cwd: false,
+        skills: false,
+    }
+}
+
 fn agent_config(name: &str) -> wire::AgentConfig {
     wire::AgentConfig {
         config_id: config_id(name),
         description: String::new(),
         selectable: true,
         bundles: vec![],
-        hooks: Default::default(),
         models: vec![wire::ModelSelection::Global],
         first_model_default: true,
         subagents: Default::default(),
@@ -102,8 +111,8 @@ async fn inference(State(mut fake): State<Fake>, Json(body): Json<Value>) -> Res
     fake.requests.send(body).unwrap();
     let mut delta = match script {
         Script::Tools | Script::TextTools => json!({"role":"assistant", "tool_calls":[
-            {"index":0,"id":"call-ok","type":"function","function":{"name":"noop","arguments":"{}"}},
-            {"index":1,"id":"call-bad","type":"function","function":{"name":"noop","arguments":"{bad json"}}
+            {"index":0,"id":"call-ok","type":"function","function":{"name":"read","arguments":"{\"path\":\"/work/notes.txt\"}"}},
+            {"index":1,"id":"call-bad","type":"function","function":{"name":"read","arguments":"{bad json"}}
         ]}),
         Script::Calls(calls) => {
             json!({"role":"assistant", "tool_calls": calls.iter().enumerate().map(|(index, (id, name, arguments))| {
@@ -163,7 +172,9 @@ impl Harness {
     }
 
     async fn start_with_probe(scripts: Vec<Script>, connect_probe: bool) -> Self {
-        Self::start_with_files(scripts, connect_probe, fake_probe::FakeFiles::default()).await
+        // Scripted `read` calls target this file.
+        let files = fake_probe::FakeFiles::default().file("/work/notes.txt", "notes");
+        Self::start_with_files(scripts, connect_probe, files).await
     }
 
     async fn start_with_files(
@@ -239,16 +250,11 @@ impl Harness {
 
         let client = wire::Client::new(&format!("http://{address}"), "test-client-key").unwrap();
         let mut default = agent_config("default");
-        default.bundles = vec![psa::api::BundleConfig::Noop];
-        default.hooks = wire::HookConfigs {
-            agent_create: vec![
-                wire::HookConfig::DefaultStartup,
-                wire::HookConfig::ToolDefinitions,
-            ],
-            session_update: vec![wire::HookConfig::SessionModelUpdate],
-            after_request: vec![wire::HookConfig::StopWithoutTools],
-            ..Default::default()
-        };
+        default.bundles = vec![
+            startup(),
+            psa::api::BundleConfig::FileTools { read_only: true },
+            psa::api::BundleConfig::StopWithoutTools,
+        ];
         client.upsert_agent_configs(&[default]).await.unwrap();
 
         Self {
@@ -406,12 +412,12 @@ async fn interactive_and_hidden_metadata_survive_http_create_get_list_and_fork()
         let child = fork
             .agents
             .iter()
-            .find(|agent| agent.parent_id == Some(source.id))
+            .find(|agent| agent.forked_from == Some(source.id))
             .unwrap();
         assert_eq!(child.interactive, source.interactive);
         assert_eq!(child.hidden, source.hidden);
         assert_eq!(child.definition_id, source.definition_id);
-        assert_eq!(child.parent_id, Some(source.id));
+        assert_eq!(child.forked_from, Some(source.id));
         let loaded = harness
             .client
             .get_agent(fork.session.id, child.id)
@@ -453,12 +459,12 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
         path: "/work/project/.agents".into(),
         probe_id: support::probe_metadata().id,
     });
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     assert_eq!(
         cursor.get_session_agents_dir(session.id).await.unwrap(),
         expected
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
     let inherited = harness
         .client
@@ -485,7 +491,7 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
         )
         .await
         .unwrap();
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     assert_eq!(
         cursor
             .get_session_agents_dir(inherited.session.id)
@@ -507,7 +513,7 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
         cursor.get_session_agents_dir(session.id).await.unwrap(),
         expected
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
     harness
         .client
@@ -520,7 +526,7 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
         )
         .await
         .unwrap();
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     assert_eq!(
         cursor.get_session_agents_dir(session.id).await.unwrap(),
         None
@@ -532,28 +538,22 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
             .unwrap(),
         expected
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     harness.close().await;
 }
 
 #[tokio::test]
-async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
+async fn config_routes_preserve_snapshots_and_explicit_bundle_configuration() {
     let harness = Harness::start(vec![]).await;
     let mut request = agent_config("custom");
     request.description = "An HTTP snapshot fixture".into();
     request.selectable = true;
-    request.bundles = vec![psa::api::BundleConfig::Noop];
-    request.hooks = wire::HookConfigs {
-        agent_create: vec![
-            wire::HookConfig::Noop,
-            wire::HookConfig::ExtraSystemPrompt {
-                prompt: "Review carefully.".into(),
-            },
-        ],
-        session_update: vec![wire::HookConfig::Noop],
-        before_request: vec![wire::HookConfig::Noop],
-        after_request: vec![wire::HookConfig::Noop],
-    };
+    request.bundles = vec![
+        psa::api::BundleConfig::FileTools { read_only: true },
+        psa::api::BundleConfig::ExtraSystemPrompt {
+            prompt: "Review carefully.".into(),
+        },
+    ];
     harness.upsert_config(request.clone()).await;
     let loaded = harness
         .client
@@ -600,7 +600,7 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
     assert_eq!(
         events.events.len(),
         1,
-        "explicit hooks must not acquire default startup hooks"
+        "explicit bundles must not acquire default startup"
     );
     assert!(matches!(&events.events[0].event.kind,
         EventType::Message(message) if message.message_type == MessageType::System
@@ -608,12 +608,12 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
     ));
 
     let mut replacement = request.clone();
-    replacement.hooks.agent_create = vec![
-        wire::HookConfig::DefaultStartup,
-        wire::HookConfig::ExtraSystemPrompt {
+    replacement.bundles = vec![
+        psa::api::BundleConfig::ExtraSystemPrompt {
             prompt: "Updated prompt.".into(),
         },
-        wire::HookConfig::ToolDefinitions,
+        startup(),
+        psa::api::BundleConfig::FileTools { read_only: true },
     ];
     harness.upsert_config(replacement.clone()).await;
     let updated = harness
@@ -656,11 +656,8 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
         .get_resolved_agent_config(updated.definition_id)
         .await
         .unwrap();
-    assert_eq!(
-        updated_snapshot.config.hooks.agent_create,
-        replacement.hooks.agent_create
-    );
-    assert_eq!(updated_snapshot.definition.hooks, replacement.hooks);
+    assert_eq!(updated_snapshot.config.bundles, replacement.bundles);
+    assert_eq!(updated_snapshot.definition.bundles, replacement.bundles);
     harness.client.refresh_configs(&[session.id]).await.unwrap();
     let configs = harness.client.list_agent_configs().await.unwrap();
     assert_eq!(
@@ -677,9 +674,8 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
             .await
             .unwrap()
             .config
-            .hooks
-            .agent_create,
-        replacement.hooks.agent_create
+            .bundles,
+        replacement.bundles
     );
     harness.close().await;
 }
@@ -740,9 +736,8 @@ async fn config_batches_cycles_and_dependency_changes_pin_complete_graphs() {
     assert_eq!(child.references.subagents, vec![original.definition_id]);
 
     second
-        .hooks
-        .agent_create
-        .push(wire::HookConfig::ExtraSystemPrompt {
+        .bundles
+        .push(psa::api::BundleConfig::ExtraSystemPrompt {
             prompt: "Changed dependency".into(),
         });
     harness.upsert_config(second.clone()).await;
@@ -763,7 +758,7 @@ async fn config_batches_cycles_and_dependency_changes_pin_complete_graphs() {
         .get_resolved_agent_config(child.definition.id)
         .await
         .unwrap();
-    assert!(retained_child.config.hooks.agent_create.is_empty());
+    assert!(retained_child.config.bundles.is_empty());
 
     let mut invalid = agent_config("invalid-batch");
     invalid.models.clear();
@@ -936,7 +931,7 @@ async fn missing_explicit_dependencies_warn_and_resolve_again_when_registered() 
 }
 
 #[tokio::test]
-async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
+async fn startup_bundle_orders_offline_context_hooks() {
     let harness = Harness::start_with_probe(vec![], false).await;
     let session = harness
         .client
@@ -951,26 +946,25 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
         .await
         .unwrap();
 
-    for (name, hooks) in [
-        ("omitted", vec![]),
-        ("startup", vec![wire::HookConfig::DefaultStartup]),
-        ("tools", vec![wire::HookConfig::ToolDefinitions]),
+    for (name, startup) in [
+        ("omitted", None),
+        ("startup", Some(startup())),
         (
             "ordered",
-            vec![
-                wire::HookConfig::DefaultStartup,
-                wire::HookConfig::Cwd,
-                wire::HookConfig::ToolDefinitions,
-            ],
+            Some(psa::api::BundleConfig::Startup {
+                base_prompt: true,
+                project_context: false,
+                cwd: true,
+                skills: false,
+            }),
         ),
     ] {
+        // Startup creation hooks run first even when listed after other bundles.
+        let mut bundles = vec![psa::api::BundleConfig::FileTools { read_only: true }];
+        bundles.extend(startup);
         let definition = harness
             .upsert_config(wire::AgentConfig {
-                bundles: vec![psa::api::BundleConfig::Noop],
-                hooks: wire::HookConfigs {
-                    agent_create: hooks,
-                    ..Default::default()
-                },
+                bundles,
                 ..agent_config(name)
             })
             .await;
@@ -990,26 +984,20 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
             .await
             .unwrap();
         harness.wait_stopped(session.id).await;
-        let mut cursor = harness.db.cursor().await.unwrap();
+        let mut cursor = harness.db.read().await.unwrap();
         let events = cursor.load_all_events(agent.id).await.unwrap();
-        cursor.rollback().await.unwrap();
+        cursor.close().await.unwrap();
 
         if name == "omitted" {
             assert!(
                 events.is_empty(),
-                "omitted hooks must not acquire startup or tools"
-            );
-            continue;
-        }
-        if name == "tools" {
-            assert_eq!(events.len(), 1);
-            assert!(
-                matches!(&events[0].kind, EventType::ToolDefinition(tool) if tool.id == ToolId::Noop)
+                "omitted startup must not add startup or tools"
             );
             continue;
         }
 
-        assert_eq!(events.len(), if name == "ordered" { 5 } else { 3 });
+        // The read tool's definition is followed by its usage and rules messages.
+        assert_eq!(events.len(), if name == "ordered" { 7 } else { 6 });
         assert!(matches!(events[0].kind, EventType::NewContext));
         assert!(matches!(&events[1].kind, EventType::Model(config) if config == &model()));
         let EventType::Message(base) = &events[2].kind else {
@@ -1023,9 +1011,12 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
             ))
             .unwrap()
         );
+        assert!(
+            matches!(&events[3].kind, EventType::ToolDefinition(tool) if tool.id == ToolId::Read)
+        );
         if name == "ordered" {
-            let EventType::Message(cwd) = &events[3].kind else {
-                panic!("cwd must follow the base system message");
+            let EventType::Message(cwd) = &events[6].kind else {
+                panic!("cwd must follow the tool definitions");
             };
             assert_eq!(cwd.message_type, MessageType::System);
             assert_eq!(
@@ -1035,7 +1026,6 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
                 ))
                 .unwrap()
             );
-            assert!(matches!(events[4].kind, EventType::ToolDefinition(_)));
         }
     }
     assert!(harness.requests.is_empty());
@@ -1060,11 +1050,11 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
         .iter()
         .find(|agent| agent.name == "ordered")
         .unwrap();
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     let events = cursor.load_all_events(ordered.id).await.unwrap();
     assert_eq!(
         events.len(),
-        6,
+        8,
         "forks inherit startup and tools, but refresh cwd"
     );
     assert_eq!(
@@ -1081,7 +1071,7 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
         serde_json::to_value(&cwd.content).unwrap(),
         serde_json::to_value(psa_server::prompts::text("<cwd>\n/fork\n</cwd>")).unwrap()
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     harness.close().await;
 }
 
@@ -1107,7 +1097,7 @@ async fn offline_probe_interrupts_before_calling_the_provider() {
     );
     assert!(harness.requests.try_recv().is_err());
 
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     let events = cursor.load_all_events(agent.id).await.unwrap();
     assert!(events.iter().any(|event| matches!(
         &event.kind,
@@ -1119,7 +1109,7 @@ async fn offline_probe_interrupts_before_calling_the_provider() {
             .iter()
             .any(|event| matches!(&event.kind, EventType::InferenceResultStart(_)))
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     harness.close().await;
 }
 
@@ -1161,7 +1151,7 @@ async fn disconnected_probe_interrupts_the_next_request_before_provider_call() {
     assert_eq!(agent.usage.total_tokens, Some(7));
     assert!(harness.requests.try_recv().is_err());
 
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     let events = cursor.load_all_events(agent.id).await.unwrap();
     assert_eq!(
         events
@@ -1170,7 +1160,7 @@ async fn disconnected_probe_interrupts_the_next_request_before_provider_call() {
             .count(),
         1
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     harness.close().await;
 }
 
@@ -1200,14 +1190,14 @@ async fn queued_requests_and_worker_retirement_do_not_lose_messages() {
         harness.requests.recv().await.unwrap();
     }
     harness.wait_stopped(session.id).await;
-    let mut cursor = harness.db.cursor().await.unwrap();
+    let mut cursor = harness.db.read().await.unwrap();
     let events = cursor.load_all_events(agent.id).await.unwrap();
     assert_eq!(events.iter().filter(|event| matches!(&event.kind, EventType::Message(message) if message.message_type == MessageType::Human)).count(), 16);
     assert_eq!(
         cursor.get_agent(agent.id).await.unwrap().usage.total_tokens,
         Some(16 * 7)
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     harness.close().await;
 }
 
@@ -1234,18 +1224,17 @@ async fn busy_queries_track_all_workers_and_request_ids_ignore_generations() {
         harness.wait_stopped(session.id).await;
         assert!(!harness.client.get_session(session.id).await.unwrap().busy);
 
-        for (index, agent) in [first.id, second.id].into_iter().enumerate() {
+        let mut request_ids = Vec::new();
+        for agent in [first.id, second.id] {
             let accepted = harness
                 .client
                 .submit_request(session.id, agent, &message(MessageDelivery::Queue))
                 .await
                 .unwrap();
-            assert_eq!(
-                accepted.request_id.rsplit('-').next().unwrap(),
-                (index + 1).to_string()
-            );
+            request_ids.push(accepted.request_id);
             harness.requests.recv().await.unwrap();
         }
+        assert_ne!(request_ids[0], request_ids[1]);
 
         let updated = harness
             .client
@@ -1395,9 +1384,15 @@ async fn http_tools_hooks_usage_streaming_and_reconnect() {
         .await
         .unwrap();
     let first = harness.requests.recv().await.unwrap();
-    assert_eq!(first["messages"].as_array().unwrap().len(), 2);
-    assert_eq!(first["messages"][0]["role"], "system");
-    assert_eq!(first["messages"][1]["role"], "user");
+    // Base instructions, then the read tool's usage and rules, then the prompt.
+    let messages = first["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 4);
+    assert!(
+        messages[..3]
+            .iter()
+            .all(|message| message["role"] == "system")
+    );
+    assert_eq!(messages[3]["role"], "user");
     let mut pending_seen = false;
     let mut promoted = false;
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -1498,7 +1493,8 @@ async fn http_tools_hooks_usage_streaming_and_reconnect() {
             _ => {}
         }
     }
-    assert_eq!(replayed, page.events.len() - 4); // initial NewContext + Model + System + ToolDefinition
+    // Startup: NewContext, Model, base System, ToolDefinition, and its usage and rules.
+    assert_eq!(replayed, page.events.len() - 6);
     let other = harness
         .client
         .create_session(&wire::CreateSession {
@@ -1600,7 +1596,7 @@ async fn shutdown_interrupts_inference_persists_partial_output_and_discards_queu
     assert!(harness.requests.try_recv().is_err());
     let db = Database::open(path).await.unwrap();
     support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     assert_eq!(
         cursor.get_agent(agent.id).await.unwrap().state,
         AgentState::Interrupted
@@ -1609,7 +1605,7 @@ async fn shutdown_interrupts_inference_persists_partial_output_and_discards_queu
     assert_eq!(events.iter().filter(|event| matches!(&event.kind, EventType::Message(message) if message.message_type == MessageType::Human)).count(), 1);
     assert!(events.iter().any(|event| matches!(&event.kind, EventType::Message(message) if message.message_type == MessageType::Agent)));
     assert!(events.iter().any(|event| matches!(&event.kind, EventType::InferenceResultEnd(end) if matches!(end.outcome, api::Outcome::Cancelled))));
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     db.close().await;
     harness.fake_stop.send_replace(true);
     harness.fake_server.await.unwrap();
@@ -1624,7 +1620,7 @@ fn inference_events(id: u64) -> Vec<NewEvent> {
         })),
         NewEvent::new(EventType::ToolCall(ToolCall {
             call_id: format!("call-{id}"),
-            tool_name: "noop".into(),
+            tool_name: "read".into(),
             arguments: "{}".into(),
             metadata: Default::default(),
         })),
@@ -1653,7 +1649,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::open(dir.path().join("db.sqlite3")).await.unwrap();
     support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let session = cursor
         .create_session(NewSession {
             decision_model: None,
@@ -1699,7 +1695,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
                 NewEvent::new(EventType::NewContext),
                 NewEvent::new(EventType::Model(model())),
                 NewEvent::new(EventType::ToolDefinition(
-                    ToolDefinition::for_tool(ToolId::Noop).unwrap(),
+                    ToolDefinition::for_tool(ToolId::Read).unwrap(),
                 )),
             ],
         )
@@ -1786,7 +1782,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
     )
     .await
     .unwrap();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     let child_events = cursor.load_all_events(child.id).await.unwrap();
     let repaired_len = child_events.len();
     assert_eq!(
@@ -1804,7 +1800,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
         cursor.get_agent(child.id).await.unwrap().usage.total_tokens,
         Some(15)
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     runtime.shutdown().await.unwrap();
     let runtime = Runtime::start(
         db.clone(),
@@ -1814,12 +1810,12 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
     )
     .await
     .unwrap();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     assert_eq!(
         cursor.load_all_events(child.id).await.unwrap().len(),
         repaired_len
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     runtime.shutdown().await.unwrap();
     probes.shutdown().await;
     db.close().await;
@@ -1832,7 +1828,7 @@ async fn persistence_failure_does_not_mutate_worker_memory() {
     let path = dir.path().join("db.sqlite3");
     let db = Database::open(&path).await.unwrap();
     support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let session = cursor
         .create_session(NewSession {
             decision_model: None,
@@ -1876,13 +1872,13 @@ async fn persistence_failure_does_not_mutate_worker_memory() {
     );
     assert_eq!(state.agent().state, AgentState::Idle);
     assert_eq!(state.context().last_event_id, EventId(0));
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     assert!(cursor.load_all_events(agent.id).await.unwrap().is_empty());
     assert_eq!(
         cursor.get_agent(agent.id).await.unwrap().state,
         AgentState::Idle
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     connection.close().await.unwrap();
     db.close().await;
 }
@@ -1907,7 +1903,7 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
         .await
         .unwrap();
     assert_eq!(child.subagent_parent_id, Some(parent.id));
-    assert_eq!(child.parent_id, None);
+    assert_eq!(child.forked_from, None);
     harness.wait_stopped(session.id).await;
     let mut stream = harness
         .client
@@ -2002,16 +1998,16 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
     let copied_parent = fork
         .agents
         .iter()
-        .find(|agent| agent.parent_id == Some(parent.id))
+        .find(|agent| agent.forked_from == Some(parent.id))
         .unwrap()
         .id;
     let copied_child = fork
         .agents
         .iter()
-        .find(|agent| agent.parent_id == Some(child.id))
+        .find(|agent| agent.forked_from == Some(child.id))
         .unwrap();
     assert_eq!(copied_child.subagent_parent_id, Some(copied_parent));
-    assert_eq!(copied_child.parent_id, Some(child.id));
+    assert_eq!(copied_child.forked_from, Some(child.id));
     harness.wait_stopped(fork.session.id).await;
     harness.close().await;
 }

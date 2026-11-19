@@ -90,9 +90,9 @@ async fn list_sandboxes(
     axum::extract::State(state): axum::extract::State<AppState>,
     ApiQuery(query): ApiQuery<ListSandboxes>,
 ) -> Result<Json<Vec<Sandbox>>, SandboxError> {
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let records = cursor.list_sandboxes(query.manager_id).await?;
-    cursor.rollback().await?;
+    cursor.close().await?;
 
     let mut states = HashMap::new();
     for record in records.iter().filter(|record| record.deleted_at.is_none()) {
@@ -122,10 +122,10 @@ async fn create_sandbox(
     ApiPath(manager_id): ApiPath<ProbeId>,
     ApiJson(request): ApiJson<CreateSandbox>,
 ) -> Result<(StatusCode, Json<Sandbox>), SandboxError> {
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let manager = cursor.get_probe(manager_id).await?;
     let existing = cursor.list_sandboxes(Some(manager_id)).await?;
-    cursor.rollback().await?;
+    cursor.close().await?;
 
     if !manager.metadata.sandboxes {
         return Err(SandboxError::Unsupported(probe_name(&manager)));
@@ -213,7 +213,7 @@ async fn delete_sandbox(
     let (_, handle) = load_managed_sandbox(&state, probe_id).await?;
     handle.sandbox(SandboxRequest::Remove { probe_id }).await?;
 
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.write().await?;
     cursor
         .mark_sandbox_deleted(probe_id, OffsetDateTime::now_utc())
         .await?;
@@ -222,15 +222,15 @@ async fn delete_sandbox(
 }
 
 async fn insert_sandbox(state: &AppState, record: &SandboxRecord) -> Result<(), DbError> {
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.write().await?;
     cursor.insert_sandbox(record).await?;
     cursor.commit().await
 }
 
 async fn load_sandbox(state: &AppState, probe_id: ProbeId) -> Result<SandboxRecord, SandboxError> {
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let record = cursor.get_sandbox(probe_id).await?;
-    cursor.rollback().await?;
+    cursor.close().await?;
     Ok(record)
 }
 
@@ -240,10 +240,10 @@ async fn load_managed_sandbox(
     state: &AppState,
     probe_id: ProbeId,
 ) -> Result<(SandboxRecord, ProbeHandle), SandboxError> {
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let record = cursor.get_sandbox(probe_id).await?;
     let manager = cursor.get_probe(record.manager_id).await?;
-    cursor.rollback().await?;
+    cursor.close().await?;
 
     if record.deleted_at.is_some() {
         return Err(SandboxError::Deleted(record.name));

@@ -1,5 +1,6 @@
 use super::*;
 use crate::db::NewEvent;
+use std::panic::AssertUnwindSafe;
 
 #[tokio::test]
 async fn batch_snapshots_share_the_base_projection_and_saves_replace_only_the_writer() {
@@ -70,7 +71,7 @@ async fn sequential_barriers_include_preceding_immediate_error_results() {
 async fn each_invocation_has_its_own_cancellation_grace_period() {
     let fixture = Fixture::new().await;
     let (sender, mut notices) = mpsc::unbounded_channel();
-    let (mut fast, _) = tool(ToolId::Noop, ExecutionMode::Parallel, &sender);
+    let (mut fast, _) = tool(ToolId::ListSessions, ExecutionMode::Parallel, &sender);
     let (mut slow, release) = tool(ToolId::Edit, ExecutionMode::Parallel, &sender);
     let fast_dropped = match &mut fast {
         ToolKind::ExecutionProbe(tool) => {
@@ -121,7 +122,7 @@ async fn each_invocation_has_its_own_cancellation_grace_period() {
 async fn enqueued_saves_survive_a_sibling_panic_before_mailbox_handling() {
     let fixture = Fixture::new().await;
     let (sender, _notices) = mpsc::unbounded_channel();
-    let (parallel, _) = tool(ToolId::Noop, ExecutionMode::Parallel, &sender);
+    let (parallel, _) = tool(ToolId::ListSessions, ExecutionMode::Parallel, &sender);
     let dropped = match &parallel {
         ToolKind::ExecutionProbe(tool) => tool.dropped.clone(),
         _ => unreachable!(),
@@ -158,9 +159,9 @@ async fn enqueued_saves_survive_a_sibling_panic_before_mailbox_handling() {
     state.persist_events(&events).await.unwrap();
     assert!(state.outstanding_calls().is_empty());
     assert_eq!(state.agent.state, AgentState::Interrupted);
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     let events = cursor.load_all_events(state.agent.id).await.unwrap();
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     assert_eq!(
         events
             .iter()
@@ -182,7 +183,7 @@ async fn enqueued_saves_survive_a_sibling_panic_before_mailbox_handling() {
 async fn timed_out_save_waiter_does_not_cancel_its_enqueued_commit() {
     let fixture = Fixture::new().await;
     let (sender, mut notices) = mpsc::unbounded_channel();
-    let (mut parallel, _) = tool(ToolId::Noop, ExecutionMode::Parallel, &sender);
+    let (mut parallel, _) = tool(ToolId::ListSessions, ExecutionMode::Parallel, &sender);
     let dropped = match &mut parallel {
         ToolKind::ExecutionProbe(tool) => {
             tool.grace = Duration::ZERO;
@@ -221,9 +222,9 @@ async fn timed_out_save_waiter_does_not_cancel_its_enqueued_commit() {
     drop(publication);
     let state = finish(run).await;
     assert_eq!(state.agent.state, AgentState::Interrupted);
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     let events = cursor.load_all_events(state.agent.id).await.unwrap();
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     assert_eq!(
         events
             .iter()
@@ -251,7 +252,7 @@ async fn timed_out_save_waiter_does_not_cancel_its_enqueued_commit() {
 async fn malformed_unknown_incomplete_and_typed_invalid_calls_each_get_one_result() {
     let fixture = Fixture::new().await;
     let (sender, mut notices) = mpsc::unbounded_channel();
-    let (parallel, release) = tool(ToolId::Noop, ExecutionMode::Parallel, &sender);
+    let (parallel, release) = tool(ToolId::ListSessions, ExecutionMode::Parallel, &sender);
     release.add_permits(1);
     let mut state = fixture
         .state(

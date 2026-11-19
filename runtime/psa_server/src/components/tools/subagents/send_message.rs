@@ -55,7 +55,7 @@ impl SendMessage {
         let operation = async {
             let _guard = handle.begin_operation()?;
             let agents = context
-                .sessions()
+                .runtime()
                 .list_agents(context.session().id)
                 .await
                 .map_err(|error| error.to_string())?;
@@ -84,7 +84,7 @@ impl SendMessage {
             }
 
             let link = context
-                .sessions()
+                .runtime()
                 .send_subagent_message(
                     context.session().id,
                     target,

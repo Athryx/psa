@@ -97,7 +97,7 @@ widgets, slash-command control endpoints, or request-history filtering in this p
 
 Agent ancestry is persisted as `Agent.subagent_parent_id` and exposed through
 agent create/get/list responses and snapshot events, including without the bundle.
-The parent must be in the same session. `Agent.parent_id` remains fork lineage.
+The parent must be in the same session. `Agent.forked_from` remains fork lineage.
 Session forks remap ancestry to copied agent IDs. Existing checkpoint logs are
 not imported; preexisting agents default to no subagent parent.
 
@@ -157,7 +157,7 @@ Interruptions cancel all active tool futures, respecting individual cleanup grac
 periods. Dropping an invocation does not retract an already enqueued event save.
 Session updates affect later invocation batches, not in-flight snapshots.
 
-`Sessions::wait_for_steering` is a cancellation-safe, level-triggered notification:
+`RuntimeHandle::wait_for_steering` is a cancellation-safe, level-triggered notification:
 it observes queued steering without consuming it. Registration/checking are
 serialized by the manager, so steering cannot be lost between them. Runtime
 shutdown wakes waiters and cleans session resource owners as well as per-agent

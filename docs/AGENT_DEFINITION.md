@@ -7,8 +7,9 @@ Agent defined by sets of:
 - Extras (just consumed by hooks / tools, so are just fields)
   - skills
   - permitted subagents
-- extra system prompts are explicit `HookConfig::ExtraSystemPrompt { prompt }`
+- extra system prompts are explicit `BundleConfig::ExtraSystemPrompt { prompt }`
   construction payloads, not agent fields
+- tools and hooks are configured only through bundles
 
 Low level
 - tools

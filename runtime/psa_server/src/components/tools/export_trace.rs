@@ -76,7 +76,7 @@ impl ExportTrace {
         let mut trace = tokio::select! {
             biased;
             _ = cancellation.cancelled() => return ToolOutput::error(prompts::tool_interrupted()),
-            result = trace_export::export_session(context.sessions(), session_id) => match result {
+            result = trace_export::export_session(context.runtime(), session_id) => match result {
                 Ok(trace) => trace,
                 Err(error) => {
                     return ToolOutput::error(prompts::text(format!(

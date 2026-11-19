@@ -54,15 +54,9 @@ path = "psa.sqlite3"
 model = "openai_codex/gpt-5"
 effort = "Medium"
 
-# Optional fallbacks for omitted API/TOML agent component fields.
+# Optional fallback bundles for API/TOML agents that omit `bundles`.
 [agent_defaults]
-bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents", { Goal = { interactive_only = true } }, { Compaction = {} }]
-
-[agent_defaults.hooks]
-agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
-session_update = ["SessionModelUpdate"]
-before_request = []
-after_request = []
+bundles = [{ Startup = {} }, { FileTools = { read_only = false } }, "Bash", "Subagents", { Goal = { interactive_only = true } }, { Compaction = {} }]
 ```
 
 A newly generated configuration also writes two global agent files to
@@ -86,9 +80,7 @@ returned in session responses; reloads, updates, and forks do not reapply defaul
 Changing creation defaults requires a server restart.
 
 Omitted `bundles` inherit the whole default list; explicit lists replace
-it, and `[]` disables it. Hook stages inherit independently: an omitted stage
-inherits, while `after_request = []` disables only that stage. No
-`[agent_defaults]` means all fallbacks are empty. Defaults apply during API
+it, and `[]` disables it. No `[agent_defaults]` means the fallback is empty. Defaults apply during API
 registration/file refresh, not additively or to existing snapshots. Restart to
 load changed server defaults; API callers must resubmit omission-aware input to
 adopt them. Library servers can use
@@ -158,7 +150,7 @@ not necessarily persisted or executed at the time HTTP 202 is returned.
 
 ```rust,no_run
 use psa::api::{Client, CreateSession, CreateAgent, AgentConfigInput, AgentRequest,
-    ConfigGroup, ConfigId, HookConfig, HookOverrides, IncludedItems, MessageDelivery, ModelSelection,
+    BundleConfig, ConfigGroup, ConfigId, IncludedItems, MessageDelivery, ModelSelection,
     ProjectId};
 use llm_api::{api::{ContentBlock, TextBlock}, providers::{Effort, Model, ModelConfig, ProviderType}};
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -180,16 +172,12 @@ let config_id = ConfigId { config_group: ConfigGroup::Custom("examples".into()),
 let mut config = AgentConfigInput::new(config_id.clone(), vec![ModelSelection::Global]);
 config.description = "Example assistant".into();
 config.selectable = true;
-config.bundles = Some(vec![psa::api::BundleConfig::FileTools { read_only: false }]); // Replace defaults.
-config.hooks = HookOverrides {
-    agent_create: Some(vec![
-        HookConfig::DefaultStartup, HookConfig::ToolDefinitions, HookConfig::Cwd, HookConfig::Skills,
-    ]),
-    session_update: Some(vec![HookConfig::SessionModelUpdate]),
-    after_request: Some(vec![HookConfig::StopWithoutTools]),
-    ..Default::default() // Omitted before_request inherits its server default.
-};
-config.skills = IncludedItems { groups: vec![ConfigGroup::Global], items: vec![] };
+config.bundles = Some(vec![ // Replace defaults.
+    BundleConfig::Startup { base_prompt: true, project_context: false, cwd: true, skills: true },
+    BundleConfig::FileTools { read_only: false },
+    BundleConfig::StopWithoutTools,
+]);
+config.skills = IncludedItems { groups: vec![ConfigGroup::Global], ..Default::default() };
 client.upsert_agent_configs(&[config]).await?;
 let agent = client.create_agent(session.id, &CreateAgent {
     config_id,
@@ -270,16 +258,13 @@ CodeMode and read-only file access:
 
 ```toml
 [agent_defaults]
-bundles = ["CodeMode", { FileTools = { read_only = true } }]
-
-[agent_defaults.hooks]
-agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
+bundles = [{ Startup = { project_context = false, cwd = false } }, "CodeMode", { FileTools = { read_only = true } }]
 ```
 
 For an API configuration, the corresponding JSON field is:
 
 ```json
-{"bundles": ["CodeMode", {"FileTools": {"read_only": true}}]}
+{"bundles": [{"Startup": {"project_context": false, "cwd": false}}, "CodeMode", {"FileTools": {"read_only": true}}]}
 ```
 
 Rust clients can use `BundleConfig::CodeMode` and
@@ -440,9 +425,11 @@ upserting by `ConfigId { config_group, name }` after resolving server component
 defaults. The client accepts either `AgentConfigInput` or normalized `AgentConfig`;
 the latter sends every component list explicitly, including empty lists. Use
 `AgentConfigInput::new(config_id, models)` to inherit defaults. `GET /agent-configs` lists
-`AgentConfigStatus`; `POST /agent-configs/lookup` takes a `ConfigId` body and reads
-its current configuration/status. `GET /agent-snapshots/{definition_id}` reads an
-immutable `ResolvedAgentConfig` snapshot (JSON `null` when absent). Existing
+`AgentConfigStatus`; `GET /agent-configs/lookup` takes a `ConfigLookup` query
+(`name`, `group`, plus `custom` for Custom groups or `path` and `probe_id` for
+AgentsDir groups) and reads its current configuration/status.
+`GET /agent-snapshots/{definition_id}` reads an immutable `ResolvedAgentConfig`
+snapshot (HTTP 404 when absent). Existing
 agents and forks keep their pinned snapshots when current configurations change.
 There is no compatibility API: `/agent-definitions` CRUD routes and client
 methods are removed.
@@ -457,10 +444,12 @@ to true for single-model configurations; multiple choices with
 `first_model_default = false` require explicit selection. Model and effort inheritance resolve
 at creation.
 
-`POST /skills` uploads `NewSkill { config_id, tar_data }`, a complete skill tar
-archive represented as JSON bytes. `GET /skills` and `GET /agent-configs` refresh
-source metadata before listing; optional `?session_id=...` also refreshes that
-session's selected project. Global files live in `<data_dir>/{agents,skills}`;
+`POST /skills` uploads `NewSkill { config_id, tar_data, compression }`, a complete
+skill tar archive, base64-encoded in JSON and optionally compressed. `GET /skills`
+and `GET /agent-configs` list what is already registered without rescanning.
+`POST /configs/refresh` with `RefreshConfigs { session_ids }` rescans the global
+sources and the listed sessions' `.agents` directories; agent creation refreshes
+the global sources and its own session first. Global files live in `<data_dir>/{agents,skills}`;
 projects use the nearest probe-local `.agents/{agents,skills}`. Server-owned
 skills are synchronized to managed remote-probe caches before agent creation.
 For a probe advertising `host: true`, server-owned skills instead use their
@@ -487,19 +476,19 @@ always contain the concrete persisted configuration, which `UpdateSession` can
 replace explicitly. Reloading, updating, or forking never resets it to defaults.
 Each input/normalized config supplies a nonempty `models` policy list (`Global`, `Parent`,
 or `Fixed` with an effort policy), plus `description`, `selectable`, and inclusions.
-Extra prompts are explicit `HookConfig::ExtraSystemPrompt { prompt }` payloads,
+Extra prompts are explicit `BundleConfig::ExtraSystemPrompt { prompt }` payloads,
 not a separate agent/config field. Resolution produces an internal executable
 `AgentDefinition` with `model_config`, probe-local skill paths, and
 `permitted_subagents` snapshot IDs; `ResolvedAgentConfig.references` separately
-stores `SkillId` and subagent IDs. Skill paths are consumed only when `SkillsHook`
-is explicitly configured. Metadata does not automatically select agents or inject
+stores `SkillId` and subagent IDs. Skill paths are consumed only when the `Startup`
+bundle enables `skills`. Metadata does not automatically select agents or inject
 extra system prompts. The opt-in Subagents tool checks pinned permitted IDs when
 creating children; trusted-client config-based creation remains unrestricted.
 Unknown extra configuration/creation JSON fields are rejected.
 
 Normalized configs and snapshots persist ordered `bundles`; omitted input
 inherits server defaults, while explicit `[]` selects no bundles.
-`BundleConfig::Noop` installs Noop. `BundleConfig::FileTools { read_only: false }`
+`BundleConfig::FileTools { read_only: false }`
 installs Read, Edit, and Write; true installs only Read. FileTools requires a
 payload, with `read_only` defaulting to false inside it; bare `"FileTools"` is
 invalid. JSON uses `{"FileTools":{"read_only":true}}`, and TOML bundle entries
@@ -525,7 +514,7 @@ Bundles install in list order. Configured `agent_create` hooks run before
 bundle creation hooks, so startup initializes context before bundle prompts.
 Other stages run bundle hooks before explicit hooks. There is no standalone tool
 configuration or agent/config/defaults `tools` field; every tool requires a bundle. Duplicate bundle IDs, tool IDs, or tool
-names are rejected during component installation. The session manager retains
+names are rejected during component installation. The supervisor retains
 owners and instances by agent ID across worker retirement/failure. Forked agents
 have independent resources; server restart does not restore runtime resources.
 Shared session resources do not share tool instances or mutable hooks across
@@ -536,29 +525,31 @@ connected until cleanup finishes. See `../../docs/BASH_TOOLS.md` for process too
 Omitting bundles during an omission-aware upsert uses the server default list;
 explicit `[]` clears it. Existing executable snapshots are not changed.
 
-Each normalized config uses `HookConfigs` with ordered `HookConfig` lists at `agent_create`,
-`session_update`, `before_request`, and `after_request`. Omitted input stages
-inherit independently from `[agent_defaults.hooks]`; explicit empty stages disable
-those defaults. Without server defaults, all lists are empty. Selected bundles
-can additionally supply their own hooks. Built-ins:
+Configs have no hook lists: bundles install every hook. `Startup { base_prompt,
+project_context, cwd, skills }` installs `DefaultStartup`, `ToolDefinitions`, and the enabled
+`ProjectContext`, `Cwd`, and `Skills` creation hooks (in that order, before any
+other bundle's creation hooks), plus `SessionModelUpdate`. `StopWithoutTools`
+and `ExtraSystemPrompt { prompt }` are bundles installing the same-named hooks.
+Built-in hooks:
 
-- `DefaultStartup`: normally bound to `agent_create`; saves `NewContext`, the
-  resolved `Model`, and a `System` message with the base assistant identity for a
+- `DefaultStartup`: runs on `agent_create`; saves `NewContext`, the
+  resolved `Model`, and (unless `base_prompt` is false) a `System` message with
+  the base assistant identity for a
   new root agent. It does not emit tool definitions. It skips forked agents
   entirely so inherited context and its model are not reset; an explicit session
   update can synchronize an inherited model afterward.
 - `ToolDefinitions`: separately emits tool-definition events from the worker's
   tool instances, then separate `<tools>` and `<rules>` system messages for any
-  tool-provided directions. Empty sections are omitted. Normally bound after
+  tool-provided directions. Empty sections are omitted. Runs after
   `DefaultStartup` on `agent_create`; it also skips forks to preserve inherited
   tool definitions and prompt sections.
-- `ExtraSystemPrompt { prompt }`: opt-in hook configuration that appends its
-  explicit prompt as a separate `System` message (unless empty), including on
+- `ExtraSystemPrompt { prompt }`: opt-in bundle that appends its
+  explicit prompt on creation as a separate `System` message (unless empty), including on
   forks. JSON uses `{"ExtraSystemPrompt":{"prompt":"Follow project conventions."}}`;
-  no agent-level prompt field or empty default prompt hook is installed.
+  no agent-level prompt field or empty default prompt is installed.
 - `Cwd`: emits a `System` message containing `<cwd>\nSESSION_CWD\n</cwd>`, with the
-  session working directory XML-escaped. It does not skip forks. Bind it to
-  `agent_create` and optionally `session_update` to reflect directory changes.
+  session working directory XML-escaped. It does not skip forks, so a fork
+  records its own working directory.
 - `Skills`: reads only explicit `AgentDefinition.skills` locations on the session
   probe. Relative locations resolve against the session's `working_directory`;
   locations can be Markdown (`.md`) files or directories containing `SKILL.md`.
@@ -567,16 +558,15 @@ can additionally supply their own hooks. Built-ins:
   omitted; the first duplicate name wins. Missing or malformed skills produce
   warning `Log` events and are skipped. An empty catalogue emits no system
   message. A nonempty skills list requires a connected probe; a disconnected
-  probe is an error rather than a missing-skill warning. Bind it after `Cwd` on
-  `agent_create`; without this hook, skills locations are not consumed.
-- `SessionModelUpdate`: normally bound to `session_update`; saves a changed
+  probe is an error rather than a missing-skill warning. Without this hook, skills
+  locations are not consumed.
+- `SessionModelUpdate`: runs on `session_update`; saves a changed
   session model unless the definition has its own model override. It does not
   emit `NewContext` or clear inherited history.
-- `StopWithoutTools`: ordinary completion mode, normally bound to `after_request`;
+- `StopWithoutTools`: ordinary completion mode, run on `after_request`;
   records a durable text Result and Idle for no-tool completion, including
   token-limited text. It is incompatible with Goal and TypedResult completion,
   including when inherited from defaults.
-- `Noop`: does nothing.
 
 One global session-manager task supervises lazy per-agent workers. Creation
 callbacks still run for newly forked agents, but not on worker reload or server
@@ -601,7 +591,7 @@ than forwarding an unfinished native tool call to the provider.
 
 Tools and hooks borrow `agents::agent_context::AgentContext` for each invocation.
 It exposes `agent()`, `session()`, the pinned `definition()`, agent-runtime
-`tools()`, `projection()`, the iteration's `probe()`, and `sessions()`.
+`tools()`, `projection()`, the iteration's `probe()`, and `runtime()`.
 `probe()` returns a `Result`: lifecycle hooks run even with an offline probe, and accessing it then returns `ProbeError::Disconnected`. Each session-update
 hook sees the snapshot for that update. Trace methods mirror the database queries
 with the current agent ID filled in: `load_events`, `load_all_events`, `load_context_window`,
@@ -625,8 +615,7 @@ Hooks implement `Hook` and return `Result<(), HookError>`. Tools implement `Tool
 and return `ToolOutput { content, error }`. Neither trait requires `new`.
 Construct stateless unit structs directly; stateful bundle components receive
 explicit shared handles from their owner. Tools are constructed only by bundles;
-`HookKind::from_config(&HookConfig)` and `Hooks::from_configs(&HookConfigs)`
-dispatch construction from payload-ready configurations.
+hooks are constructed only by bundles' `install`.
 `BundleKind::from_config(&BundleConfig, Option<&SessionBundleHandle>)` returns
 `Result<Self, InstallError>` and requires session resources for `Subagents`;
 there is no unbound fallback. Runtime-owned resources are supplied by the runtime,
@@ -645,10 +634,10 @@ interrupts without inference if the probe is missing. A mid-iteration disconnect
 is reported through probe-operation errors; tools/hooks decide whether to change
 status. Operations are never automatically retried.
 
-`agents::sessions::Sessions` is the shared async facade for config batch upsert,
+`agents::runtime_handle::RuntimeHandle` is the shared async facade for config batch upsert,
 lookup/list and snapshot reads, skill upload/list, session create/query/update/fork,
 configured agent create/query, request submission, steering, resume, interrupt,
-and busy queries. `Runtime::handle` and `AgentContext::sessions()` expose it.
+and busy queries. `Runtime::handle` and `AgentContext::runtime()` expose it.
 Registration uses `psa::api::AgentConfigInput`, normalized configs use
 `psa::api::AgentConfig`, and executable snapshots use `psa::api::AgentDefinition`.
 Session/agent operations
@@ -660,13 +649,20 @@ now `agents::agent_projection::AgentProjection`, distinct from execution context
 
 ## Storage and replay API
 
-`db::Database` manages the pool and migrations. Call `db.cursor().await?` to get a
-`DatabaseCursor`; all session, agent, and event operations take `&mut self` on the
-cursor. Call `commit().await?` to persist changes or `rollback().await?` to discard
-them. Dropping the cursor also rolls back. Both methods consume the cursor.
+`db::Database` manages the pool and migrations. Call `db.read().await?` for a
+`ReadCursor` or `db.write().await?` for a `WriteCursor`; all session, agent, and
+event operations take `&mut self` on a cursor. Queries live on `ReadCursor`, and
+`WriteCursor` adds the writes and dereferences to `ReadCursor`, so it can read
+too. On a write cursor, call `commit().await?` to persist changes or
+`rollback().await?` to discard them; dropping it also rolls back. A read cursor
+ends with `close().await?` or on drop.
 
-A cursor begins an immediate transaction, including for reads. Keep cursors short
-lived and release them before model/tool/network work or closing the database.
+A read cursor begins a deferred transaction: under WAL it reads a consistent
+snapshot without taking the writer lock, so reads never wait on writers. A write
+cursor begins an immediate transaction, reserving the writer lock up front so a
+read-then-write can never fail to upgrade. Keep cursors short lived (an open read
+transaction also stalls WAL checkpoints) and release them before
+model/tool/network work or closing the database.
 Multiple operations share one coherent snapshot and can be committed atomically.
 Multi-step writes use savepoints: a failed operation rolls back its own changes,
 so callers can catch the error and still commit earlier successful operations.
@@ -705,7 +701,7 @@ use llm_api::{api::RequestConfig, providers::{Effort, Model, ModelConfig, Provid
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let db = Database::open("psa.sqlite3").await?;
-let mut cursor = db.cursor().await?;
+let mut cursor = db.write().await?;
 let probe = cursor.list_probes().await?.into_iter().next().ok_or("connect a probe first")?;
 let session = cursor.create_session(NewSession {
     probe_id: probe.metadata.id,
@@ -764,7 +760,7 @@ let fork = cursor.fork_session(session.id, SessionFork {
     metadata: SessionUpdate { name: Some("Alternative".into()), ..Default::default() },
 }).await?;
 // fork.agents is Vec<Agent>, including agents with empty streams.
-// Each child agent.parent_id identifies its source agent.
+// Each child agent.forked_from identifies its source agent.
 # let _ = (request, fork);
 cursor.commit().await?;
 db.close().await;

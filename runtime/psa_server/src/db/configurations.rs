@@ -1,7 +1,7 @@
 //! Mutable source registry and lazy, cycle-aware immutable snapshot resolution.
 use super::agent_definitions::CreateAgentDefinition;
 use super::{
-    DatabaseCursor, DbError,
+    DbError, ReadCursor, WriteCursor,
     schema::{decode_integer, encode_integer},
 };
 use crate::components::bundles::validate_completion_config;
@@ -36,6 +36,11 @@ fn validate_id(id: &ConfigId) -> Result<(), DbError> {
                 "AgentsDir group path must be absolute".into(),
             ));
         }
+        ConfigGroup::Session => {
+            return Err(DbError::InvalidInput(
+                "Session is only valid as an included group".into(),
+            ));
+        }
         _ => {}
     }
     Ok(())
@@ -45,7 +50,7 @@ fn validate_batch(agents: &[AgentConfig], skills: &[SkillRegistration]) -> Resul
     let mut seen = HashSet::new();
     for config in agents {
         validate_id(&config.config_id)?;
-        validate_completion_config(&config.bundles, &config.hooks)
+        validate_completion_config(&config.bundles)
             .map_err(|error| DbError::InvalidInput(error.to_string()))?;
         if !seen.insert(&config.config_id) {
             return Err(DbError::InvalidInput(
@@ -102,13 +107,22 @@ fn validate_batch(agents: &[AgentConfig], skills: &[SkillRegistration]) -> Resul
 
 /// Group order wins by name; explicit items win last, even when missing.
 /// Keeping a missing explicit override prevents silently falling back to a different source.
+/// `ConfigGroup::Session` stands for `session_group` and selects nothing without one.
 fn select_items(
     included: &IncludedItems,
     available: &[ConfigId],
     exclude: Option<&ConfigId>,
+    session_group: Option<&ConfigGroup>,
 ) -> Vec<ConfigId> {
     let mut selected = BTreeMap::new();
     for group in &included.groups {
+        let group = match group {
+            ConfigGroup::Session => match session_group {
+                Some(group) => group,
+                None => continue,
+            },
+            group => group,
+        };
         for id in available {
             if &id.config_group == group && Some(id) != exclude {
                 selected.insert(id.name.clone(), id.clone());
@@ -130,7 +144,230 @@ struct SelectedNode {
     model: AgentModel,
 }
 
-impl DatabaseCursor {
+impl ReadCursor {
+    /// Source manifest for adapters calculating the catalogue after a successful scan.
+    /// The tuple contains agent IDs and active skill IDs respectively.
+    pub async fn list_discovered_config_ids(
+        &mut self,
+    ) -> Result<(Vec<ConfigId>, Vec<ConfigId>), DbError> {
+        let agents: Vec<String> = sqlx::query_scalar(
+            "SELECT config_key FROM agent_configs WHERE discovered=TRUE ORDER BY config_key",
+        )
+        .fetch_all(self.connection())
+        .await?;
+        let skills: Vec<String> = sqlx::query_scalar("SELECT config_key FROM registered_skills WHERE discovered=TRUE AND active=TRUE ORDER BY config_key")
+            .fetch_all(self.connection()).await?;
+        let decode = |ids: Vec<String>| -> Result<Vec<ConfigId>, DbError> {
+            ids.into_iter()
+                .map(|id| serde_json::from_str(&id).map_err(Into::into))
+                .collect()
+        };
+        Ok((decode(agents)?, decode(skills)?))
+    }
+
+    async fn current_configs(&mut self) -> Result<Vec<AgentConfig>, DbError> {
+        let rows = sqlx::query("SELECT payload FROM agent_configs ORDER BY config_key")
+            .fetch_all(self.connection())
+            .await?;
+        rows.into_iter()
+            .map(|row| Ok(serde_json::from_str(row.try_get("payload")?)?))
+            .collect()
+    }
+
+    pub async fn list_skills(&mut self) -> Result<Vec<Skill>, DbError> {
+        self.list_registered_skills(false).await
+    }
+
+    /// Includes inactive source tombstones so refresh adapters can retain a
+    /// missing path's metadata-derived identity across repeated scans/restarts.
+    /// These records must not be offered for selection or materialization.
+    pub async fn list_skill_sources(&mut self) -> Result<Vec<Skill>, DbError> {
+        self.list_registered_skills(true).await
+    }
+
+    async fn list_registered_skills(
+        &mut self,
+        include_inactive: bool,
+    ) -> Result<Vec<Skill>, DbError> {
+        let rows = sqlx::query(
+            "SELECT id,payload FROM registered_skills WHERE (? OR active=TRUE) ORDER BY config_key",
+        )
+        .bind(include_inactive)
+        .fetch_all(self.connection())
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let input: SkillRegistration = serde_json::from_str(row.try_get("payload")?)?;
+                Ok(Skill {
+                    id: SkillId(decode_integer(row.try_get("id")?)?),
+                    config_id: input.config_id,
+                    name: input.name,
+                    description: input.description,
+                    skill_location: input.skill_location,
+                    disable_model_invocation: input.disable_model_invocation,
+                    archive_sha256: input.archive_sha256,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn get_skill(&mut self, id: SkillId) -> Result<Skill, DbError> {
+        self.list_skills()
+            .await?
+            .into_iter()
+            .find(|skill| skill.id == id)
+            .ok_or(DbError::NotFound {
+                entity: "skill",
+                id: id.0,
+            })
+    }
+
+    pub async fn list_agent_configs(&mut self) -> Result<Vec<AgentConfigStatus>, DbError> {
+        let configs = self.current_configs().await?;
+        let skills = self.list_skills().await?;
+        let agents: Vec<_> = configs.iter().map(|item| item.config_id.clone()).collect();
+        let skill_ids: Vec<_> = skills.iter().map(|item| item.config_id.clone()).collect();
+        Ok(configs
+            .into_iter()
+            .map(|config| {
+                let mut missing_components = Vec::new();
+                for config_id in
+                    select_items(&config.subagents, &agents, Some(&config.config_id), None)
+                {
+                    if !agents.contains(&config_id) {
+                        missing_components.push(MissingComponent::Agent { config_id });
+                    }
+                }
+                for config_id in select_items(&config.skills, &skill_ids, None, None) {
+                    if !skill_ids.contains(&config_id) {
+                        missing_components.push(MissingComponent::Skill { config_id });
+                    }
+                }
+                AgentConfigStatus {
+                    config,
+                    status: AgentDefinitionStatus { missing_components },
+                }
+            })
+            .collect())
+    }
+
+    pub async fn get_agent_config(&mut self, id: &ConfigId) -> Result<AgentConfigStatus, DbError> {
+        self.list_agent_configs()
+            .await?
+            .into_iter()
+            .find(|item| &item.config.config_id == id)
+            .ok_or_else(|| DbError::ConfigNotFound(id.clone()))
+    }
+
+    /// `session_group` is the creating session's `.agents` group, if any.
+    pub async fn get_agent_config_graph(
+        &mut self,
+        root: &ConfigId,
+        session_group: Option<&ConfigGroup>,
+    ) -> Result<AgentConfigGraph, DbError> {
+        let statuses = self.list_agent_configs().await?;
+        let all_skills = self.list_skills().await?;
+        let agents: Vec<_> = statuses
+            .iter()
+            .map(|item| item.config.config_id.clone())
+            .collect();
+        let skill_ids: Vec<_> = all_skills
+            .iter()
+            .map(|item| item.config_id.clone())
+            .collect();
+        if !agents.contains(root) {
+            return Err(DbError::ConfigNotFound(root.clone()));
+        }
+        let mut pending = vec![root.clone()];
+        let mut seen = HashSet::new();
+        let mut selected_skills = HashSet::new();
+        let mut graph = AgentConfigGraph {
+            configs: Vec::new(),
+            skills: Vec::new(),
+            statuses: Vec::new(),
+        };
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let Some(item) = statuses.iter().find(|item| item.config.config_id == id) else {
+                continue;
+            };
+            pending.extend(select_items(
+                &item.config.subagents,
+                &agents,
+                Some(&id),
+                session_group,
+            ));
+            selected_skills.extend(select_items(
+                &item.config.skills,
+                &skill_ids,
+                None,
+                session_group,
+            ));
+            graph.configs.push(item.config.clone());
+            graph.statuses.push(item.clone());
+        }
+        graph.skills = all_skills
+            .into_iter()
+            .filter(|skill| selected_skills.contains(&skill.config_id))
+            .collect();
+        Ok(graph)
+    }
+
+    /// None means a legacy definition without registry metadata.
+    pub async fn get_resolved_agent_config(
+        &mut self,
+        id: AgentDefinitionId,
+    ) -> Result<Option<ResolvedAgentConfig>, DbError> {
+        let row =
+            sqlx::query("SELECT config,skill_ids FROM config_snapshots WHERE definition_id=?")
+                .bind(encode_integer(id.0)?)
+                .fetch_optional(self.connection())
+                .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let definition = self.get_agent_definition(id).await?;
+        Ok(Some(ResolvedAgentConfig {
+            config: serde_json::from_str(row.try_get("config")?)?,
+            references: ResolvedDefinitionReferences {
+                subagents: definition.permitted_subagents.clone(),
+                skills: serde_json::from_str(row.try_get("skill_ids")?)?,
+            },
+            definition,
+        }))
+    }
+
+    pub async fn has_session_agents_dir_discovery(
+        &mut self,
+        session: SessionId,
+    ) -> Result<bool, DbError> {
+        Ok(sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM session_agents_dirs WHERE session_id=?)",
+        )
+        .bind(encode_integer(session.0)?)
+        .fetch_one(self.connection())
+        .await?)
+    }
+
+    pub async fn get_session_agents_dir(
+        &mut self,
+        session: SessionId,
+    ) -> Result<Option<ConfigGroup>, DbError> {
+        let agents_dir: Option<String> =
+            sqlx::query_scalar("SELECT config_group FROM session_agents_dirs WHERE session_id=?")
+                .bind(encode_integer(session.0)?)
+                .fetch_optional(self.connection())
+                .await?;
+        let agents_dir: Option<Option<ConfigGroup>> = agents_dir
+            .map(|value| serde_json::from_str(&value).map_err(DbError::from))
+            .transpose()?;
+        Ok(agents_dir.flatten())
+    }
+}
+
+impl WriteCursor {
     pub async fn upsert_agent_configs(
         &mut self,
         configs: Vec<AgentConfig>,
@@ -274,172 +511,17 @@ impl DatabaseCursor {
         self.finish_registry_savepoint(result).await
     }
 
-    /// Source manifest for adapters calculating the catalogue after a successful scan.
-    /// The tuple contains agent IDs and active skill IDs respectively.
-    pub async fn list_discovered_config_ids(
-        &mut self,
-    ) -> Result<(Vec<ConfigId>, Vec<ConfigId>), DbError> {
-        let agents: Vec<String> = sqlx::query_scalar(
-            "SELECT config_key FROM agent_configs WHERE discovered=TRUE ORDER BY config_key",
-        )
-        .fetch_all(self.connection())
-        .await?;
-        let skills: Vec<String> = sqlx::query_scalar("SELECT config_key FROM registered_skills WHERE discovered=TRUE AND active=TRUE ORDER BY config_key")
-            .fetch_all(self.connection()).await?;
-        let decode = |ids: Vec<String>| -> Result<Vec<ConfigId>, DbError> {
-            ids.into_iter()
-                .map(|id| serde_json::from_str(&id).map_err(Into::into))
-                .collect()
-        };
-        Ok((decode(agents)?, decode(skills)?))
-    }
-
-    async fn current_configs(&mut self) -> Result<Vec<AgentConfig>, DbError> {
-        let rows = sqlx::query("SELECT payload FROM agent_configs ORDER BY config_key")
-            .fetch_all(self.connection())
-            .await?;
-        rows.into_iter()
-            .map(|row| Ok(serde_json::from_str(row.try_get("payload")?)?))
-            .collect()
-    }
-
-    pub async fn list_skills(&mut self) -> Result<Vec<Skill>, DbError> {
-        self.list_registered_skills(false).await
-    }
-
-    /// Includes inactive source tombstones so refresh adapters can retain a
-    /// missing path's metadata-derived identity across repeated scans/restarts.
-    /// These records must not be offered for selection or materialization.
-    pub async fn list_skill_sources(&mut self) -> Result<Vec<Skill>, DbError> {
-        self.list_registered_skills(true).await
-    }
-
-    async fn list_registered_skills(
-        &mut self,
-        include_inactive: bool,
-    ) -> Result<Vec<Skill>, DbError> {
-        let rows = sqlx::query(
-            "SELECT id,payload FROM registered_skills WHERE (? OR active=TRUE) ORDER BY config_key",
-        )
-        .bind(include_inactive)
-        .fetch_all(self.connection())
-        .await?;
-        rows.into_iter()
-            .map(|row| {
-                let input: SkillRegistration = serde_json::from_str(row.try_get("payload")?)?;
-                Ok(Skill {
-                    id: SkillId(decode_integer(row.try_get("id")?)?),
-                    config_id: input.config_id,
-                    name: input.name,
-                    description: input.description,
-                    skill_location: input.skill_location,
-                    disable_model_invocation: input.disable_model_invocation,
-                    archive_sha256: input.archive_sha256,
-                })
-            })
-            .collect()
-    }
-
-    pub async fn get_skill(&mut self, id: SkillId) -> Result<Skill, DbError> {
-        self.list_skills()
-            .await?
-            .into_iter()
-            .find(|skill| skill.id == id)
-            .ok_or(DbError::NotFound {
-                entity: "skill",
-                id: id.0,
-            })
-    }
-
-    pub async fn list_agent_configs(&mut self) -> Result<Vec<AgentConfigStatus>, DbError> {
-        let configs = self.current_configs().await?;
-        let skills = self.list_skills().await?;
-        let agents: Vec<_> = configs.iter().map(|item| item.config_id.clone()).collect();
-        let skill_ids: Vec<_> = skills.iter().map(|item| item.config_id.clone()).collect();
-        Ok(configs
-            .into_iter()
-            .map(|config| {
-                let mut missing_components = Vec::new();
-                for config_id in select_items(&config.subagents, &agents, Some(&config.config_id)) {
-                    if !agents.contains(&config_id) {
-                        missing_components.push(MissingComponent::Agent { config_id });
-                    }
-                }
-                for config_id in select_items(&config.skills, &skill_ids, None) {
-                    if !skill_ids.contains(&config_id) {
-                        missing_components.push(MissingComponent::Skill { config_id });
-                    }
-                }
-                AgentConfigStatus {
-                    config,
-                    status: AgentDefinitionStatus { missing_components },
-                }
-            })
-            .collect())
-    }
-
-    pub async fn get_agent_config(&mut self, id: &ConfigId) -> Result<AgentConfigStatus, DbError> {
-        self.list_agent_configs()
-            .await?
-            .into_iter()
-            .find(|item| &item.config.config_id == id)
-            .ok_or_else(|| DbError::ConfigNotFound(id.clone()))
-    }
-
-    pub async fn get_agent_config_graph(
-        &mut self,
-        root: &ConfigId,
-    ) -> Result<AgentConfigGraph, DbError> {
-        let statuses = self.list_agent_configs().await?;
-        let all_skills = self.list_skills().await?;
-        let agents: Vec<_> = statuses
-            .iter()
-            .map(|item| item.config.config_id.clone())
-            .collect();
-        let skill_ids: Vec<_> = all_skills
-            .iter()
-            .map(|item| item.config_id.clone())
-            .collect();
-        if !agents.contains(root) {
-            return Err(DbError::ConfigNotFound(root.clone()));
-        }
-        let mut pending = vec![root.clone()];
-        let mut seen = HashSet::new();
-        let mut selected_skills = HashSet::new();
-        let mut graph = AgentConfigGraph {
-            configs: Vec::new(),
-            skills: Vec::new(),
-            statuses: Vec::new(),
-        };
-        while let Some(id) = pending.pop() {
-            if !seen.insert(id.clone()) {
-                continue;
-            }
-            let Some(item) = statuses.iter().find(|item| item.config.config_id == id) else {
-                continue;
-            };
-            pending.extend(select_items(&item.config.subagents, &agents, Some(&id)));
-            selected_skills.extend(select_items(&item.config.skills, &skill_ids, None));
-            graph.configs.push(item.config.clone());
-            graph.statuses.push(item.clone());
-        }
-        graph.skills = all_skills
-            .into_iter()
-            .filter(|skill| selected_skills.contains(&skill.config_id))
-            .collect();
-        Ok(graph)
-    }
-
     /// All required copies must complete before calling this method. Missing path
     /// mappings are errors, not missing-component warnings. Omitted model entries
     /// follow the session model.
     pub async fn resolve_agent_config(
         &mut self,
         root: &ConfigId,
+        session_group: Option<&ConfigGroup>,
         skill_paths: &HashMap<SkillId, PathBuf>,
         models: &Models,
     ) -> Result<ResolvedAgentConfig, DbError> {
-        let graph = self.get_agent_config_graph(root).await?;
+        let graph = self.get_agent_config_graph(root, session_group).await?;
         let agents: Vec<_> = graph
             .configs
             .iter()
@@ -452,13 +534,18 @@ impl DatabaseCursor {
             .collect();
         let mut nodes = HashMap::new();
         for config in graph.configs {
-            let children = select_items(&config.subagents, &agents, Some(&config.config_id))
-                .into_iter()
-                .filter(|id| agents.contains(id))
-                .collect();
+            let children = select_items(
+                &config.subagents,
+                &agents,
+                Some(&config.config_id),
+                session_group,
+            )
+            .into_iter()
+            .filter(|id| agents.contains(id))
+            .collect();
             let mut ids = Vec::new();
             let mut paths = Vec::new();
-            for id in select_items(&config.skills, &skills, None) {
+            for id in select_items(&config.skills, &skills, None, session_group) {
                 let Some(skill) = graph.skills.iter().find(|item| item.config_id == id) else {
                     continue;
                 };
@@ -558,30 +645,6 @@ impl DatabaseCursor {
         Ok(())
     }
 
-    /// None means a legacy definition without registry metadata.
-    pub async fn get_resolved_agent_config(
-        &mut self,
-        id: AgentDefinitionId,
-    ) -> Result<Option<ResolvedAgentConfig>, DbError> {
-        let row =
-            sqlx::query("SELECT config,skill_ids FROM config_snapshots WHERE definition_id=?")
-                .bind(encode_integer(id.0)?)
-                .fetch_optional(self.connection())
-                .await?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let definition = self.get_agent_definition(id).await?;
-        Ok(Some(ResolvedAgentConfig {
-            config: serde_json::from_str(row.try_get("config")?)?,
-            references: ResolvedDefinitionReferences {
-                subagents: definition.permitted_subagents.clone(),
-                skills: serde_json::from_str(row.try_get("skill_ids")?)?,
-            },
-            definition,
-        }))
-    }
-
     /// Select a creation-time model without consulting mutable current configs or
     /// advancing any pinned subagent edges. Existing snapshots remain unchanged.
     pub async fn resolve_pinned_agent_config(
@@ -620,7 +683,6 @@ impl DatabaseCursor {
             description: pinned.definition.description.clone(),
             selectable: pinned.definition.selectable,
             bundles: pinned.definition.bundles.clone(),
-            hooks: pinned.definition.hooks.clone(),
             model: pinned.definition.model.clone(),
             skills: pinned.definition.skills.clone(),
             permitted_subagents: pinned.definition.permitted_subagents.clone(),
@@ -683,18 +745,6 @@ impl DatabaseCursor {
         Ok(())
     }
 
-    pub async fn has_session_agents_dir_discovery(
-        &mut self,
-        session: SessionId,
-    ) -> Result<bool, DbError> {
-        Ok(sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM session_agents_dirs WHERE session_id=?)",
-        )
-        .bind(encode_integer(session.0)?)
-        .fetch_one(self.connection())
-        .await?)
-    }
-
     /// Mark discovery unknown, rather than a successful scan that found nothing.
     pub async fn clear_session_agents_dir(&mut self, session: SessionId) -> Result<(), DbError> {
         sqlx::query("DELETE FROM session_agents_dirs WHERE session_id=?")
@@ -702,21 +752,6 @@ impl DatabaseCursor {
             .execute(self.connection())
             .await?;
         Ok(())
-    }
-
-    pub async fn get_session_agents_dir(
-        &mut self,
-        session: SessionId,
-    ) -> Result<Option<ConfigGroup>, DbError> {
-        let agents_dir: Option<String> =
-            sqlx::query_scalar("SELECT config_group FROM session_agents_dirs WHERE session_id=?")
-                .bind(encode_integer(session.0)?)
-                .fetch_optional(self.connection())
-                .await?;
-        let agents_dir: Option<Option<ConfigGroup>> = agents_dir
-            .map(|value| serde_json::from_str(&value).map_err(DbError::from))
-            .transpose()?;
-        Ok(agents_dir.flatten())
     }
 }
 
@@ -726,7 +761,6 @@ fn snapshot_input(node: &SelectedNode, children: Vec<AgentDefinitionId>) -> Crea
         description: node.config.description.clone(),
         selectable: node.config.selectable,
         bundles: node.config.bundles.clone(),
-        hooks: node.config.hooks.clone(),
         model: node.model.clone(),
         skills: node.skill_paths.clone(),
         permitted_subagents: children,

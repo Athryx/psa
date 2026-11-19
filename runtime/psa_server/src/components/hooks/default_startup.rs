@@ -4,8 +4,17 @@ use crate::{agents::agent_context::AgentContext, components::cancellation::Cance
 use psa::api::events::{EventType, Message};
 use std::time::Duration;
 
-/// Initializes a new root agent from its pinned definition and session snapshot.
-pub struct DefaultStartupHook;
+/// Initializes a new root agent from its pinned definition and session snapshot,
+/// optionally with the base assistant instructions.
+pub struct DefaultStartupHook {
+    base_prompt: bool,
+}
+
+impl DefaultStartupHook {
+    pub fn new(base_prompt: bool) -> Self {
+        Self { base_prompt }
+    }
+}
 
 impl Hook for DefaultStartupHook {
     fn cancellation_timeout(&self) -> Duration {
@@ -18,7 +27,7 @@ impl Hook for DefaultStartupHook {
         _cancellation: Cancellation,
     ) -> Result<(), HookError> {
         // Forks already have an inherited context, which must not be cleared.
-        if context.agent().parent_id.is_some() {
+        if context.agent().forked_from.is_some() {
             return Ok(());
         }
 
@@ -26,14 +35,16 @@ impl Hook for DefaultStartupHook {
             .definition()
             .model
             .resolve(&context.session().model_config);
-        let events = [
+        let mut events = vec![
             NewEvent::new(EventType::NewContext),
             NewEvent::new(EventType::Model(model)),
-            NewEvent::new(EventType::Message(Message::system(
+        ];
+        if self.base_prompt {
+            events.push(NewEvent::new(EventType::Message(Message::system(
                 prompts::default_system_prompt(),
                 "Base instructions",
-            ))),
-        ];
+            ))));
+        }
 
         context.save_events(&events).await?;
         Ok(())

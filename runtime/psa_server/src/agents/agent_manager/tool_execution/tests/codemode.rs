@@ -1,9 +1,6 @@
 use super::*;
 use crate::components::bundles::codemode::MontyEngine;
-use crate::components::{
-    codemode_functions::CodeModeFunctionKind,
-    tools::{CodeMode, Noop},
-};
+use crate::components::{codemode_functions::CodeModeFunctionKind, tools::CodeMode};
 use crate::db::NewEvent;
 use crate::db::PrivateEvent;
 use serde_json::json;
@@ -15,7 +12,7 @@ async fn nested_contexts_have_independent_snapshots_and_shared_registry() {
     let mut components = crate::components::bundles::InstalledComponents::default();
     components.codemode_functions =
         crate::components::codemode_functions::listed_entries([CodeModeFunctionKind::Tool(
-            ToolKind::Noop(Noop),
+            crate::components::bundles::testing::test_tool("noop", psa::api::ToolId::Edit),
         )]);
     let registry = components.codemode_functions.clone();
     state
@@ -129,7 +126,7 @@ async fn mixed_batch_commits_public_and_private_events() {
         }
     }
     assert_eq!(committed, 1);
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     assert_eq!(
         cursor
             .load_latest_private_event(
@@ -145,7 +142,7 @@ async fn mixed_batch_commits_public_and_private_events() {
     assert!(
         matches!(&events.last().unwrap().kind, EventType::ToolResult(result) if result.call_id == "mixed")
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     fixture.close().await;
 }
 
@@ -164,15 +161,12 @@ async fn dropped_worker_does_not_cancel_inflight_batch() {
     );
     drop(state);
     let database = fixture.database.clone();
+    // Detached appends are tracked by the process's publication, which a
+    // replacement runtime shares.
+    let publication = fixture.publication.clone();
     let probes = fixture.probes.clone();
     let mut replacement = tokio::spawn(async move {
-        Runtime::start(
-            database,
-            Publication::default(),
-            ProviderRegistry::default(),
-            probes,
-        )
-        .await
+        Runtime::start(database, publication, ProviderRegistry::default(), probes).await
     });
     assert!(
         tokio::time::timeout(Duration::from_millis(50), &mut replacement)
@@ -190,7 +184,7 @@ async fn dropped_worker_does_not_cancel_inflight_batch() {
         AgentManagerState::load_persisted(fixture.database.clone(), Publication::default(), agent)
             .await
             .unwrap();
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     assert_eq!(
         cursor
             .load_latest_private_event(agent, None, crate::db::PrivateEventKind::CodeModeSnapshot)
@@ -203,7 +197,7 @@ async fn dropped_worker_does_not_cancel_inflight_batch() {
         |event| matches!(&event.kind, EventType::ToolResult(result) if result.call_id == "dropped-worker")
     ));
     assert_eq!(recovered.context.last_event_id, events.last().unwrap().id);
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     replacement.shutdown().await.unwrap();
     fixture.close().await;
 }
@@ -225,7 +219,7 @@ async fn invalid_private_event_rolls_back_public_result() {
         &[],
     );
     assert!(state.finish_persistence().await.is_err());
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     assert_eq!(
         cursor
             .get_agent(state.agent.id)
@@ -245,7 +239,7 @@ async fn invalid_private_event_rolls_back_public_result() {
             .unwrap(),
         None
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     fixture.close().await;
 }
 
@@ -299,7 +293,7 @@ async fn leading_private_event_is_rejected_without_publication() {
     assert!(state.persist_event_batch(batch).await.is_err());
     assert_eq!(state.agent.next_event_id, previous);
     assert!(subscriber.try_recv().is_err());
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     assert_eq!(
         cursor
             .get_agent(state.agent.id)
@@ -319,7 +313,7 @@ async fn leading_private_event_is_rejected_without_publication() {
             .unwrap(),
         None
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     fixture.close().await;
 }
 
@@ -348,7 +342,7 @@ async fn draining_saves_replies_to_invalid_batch_and_persists_next_request() {
     let saved = valid.unwrap().unwrap();
     assert_eq!(saved.events.len(), 1);
     assert_eq!(saved.projection.last_event_id, saved.events[0].id);
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     let events = cursor.load_all_events(agent).await.unwrap();
     assert!(
         matches!(&events.last().unwrap().kind, EventType::ToolResult(result) if result.call_id == "after-invalid")
@@ -360,7 +354,7 @@ async fn draining_saves_replies_to_invalid_batch_and_persists_next_request() {
             .unwrap(),
         None
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     fixture.close().await;
 }
 
@@ -383,9 +377,9 @@ async fn sequential_codemode_calls_observe_committed_private_events() {
     let (controls, run) = fixture.run(state).await;
     let state = finish(run).await;
     drop(controls);
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     let events = cursor.load_all_events(state.agent.id).await.unwrap();
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     let result = events
         .iter()
         .find_map(|event| match &event.kind {

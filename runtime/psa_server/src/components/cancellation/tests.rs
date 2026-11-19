@@ -8,7 +8,7 @@ fn session() -> Session {
         decision_model: None,
         id: SessionId(1),
         probe_id: psa::api::ProbeId(psa::api::probes::Uuid::nil()),
-        parent_id: None,
+        forked_from: None,
         first_position: 1,
         next_position: 1,
         name: "test".into(),

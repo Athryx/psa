@@ -3,7 +3,7 @@
 //! Returns server-native snapshots; HTTP handlers build wire representations.
 //!
 //! Database transactions and publication guards are released before awaiting the
-//! session manager, which owns request queues and worker lifecycles.
+//! supervisor, which owns request queues and worker lifecycles.
 
 use super::{
     Agent, AgentError, NewAgent,
@@ -11,7 +11,7 @@ use super::{
     agent_projection::AgentProjection,
     client_queries::{ClientQueriesHandle, ClientQueryError},
     publication::Publication,
-    session_manager::{ManagerClient, ManagerCommand, RuntimeError},
+    supervisor::{RuntimeError, SupervisorClient, SupervisorCommand},
 };
 use crate::{components::cancellation::Cancellation, db::Database, sessions};
 use psa::api::{self as api, AgentId, SessionId};
@@ -20,23 +20,25 @@ mod configurations;
 mod results;
 
 #[derive(Clone)]
-pub struct Sessions {
+pub struct RuntimeHandle {
     database: Database,
     publication: Publication,
-    pub(crate) commands: ManagerClient,
+    pub(crate) commands: SupervisorClient,
     queries: ClientQueriesHandle,
     catalog: Option<crate::models::ModelCatalog>,
     configuration: Option<crate::config_registry::ConfigRegistry>,
     probes: Option<crate::probes::ProbeRegistry>,
-    configuration_gate: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// Rescans and config writes take it exclusively; agent creation downgrades
+    /// to shared after its rescan, so creations on different probes overlap.
+    configuration_gate: std::sync::Arc<tokio::sync::RwLock<()>>,
     default_model_config: llm_api::providers::ModelConfig,
 }
 
-impl Sessions {
+impl RuntimeHandle {
     pub(crate) fn new(
         database: Database,
         publication: Publication,
-        commands: ManagerClient,
+        commands: SupervisorClient,
         queries: ClientQueriesHandle,
     ) -> Self {
         Self {
@@ -124,7 +126,7 @@ impl Sessions {
         &self,
         request: crate::db::CreateAgentDefinition,
     ) -> Result<api::AgentDefinition, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.write().await?;
         let definition = cursor.create_agent_definition(request).await?;
         cursor.commit().await?;
         Ok(definition)
@@ -134,31 +136,9 @@ impl Sessions {
         &self,
         id: api::AgentDefinitionId,
     ) -> Result<api::AgentDefinition, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let definition = cursor.get_agent_definition(id).await?;
-        cursor.rollback().await?;
-        Ok(definition)
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn list_agent_definitions(
-        &self,
-    ) -> Result<Vec<api::AgentDefinition>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
-        let definitions = cursor.list_agent_definitions().await?;
-        cursor.rollback().await?;
-        Ok(definitions)
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn update_agent_definition(
-        &self,
-        id: api::AgentDefinitionId,
-        request: crate::db::UpdateAgentDefinition,
-    ) -> Result<api::AgentDefinition, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
-        let definition = cursor.update_agent_definition(id, request).await?;
-        cursor.commit().await?;
+        cursor.close().await?;
         Ok(definition)
     }
 
@@ -175,7 +155,7 @@ impl Sessions {
             .discover_session_agents_dir(request.probe_id, &request.working_directory)
             .await?;
         let publication = self.publication.lock().await;
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.write().await?;
         let session = cursor
             .create_session(sessions::NewSession {
                 name: request.name,
@@ -200,9 +180,9 @@ impl Sessions {
     }
 
     pub async fn get_session(&self, id: SessionId) -> Result<sessions::Session, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let session = cursor.get_session(id).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         Ok(session)
     }
@@ -212,9 +192,9 @@ impl Sessions {
         &self,
         parent: Option<SessionId>,
     ) -> Result<Vec<sessions::Session>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let sessions = cursor.list_sessions(parent).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         Ok(sessions)
     }
@@ -224,7 +204,7 @@ impl Sessions {
         id: SessionId,
         request: api::UpdateSession,
     ) -> Result<sessions::Session, RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
+        let _guard = self.configuration_gate.write().await;
         self.validate_decision_model(request.decision_model.as_ref())
             .await?;
         let agents_dir = if let Some(cwd) = &request.working_directory {
@@ -239,7 +219,7 @@ impl Sessions {
         let notification = self.commands.reserve_notification().await?;
 
         let publication = self.publication.lock().await;
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.write().await?;
         let session = cursor
             .update_session(
                 id,
@@ -258,7 +238,7 @@ impl Sessions {
         }
         cursor.commit().await?;
 
-        notification.send(ManagerCommand::SessionUpdated {
+        notification.send(SupervisorCommand::SessionUpdated {
             session: session.clone(),
         });
         let busy = publication.is_session_busy(id);
@@ -273,7 +253,7 @@ impl Sessions {
         id: SessionId,
         request: api::ForkSession,
     ) -> Result<sessions::ForkedSession, RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
+        let _guard = self.configuration_gate.write().await;
         self.validate_decision_model(request.metadata.decision_model.as_ref())
             .await?;
         let agents_dir = if let Some(cwd) = &request.metadata.working_directory {
@@ -281,15 +261,15 @@ impl Sessions {
             self.discover_session_agents_dir(source.probe_id, cwd)
                 .await?
         } else {
-            let mut cursor = self.database.cursor().await?;
+            let mut cursor = self.database.read().await?;
             let known = cursor.has_session_agents_dir_discovery(id).await?;
             let agents_dir = cursor.get_session_agents_dir(id).await?;
-            cursor.rollback().await?;
+            cursor.close().await?;
             known.then_some(agents_dir)
         };
         let notification = self.commands.reserve_notification().await?;
         let publication = self.publication.lock().await;
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.write().await?;
         let fork = cursor
             .fork_session(
                 id,
@@ -341,7 +321,7 @@ impl Sessions {
         }
         cursor.commit().await?;
 
-        notification.send(ManagerCommand::AgentsCreated {
+        notification.send(SupervisorCommand::AgentsCreated {
             agents: agents.iter().map(|agent| agent.id).collect(),
         });
         for message in committed_messages {
@@ -360,7 +340,7 @@ impl Sessions {
     ) -> Result<Agent, RuntimeError> {
         let notification = self.commands.reserve_notification().await?;
         let publication = self.publication.lock().await;
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.write().await?;
         cursor.get_agent_definition(request.definition_id).await?;
         let agent = cursor
             .create_agent(
@@ -380,7 +360,7 @@ impl Sessions {
         // Reserve before mutation, then enqueue synchronously after commit and
         // before publication, so cancellation/backpressure cannot lose the hook
         // or let a subscriber submit work ahead of agent creation.
-        notification.send(ManagerCommand::AgentsCreated {
+        notification.send(SupervisorCommand::AgentsCreated {
             agents: vec![agent.id],
         });
         publication.publish(api::StreamMessage::AgentUpdated {
@@ -394,9 +374,9 @@ impl Sessions {
     }
 
     pub async fn list_agents(&self, session: SessionId) -> Result<Vec<Agent>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let agents = cursor.list_agents(session).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         Ok(agents)
     }
@@ -406,9 +386,9 @@ impl Sessions {
         session: SessionId,
         agent: AgentId,
     ) -> Result<Agent, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let agent = cursor.require_agent_session(session, agent).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         Ok(agent)
     }
@@ -420,10 +400,10 @@ impl Sessions {
         agent: AgentId,
         range: crate::db::EventRange,
     ) -> Result<Vec<api::events::Event>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         cursor.require_agent_session(session, agent).await?;
         let events = cursor.load_events(agent, range).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(events)
     }
 
@@ -433,9 +413,9 @@ impl Sessions {
         session: SessionId,
         agent: AgentId,
     ) -> Result<Option<api::ResultRecord>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let result = cursor.load_last_result(session, agent).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(result)
     }
 
@@ -446,9 +426,9 @@ impl Sessions {
         agent: AgentId,
         limit: u32,
     ) -> Result<Vec<api::ResultRecord>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let results = cursor.load_last_results(session, agent, limit).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(results)
     }
 
@@ -618,15 +598,15 @@ impl Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{agents::session_manager::ManagerCommand, db::DbError};
+    use crate::{agents::supervisor::SupervisorCommand, db::DbError};
     use psa::api::events::{EventId, EventType, StatusChange};
     use std::time::Duration;
 
     pub(super) struct Fixture {
         _directory: tempfile::TempDir,
-        pub(super) sessions: Sessions,
+        pub(super) sessions: RuntimeHandle,
         _queries: crate::agents::client_queries::ClientQueries,
-        received: actors::Mailbox<ManagerCommand>,
+        received: actors::Mailbox<SupervisorCommand>,
     }
 
     impl Fixture {
@@ -641,10 +621,10 @@ mod tests {
             let queries = crate::agents::client_queries::ClientQueries::start(publication.clone());
             Self {
                 _directory: directory,
-                sessions: Sessions::new(
+                sessions: RuntimeHandle::new(
                     database,
                     publication,
-                    ManagerClient::new(commands),
+                    SupervisorClient::new(commands),
                     queries.handle(),
                 ),
                 _queries: queries,
@@ -727,7 +707,7 @@ mod tests {
 
         // The fake manager does not run startup hooks. Seed an explicit transcript
         // so both head recovery and an earlier model-only fork can be tested.
-        let mut cursor = sessions.database.cursor().await.unwrap();
+        let mut cursor = sessions.database.write().await.unwrap();
         cursor
             .add_events(
                 agent.id,
@@ -756,12 +736,12 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(fork.session.parent_id, Some(session.id));
+        assert_eq!(fork.session.forked_from, Some(session.id));
         assert_eq!(fork.session.probe_id, session.probe_id);
         assert_eq!(fork.session.name, "fork");
         assert_eq!(fork.session.first_position, 5);
         assert_eq!(fork.session.next_position, 6);
-        assert_eq!(fork.agents[0].parent_id, Some(agent.id));
+        assert_eq!(fork.agents[0].forked_from, Some(agent.id));
         assert_eq!(fork.agents[0].created_position, agent.created_position);
         assert_eq!(fork.agents[0].first_event_id, EventId(4));
         assert_eq!(fork.agents[0].next_event_id, EventId(5));
@@ -806,79 +786,15 @@ mod tests {
         assert_eq!(earlier.session.next_position, 3);
         assert_eq!(earlier.agents[0].created_position, agent.created_position);
         assert_eq!(earlier.agents[0].first_event_id, EventId(2));
-        let mut cursor = sessions.database.cursor().await.unwrap();
+        let mut cursor = sessions.database.read().await.unwrap();
         let events = cursor.load_all_events(earlier.agents[0].id).await.unwrap();
-        cursor.rollback().await.unwrap();
+        cursor.close().await.unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0].kind, EventType::Model(_)));
         assert!(matches!(
             sessions.get_agent(session.id, fork.agents[0].id).await,
             Err(RuntimeError::Database(DbError::NotFound { .. }))
         ));
-    }
-
-    #[tokio::test]
-    async fn definition_updates_create_immutable_versions_without_manager_access() {
-        let fixture = Fixture::new().await;
-        let sessions = &fixture.sessions;
-        let initial = sessions
-            .create_agent_definition(crate::db::CreateAgentDefinition {
-                name: "custom".into(),
-                description: "first version".into(),
-                selectable: true,
-                model: crate::test_support::model_config().into(),
-                hooks: api::HookConfigs {
-                    agent_create: vec![api::HookConfig::ExtraSystemPrompt {
-                        prompt: "original instructions".into(),
-                    }],
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(initial.version, 1);
-        assert_eq!(initial.previous_version_id, None);
-        let updated = sessions
-            .update_agent_definition(
-                initial.id,
-                crate::db::UpdateAgentDefinition {
-                    name: "replacement".into(),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_ne!(updated.id, initial.id);
-        assert_eq!(updated.previous_version_id, Some(initial.id));
-        assert_eq!(updated.version, 2);
-        assert_eq!(updated.name, "replacement");
-        assert!(updated.description.is_empty());
-        assert!(!updated.selectable);
-        assert_eq!(updated.model, api::AgentModel::Global);
-        assert!(updated.hooks.agent_create.is_empty());
-        let original = sessions.get_agent_definition(initial.id).await.unwrap();
-        assert_eq!(original.name, "custom");
-        assert_eq!(original.description, "first version");
-        assert!(original.selectable);
-        assert_eq!(original.model, crate::test_support::model_config().into());
-        assert_eq!(
-            original.hooks.agent_create,
-            vec![api::HookConfig::ExtraSystemPrompt {
-                prompt: "original instructions".into()
-            }]
-        );
-        let definitions = sessions.list_agent_definitions().await.unwrap();
-        assert!(
-            definitions
-                .iter()
-                .any(|definition| definition.id == initial.id)
-        );
-        assert!(
-            definitions
-                .iter()
-                .any(|definition| definition.id == updated.id)
-        );
     }
 
     #[tokio::test]
@@ -905,7 +821,8 @@ mod tests {
         let serve_manager = async {
             // Only the two explicit reads below consult the manager; the update uses the projection.
             for busy in [true, false] {
-                let ManagerCommand::IsBusy { session: id, reply } = received.recv().await.unwrap()
+                let SupervisorCommand::IsBusy { session: id, reply } =
+                    received.recv().await.unwrap()
                 else {
                     panic!("expected busy query");
                 };
@@ -913,7 +830,7 @@ mod tests {
                 let _publication = sessions.publication.lock().await;
                 sessions
                     .database
-                    .cursor()
+                    .write()
                     .await
                     .unwrap()
                     .rollback()
@@ -921,7 +838,7 @@ mod tests {
                     .unwrap();
                 reply.send(busy).unwrap();
             }
-            let ManagerCommand::SessionUpdated { session: updated } =
+            let SupervisorCommand::SessionUpdated { session: updated } =
                 received.recv().await.unwrap()
             else {
                 panic!("expected updated session notification");
@@ -929,12 +846,12 @@ mod tests {
             assert_eq!(updated.name, "renamed");
             assert_eq!(updated.working_directory.to_str(), Some("/new"));
             let _publication = sessions.publication.lock().await;
-            let mut cursor = sessions.database.cursor().await.unwrap();
+            let mut cursor = sessions.database.read().await.unwrap();
             assert_eq!(
                 cursor.get_session(session.id).await.unwrap().name,
                 "renamed"
             );
-            cursor.rollback().await.unwrap();
+            cursor.close().await.unwrap();
         };
         let query_and_update = async {
             assert!(sessions.is_busy(session.id).await.unwrap());
@@ -1120,7 +1037,7 @@ mod tests {
                     .await
                     .unwrap()
                     .request_id,
-                "accepted"
+                psa::api::RequestId::from("accepted")
             );
             assert_eq!(
                 sessions
@@ -1128,7 +1045,7 @@ mod tests {
                     .await
                     .unwrap()
                     .request_id,
-                "accepted"
+                psa::api::RequestId::from("accepted")
             );
             assert!(matches!(
                 sessions.resume(SessionId(1), AgentId(2), content).await,
@@ -1140,7 +1057,7 @@ mod tests {
                     .await
                     .unwrap()
                     .request_id,
-                "accepted"
+                psa::api::RequestId::from("accepted")
             );
         };
         let respond = async {
@@ -1150,7 +1067,7 @@ mod tests {
                 Some(api::MessageDelivery::Resume),
                 None,
             ] {
-                let ManagerCommand::Submit {
+                let SupervisorCommand::Submit {
                     session,
                     agent,
                     request,

@@ -295,8 +295,9 @@ fn prior_results_accepts_positional_indices_without_changing_tool_argument_rules
         json!({"index": -2})
     );
 
-    let tool = CodeModeFunctionKind::Tool(crate::components::tools::ToolKind::Noop(
-        crate::components::tools::Noop,
+    let tool = CodeModeFunctionKind::Tool(crate::components::bundles::testing::test_tool(
+        "noop",
+        psa::api::ToolId::Edit,
     ));
     assert!(parse_function_arguments(&tool, &args).is_err());
 

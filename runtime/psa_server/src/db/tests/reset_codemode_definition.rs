@@ -4,13 +4,17 @@ use crate::db::NewEvent;
 #[tokio::test]
 async fn reset_codemode_definition_round_trips_through_persistence_and_reopen() {
     let (directory, db, _session, agent) = fixture().await;
-    let definitions = [ToolId::Noop, ToolId::CodeMode, ToolId::ResetCodeMode]
-        .map(|id| ToolDefinition::for_tool(id).unwrap());
+    let definitions = [
+        ToolId::ListSessions,
+        ToolId::CodeMode,
+        ToolId::ResetCodeMode,
+    ]
+    .map(|id| ToolDefinition::for_tool(id).unwrap());
     let events: Vec<_> = definitions
         .iter()
         .map(|definition| NewEvent::new(EventType::ToolDefinition(definition.clone())))
         .collect();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor.add_events(agent.id, &events).await.unwrap();
     cursor.commit().await.unwrap();
 
@@ -19,13 +23,13 @@ async fn reset_codemode_definition_round_trips_through_persistence_and_reopen() 
             .fetch_all(&db.pool)
             .await
             .unwrap();
-    assert_eq!(stored_ids, ["noop", "codemode", "reset_codemode"]);
+    assert_eq!(stored_ids, ["list_sessions", "codemode", "reset_codemode"]);
     db.close().await;
 
     let reopened = Database::open(directory.path().join("events.sqlite3"))
         .await
         .unwrap();
-    let mut cursor = reopened.cursor().await.unwrap();
+    let mut cursor = reopened.read().await.unwrap();
     let saved = cursor.load_all_events(agent.id).await.unwrap();
     assert_eq!(saved.len(), definitions.len());
     for (event, expected) in saved.iter().zip(definitions) {
@@ -38,7 +42,7 @@ async fn reset_codemode_definition_round_trips_through_persistence_and_reopen() 
             serde_json::to_value(&expected.definition).unwrap()
         );
     }
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     reopened.close().await;
 }
 

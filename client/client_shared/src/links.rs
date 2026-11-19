@@ -5,16 +5,19 @@
 //! result's client-only delivery field, so both sides are linked by ID rather
 //! than by content.
 use crate::{RowId, Transcript};
-use psa::api::events::{EventType, MessageType};
+use psa::api::{
+    RequestId,
+    events::{EventType, MessageType},
+};
 
 /// Where to reveal a message in another agent's transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageLink {
     /// In the sender: the call whose result returned `request_id`. Completion
     /// reports have no such call; callers then reveal the latest activity.
-    Sent { request_id: String },
+    Sent { request_id: RequestId },
     /// In the recipient: the attributed message delivered by `request_id`.
-    Received { request_id: String },
+    Received { request_id: RequestId },
 }
 
 /// Tools whose results report a message delivery.
@@ -83,7 +86,7 @@ mod tests {
         for (index, kind) in kinds.into_iter().enumerate() {
             transcript.apply(StreamMessage::Upsert {
                 pending: PendingEvent {
-                    id: format!("{index:06}"),
+                    id: format!("{index:06}").into(),
                     revision: 1,
                     session_id: SessionId(1),
                     agent_id: AgentId(1),

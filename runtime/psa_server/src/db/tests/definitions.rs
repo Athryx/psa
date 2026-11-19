@@ -5,12 +5,12 @@ use crate::{
     db::{Database, DbError},
     sessions::{ForkPoint, SessionFork, SessionUpdate},
 };
-use psa::api::{AgentDefinitionId, BundleConfig, HookConfig, HookConfigs};
+use psa::api::{AgentDefinitionId, BundleConfig};
 
 #[tokio::test]
 async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
     let (dir, db, session, _) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let request = CreateAgentDefinition {
         name: " \n literal name \t".into(),
         description: "description\n\n".into(),
@@ -18,25 +18,17 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
         bundles: vec![
             BundleConfig::FileTools { read_only: false },
             BundleConfig::FileTools { read_only: true },
-            BundleConfig::Noop,
-            BundleConfig::Noop,
+            BundleConfig::Startup {
+                base_prompt: true,
+                project_context: true,
+                cwd: false,
+                skills: true,
+            },
+            BundleConfig::ExtraSystemPrompt {
+                prompt: " \n literal prompt \n ".into(),
+            },
+            BundleConfig::StopWithoutTools,
         ],
-        hooks: HookConfigs {
-            agent_create: vec![
-                HookConfig::Noop,
-                HookConfig::DefaultStartup,
-                HookConfig::Noop,
-            ],
-            session_update: vec![HookConfig::SessionModelUpdate],
-            before_request: vec![
-                HookConfig::Noop,
-                HookConfig::ExtraSystemPrompt {
-                    prompt: " \n literal prompt \n ".into(),
-                },
-                HookConfig::Noop,
-            ],
-            after_request: vec![HookConfig::StopWithoutTools, HookConfig::Noop],
-        },
         model: model().into(),
         skills: vec![
             "relative/../skill".into(),
@@ -52,8 +44,6 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
     let mut expected = serde_json::to_value(&request).unwrap();
     let object = expected.as_object_mut().unwrap();
     object.insert("id".into(), serde_json::json!(first.id));
-    object.insert("version".into(), serde_json::json!(1));
-    object.insert("previous_version_id".into(), serde_json::Value::Null);
     assert_eq!(serde_json::to_value(&first).unwrap(), expected);
     let agent = cursor
         .create_agent(
@@ -69,21 +59,13 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
         .await
         .unwrap();
 
-    let replacement = CreateAgentDefinition {
-        name: String::new(),
-        ..Default::default()
-    };
     let next = cursor
-        .update_agent_definition(first.id, replacement)
+        .create_agent_definition(CreateAgentDefinition::default())
         .await
         .unwrap();
     assert_ne!(first.id, next.id);
-    assert_eq!(next.previous_version_id, Some(first.id));
-    assert_eq!(next.version, 2);
     assert!(next.bundles.is_empty());
-    assert!(next.hooks.agent_create.is_empty());
     assert_eq!(next.model, psa::api::AgentModel::Global);
-    assert!(next.hooks.before_request.is_empty());
     assert_eq!(
         serde_json::to_value(cursor.get_agent_definition(first.id).await.unwrap()).unwrap(),
         expected
@@ -96,12 +78,6 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
     let missing = AgentDefinitionId(777777);
     assert!(matches!(
         cursor.get_agent_definition(missing).await,
-        Err(DbError::NotFound { .. })
-    ));
-    assert!(matches!(
-        cursor
-            .update_agent_definition(missing, Default::default())
-            .await,
         Err(DbError::NotFound { .. })
     ));
     assert!(
@@ -125,7 +101,7 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
     let db = Database::open(dir.path().join("events.sqlite3"))
         .await
         .unwrap();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     assert_eq!(
         cursor.get_agent_definition(first.id).await.unwrap().bundles,
         request.bundles
@@ -159,7 +135,7 @@ async fn migration_defaults_legacy_definitions_to_empty_bundles_and_checks_json(
     pool.close().await;
 
     let db = Database::open(&path).await.unwrap();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let definition = cursor
         .get_agent_definition(AgentDefinitionId(1))
         .await
@@ -183,7 +159,7 @@ async fn migration_defaults_legacy_definitions_to_empty_bundles_and_checks_json(
     db.close().await;
 
     let db = Database::open(&path).await.unwrap();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     assert!(
         cursor
             .get_agent_definition(AgentDefinitionId(1))
@@ -199,15 +175,12 @@ async fn migration_defaults_legacy_definitions_to_empty_bundles_and_checks_json(
 #[tokio::test]
 async fn fork_preserves_definition_reference_and_session_model_or_explicit_override() {
     let (_dir, db, session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let updated_definition = cursor
-        .update_agent_definition(
-            agent.definition_id,
-            CreateAgentDefinition {
-                name: "updated".into(),
-                ..Default::default()
-            },
-        )
+        .create_agent_definition(CreateAgentDefinition {
+            name: "updated".into(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     let fork = cursor

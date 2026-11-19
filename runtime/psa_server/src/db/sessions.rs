@@ -1,5 +1,5 @@
 use super::{
-    DatabaseCursor, DbError,
+    DbError, ReadCursor, WriteCursor,
     agents::{get_agent, list_agents},
     events::{agent_state_at, event_cutoff_at, load_event_rows},
     schema::{
@@ -17,48 +17,7 @@ use crate::{
 use psa::api::events::EventId;
 use sqlx::{Acquire, SqliteConnection};
 
-impl DatabaseCursor {
-    pub async fn create_session(&mut self, new: NewSession) -> Result<Session, DbError> {
-        self.get_probe(new.probe_id).await?;
-        let probe_id = new.probe_id.to_string();
-        let model_config = serde_json::to_string(&new.model_config)?;
-        let decision_model = new
-            .decision_model
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()?;
-        validate_name(&new.name)?;
-        if let Some(project) = &new.project_id {
-            project.validate().map_err(DbError::InvalidInput)?;
-        }
-        let project_id = new.project_id.map(|project| project.0);
-        let path = encode_path(&new.working_directory)?;
-        let now = now_us()?;
-
-        let mut savepoint = self.transaction.begin().await?;
-        let result = sqlx::query!(
-            "INSERT INTO sessions (first_position, next_position, name, working_directory, probe_id, project_id, model_config, decision_model, created_at_us, updated_at_us) VALUES (1,1,?,?,?,?,?,?,?,?)",
-            new.name,
-            path,
-            probe_id,
-            project_id,
-            model_config,
-            decision_model,
-            now,
-            now
-        )
-        .execute(&mut *savepoint)
-        .await?;
-        let session = get_session(
-            &mut savepoint,
-            SessionId(decode_integer(result.last_insert_rowid())?),
-        )
-        .await?;
-
-        savepoint.commit().await?;
-        Ok(session)
-    }
-
+impl ReadCursor {
     pub async fn get_session(&mut self, id: SessionId) -> Result<Session, DbError> {
         get_session(self.connection(), id).await
     }
@@ -141,6 +100,49 @@ impl DatabaseCursor {
         .fetch_all(self.connection())
         .await?;
         Ok(rows.into_iter().map(psa::api::ProjectId).collect())
+    }
+}
+
+impl WriteCursor {
+    pub async fn create_session(&mut self, new: NewSession) -> Result<Session, DbError> {
+        self.get_probe(new.probe_id).await?;
+        let probe_id = new.probe_id.to_string();
+        let model_config = serde_json::to_string(&new.model_config)?;
+        let decision_model = new
+            .decision_model
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        validate_name(&new.name)?;
+        if let Some(project) = &new.project_id {
+            project.validate().map_err(DbError::InvalidInput)?;
+        }
+        let project_id = new.project_id.map(|project| project.0);
+        let path = encode_path(&new.working_directory)?;
+        let now = now_us()?;
+
+        let mut savepoint = self.transaction.begin().await?;
+        let result = sqlx::query!(
+            "INSERT INTO sessions (first_position, next_position, name, working_directory, probe_id, project_id, model_config, decision_model, created_at_us, updated_at_us) VALUES (1,1,?,?,?,?,?,?,?,?)",
+            new.name,
+            path,
+            probe_id,
+            project_id,
+            model_config,
+            decision_model,
+            now,
+            now
+        )
+        .execute(&mut *savepoint)
+        .await?;
+        let session = get_session(
+            &mut savepoint,
+            SessionId(decode_integer(result.last_insert_rowid())?),
+        )
+        .await?;
+
+        savepoint.commit().await?;
+        Ok(session)
     }
 
     pub async fn update_session(
@@ -276,7 +278,7 @@ impl DatabaseCursor {
         for copy in &mut agents {
             let original = originals
                 .iter()
-                .find(|agent| Some(agent.id) == copy.parent_id)
+                .find(|agent| Some(agent.id) == copy.forked_from)
                 .expect("fork source exists");
             copy.subagent_parent_id = original
                 .subagent_parent_id

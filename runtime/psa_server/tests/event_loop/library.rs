@@ -4,19 +4,14 @@ use super::*;
 use psa::{
     AgentLayout, AgentSpec, Context, EventRange, Inclusions, ProbeSelector, SessionSpec, Skill,
 };
-use wire::{AgentResult, BundleConfig, HookConfig, HookOverrides};
+use wire::{AgentResult, BundleConfig};
 
 fn worker_layout() -> AgentLayout {
-    AgentLayout::new("worker")
-        .bundles(vec![BundleConfig::Noop])
-        .hooks(HookOverrides {
-            agent_create: Some(vec![
-                HookConfig::DefaultStartup,
-                HookConfig::ToolDefinitions,
-            ]),
-            after_request: Some(vec![HookConfig::StopWithoutTools]),
-            ..Default::default()
-        })
+    AgentLayout::new("worker").bundles(vec![
+        startup(),
+        BundleConfig::FileTools { read_only: true },
+        BundleConfig::StopWithoutTools,
+    ])
 }
 
 #[tokio::test]

@@ -245,7 +245,7 @@ impl Registry {
         }
 
         let publication = self.publication.clone();
-        let mut state = publication.lock().await;
+        let mut state = publication.lock_state().await;
         for (_, pending) in self.pending.drain() {
             remove_projection(&mut state, &pending.request);
             let _ = pending.waiter.send(Err(ClientQueryError::Unavailable));
@@ -272,7 +272,7 @@ impl Registry {
         }
 
         let publication = self.publication.clone();
-        let mut state = publication.lock().await;
+        let mut state = publication.lock_state().await;
         if registered.is_closed() || waiter.is_closed() {
             return;
         }
@@ -318,7 +318,7 @@ impl Registry {
             .map_err(ClientQueryError::InvalidResponse)?;
 
         let publication = self.publication.clone();
-        let mut state = publication.lock().await;
+        let mut state = publication.lock_state().await;
         let pending = self
             .pending
             .remove(&id)
@@ -344,7 +344,7 @@ impl Registry {
             return;
         }
         let publication = self.publication.clone();
-        let mut state = publication.lock().await;
+        let mut state = publication.lock_state().await;
         let pending = self
             .pending
             .remove(&id)

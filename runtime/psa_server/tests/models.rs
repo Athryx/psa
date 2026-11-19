@@ -244,16 +244,19 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
             config_id: config_id.clone(),
             description: String::new(),
             selectable: true,
-            bundles: vec![],
+            bundles: vec![
+                api::BundleConfig::Startup {
+                    base_prompt: true,
+                    project_context: false,
+                    cwd: false,
+                    skills: false,
+                },
+                api::BundleConfig::StopWithoutTools,
+            ],
             models: vec![api::ModelSelection::Global],
             first_model_default: true,
             subagents: Default::default(),
             skills: Default::default(),
-            hooks: api::HookConfigs {
-                agent_create: vec![api::HookConfig::DefaultStartup],
-                after_request: vec![api::HookConfig::StopWithoutTools],
-                ..Default::default()
-            },
         }])
         .await
         .unwrap();
@@ -325,7 +328,7 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
                 EventType::InferenceResultEnd(end) if matches!(&end.outcome,llm_api::api::Outcome::Failed(error) if error.to_string().contains("Supported:")))));
         }
         // Trace reads retain the resolved request even through the core database API.
-        let mut cursor = database.cursor().await.unwrap();
+        let mut cursor = database.read().await.unwrap();
         assert!(
             !cursor
                 .load_events(agent.id, EventRange::default())
@@ -333,7 +336,7 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
                 .unwrap()
                 .is_empty()
         );
-        cursor.rollback().await.unwrap();
+        cursor.close().await.unwrap();
     }
     fail.store(true, Ordering::SeqCst);
     for provider in [Some(config.model.provider), None] {

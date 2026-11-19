@@ -1,10 +1,7 @@
 use super::*;
 use crate::{
     agents::{Agent, AgentDefinition, AgentState},
-    components::{
-        bundles::{BundleConfig, InstalledComponents},
-        hooks::HookConfigs,
-    },
+    components::bundles::{BundleConfig, InstalledComponents},
     sessions::Session,
 };
 use llm_api::api::Usage;
@@ -19,7 +16,7 @@ pub(super) fn snapshots() -> (AgentDefinition, Agent, Session) {
         id: AgentId(1),
         session_id: SessionId(1),
         definition_id: AgentDefinitionId(1),
-        parent_id: None,
+        forked_from: None,
         subagent_parent_id: None,
         first_event_id: EventId(1),
         next_event_id: EventId(1),
@@ -33,7 +30,7 @@ pub(super) fn snapshots() -> (AgentDefinition, Agent, Session) {
     let session = Session {
         decision_model: None,
         id: agent.session_id,
-        parent_id: None,
+        forked_from: None,
         first_position: 1,
         next_position: 1,
         name: "test".into(),
@@ -46,13 +43,10 @@ pub(super) fn snapshots() -> (AgentDefinition, Agent, Session) {
     };
     let definition = AgentDefinition {
         id: AgentDefinitionId(1),
-        previous_version_id: None,
-        version: 1,
         name: "test".into(),
         description: String::new(),
         selectable: false,
         bundles: vec![],
-        hooks: HookConfigs::default(),
         model: Default::default(),
         skills: vec![],
         permitted_subagents: vec![],
@@ -66,7 +60,6 @@ async fn registry_follows_bundle_installation_and_cleanup() {
     definition.bundles = vec![
         BundleConfig::FileTools { read_only: true },
         BundleConfig::Bash,
-        BundleConfig::Noop,
         BundleConfig::CodeMode,
         BundleConfig::AskQuestion {
             interactive_only: true,
@@ -87,7 +80,6 @@ async fn registry_follows_bundle_installation_and_cleanup() {
             "bash",
             "interact_bash",
             "close_bash",
-            "noop",
             "prior_results",
             "help"
         ]

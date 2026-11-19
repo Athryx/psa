@@ -1,7 +1,7 @@
 use psa::api::events::{EventType, MessageType, ToolCall, ToolResult};
 use psa::api::{
     Agent, AgentContextState, AgentId, ClientQueryId, ClientQueryRequest, EventEnvelope,
-    EventsPage, PendingEvent, Session, SessionId, StreamMessage,
+    EventsPage, PendingEvent, PendingEventId, RequestId, Session, SessionId, StreamMessage,
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -173,7 +173,7 @@ const DISPLAY_CATEGORIES: usize = 5;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RowId {
     Committed(u64),
-    Pending(String),
+    Pending(PendingEventId),
 }
 #[derive(Debug, Clone)]
 pub struct TranscriptRow {
@@ -195,18 +195,18 @@ pub struct Transcript {
     pub session_id: SessionId,
     pub agent_id: Option<AgentId>,
     pub committed: PayloadMap<u64, EventEnvelope>,
-    pub pending: PayloadMap<String, PendingEvent>,
+    pub pending: PayloadMap<PendingEventId, PendingEvent>,
     pub queries: BTreeMap<ClientQueryId, ClientQueryRequest>,
     pub agents: HashMap<AgentId, Agent>,
     pub session: Option<Session>,
     /// Server projection at a committed agent event boundary.
     pub context_state: Option<AgentContextState>,
-    pub request_failures: HashMap<String, String>,
+    pub request_failures: HashMap<RequestId, String>,
     pub cursor: u64,
     pub needs_resync: bool,
     pub next_before: Option<u64>,
     pub has_older: bool,
-    retired_pending: Arc<HashSet<String>>,
+    retired_pending: Arc<HashSet<PendingEventId>>,
     tool_results: Arc<HashMap<(AgentId, String), Arc<BTreeMap<RowId, RowPayload>>>>,
     display_index: [Arc<Vec<RowId>>; DISPLAY_CATEGORIES],
     human_messages: Arc<Vec<RowId>>,
@@ -645,9 +645,9 @@ impl Transcript {
         self.pending.clear();
     }
 
-    fn remove_pending(&mut self, id: &str) {
-        self.remove_display_row(&RowId::Pending(id.to_owned()));
-        self.remove_human_message(&RowId::Pending(id.to_owned()));
+    fn remove_pending(&mut self, id: &PendingEventId) {
+        self.remove_display_row(&RowId::Pending(id.clone()));
+        self.remove_human_message(&RowId::Pending(id.clone()));
         if let Some(previous) = self.pending.remove(id) {
             self.remove_tool_result(&RowPayload::Pending(previous));
         }
@@ -989,8 +989,8 @@ mod tests {
         let updated = transcript.row_window(0, 10);
         assert_eq!(rows[0], updated[0]);
         assert_ne!(rows[1], updated[1]);
-        assert_eq!(snapshot.pending["p"].revision, 1);
-        assert_eq!(transcript.pending["p"].revision, 2);
+        assert_eq!(snapshot.pending[&PendingEventId::from("p")].revision, 1);
+        assert_eq!(transcript.pending[&PendingEventId::from("p")].revision, 2);
     }
 
     #[test]
@@ -1470,7 +1470,7 @@ mod tests {
         t.apply(StreamMessage::Upsert {
             pending: pending(1),
         });
-        assert_eq!(t.pending["p"].revision, 2);
+        assert_eq!(t.pending[&PendingEventId::from("p")].revision, 2);
         t.apply(StreamMessage::Committed {
             event: event(3),
             pending_id: Some("p".into()),
@@ -1497,7 +1497,7 @@ mod tests {
         });
         t.merge_history(page(vec![event(2), event(1)]));
         assert_eq!(t.cursor, 5);
-        assert_eq!(t.pending["p"].revision, 3);
+        assert_eq!(t.pending[&PendingEventId::from("p")].revision, 3);
         assert_eq!(
             t.committed.keys().copied().collect::<Vec<_>>(),
             vec![1, 2, 5]

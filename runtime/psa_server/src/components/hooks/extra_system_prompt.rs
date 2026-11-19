@@ -4,9 +4,6 @@ use crate::{agents::agent_context::AgentContext, components::cancellation::Cance
 use psa::api::events::{EventType, Message};
 use std::time::Duration;
 
-#[cfg(test)]
-mod tests;
-
 /// Adds its configured extra system prompt to the model context.
 pub struct ExtraSystemPromptHook {
     prompt: String,
@@ -28,8 +25,9 @@ impl Hook for ExtraSystemPromptHook {
         context: &mut AgentContext<'_>,
         _cancellation: Cancellation,
     ) -> Result<(), HookError> {
+        // Forks inherit the prompt with the rest of their context.
         let prompt = &self.prompt;
-        if prompt.is_empty() {
+        if prompt.is_empty() || context.agent().forked_from.is_some() {
             return Ok(());
         }
 

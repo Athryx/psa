@@ -31,12 +31,12 @@ pub enum AgentState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agent {
     pub id: AgentId,
-    /// Immutable definition version pinned to this agent.
+    /// Immutable definition snapshot pinned to this agent.
     pub definition_id: AgentDefinitionId,
     /// Session containing this agent.
     pub session_id: SessionId,
     /// Fork lineage; independent of subagent ancestry.
-    pub parent_id: Option<AgentId>,
+    pub forked_from: Option<AgentId>,
     /// Immutable subagent parent, independent of fork lineage.
     pub subagent_parent_id: Option<AgentId>,
     pub name: String,
@@ -246,9 +246,40 @@ pub enum AgentRequest {
     RecordCommand(crate::api::events::CommandRecord),
 }
 
+/// Server-assigned identifier of an accepted agent request. Opaque text, since
+/// older transcripts hold request IDs in other formats.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RequestId(pub String);
+
+impl RequestId {
+    /// The identifier text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for RequestId {
+    fn from(id: String) -> Self {
+        Self(id)
+    }
+}
+
+impl From<&str> for RequestId {
+    fn from(id: &str) -> Self {
+        Self(id.to_owned())
+    }
+}
+
+impl std::fmt::Display for RequestId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 /// Acknowledgment that an asynchronous agent request was accepted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestAccepted {
     /// Identifier used to correlate later request failures.
-    pub request_id: String,
+    pub request_id: RequestId,
 }

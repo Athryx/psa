@@ -17,8 +17,8 @@ fn system_text(event: &NewEvent) -> &str {
 #[test]
 fn snapshots_are_followed_by_two_separate_system_prompt_events() {
     let events = build_tool_events([(
-        ToolId::Noop,
-        tool_definition(ToolId::Noop).unwrap(),
+        ToolId::ListSessions,
+        tool_definition(ToolId::ListSessions).unwrap(),
         ToolSystemPrompt {
             tools: Some("Do nothing.".into()),
             rules: vec!["Keep changes focused.".into(), "Use absolute paths.".into()],
@@ -32,11 +32,11 @@ fn snapshots_are_followed_by_two_separate_system_prompt_events() {
         matches!(&events[2].kind, EventType::Message(message) if message.description.as_deref() == Some("Tool rules"))
     );
     assert!(
-        matches!(&events[0].kind, EventType::ToolDefinition(snapshot) if snapshot.id == ToolId::Noop)
+        matches!(&events[0].kind, EventType::ToolDefinition(snapshot) if snapshot.id == ToolId::ListSessions)
     );
     assert_eq!(
         system_text(&events[1]),
-        "<tools>\n- noop: Do nothing.\n</tools>"
+        "<tools>\n- list_sessions: Do nothing.\n</tools>"
     );
     assert_eq!(
         system_text(&events[2]),
@@ -59,11 +59,14 @@ fn rules_and_tool_directions_are_independent() {
                 tools: Some("A tool direction.".into()),
                 rules: vec![],
             },
-            "<tools>\n- noop: A tool direction.\n</tools>",
+            "<tools>\n- list_sessions: A tool direction.\n</tools>",
         ),
     ] {
-        let events =
-            build_tool_events([(ToolId::Noop, tool_definition(ToolId::Noop).unwrap(), prompt)]);
+        let events = build_tool_events([(
+            ToolId::ListSessions,
+            tool_definition(ToolId::ListSessions).unwrap(),
+            prompt,
+        )]);
         assert_eq!(events.len(), 2);
         assert_eq!(system_text(&events[1]), expected);
     }
@@ -90,8 +93,8 @@ fn codemode_history_guidance_is_published_in_the_rules_system_message() {
 #[test]
 fn default_guidance_keeps_only_the_tool_snapshot() {
     let events = build_tool_events([(
-        ToolId::Noop,
-        tool_definition(ToolId::Noop).unwrap(),
+        ToolId::ListSessions,
+        tool_definition(ToolId::ListSessions).unwrap(),
         ToolSystemPrompt::default(),
     )]);
     assert_eq!(events.len(), 1);

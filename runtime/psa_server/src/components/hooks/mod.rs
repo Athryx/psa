@@ -4,7 +4,6 @@ pub mod cwd;
 pub mod default_startup;
 pub mod extra_system_prompt;
 pub mod goal;
-pub mod noop;
 pub mod project_context;
 pub mod require_result;
 pub mod session_model_update;
@@ -22,7 +21,6 @@ pub use cwd::CwdHook;
 pub use default_startup::DefaultStartupHook;
 pub use extra_system_prompt::ExtraSystemPromptHook;
 pub use goal::GoalHook;
-pub use noop::NoopHook;
 pub use project_context::ProjectContextHook;
 pub use require_result::RequireResult;
 pub use session_model_update::SessionModelUpdateHook;
@@ -35,12 +33,12 @@ use super::cancellation::{Cancellation, run_cancellable};
 use crate::{
     agents::{
         AgentError, agent_context::AgentContext, agent_manager::AgentManagerMessage,
-        session_manager::RuntimeError,
+        supervisor::RuntimeError,
     },
     db::DbError,
 };
 use actors::UnboundedMailbox;
-pub use psa::api::{AgentCommand, CommandResult, HookConfig, HookConfigs};
+pub use psa::api::{AgentCommand, CommandResult};
 use psa_shared::probe_transport::ProbeError;
 use std::time::Duration;
 
@@ -54,7 +52,7 @@ pub enum HookError {
     #[error(transparent)]
     Probe(#[from] ProbeError),
     #[error(transparent)]
-    Sessions(#[from] RuntimeError),
+    Runtime(#[from] RuntimeError),
     #[error("context compaction failed: {0}")]
     Compaction(String),
     #[error(transparent)]
@@ -108,7 +106,6 @@ pub trait Hook: Send {
 }
 
 pub enum HookKind {
-    Noop(NoopHook),
     StopWithoutTools(StopWithoutTools),
     DefaultStartup(DefaultStartupHook),
     ExtraSystemPrompt(ExtraSystemPromptHook),
@@ -123,34 +120,14 @@ pub enum HookKind {
     SubagentIdentity(SubagentIdentity),
     CodeModeFunctions(CodeModeFunctionsHook),
     #[cfg(test)]
-    RecordLifecycle(crate::agents::session_manager::lifecycle_tests::RecordLifecycle),
+    RecordLifecycle(crate::agents::supervisor::lifecycle_tests::RecordLifecycle),
     #[cfg(test)]
     BundleProbe(crate::components::bundles::testing::SharedHook),
-}
-
-impl HookKind {
-    /// Builds an agent-local instance from configuration without performing IO.
-    pub fn from_config(config: &HookConfig) -> Self {
-        match config {
-            HookConfig::Noop => Self::Noop(NoopHook),
-            HookConfig::StopWithoutTools => Self::StopWithoutTools(StopWithoutTools),
-            HookConfig::DefaultStartup => Self::DefaultStartup(DefaultStartupHook),
-            HookConfig::ExtraSystemPrompt { prompt } => {
-                Self::ExtraSystemPrompt(ExtraSystemPromptHook::new(prompt.clone()))
-            }
-            HookConfig::ProjectContext => Self::ProjectContext(ProjectContextHook),
-            HookConfig::ToolDefinitions => Self::ToolDefinitions(ToolDefinitionsHook),
-            HookConfig::Cwd => Self::Cwd(CwdHook),
-            HookConfig::Skills => Self::Skills(SkillsHook),
-            HookConfig::SessionModelUpdate => Self::SessionModelUpdate(SessionModelUpdateHook),
-        }
-    }
 }
 
 impl Hook for HookKind {
     fn cancellation_timeout(&self) -> Duration {
         match self {
-            Self::Noop(hook) => hook.cancellation_timeout(),
             Self::StopWithoutTools(hook) => hook.cancellation_timeout(),
             Self::DefaultStartup(hook) => hook.cancellation_timeout(),
             Self::ExtraSystemPrompt(hook) => hook.cancellation_timeout(),
@@ -177,7 +154,6 @@ impl Hook for HookKind {
         cancellation: Cancellation,
     ) -> Result<(), HookError> {
         match self {
-            Self::Noop(hook) => hook.run(context, cancellation).await,
             Self::StopWithoutTools(hook) => hook.run(context, cancellation).await,
             Self::DefaultStartup(hook) => hook.run(context, cancellation).await,
             Self::ExtraSystemPrompt(hook) => hook.run(context, cancellation).await,
@@ -295,18 +271,4 @@ pub struct Hooks {
     pub after_request: Vec<HookKind>,
     /// Bundle-installed handlers for submitted agent commands.
     pub command: Vec<CommandHookKind>,
-}
-
-impl Hooks {
-    pub fn from_configs(configs: &HookConfigs) -> Self {
-        let build = |configs: &[HookConfig]| configs.iter().map(HookKind::from_config).collect();
-
-        Self {
-            agent_create: build(&configs.agent_create),
-            session_update: build(&configs.session_update),
-            before_request: build(&configs.before_request),
-            after_request: build(&configs.after_request),
-            command: Vec::new(),
-        }
-    }
 }

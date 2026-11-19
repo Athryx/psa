@@ -34,7 +34,7 @@ to introduce new general-purpose capabilities.
   and `hooks/` hold their respective implementations. Shared invocation
   cancellation lives in `components/cancellation.rs`.
 - `tools/mod.rs` owns common infrastructure and dispatch, not concrete tool logic.
-- Use `tools/noop.rs` and the Noop bundle as working references. `ToolId`
+- Use `tools/list_sessions.rs` and the Traces bundle as working references. `ToolId`
   identifies tools; every tool is installed by a bundle. There is no standalone
   tool configuration type, agent/defaults `tools` field, or tool config factory.
   Follow bundle installation and existing definition dispatch; do not create a
@@ -109,7 +109,7 @@ with a generic success or dump the input payload into the response.
 ## Every tool requires a bundle
 
 Define a Rust bundle for every tool feature, even an unrelated single unit tool;
-the Noop bundle is the minimal working example. Related tools and hooks share
+the Traces bundle is a minimal working example. Related tools and hooks share
 an owner through their bundle. Tools cannot be configured individually. Keep
 each concrete tool in its own file; typed invocation arguments and the execution
 macro are unchanged.
@@ -124,7 +124,7 @@ macro are unchanged.
   demonstrate state shared by two constructed tools and a hook.
 - Agent definitions select ordered bundle configurations, e.g.
   `"bundles": [{"FileTools":{"read_only":false}}, "Bash"]`.
-  `Noop` is a unit bundle installing Noop. `CodeMode` installs a sequential
+  `Bash` is a unit bundle installing the bash tools. `CodeMode` installs a sequential
   Python REPL tool using its own bundle-owned Monty runtime.
   `FileTools { read_only }` requires a payload: false or omission inside that
   payload installs Read, Edit, and Write;
@@ -147,11 +147,15 @@ macro are unchanged.
   `Subagents` adds session-wide tools using session-shared resources. These
   component tool IDs also require their corresponding bundle.
   Unit configuration variants serialize as strings; variants with construction
-  arguments carry typed payloads. Definitions, defaults, and TOML use
-  `HookConfig`, `HookConfigs`, and `BundleConfig`, not identity IDs.
-  Hooks dispatch through `HookKind::from_config(&HookConfig)` and
-  `Hooks::from_configs(&HookConfigs)`. `ExtraSystemPrompt { prompt: String }`
-  owns its prompt; there is no agent-level `extra_system_prompt` field.
+  arguments carry typed payloads. Definitions, defaults, and TOML use only
+  `BundleConfig`, not identity IDs: there is no hook configuration. Every hook
+  is installed by a bundle. `Startup { base_prompt, project_context, cwd, skills }`
+  (flags default to true) installs DefaultStartup (with base instructions unless
+  `base_prompt` is false) and ToolDefinitions, the selected
+  ProjectContext/Cwd/Skills creation hooks, and SessionModelUpdate.
+  `StopWithoutTools` installs the ordinary completion hook.
+  `ExtraSystemPrompt { prompt: String }` owns its prompt and adds it on creation;
+  there is no agent-level `extra_system_prompt` field.
   `TypedResult { schema: ToolSchema, max_retries }` installs sequential
   `record_result` and a require-result completion hook. Its schema is a raw,
   explicit object-root Draft 2020-12 schema with local references, validated
@@ -160,8 +164,8 @@ macro are unchanged.
   Valid data atomically saves Result and Idle; acknowledgment is only
   `Result recorded.`. Invalid data yields an error, never a Result.
   TypedResult, Goal, and ordinary StopWithoutTools are incompatible completion
-  modes, including inherited defaults; explicit hook overrides must remove the
-  ordinary default completion hook when selecting a bundle completion mode.
+  modes, including inherited defaults; an explicit bundle list replaces the
+  defaults, so it must not also select StopWithoutTools.
   At most one policy may be configured; none is allowed but provides no automatic
   completion or Result. Interactive-only Goal supplies ordinary completion for
   noninteractive agents. Non-running Goal
@@ -171,11 +175,11 @@ macro are unchanged.
   default; the fourth violation interrupts with a reason, not a fake result.
   Zero fails immediately. Reset only on a new non-Running to Running transition,
   never on midrun steering. See `docs/AGENT_RESULTS.md` for full semantics.
-  Bundles install in definition order. Configured `agent_create` hooks run before
-  bundle-owned creation hooks so startup initializes context before bundle prompts;
-  other stages run bundle hooks before explicit hooks.
+  Bundles install in definition order and their hooks run in that order.
+  Startup must be listed first: its `agent_create` hooks emit `NewContext`,
+  which clears context written by any earlier creation hook.
   Duplicate bundle IDs, tool IDs, or model-facing tool names fail installation.
-  Hooks preserve their configured stage/order and are not silently deduplicated.
+  Hooks preserve their installed stage/order and are not silently deduplicated.
 - Implement `Bundle::install(&mut self, agent, session, &mut Installer)` without
   filesystem/network IO. Construct shared handles once and pass clones into
   concrete tool/hook instances. Register them with
@@ -274,7 +278,7 @@ to reach around their ownership or lifecycle rules.
 - `tools()`: available tool instances; `projection()`: current agent projection.
 - `probe() -> Result<&ProbeHandle, ProbeError>`: the invocation's remote connection;
   it can be unavailable. Do not silently fall back to the server's filesystem.
-- `sessions() -> &Sessions`: async session/agent facade described below.
+- `runtime() -> &RuntimeHandle`: async session/agent facade described below.
 - `query_client(query, &mut cancellation).await`: sends a typed `psa::api::ClientQuery`
   scoped to the invocation's session/agent and waits for `ClientQueryResponse`.
   The runtime owns pending requests; clients receive them through existing SSE
@@ -309,7 +313,7 @@ to reach around their ownership or lifecycle rules.
   `load_last_inference_result()`, and `load_agent_envelopes(range)`. These are
   scoped to the agent, including inherited fork history. Use them rather than SQL.
 
-### `Sessions` (`runtime/psa_server/src/agents/sessions/mod.rs`)
+### `RuntimeHandle` (`runtime/psa_server/src/agents/runtime_handle/mod.rs`)
 
 Existing async operations cover agent-definition create/get/list/update;
 session create/get/list/update/fork; agent create/get/list (including immutable

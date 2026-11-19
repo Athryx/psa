@@ -13,7 +13,7 @@ fn invalid(error: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Invalid(error.to_string())
 }
 
-impl Sessions {
+impl RuntimeHandle {
     /// `Some(None)` is a completed scan that found no `.agents` directory;
     /// `None` defers discovery because the probe is offline.
     pub(super) async fn discover_session_agents_dir(
@@ -42,11 +42,11 @@ impl Sessions {
         &self,
         id: SessionId,
     ) -> Result<Option<ConfigGroup>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let session = cursor.get_session(id).await?;
         let known = cursor.has_session_agents_dir_discovery(id).await?;
         let agents_dir = cursor.get_session_agents_dir(id).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         if known {
             return Ok(agents_dir);
         }
@@ -57,7 +57,7 @@ impl Sessions {
         else {
             return Ok(agents_dir);
         };
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.write().await?;
         cursor
             .set_session_agents_dir(id, discovered.clone())
             .await?;
@@ -98,7 +98,7 @@ impl Sessions {
     }
 
     pub async fn refresh_configs(&self, sessions: &[SessionId]) -> Result<(), RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
+        let _guard = self.configuration_gate.write().await;
         self.refresh_configuration(sessions).await
     }
 
@@ -106,7 +106,7 @@ impl Sessions {
         &self,
         configs: Vec<I>,
     ) -> Result<Vec<api::AgentConfigStatus>, RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
+        let _guard = self.configuration_gate.write().await;
         let defaults = self
             .configuration
             .as_ref()
@@ -116,16 +116,16 @@ impl Sessions {
             .into_iter()
             .map(|config| defaults.resolve(config.into()))
             .collect();
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.write().await?;
         let configs = cursor.upsert_agent_configs(configs).await?;
         cursor.commit().await?;
         Ok(configs)
     }
 
     pub async fn list_agent_configs(&self) -> Result<Vec<api::AgentConfigStatus>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let configs = cursor.list_agent_configs().await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(configs)
     }
 
@@ -133,9 +133,9 @@ impl Sessions {
         &self,
         id: ConfigId,
     ) -> Result<api::AgentConfigStatus, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let config = cursor.get_agent_config(&id).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(config)
     }
 
@@ -143,26 +143,26 @@ impl Sessions {
         &self,
         id: api::AgentDefinitionId,
     ) -> Result<Option<api::ResolvedAgentConfig>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let config = cursor.get_resolved_agent_config(id).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(config)
     }
 
     pub async fn upload_skill(&self, request: api::NewSkill) -> Result<api::Skill, RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
+        let _guard = self.configuration_gate.write().await;
         let configuration = self
             .configuration
             .as_ref()
             .ok_or(RuntimeError::Unavailable)?;
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let previous = cursor
             .list_skill_sources()
             .await?
             .into_iter()
             .find(|skill| skill.config_id == request.config_id)
             .map(|skill| skill.skill_location);
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         let registration = configuration
             .upload_skill(&request)
@@ -170,7 +170,7 @@ impl Sessions {
             .map_err(invalid)?;
         let location = registration.skill_location.clone();
         let result = async {
-            let mut cursor = self.database.cursor().await?;
+            let mut cursor = self.database.write().await?;
             let mut skills = cursor.upsert_skills(vec![registration]).await?;
             cursor.commit().await?;
             Ok::<_, RuntimeError>(skills.remove(0))
@@ -190,9 +190,9 @@ impl Sessions {
     }
 
     pub async fn list_skills(&self) -> Result<Vec<api::Skill>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let skills = cursor.list_skills().await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(skills)
     }
 
@@ -216,9 +216,9 @@ impl Sessions {
             .await
             .map_err(invalid)?;
 
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let registered_probe = cursor.get_probe(session.probe_id).await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
 
         configuration
             .materialize_skills(&probe, &registered_probe.metadata, skills)
@@ -236,10 +236,10 @@ impl Sessions {
     ) -> Result<AgentModel, RuntimeError> {
         let parent_model = match parent {
             Some(id) => {
-                let mut cursor = self.database.cursor().await?;
+                let mut cursor = self.database.read().await?;
                 let agent = cursor.require_agent_session(session.id, id).await?;
                 let definition = cursor.get_agent_definition(agent.definition_id).await?;
-                cursor.rollback().await?;
+                cursor.close().await?;
                 definition.model
             }
             None => AgentModel::Global,
@@ -252,12 +252,17 @@ impl Sessions {
         id: SessionId,
         request: api::CreateAgent,
     ) -> Result<Agent, RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
+        let guard = self.configuration_gate.write().await;
         self.refresh_configuration(&[id]).await?;
+        // Resolution only reads sources, so other creations may proceed alongside.
+        let _guard = guard.downgrade();
         let session = self.get_session(id).await?;
-        let mut cursor = self.database.cursor().await?;
-        let graph = cursor.get_agent_config_graph(&request.config_id).await?;
-        cursor.rollback().await?;
+        let mut cursor = self.database.read().await?;
+        let session_group = cursor.get_session_agents_dir(id).await?;
+        let graph = cursor
+            .get_agent_config_graph(&request.config_id, session_group.as_ref())
+            .await?;
+        cursor.close().await?;
         let root = graph
             .configs
             .iter()
@@ -273,9 +278,9 @@ impl Sessions {
             .await?;
         let paths = self.materialize_skills(&session, &graph.skills).await?;
         let models = HashMap::from([(request.config_id.clone(), model)]);
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.write().await?;
         let snapshot = cursor
-            .resolve_agent_config(&request.config_id, &paths, &models)
+            .resolve_agent_config(&request.config_id, session_group.as_ref(), &paths, &models)
             .await?;
         cursor.commit().await?;
         self.commit_agent(
@@ -298,12 +303,13 @@ impl Sessions {
         mut request: crate::agents::NewAgent,
         model: Option<ModelSelection>,
     ) -> Result<Agent, RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
+        let guard = self.configuration_gate.write().await;
         let snapshot = self
             .get_resolved_agent_config(request.definition_id)
             .await?;
         if let Some(snapshot) = snapshot {
             self.refresh_configuration(&[id]).await?;
+            let _guard = guard.downgrade();
             let session = self.get_session(id).await?;
             let model = self
                 .creation_model(
@@ -313,15 +319,15 @@ impl Sessions {
                     model.as_ref(),
                 )
                 .await?;
-            let mut cursor = self.database.cursor().await?;
+            let mut cursor = self.database.read().await?;
             let current = cursor.list_skills().await?;
-            cursor.rollback().await?;
+            cursor.close().await?;
             let skills: Vec<_> = current
                 .into_iter()
                 .filter(|skill| snapshot.references.skills.contains(&skill.id))
                 .collect();
             let paths = self.materialize_skills(&session, &skills).await?;
-            let mut cursor = self.database.cursor().await?;
+            let mut cursor = self.database.write().await?;
             let resolved = cursor
                 .resolve_pinned_agent_config(request.definition_id, model, &paths)
                 .await?;

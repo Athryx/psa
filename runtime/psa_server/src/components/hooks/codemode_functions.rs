@@ -24,7 +24,7 @@ impl Hook for CodeModeFunctionsHook {
         context: &mut AgentContext<'_>,
         mut cancellation: Cancellation,
     ) -> Result<(), HookError> {
-        if context.agent().parent_id.is_some() {
+        if context.agent().forked_from.is_some() {
             return Ok(());
         }
 
@@ -103,9 +103,8 @@ pub(crate) fn format_codemode_functions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{
-        codemode_functions::{CodeModeFunctionKind, help::Help, prior_results::PriorResults},
-        tools::{Noop, ToolKind},
+    use crate::components::codemode_functions::{
+        CodeModeFunctionKind, help::Help, prior_results::PriorResults,
     };
 
     fn entry(function: CodeModeFunctionKind, listing: CodeModeListing) -> CodeModeEntry {
@@ -120,7 +119,10 @@ mod tests {
                 CodeModeListing::SystemPrompt,
             ),
             entry(
-                CodeModeFunctionKind::Tool(ToolKind::Noop(Noop)),
+                CodeModeFunctionKind::Tool(crate::components::bundles::testing::test_tool(
+                    "noop",
+                    psa::api::ToolId::Edit,
+                )),
                 CodeModeListing::SystemPrompt,
             ),
         ];
@@ -145,7 +147,10 @@ mod tests {
                 CodeModeListing::SystemPrompt,
             ),
             entry(
-                CodeModeFunctionKind::Tool(ToolKind::Noop(Noop)),
+                CodeModeFunctionKind::Tool(crate::components::bundles::testing::test_tool(
+                    "noop",
+                    psa::api::ToolId::Edit,
+                )),
                 CodeModeListing::HelpOnly,
             ),
         ];
@@ -158,7 +163,10 @@ mod tests {
     #[test]
     fn shared_native_tools_are_explained_once() {
         let functions = [entry(
-            CodeModeFunctionKind::Tool(ToolKind::Noop(Noop)),
+            CodeModeFunctionKind::Tool(crate::components::bundles::testing::test_tool(
+                "noop",
+                psa::api::ToolId::Edit,
+            )),
             CodeModeListing::SystemPrompt,
         )];
         let text = format_codemode_functions(&functions, &["noop".into()]).unwrap();

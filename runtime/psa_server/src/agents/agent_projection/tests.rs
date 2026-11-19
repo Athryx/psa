@@ -159,7 +159,7 @@ fn thinking() -> EventType {
 fn renders_flat_context_and_tracks_the_latest_response_separately() {
     let transcript = events(vec![
         EventType::Model(config()),
-        EventType::ToolDefinition(ToolDefinition::for_tool(ToolId::Noop).unwrap()),
+        EventType::ToolDefinition(ToolDefinition::for_tool(ToolId::ListSessions).unwrap()),
         message(MessageType::Human, "question"),
         start(1),
         thinking(),
@@ -327,7 +327,7 @@ fn preserves_rich_content_and_checks_snapshotted_tools() {
             ..Default::default()
         },
     };
-    let mut tool = ToolDefinition::for_tool(ToolId::Noop).unwrap();
+    let mut tool = ToolDefinition::for_tool(ToolId::ListSessions).unwrap();
     tool.definition.description = "stored definition".into();
     let transcript = events(vec![
         EventType::Model(config()),

@@ -2,8 +2,8 @@
 use crate::{
     Error, ProbeSelector, Result, Skill, SkillRef,
     api::{
-        AgentConfigInput, BundleConfig, ConfigGroup, ConfigId, CreateSandbox, HookOverrides,
-        IncludedItems, ModelSelection,
+        AgentConfigInput, BundleConfig, ConfigGroup, ConfigId, CreateSandbox, IncludedItems,
+        ModelSelection,
     },
 };
 use llm_api::providers::{Model, ModelConfig};
@@ -175,8 +175,6 @@ pub struct AgentLayout {
     pub models: Vec<ModelSelection>,
     /// Bundles to install; `None` uses the server's defaults.
     pub bundles: Option<Vec<BundleConfig>>,
-    /// Hook overrides; absent stages use the server's defaults.
-    pub hooks: HookOverrides,
     /// Agent configs this agent may start as subagents.
     pub subagents: Inclusions<AgentConfigRef>,
     /// Skills available to this agent.
@@ -185,14 +183,13 @@ pub struct AgentLayout {
 
 impl AgentLayout {
     /// A layout following the session's model, with the server's default
-    /// bundles and hooks, no subagents, and no skills.
+    /// bundles, no subagents, and no skills.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             description: String::new(),
             models: vec![ModelSelection::Global],
             bundles: None,
-            hooks: HookOverrides::default(),
             subagents: Inclusions::default(),
             skills: Inclusions::default(),
         }
@@ -213,12 +210,6 @@ impl AgentLayout {
     /// Install exactly these bundles instead of the server's defaults.
     pub fn bundles(mut self, bundles: Vec<BundleConfig>) -> Self {
         self.bundles = Some(bundles);
-        self
-    }
-
-    /// Override hook stages.
-    pub fn hooks(mut self, hooks: HookOverrides) -> Self {
-        self.hooks = hooks;
         self
     }
 
@@ -248,7 +239,6 @@ impl AgentLayout {
         let mut input = AgentConfigInput::new(config_id, self.models.clone());
         input.description = self.description.clone();
         input.bundles = self.bundles.clone();
-        input.hooks = self.hooks.clone();
         input.subagents = self.subagents.build_included_items(
             group,
             &registered.configs,

@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     agents::{
         NewAgent, agent_context::AgentContext, agent_manager::AgentManagerState,
-        publication::Publication, session_manager::Runtime,
+        publication::Publication, supervisor::Runtime,
     },
     components::cancellation::Cancellation,
     probes::ProbeRegistry,
@@ -68,7 +68,7 @@ async fn typed_bridge_validates_and_cancels_before_running() {
     )
     .await
     .unwrap();
-    let mut cursor = database.cursor().await.unwrap();
+    let mut cursor = database.write().await.unwrap();
     let session = cursor
         .create_session(NewSession {
             decision_model: None,

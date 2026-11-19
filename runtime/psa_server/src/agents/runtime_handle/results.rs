@@ -1,15 +1,15 @@
 //! Durable result waits use publication only as a wake-up signal. The database
 //! remains authoritative, including when the broadcast receiver has lagged.
 
-use super::{RuntimeError, Sessions};
+use super::{RuntimeError, RuntimeHandle};
 use crate::db::EventRange;
 use crate::{
-    agents::session_manager::EXECUTION_FAILURE_MESSAGE, components::cancellation::Cancellation,
+    agents::supervisor::EXECUTION_FAILURE_MESSAGE, components::cancellation::Cancellation,
 };
 use psa::api::{AgentId, AgentState, ResultRecord, SessionId, StreamMessage, events::*};
 use tokio::sync::broadcast;
 
-impl Sessions {
+impl RuntimeHandle {
     /// Wait for the newest durable result strictly after `after` in this agent's
     /// logical history. `None` accepts an existing result, including fork ancestry.
     /// Capture the agent's last event ID before submitting work to exclude stale
@@ -105,14 +105,14 @@ impl Sessions {
         after: EventId,
         request_failed: bool,
     ) -> Result<Option<ResultRecord>, RuntimeError> {
-        let mut cursor = self.database.cursor().await?;
+        let mut cursor = self.database.read().await?;
         let snapshot = cursor.require_agent_session(session, agent).await?;
         let result = cursor
             .load_last_result(session, agent)
             .await?
             .filter(|result| result.event_id > after);
         if result.is_some() {
-            cursor.rollback().await?;
+            cursor.close().await?;
             return Ok(result);
         }
 
@@ -151,7 +151,7 @@ impl Sessions {
                 }
             }
         }
-        cursor.rollback().await?;
+        cursor.close().await?;
         Ok(None)
     }
 }

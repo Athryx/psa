@@ -1,10 +1,10 @@
 //! Trusted-client HTTP/SSE API. Transcript mutations share the publication gate.
 
-use crate::db::{DatabaseCursor, EventRange};
+use crate::db::{EventRange, ReadCursor};
 use crate::{
     agents::{
-        client_queries::ClientQueryError, publication::Publication, session_manager::RuntimeError,
-        sessions::Sessions,
+        client_queries::ClientQueryError, publication::Publication, runtime_handle::RuntimeHandle,
+        supervisor::RuntimeError,
     },
     db::{Database, DbError},
 };
@@ -76,7 +76,7 @@ impl<S: Send + Sync, T: serde::de::DeserializeOwned + Send> axum::extract::FromR
 pub struct AppState {
     pub database: Database,
     pub publication: Publication,
-    pub runtime: Sessions,
+    pub runtime: RuntimeHandle,
     pub accepting: Arc<AtomicBool>,
     pub probes: crate::probes::ProbeRegistry,
     pub client_key: Arc<str>,
@@ -211,7 +211,7 @@ pub fn router(state: AppState) -> Router {
             routes::AGENT_CONFIGS,
             post(upsert_agent_configs).get(list_agent_configs),
         )
-        .route(routes::AGENT_CONFIG_LOOKUP, post(get_agent_config))
+        .route(routes::AGENT_CONFIG_LOOKUP, get(get_agent_config))
         .route(routes::AGENT_SNAPSHOT, get(get_resolved_agent_config))
         .route(
             routes::SKILLS,
@@ -375,8 +375,9 @@ async fn refresh_configs(
 
 async fn get_agent_config(
     State(state): State<AppState>,
-    ApiJson(id): ApiJson<api::ConfigId>,
+    ApiQuery(lookup): ApiQuery<api::ConfigLookup>,
 ) -> Result<Json<api::AgentConfigStatus>, HttpError> {
+    let id = api::ConfigId::try_from(lookup).map_err(HttpError::Invalid)?;
     Ok(Json(state.runtime.get_agent_config(id).await?))
 }
 
@@ -460,9 +461,9 @@ async fn list_sessions(
         .transpose()?;
 
     let publication = state.publication.lock().await;
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let mut sessions = cursor.query_sessions(&query, before).await?;
-    cursor.rollback().await?;
+    cursor.close().await?;
 
     let more = sessions.len() > query.limit as usize;
     sessions.truncate(query.limit as usize);
@@ -498,9 +499,9 @@ async fn list_sessions(
 async fn list_projects(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<api::ProjectId>>, HttpError> {
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let projects = cursor.list_projects().await?;
-    cursor.rollback().await?;
+    cursor.close().await?;
     Ok(Json(projects))
 }
 
@@ -623,7 +624,7 @@ async fn get_agent_context_state(
     State(state): State<AppState>,
     ApiPath((session, agent)): ApiPath<(u64, u64)>,
 ) -> Result<Json<api::AgentContextState>, HttpError> {
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let status = cursor
         .load_agent_context_state(SessionId(session), AgentId(agent))
         .await?;
@@ -634,7 +635,7 @@ async fn get_agent_model_usage(
     State(state): State<AppState>,
     ApiPath((session, agent)): ApiPath<(u64, u64)>,
 ) -> Result<Json<Vec<api::ModelUsage>>, HttpError> {
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let usage = cursor
         .load_agent_model_usage(SessionId(session), AgentId(agent))
         .await?;
@@ -744,7 +745,7 @@ async fn load_page(
         ));
     }
 
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let page = match query.span {
         api::EventSpan::Latest => {
             load_backward_page(&mut cursor, session, agent, None, query).await?
@@ -770,12 +771,12 @@ async fn load_page(
             load_forward_page(&mut cursor, session, agent, after, Some(through), query).await?
         }
     };
-    cursor.rollback().await?;
+    cursor.close().await?;
     Ok(page)
 }
 
 async fn load_head(
-    cursor: &mut DatabaseCursor,
+    cursor: &mut ReadCursor,
     session: SessionId,
     agent: Option<AgentId>,
 ) -> Result<u64, HttpError> {
@@ -793,7 +794,7 @@ async fn load_head(
 }
 
 async fn load_recent_events(
-    cursor: &mut DatabaseCursor,
+    cursor: &mut ReadCursor,
     session: SessionId,
     agent: Option<AgentId>,
     through: u64,
@@ -816,7 +817,7 @@ async fn load_recent_events(
 
 /// The newest page ending before `before`, or at the head.
 async fn load_backward_page(
-    cursor: &mut DatabaseCursor,
+    cursor: &mut ReadCursor,
     session: SessionId,
     agent: Option<AgentId>,
     before: Option<u64>,
@@ -861,7 +862,7 @@ async fn load_backward_page(
 
 /// Events after `after`, up to `through` or the head.
 async fn load_forward_page(
-    cursor: &mut DatabaseCursor,
+    cursor: &mut ReadCursor,
     session: SessionId,
     agent: Option<AgentId>,
     after: u64,
@@ -1173,7 +1174,7 @@ mod desktop_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::{NewAgent, session_manager::Runtime};
+    use crate::agents::{NewAgent, supervisor::Runtime};
     use crate::{providers::ProviderRegistry, sessions};
 
     #[test]
@@ -1260,7 +1261,7 @@ mod tests {
             ("GET", routes::CONFIG),
             ("GET", routes::AGENT_CONFIGS),
             ("POST", routes::AGENT_CONFIGS),
-            ("POST", routes::AGENT_CONFIG_LOOKUP),
+            ("GET", routes::AGENT_CONFIG_LOOKUP),
             ("GET", routes::AGENT_SNAPSHOT),
             ("GET", routes::SKILLS),
             ("POST", routes::SKILLS),
@@ -1344,14 +1345,15 @@ mod tests {
         let probes = crate::probes::ProbeRegistry::start("test".into());
         let defaults = crate::config::AgentDefaults {
             bundles: vec![
+                api::BundleConfig::Startup {
+                    base_prompt: true,
+                    project_context: false,
+                    cwd: false,
+                    skills: false,
+                },
                 api::BundleConfig::FileTools { read_only: false },
-                api::BundleConfig::Noop,
+                api::BundleConfig::StopWithoutTools,
             ],
-            hooks: api::HookConfigs {
-                agent_create: vec![api::HookConfig::DefaultStartup],
-                after_request: vec![api::HookConfig::StopWithoutTools],
-                ..Default::default()
-            },
         };
         let runtime = Runtime::start_with_configuration(
             db.clone(),
@@ -1444,7 +1446,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(inherited[0].config.bundles, defaults.bundles);
-        assert_eq!(inherited[0].config.hooks, defaults.hooks);
 
         let http = reqwest::Client::new();
         let response = http
@@ -1453,8 +1454,7 @@ mod tests {
             .json(&serde_json::json!([{
                 "config_id": inherited_id,
                 "models": ["Global"],
-                "bundles": [],
-                "hooks": {"agent_create": []}
+                "bundles": []
             }]))
             .send()
             .await
@@ -1462,25 +1462,24 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let explicit: Vec<api::AgentConfigStatus> = response.json().await.unwrap();
         assert!(explicit[0].config.bundles.is_empty());
-        assert!(explicit[0].config.hooks.agent_create.is_empty());
-        assert_eq!(
-            explicit[0].config.hooks.after_request,
-            defaults.hooks.after_request
-        );
-        assert_eq!(
+        assert!(
             client
                 .get_agent_config(&inherited_id)
                 .await
                 .unwrap()
                 .config
-                .hooks,
-            explicit[0].config.hooks
+                .bundles
+                .is_empty()
         );
 
-        for tools in [serde_json::json!([]), serde_json::json!(["Noop"])] {
+        for (field, value) in [
+            ("tools", serde_json::json!([])),
+            ("tools", serde_json::json!(["Noop"])),
+            ("hooks", serde_json::json!({})),
+        ] {
             let response = http.post(format!("{base}/agent-configs"))
                 .bearer_auth("test-client-key")
-                .json(&serde_json::json!([{"config_id": inherited_id, "models": ["Global"], "tools": tools}]))
+                .json(&serde_json::json!([{"config_id": inherited_id, "models": ["Global"], field: value}]))
                 .send().await.unwrap();
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
@@ -1522,7 +1521,7 @@ mod tests {
             .await
             .unwrap();
         crate::test_support::register_probe(&db).await;
-        let mut cursor = db.cursor().await.unwrap();
+        let mut cursor = db.write().await.unwrap();
         let session = cursor
             .create_session(sessions::NewSession {
                 decision_model: None,

@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, name, description, selectable, model_config, skills, permitted_subagents, bundles FROM agent_definitions WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "description",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "name": "selectable",
+        "ordinal": 3,
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "selectable"
+          }
+        }
+      },
+      {
+        "name": "model_config",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "model_config"
+          }
+        }
+      },
+      {
+        "name": "skills",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "skills"
+          }
+        }
+      },
+      {
+        "name": "permitted_subagents",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "permitted_subagents"
+          }
+        }
+      },
+      {
+        "name": "bundles",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_definitions",
+            "name": "bundles"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5baa71fd07344694c618fdfbb9455ce705da4a4284e3d8f87403e35b51bfc92d"
+}

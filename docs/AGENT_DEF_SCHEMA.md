@@ -25,7 +25,7 @@ in `runtime/psa_server/src/db/configurations.rs`.
 | --- | --- | --- | --- |
 | `POST /agent-configs` | JSON array of `AgentConfigInput` | `Vec<AgentConfigStatus>` | `upsert_agent_configs(&[I])` (`I: Clone + Into<AgentConfigInput>`) |
 | `GET /agent-configs` | none | `Vec<AgentConfigStatus>` | `list_agent_configs()` |
-| `POST /agent-configs/lookup` | `ConfigId` JSON body | `AgentConfigStatus` | `get_agent_config(&ConfigId)` |
+| `GET /agent-configs/lookup` | `ConfigLookup` query (flattened `ConfigId`) | `AgentConfigStatus` | `get_agent_config(&ConfigId)` |
 | `GET /agent-snapshots/{definition_id}` | Internal snapshot ID | `ResolvedAgentConfig` (404 if unknown) | `get_resolved_agent_config(AgentDefinitionId)` |
 | `POST /skills` | `NewSkill` JSON body | `Skill` (201) | `upload_skill(&NewSkill)` |
 | `GET /skills` | none | `Vec<Skill>` | `list_skills()` |
@@ -57,6 +57,9 @@ enum ConfigGroup {
     Custom(String),
     Global,
     Project { path: String, probe_id: ProbeId },
+    // Placeholder for the creating session's `.agents` group; only valid in
+    // `IncludedItems::groups`.
+    Session,
 }
 struct IncludedItems { groups: Vec<ConfigGroup>, items: Vec<ConfigId> }
 
@@ -66,7 +69,6 @@ struct AgentConfig {
     description: String,
     selectable: bool,
     bundles: Vec<BundleConfig>,
-    hooks: HookConfigs,
     models: Vec<ModelSelection>,
     default: bool,
     subagents: IncludedItems,
@@ -80,22 +82,15 @@ enum ModelSelection {
 enum EffortSelection { Fixed(Effort), Parent, Global }
 
 enum BundleConfig {
-    Noop, Bash, Subagents,
+    Bash, Subagents, CodeMode, Traces, StopWithoutTools,
+    Startup { base_prompt: bool, project_context: bool, cwd: bool, skills: bool },
+    ExtraSystemPrompt { prompt: String },
     FileTools { read_only: bool },
     Goal { interactive_only: bool },
     AskQuestion { interactive_only: bool },
     TypedResult { schema: ToolSchema, max_retries: u32 },
-}
-enum HookConfig {
-    Noop, StopWithoutTools, DefaultStartup, ToolDefinitions, Cwd, Skills,
-    ExtraSystemPrompt { prompt: String }, ProjectContext, SessionModelUpdate,
+    DecisionModels { models: Vec<DecisionModelSelection>, first_model_default: bool },
     Compaction { reserve_tokens: u64, keep_recent_tokens: u64, context_window: Option<u64> },
-}
-struct HookConfigs {
-    agent_create: Vec<HookConfig>,
-    session_update: Vec<HookConfig>,
-    before_request: Vec<HookConfig>,
-    after_request: Vec<HookConfig>,
 }
 
 struct Skill {
@@ -130,10 +125,11 @@ its name must match `config_id.name`. `disable-model-invocation` is preserved.
 
 ### Component construction configurations
 
-All tools are installed by bundles: there is no standalone tool configuration
-or `tools` field on agent configs, stored definitions, or server defaults.
+All tools and hooks are installed by bundles: there is no standalone tool or
+hook configuration, and no `tools` or `hooks` field on agent configs, stored
+definitions, or server defaults.
 `ToolId` remains a tool identity enum, not a construction selector.
-`Noop` is a unit bundle installing the Noop tool. `FileTools { read_only }`
+`FileTools { read_only }`
 requires a payload: `{"FileTools":{"read_only":true}}` installs only Read;
 false or omission inside the payload installs Read, Edit, and Write.
 Bare `"FileTools"` is invalid. TOML uses
@@ -153,8 +149,8 @@ persistence, and continuation policy even for noninteractive agents when false.
 `TypedResult { schema, max_retries }` installs a sequential JSON result tool and
 completion hook. The schema is a raw, explicit object-root `ToolSchema` (Draft
 2020-12, local references only); retries default to three. It is incompatible
-with Goal and `StopWithoutTools`, including default-inherited hooks. Override
-`hooks.after_request` with `[]` to disable an inherited ordinary completion hook.
+with Goal and the `StopWithoutTools` bundle, including default-inherited
+bundles; an explicit bundle list replaces the defaults.
 See [durable results](AGENT_RESULTS.md) for validation, retry limits, typed
 configuration helpers, and retrieval.
 `DecisionModels { models, first_model_default }` installs the help-only CodeMode
@@ -172,28 +168,39 @@ duration. A session runs at most
 `[decisions] max_concurrent_calls` (server `config.toml`, default 8) calls at
 once; further calls queue until a slot frees.
 
-`HookConfigs` contains four ordered `Vec<HookConfig>` stages. Unit hook and bundle
-variants remain JSON/TOML strings. The `ExtraSystemPrompt` hook instead carries
-its own prompt; there is no agent/config `extra_system_prompt` field:
+`Startup { base_prompt, project_context, cwd, skills }` initializes a new root
+agent: on creation it starts the context with its model and, with
+`base_prompt`, the base assistant instructions, publishes the installed tool
+definitions, and then, when enabled, loads project instructions from the
+working directory hierarchy, adds the working directory, and loads the skill
+catalogue. Forks keep their inherited startup and tool definitions but rerun
+the enabled optional context. It also follows session model updates unless the
+definition pins its model. All four flags default to true (`{"Startup":{}}`);
+bare `"Startup"` is invalid. Bundles install, and their hooks run, in list
+order. List `Startup` first: its `NewContext` clears context written at
+creation by any bundle listed before it.
+
+`StopWithoutTools` is the ordinary completion policy: stop after a response
+without tool calls. `ExtraSystemPrompt { prompt }` owns its prompt and adds it
+as a system message on creation; there is no agent/config `extra_system_prompt`
+field:
 
 ```json
-{"hooks":{"agent_create":["DefaultStartup",{"ExtraSystemPrompt":{"prompt":"Follow the project conventions."}},"ToolDefinitions"]}}
+{"bundles":[{"Startup":{"cwd":false}},{"ExtraSystemPrompt":{"prompt":"Follow the project conventions."}},"StopWithoutTools"]}
 ```
 
-The equivalent file hook stage is:
+The equivalent TOML is:
 
 ```toml
-[hooks]
-agent_create = ["DefaultStartup", { ExtraSystemPrompt = { prompt = "Follow the project conventions." } }, "ToolDefinitions"]
+bundles = [{ Startup = { cwd = false } }, { ExtraSystemPrompt = { prompt = "Follow the project conventions." } }, "StopWithoutTools"]
 ```
 
-`Compaction {}` runs only in `before_request`, defaulting to a 16384-token
-reserve and 20000 recent tokens. Generated server defaults enable it; see
-[compaction](COMPACTION.md) for hidden summarizer agents and replay semantics.
+`Compaction {}` defaults to a 16384-token reserve and 20000 recent tokens.
+Generated server defaults enable it; see [compaction](COMPACTION.md) for hidden
+summarizer agents and replay semantics.
 
-Prompt hooks are opt-in; ordinary startup lists omit `ExtraSystemPrompt` unless
-an explicit prompt payload is provided. Definitions, defaults, API input, and
-TOML discovery all store construction configurations rather than identity IDs.
+Each bundle may appear once. Definitions, defaults, API input, and TOML
+discovery all store construction configurations rather than identity IDs.
 
 ### Batch JSON example
 
@@ -227,25 +234,17 @@ The server's `config.toml` can supply fallbacks shared by TOML files and API inp
 
 ```toml
 [agent_defaults]
-bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents"]
-
-[agent_defaults.hooks]
-agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
-after_request = ["StopWithoutTools"]
+bundles = [{ Startup = {} }, { FileTools = { read_only = false } }, "Bash", "Subagents", "StopWithoutTools"]
 ```
 
-An omitted `bundles` field inherits its entire configured default
-list; an explicit list replaces it, and `[]` disables it. Hook stages inherit
-independently: omitted `hooks.after_request` inherits, while
-`hooks.after_request = []` disables that stage without affecting other stages.
-An omitted `[agent_defaults]` means all fallback lists are empty. Defaults are
-not appended to explicit lists.
+An omitted `bundles` field inherits the entire configured default list; an
+explicit list replaces it, and `[]` disables it. An omitted `[agent_defaults]`
+means the fallback list is empty. Defaults are not appended to explicit lists.
 
-`AgentConfigInput` represents `bundles` as `Option<Vec<BundleConfig>>` and `hooks` as
-`HookOverrides` whose four stages are `Option<Vec<HookConfig>>`.
-`AgentConfigInput::new(config_id, models)` leaves components omitted, inheriting
-server defaults. Converting a normalized `AgentConfig` into input makes every
-component list explicit, including empty lists; resubmitting a returned config
+`AgentConfigInput` represents `bundles` as `Option<Vec<BundleConfig>>`.
+`AgentConfigInput::new(config_id, models)` leaves bundles omitted, inheriting
+server defaults. Converting a normalized `AgentConfig` into input makes the
+bundle list explicit, even when empty; resubmitting a returned config
 therefore does not unexpectedly inherit defaults.
 
 Defaults resolve at API registration or file refresh, not at agent execution.
@@ -290,7 +289,7 @@ file refresh resolves omitted fields again. Existing snapshots never change.
 
 `AgentDefinitionConfig` is the loader type, lowered to `AgentConfig`. Its group
 comes from discovery and is not repeated in the file. Ordinary agent fields
-match API input, including omission-aware components and per-stage hooks; both
+match API input, including the omission-aware bundle list; both
 loaders normalize against the same server defaults. The file-specific inclusion
 tables are:
 
@@ -310,9 +309,11 @@ struct SkillInclusionsConfig {
 
 - Both inclusion booleans default to `true`, including when their table is
   omitted. `global_defaults` includes `ConfigGroup::Global`; `group_defaults`
-  includes the defining config's own group (for a global config, Global again).
-  Inclusion never reaches across groups, so a global config does not include a
-  session's `.agents` items. Group-wide subagent inclusion excludes the defining
+  includes the defining config's own group. For a global config, that is Global
+  followed by `ConfigGroup::Session`, which at agent creation stands for the
+  session's discovered `.agents` group, so project items override global ones
+  by name. Named items still resolve only in the own group, then
+  Global. Group-wide subagent inclusion excludes the defining
   agent itself; explicit self references and cycles remain supported.
 - Included groups are applied in order, with later groups overriding earlier
   groups by name. Explicit items override group selections last, even when an
@@ -348,10 +349,8 @@ For session/global inheritance alone, omit `models` or write `models = ["Global"
 `Effort` variants (`Off`, `Minimal`, `Low`, `Medium`, `High`, `Xhigh`, `Max`);
 inherited effort can instead be `effort = "Parent"` or `effort = "Global"` inside
 `Fixed`. Other optional file fields include `description`, `selectable`,
-`bundles` and `[hooks]`; hooks contain the
-`agent_create`, `session_update`, `before_request`, and `after_request` arrays.
-Omitted component fields inherit `[agent_defaults]`; for example, `bundles = []`
-and `[hooks]` with `after_request = []` explicitly disable those defaults.
+and `bundles`. An omitted `bundles` inherits `[agent_defaults]`; `bundles = []`
+explicitly disables the defaults.
 
 ## Creation-time model choice
 
@@ -422,7 +421,7 @@ These fields have distinct purposes:
 
 - `config` preserves source identity, model policies, and inclusion requests.
 - `definition` is the existing internal executable snapshot. It contains `id`,
-  `previous_version_id`, `version`, `name`, ordinary executable fields,
+  `name`, ordinary executable fields,
   `model_config: Option<ModelConfig>`, `skills: Vec<PathBuf>` (materialized
   probe-local `SKILL.md` paths), and
   `permitted_subagents: Vec<AgentDefinitionId>`. Its `skills` are **paths**, not

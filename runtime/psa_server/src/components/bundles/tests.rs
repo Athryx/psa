@@ -1,10 +1,7 @@
 use super::{testing::*, *};
 use crate::{
     agents::AgentState,
-    components::{
-        hooks::{HookConfig, HookConfigs},
-        tools::{ExecutionMode, Read, Tool, ToolId},
-    },
+    components::tools::{ExecutionMode, Read, Tool, ToolId},
 };
 use llm_api::api::Usage;
 use psa::api::{AgentDefinitionId, AgentId, SessionId, events::EventId};
@@ -19,7 +16,7 @@ fn snapshots() -> (Agent, Session) {
         id: AgentId(1),
         session_id: SessionId(1),
         definition_id: AgentDefinitionId(1),
-        parent_id: None,
+        forked_from: None,
         subagent_parent_id: None,
         first_event_id: EventId(1),
         next_event_id: EventId(1),
@@ -33,7 +30,7 @@ fn snapshots() -> (Agent, Session) {
     let session = Session {
         decision_model: None,
         id: agent.session_id,
-        parent_id: None,
+        forked_from: None,
         first_position: 1,
         next_position: 1,
         name: "bundles".into(),
@@ -50,13 +47,10 @@ fn snapshots() -> (Agent, Session) {
 fn definition() -> AgentDefinition {
     AgentDefinition {
         id: AgentDefinitionId(1),
-        previous_version_id: None,
-        version: 1,
         name: "bundles".into(),
         description: String::new(),
         selectable: false,
         bundles: Vec::new(),
-        hooks: HookConfigs::default(),
         model: Default::default(),
         skills: Vec::new(),
         permitted_subagents: Vec::new(),
@@ -82,9 +76,8 @@ async fn bundle_order_and_empty_component_configuration_are_preserved() {
     let mut definition = definition();
     definition.bundles = vec![
         BundleConfig::FileTools { read_only: false },
-        BundleConfig::Noop,
+        BundleConfig::StopWithoutTools,
     ];
-    definition.hooks.before_request = vec![HookConfig::Noop, HookConfig::Noop];
     let mut components = InstalledComponents::install(&definition, &agent, &session)
         .await
         .unwrap();
@@ -94,12 +87,67 @@ async fn bundle_order_and_empty_component_configuration_are_preserved() {
             .iter()
             .map(ToolKind::id)
             .collect::<Vec<_>>(),
-        [ToolId::Read, ToolId::Edit, ToolId::Write, ToolId::Noop]
+        [ToolId::Read, ToolId::Edit, ToolId::Write]
     );
-    assert_eq!(components.hooks.before_request.len(), 2);
+    assert!(matches!(
+        components.hooks.after_request.as_slice(),
+        [HookKind::StopWithoutTools(_)]
+    ));
     components.cleanup().await.unwrap();
     assert!(components.tools.is_empty());
-    assert!(components.hooks.before_request.is_empty());
+    assert!(components.hooks.after_request.is_empty());
+}
+
+#[tokio::test]
+async fn creation_hooks_keep_bundle_list_order() {
+    let (agent, session) = snapshots();
+    let mut definition = definition();
+    definition.bundles = vec![
+        BundleConfig::Startup {
+            base_prompt: true,
+            project_context: true,
+            cwd: true,
+            skills: true,
+        },
+        BundleConfig::ExtraSystemPrompt {
+            prompt: "Extra".into(),
+        },
+    ];
+    let mut components = InstalledComponents::install(&definition, &agent, &session)
+        .await
+        .unwrap();
+    assert!(matches!(
+        components.hooks.agent_create.as_slice(),
+        [
+            HookKind::DefaultStartup(_),
+            HookKind::ToolDefinitions(_),
+            HookKind::ProjectContext(_),
+            HookKind::Cwd(_),
+            HookKind::Skills(_),
+            HookKind::ExtraSystemPrompt(_),
+        ]
+    ));
+    assert!(matches!(
+        components.hooks.session_update.as_slice(),
+        [HookKind::SessionModelUpdate(_)]
+    ));
+    assert!(components.hooks.after_request.is_empty());
+    components.cleanup().await.unwrap();
+
+    definition.bundles = vec![BundleConfig::Startup {
+        base_prompt: true,
+        project_context: false,
+        cwd: false,
+        skills: false,
+    }];
+    let mut components = InstalledComponents::install(&definition, &agent, &session)
+        .await
+        .unwrap();
+    assert!(matches!(
+        components.hooks.agent_create.as_slice(),
+        [HookKind::DefaultStartup(_), HookKind::ToolDefinitions(_)]
+    ));
+    components.cleanup().await.unwrap();
 }
 
 #[tokio::test]
@@ -229,7 +277,7 @@ async fn duplicate_bundle_ids_are_rejected_even_with_different_payloads() {
         .err()
         .unwrap();
     assert!(error.message.contains("duplicate bundle ID"));
-    definition.bundles = vec![BundleConfig::Noop, BundleConfig::Noop];
+    definition.bundles = vec![BundleConfig::Bash, BundleConfig::Bash];
     assert!(
         InstalledComponents::install(&definition, &agent, &session)
             .await
@@ -286,7 +334,7 @@ fn duplicate_api_names_are_rejected_independently_of_id() {
     let error = installer
         .add_tool(ToolKind::BundleProbe(SharedTool {
             state,
-            id: ToolId::Noop,
+            id: ToolId::Edit,
             name: "read".into(),
         }))
         .unwrap_err();
@@ -379,7 +427,6 @@ async fn cleanup_is_reverse_order_continues_after_failures_and_is_idempotent() {
         vec![
             probe("ok", &state, CleanupBehavior::Ok),
             probe("error", &state, CleanupBehavior::Error),
-            probe("panic", &state, CleanupBehavior::Panic),
             probe("timeout", &state, CleanupBehavior::Pending),
         ],
         &agent,
@@ -393,33 +440,24 @@ async fn cleanup_is_reverse_order_continues_after_failures_and_is_idempotent() {
             .iter()
             .map(|error| error.bundle.as_str())
             .collect::<Vec<_>>(),
-        ["timeout", "panic", "error"]
+        ["timeout", "error"]
     );
     assert!(matches!(
         errors[0].kind,
         CleanupFailureKind::TimedOut { .. }
     ));
-    assert!(matches!(
-        errors[1].kind,
-        CleanupFailureKind::Panicked { .. }
-    ));
-    assert!(matches!(errors[2].kind, CleanupFailureKind::Failed { .. }));
+    assert!(matches!(errors[1].kind, CleanupFailureKind::Failed { .. }));
     let events = state.events();
     assert_eq!(
-        &events[..4],
-        [
-            "cleanup:timeout",
-            "cleanup:panic",
-            "cleanup:error",
-            "cleanup:ok"
-        ]
+        &events[..3],
+        ["cleanup:timeout", "cleanup:error", "cleanup:ok"]
     );
     assert_eq!(
         events
             .iter()
             .filter(|event| event.starts_with("drop:"))
             .count(),
-        4
+        3
     );
     components.cleanup().await.unwrap();
     assert_eq!(state.events(), events);
@@ -460,26 +498,6 @@ async fn rollback_retains_primary_failure_and_cleans_the_failing_owner() {
             "drop:failing"
         ]
     );
-    assert_eq!(Arc::strong_count(&state), 1);
-}
-
-#[tokio::test]
-async fn synchronous_install_panic_rolls_back_partial_components() {
-    let (agent, session) = snapshots();
-    let state = Arc::new(ProbeState::default());
-    let mut failing = ProbeBundle::new("panic", state.clone());
-    failing.components = true;
-    failing.install = InstallBehavior::Panic;
-    let error = install_owned(vec![BundleKind::Probe(failing)], &agent, &session)
-        .await
-        .err()
-        .unwrap();
-    assert!(
-        error
-            .message
-            .contains("installation panicked: install:panic")
-    );
-    assert!(state.events().contains(&"cleanup:panic".into()));
     assert_eq!(Arc::strong_count(&state), 1);
 }
 

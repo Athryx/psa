@@ -26,7 +26,7 @@ impl RenderCounters {
 
 fn pending(id: usize) -> PendingEvent {
     PendingEvent {
-        id: format!("{id:06}"),
+        id: format!("{id:06}").into(),
         revision: 1,
         session_id: SessionId(1),
         agent_id: AgentId(1),
@@ -106,7 +106,7 @@ fn follow_window_stays_bounded_during_ten_thousand_appends() {
         assert!(rows.len() <= WINDOW_ROWS);
         assert_eq!(
             rows.last().unwrap().id(),
-            RowId::Pending(format!("{id:06}"))
+            RowId::Pending(format!("{id:06}").into())
         );
     }
 }

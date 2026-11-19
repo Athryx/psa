@@ -24,9 +24,11 @@ mod file_tools;
 mod hidden;
 mod interactive;
 mod models;
+mod remove_noop;
 mod reset_codemode_definition;
 mod results;
 mod subagents;
+mod unversioned_definitions;
 mod usage;
 
 async fn fixture() -> (tempfile::TempDir, Database, Session, Agent) {
@@ -35,7 +37,7 @@ async fn fixture() -> (tempfile::TempDir, Database, Session, Agent) {
         .await
         .unwrap();
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let session = cursor
         .create_session(NewSession {
             decision_model: None,
@@ -116,7 +118,7 @@ fn native() -> HistoryItem {
 #[tokio::test]
 async fn round_trips_all_payloads_and_reopens_database() {
     let (dir, db, session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let mut kinds = vec![
         EventType::Model(model()),
         EventType::NewContext,
@@ -131,7 +133,7 @@ async fn round_trips_all_payloads_and_reopens_database() {
             metadata: HistoryItemMetadata::default(),
         }),
         EventType::ProviderItem(native()),
-        EventType::ToolDefinition(ToolDefinition::for_tool(ToolId::Noop).unwrap()),
+        EventType::ToolDefinition(ToolDefinition::for_tool(ToolId::ListSessions).unwrap()),
         EventType::ToolCall(ToolCall {
             call_id: "call".into(),
             tool_name: "noop".into(),
@@ -270,7 +272,7 @@ async fn round_trips_all_payloads_and_reopens_database() {
         .await
         .unwrap();
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let loaded = cursor
         .load_events(agent.id, EventRange::default())
         .await
@@ -302,7 +304,7 @@ async fn round_trips_all_payloads_and_reopens_database() {
 #[tokio::test]
 async fn failed_batch_rolls_back_payloads_and_both_allocators() {
     let (_dir, db, session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let before = cursor.get_session(session.id).await.unwrap().next_position;
     let bad = NewEvent::new(EventType::InferenceResultEnd(InferenceResultEnd {
         id: 1,
@@ -368,7 +370,7 @@ async fn failed_batch_rolls_back_payloads_and_both_allocators() {
 #[tokio::test]
 async fn event_batches_update_the_current_agent_state() {
     let (dir, db, session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     assert_eq!(agent.state, AgentState::Idle);
     let result: super::AddEventResult = cursor
         .add_events(
@@ -462,7 +464,7 @@ async fn event_batches_update_the_current_agent_state() {
         .await
         .unwrap();
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     assert_eq!(
         cursor.get_agent(agent.id).await.unwrap().state,
         AgentState::Running
@@ -480,7 +482,7 @@ async fn event_batches_update_the_current_agent_state() {
 #[tokio::test]
 async fn forks_inherit_state_at_the_selected_event_boundary() {
     let (_dir, db, session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let empty = cursor
         .create_agent(
             session.id,
@@ -521,13 +523,13 @@ async fn forks_inherit_state_at_the_selected_event_boundary() {
     let child = fork
         .agents
         .iter()
-        .find(|copy| copy.parent_id == Some(agent.id))
+        .find(|copy| copy.forked_from == Some(agent.id))
         .unwrap()
         .clone();
     let empty_child = fork
         .agents
         .iter()
-        .find(|agent| agent.parent_id == Some(empty.id))
+        .find(|agent| agent.forked_from == Some(empty.id))
         .unwrap();
     assert_eq!(child.state, AgentState::Running);
     assert_eq!(empty_child.state, AgentState::Idle);
@@ -572,7 +574,7 @@ async fn forks_inherit_state_at_the_selected_event_boundary() {
     let head_child = head
         .agents
         .iter()
-        .find(|copy| copy.parent_id == Some(agent.id))
+        .find(|copy| copy.forked_from == Some(agent.id))
         .unwrap();
     assert_eq!(head_child.state, AgentState::Interrupted);
     assert_eq!(
@@ -587,7 +589,7 @@ async fn concurrent_state_changes_match_the_committed_event_order() {
     let append = |state| {
         let db = db.clone();
         async move {
-            let mut cursor = db.cursor().await.unwrap();
+            let mut cursor = db.write().await.unwrap();
             let saved = cursor
                 .add_events(agent.id, &[state_change(state)])
                 .await
@@ -602,7 +604,7 @@ async fn concurrent_state_changes_match_the_committed_event_order() {
         append(AgentState::Idle)
     );
 
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     let events = cursor
         .load_events(agent.id, EventRange::default())
         .await
@@ -619,7 +621,7 @@ async fn concurrent_state_changes_match_the_committed_event_order() {
 #[tokio::test]
 async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_forks() {
     let (_dir, db, session, a) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let b = cursor
         .create_agent(
             session.id,
@@ -683,19 +685,19 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
     let child_a = fork
         .agents
         .iter()
-        .find(|agent| agent.parent_id == Some(a.id))
+        .find(|agent| agent.forked_from == Some(a.id))
         .unwrap()
         .clone();
     let child_b = fork
         .agents
         .iter()
-        .find(|agent| agent.parent_id == Some(b.id))
+        .find(|agent| agent.forked_from == Some(b.id))
         .unwrap()
         .clone();
     let child_empty = fork
         .agents
         .iter()
-        .find(|agent| agent.parent_id == Some(empty.id))
+        .find(|agent| agent.forked_from == Some(empty.id))
         .unwrap()
         .clone();
     assert_eq!(
@@ -747,12 +749,12 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
     let nested_a = nested
         .agents
         .iter()
-        .find(|agent| agent.parent_id == Some(child_a.id))
+        .find(|agent| agent.forked_from == Some(child_a.id))
         .unwrap();
     let nested_b = nested
         .agents
         .iter()
-        .find(|agent| agent.parent_id == Some(child_b.id))
+        .find(|agent| agent.forked_from == Some(child_b.id))
         .unwrap();
     let page = cursor
         .load_events(nested_a.id, EventRange::default())
@@ -835,7 +837,7 @@ async fn whole_session_forks_freeze_all_streams_and_support_older_inherited_fork
 #[tokio::test]
 async fn concurrent_writers_reserve_unique_positions_and_sequences() {
     let (_dir, db, session, a) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let b = cursor
         .create_agent(
             session.id,
@@ -854,7 +856,7 @@ async fn concurrent_writers_reserve_unique_positions_and_sequences() {
         let db = db.clone();
         async move {
             for _ in 0..8 {
-                let mut cursor = db.cursor().await.unwrap();
+                let mut cursor = db.write().await.unwrap();
                 cursor
                     .add_events(agent, &[log("batch"), log("batch")])
                     .await
@@ -864,7 +866,7 @@ async fn concurrent_writers_reserve_unique_positions_and_sequences() {
         }
     };
     tokio::join!(append(a.id), append(a.id), append(b.id));
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let a_events = cursor
         .load_events(a.id, EventRange::default())
         .await
@@ -890,7 +892,7 @@ async fn concurrent_writers_reserve_unique_positions_and_sequences() {
 #[tokio::test]
 async fn missing_payload_and_invalid_numbers_are_reported() {
     let (_dir, db, _session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor.add_events(agent.id, &[log("test")]).await.unwrap();
     sqlx::query("DELETE FROM event_log")
         .execute(cursor.connection())
@@ -930,7 +932,7 @@ async fn missing_payload_and_invalid_numbers_are_reported() {
 #[tokio::test]
 async fn sqlite_enforces_payload_kind_and_failed_forks_leave_no_children() {
     let (_dir, db, session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor.add_events(agent.id, &[log("test")]).await.unwrap();
     let pk: i64 = sqlx::query_scalar("SELECT event_pk FROM events LIMIT 1")
         .fetch_one(cursor.connection())
@@ -1039,7 +1041,7 @@ async fn backfills_agent_states_from_bounded_legacy_history() {
 
     let db = Database::open(&path).await.unwrap();
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     for (id, expected) in [
         (1, AgentState::Interrupted),
         (2, AgentState::Idle),
@@ -1063,7 +1065,7 @@ async fn backfills_agent_states_from_bounded_legacy_history() {
     db.close().await;
     let db = Database::open(&path).await.unwrap();
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     assert_eq!(
         cursor
             .get_agent(crate::agents::AgentId(3))
@@ -1100,7 +1102,7 @@ async fn upgrades_legacy_delimiters_and_backfills_inherited_model_snapshots() {
 
     let db = Database::open(&path).await.unwrap();
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let events = cursor
         .load_events(crate::agents::AgentId(2), EventRange::default())
         .await
@@ -1150,7 +1152,7 @@ async fn upgrades_legacy_tool_results_to_content_blocks() {
 
     let db = Database::open(&path).await.unwrap();
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let events = cursor
         .load_events(crate::agents::AgentId(1), EventRange::default())
         .await
@@ -1220,7 +1222,7 @@ async fn upgrades_legacy_messages_to_content_blocks() {
 
     let db = Database::open(&path).await.unwrap();
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let events = cursor
         .load_events(crate::agents::AgentId(1), EventRange::default())
         .await
@@ -1270,7 +1272,7 @@ async fn upgrades_legacy_messages_to_content_blocks() {
 #[tokio::test]
 async fn atomically_persists_and_replays_a_complete_result_block() {
     let (_dir, db, _session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let saved = cursor
         .add_events(
             agent.id,
@@ -1335,59 +1337,4 @@ async fn atomically_persists_and_replays_a_complete_result_block() {
     assert_eq!(request.history.items.len(), 2);
     cursor.commit().await.unwrap();
     db.close().await;
-}
-
-#[tokio::test]
-async fn commit_tracker_is_shared_and_waits_for_completion_or_drop() {
-    let (_dir, db, _session, agent) = fixture().await;
-    let first = db.register_commit(agent.id);
-    let second = db.clone().register_commit(agent.id);
-    let other = db.register_commit(crate::agents::AgentId(999));
-    let clone = db.clone();
-    let mut drain = tokio::spawn(async move { clone.drain_commits(agent.id).await });
-    assert!(
-        tokio::time::timeout(Duration::from_millis(20), &mut drain)
-            .await
-            .is_err()
-    );
-    drop(first);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(20), &mut drain)
-            .await
-            .is_err()
-    );
-    drop(second);
-    tokio::time::timeout(Duration::from_secs(1), drain)
-        .await
-        .unwrap()
-        .unwrap();
-    drop(other);
-    db.drain_commits(crate::agents::AgentId(999)).await;
-}
-
-#[tokio::test]
-async fn cancelling_commit_drain_preserves_pending_commits() {
-    let (_dir, db, _session, agent) = fixture().await;
-    let pending = db.register_commit(agent.id);
-    let clone = db.clone();
-    let mut first = tokio::spawn(async move { clone.drain_commits(agent.id).await });
-    assert!(
-        tokio::time::timeout(Duration::from_millis(20), &mut first)
-            .await
-            .is_err()
-    );
-    first.abort();
-    let _ = first.await;
-    let clone = db.clone();
-    let mut second = tokio::spawn(async move { clone.drain_commits(agent.id).await });
-    assert!(
-        tokio::time::timeout(Duration::from_millis(20), &mut second)
-            .await
-            .is_err()
-    );
-    drop(pending);
-    tokio::time::timeout(Duration::from_secs(1), second)
-        .await
-        .unwrap()
-        .unwrap();
 }

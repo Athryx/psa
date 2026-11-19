@@ -66,16 +66,16 @@ names. Enum and variant conditional gates are preserved. Use the dependency name
 
 ## psa_server integration
 
-- `ManagerCommand` generates a bounded `ManagerClient` for the global supervisor.
+- `SupervisorCommand` generates a bounded `SupervisorClient` for the global supervisor.
 - `AgentManagerMessage` generates an unbounded `AgentClient` for worker controls.
-- `Sessions` is the public domain-oriented facade, combining `Database`,
+- `RuntimeHandle` is the public domain-oriented facade, combining `Database`,
   `Publication`, and the generated `ManagerClient`. It centralizes session/agent
   validation, persistence, publication, and request orchestration; HTTP handlers
   remain thin wire adapters. Manager transport failures map to
   `RuntimeError::Unavailable`, and application replies are unwrapped for callers.
 - The facade releases database cursors and publication guards before awaiting
   manager operations. Queues and worker lifecycle ownership stay in the manager.
-- Workers receive `ProbeRegistry` and `Sessions`. Each iteration resolves its
+- Workers receive `ProbeRegistry` and `RuntimeHandle`. Each iteration resolves its
   current probe and lends tools/hooks an `AgentContext` with worker persistence,
   agent-scoped trace queries, snapshots, the probe handle, and the facade.
   `AgentProjection` remains the separate replayed transcript projection.

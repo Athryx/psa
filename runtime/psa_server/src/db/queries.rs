@@ -1,7 +1,7 @@
 //! Higher level convenience functions to return specific types or ranges of events.
 
 use super::{
-    DatabaseCursor, DbError,
+    DbError, ReadCursor, WriteCursor,
     events::{add_decision_cost, add_usage, event_cutoff_at, load_event_rows, load_segments},
     payloads::parse_model,
     schema::{decode_integer, decode_time, encode_integer},
@@ -20,7 +20,7 @@ pub struct InferenceResultEvents {
     pub items: Vec<Event>,
 }
 
-impl DatabaseCursor {
+impl ReadCursor {
     pub async fn load_last_result(
         &mut self,
         session: SessionId,
@@ -434,6 +434,19 @@ impl DatabaseCursor {
         Ok(events)
     }
 
+    pub async fn list_all_agents(&mut self) -> Result<Vec<crate::agents::Agent>, DbError> {
+        let rows = sqlx::query!("SELECT id FROM agents ORDER BY id")
+            .fetch_all(self.connection())
+            .await?;
+        let mut agents = Vec::new();
+        for row in rows {
+            agents.push(self.get_agent(AgentId(decode_integer(row.id)?)).await?);
+        }
+        Ok(agents)
+    }
+}
+
+impl WriteCursor {
     /// Recomputes stored totals left unknown by compactions that reported no
     /// usage before such records were skipped. Fully known totals are untouched.
     /// Returns how many agents were repaired.
@@ -464,17 +477,6 @@ impl DatabaseCursor {
             repaired += 1;
         }
         Ok(repaired)
-    }
-
-    pub async fn list_all_agents(&mut self) -> Result<Vec<crate::agents::Agent>, DbError> {
-        let rows = sqlx::query!("SELECT id FROM agents ORDER BY id")
-            .fetch_all(self.connection())
-            .await?;
-        let mut agents = Vec::new();
-        for row in rows {
-            agents.push(self.get_agent(AgentId(decode_integer(row.id)?)).await?);
-        }
-        Ok(agents)
     }
 }
 

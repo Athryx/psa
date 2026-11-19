@@ -2,7 +2,7 @@
 use crate::{
     agents::{
         lifecycle::{AgentLifecycleEvent, AgentRunOutcome},
-        sessions::Sessions,
+        runtime_handle::RuntimeHandle,
     },
     prompts,
 };
@@ -11,7 +11,7 @@ use psa::api::{AgentRequest, BundleId};
 pub(crate) struct SubagentCompletion;
 
 impl SubagentCompletion {
-    pub(crate) async fn run(&self, sessions: &Sessions, event: AgentLifecycleEvent) {
+    pub(crate) async fn run(&self, sessions: &RuntimeHandle, event: AgentLifecycleEvent) {
         if let Err(error) = self.send_report(sessions, event).await {
             tracing::debug!(%error, "subagent completion report not delivered");
         }
@@ -19,7 +19,7 @@ impl SubagentCompletion {
 
     async fn send_report(
         &self,
-        sessions: &Sessions,
+        sessions: &RuntimeHandle,
         event: AgentLifecycleEvent,
     ) -> Result<(), String> {
         let AgentLifecycleEvent::Finished {

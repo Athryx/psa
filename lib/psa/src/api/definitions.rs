@@ -1,16 +1,16 @@
 //! Immutable agent definition snapshots and their model policy.
 
-use crate::api::{AgentConfig, BundleConfig, HookConfigs, SkillId};
+use crate::api::{AgentConfig, BundleConfig, SkillId};
 use llm_api::providers::{Effort, Model, ModelConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Identifier of an immutable agent definition version.
+/// Identifier of an immutable agent definition snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AgentDefinitionId(pub u64);
 
-/// Model policy of an agent definition version.
+/// Model policy of an agent definition snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentModel {
     /// Follow the session's current model and effort.
@@ -67,29 +67,24 @@ impl From<ModelConfig> for AgentModel {
     }
 }
 
-/// An immutable, versioned agent configuration.
+/// An immutable snapshot of an agent configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDefinition {
-    /// Identifier of this definition version.
+    /// Identifier of this definition snapshot.
     pub id: AgentDefinitionId,
-    /// Previous immutable version, if this definition replaces one.
-    pub previous_version_id: Option<AgentDefinitionId>,
-    /// Version number within the definition's version chain.
-    pub version: u64,
     pub name: String,
     /// Human-readable description.
     pub description: String,
     /// Whether this definition is offered for selection.
     pub selectable: bool,
-    /// Ordered feature bundle construction configurations.
+    /// Ordered feature bundle construction configurations, which install all
+    /// tools and hooks.
     pub bundles: Vec<BundleConfig>,
-    /// Ordered hook construction configurations for each lifecycle stage.
-    pub hooks: HookConfigs,
     /// Model policy, re-resolved against the session model whenever it changes.
     pub model: AgentModel,
     /// Paths to skill files or directories.
     pub skills: Vec<PathBuf>,
-    /// Definition versions this agent may use for subagents.
+    /// Definition snapshots this agent may use for subagents.
     pub permitted_subagents: Vec<AgentDefinitionId>,
 }
 

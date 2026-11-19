@@ -3,7 +3,7 @@ use super::*;
 fn agent(id: u64, session: u64, state: AgentState) -> Agent {
     let mut agent: Agent = serde_json::from_value(serde_json::json!({
         "id": id, "definition_id": 1, "session_id": session,
-        "parent_id": null, "subagent_parent_id": null, "name": format!("agent-{id}"),
+        "forked_from": null, "subagent_parent_id": null, "name": format!("agent-{id}"),
         "interactive": true, "hidden": false, "state": "Idle",
         "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
             "cached_input_tokens": 0, "cache_write_tokens": 0,
@@ -152,7 +152,7 @@ fn details_root() -> Element {
         use_signal(|| {
             let mut state = fixture();
             state.sessions.push(serde_json::from_value(serde_json::json!({
-            "id":1,"parent_id":null,"name":"session1","working_directory":"/work",
+            "id":1,"forked_from":null,"name":"session1","working_directory":"/work",
             "probe_id":"00000000-0000-0000-0000-000000000001",
             "model_config":{"model":"openrouter/test/model","effort":"Medium"},
             "busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"
@@ -183,7 +183,7 @@ fn forked_details_root() -> Element {
         let mut state = fixture();
         for (id, parent, name) in [(1, None, "original"), (2, Some(1), "fork")] {
             state.sessions.push(serde_json::from_value(serde_json::json!({
-                "id":id,"parent_id":parent,"name":name,"working_directory":"/work",
+                "id":id,"forked_from":parent,"name":name,"working_directory":"/work",
                 "probe_id":"00000000-0000-0000-0000-000000000001",
                 "model_config":{"model":"openrouter/test/model","effort":"High"},
                 "busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"

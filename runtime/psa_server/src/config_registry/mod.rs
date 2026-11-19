@@ -13,8 +13,8 @@ use crate::{
 };
 use psa::api::probes::{DirectoryEntry, Event};
 use psa::api::{
-    AgentConfig, AgentConfigInput, BundleConfig, ConfigGroup, ConfigId, HookOverrides,
-    IncludedItems, ModelSelection, ProbeId, ProbeMetadata, Skill, SkillId, SkillLocation,
+    AgentConfig, AgentConfigInput, BundleConfig, ConfigGroup, ConfigId, IncludedItems,
+    ModelSelection, ProbeId, ProbeMetadata, Skill, SkillId, SkillLocation,
 };
 use psa_shared::probe_transport::ProbeError;
 use serde::Deserialize;
@@ -23,7 +23,7 @@ use std::{
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 /// Largest accepted skill upload archive.
@@ -52,7 +52,8 @@ pub enum DiscoveryError {
 pub struct ConfigRegistry {
     data_dir: PathBuf,
     agent_defaults: AgentDefaults,
-    gate: Arc<Mutex<()>>,
+    /// Rescans and uploads rewrite skill sources; copying them to probes only reads.
+    gate: Arc<RwLock<()>>,
 }
 
 impl ConfigRegistry {
@@ -60,7 +61,7 @@ impl ConfigRegistry {
         Self {
             data_dir,
             agent_defaults: AgentDefaults::default(),
-            gate: Arc::new(Mutex::new(())),
+            gate: Arc::default(),
         }
     }
 
@@ -108,12 +109,12 @@ impl ConfigRegistry {
         database: &Database,
         agents_dirs: &[(ProbeHandle, ConfigGroup)],
     ) -> Result<(), DiscoveryError> {
-        let _guard = self.gate.lock().await;
+        let _guard = self.gate.write().await;
         tokio::fs::create_dir_all(&self.data_dir).await?;
         let global_root = tokio::fs::canonicalize(&self.data_dir).await?;
-        let mut cursor = database.cursor().await?;
+        let mut cursor = database.read().await?;
         let previous_skills = cursor.list_skill_sources().await?;
-        cursor.rollback().await?;
+        cursor.close().await?;
         let mut batches = vec![
             scan_group(
                 Source::Local,
@@ -142,7 +143,7 @@ impl ConfigRegistry {
             );
         }
 
-        let mut cursor = database.cursor().await?;
+        let mut cursor = database.write().await?;
         let existing_agents = cursor.list_agent_configs().await?;
         let existing_skills = cursor.list_skills().await?;
         let (discovered_agents, discovered_skills) = cursor.list_discovered_config_ids().await?;
@@ -234,7 +235,7 @@ impl ConfigRegistry {
         metadata: &ProbeMetadata,
         selected: &[Skill],
     ) -> Result<HashMap<SkillId, PathBuf>, DiscoveryError> {
-        let _guard = self.gate.lock().await;
+        let _guard = self.gate.read().await;
         let mut paths = HashMap::new();
         for skill in selected {
             let directory = match &skill.skill_location {
@@ -599,8 +600,6 @@ pub struct AgentDefinitionConfig {
     pub selectable: bool,
     #[serde(default)]
     pub bundles: Option<Vec<BundleConfig>>,
-    #[serde(default)]
-    pub hooks: HookOverrides,
     #[serde(default = "default_models")]
     pub models: Vec<ModelSelection>,
     #[serde(default = "yes", alias = "default")]
@@ -687,7 +686,6 @@ impl AgentDefinitionConfig {
             description: self.description,
             selectable: self.selectable,
             bundles: self.bundles,
-            hooks: self.hooks,
             models: self.models,
             first_model_default: self.first_model_default,
             subagents,
@@ -697,7 +695,8 @@ impl AgentDefinitionConfig {
 }
 
 /// Default groups are Global and/or the config's own group; named items
-/// resolve in the own group first, then in Global.
+/// resolve in the own group first, then in Global. A Global config's own-group
+/// defaults also select the creating session's `.agents` group.
 fn expand_inclusions(
     global: bool,
     own_group: bool,
@@ -711,6 +710,9 @@ fn expand_inclusions(
     }
     if own_group && !groups.contains(current) {
         groups.push(current.clone());
+    }
+    if own_group && *current == ConfigGroup::Global {
+        groups.push(ConfigGroup::Session);
     }
     let items = names
         .iter()

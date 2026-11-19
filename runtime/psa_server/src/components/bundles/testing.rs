@@ -39,7 +39,6 @@ impl ProbeState {
 pub enum CleanupBehavior {
     Ok,
     Error,
-    Panic,
     Pending,
 }
 
@@ -47,7 +46,6 @@ pub enum CleanupBehavior {
 pub enum InstallBehavior {
     Ok,
     Error,
-    Panic,
 }
 
 pub struct ProbeBundle {
@@ -82,7 +80,7 @@ impl Bundle for ProbeBundle {
         if self.components {
             installer.add_tool(ToolKind::BundleProbe(SharedTool {
                 state: self.state.clone(),
-                id: ToolId::Noop,
+                id: ToolId::Edit,
                 name: "probe_first".into(),
             }))?;
             installer.add_tool(ToolKind::BundleProbe(SharedTool {
@@ -100,7 +98,6 @@ impl Bundle for ProbeBundle {
         match self.install {
             InstallBehavior::Ok => Ok(()),
             InstallBehavior::Error => Err(InstallError::new(format!("install:{}", self.name))),
-            InstallBehavior::Panic => panic!("install:{}", self.name),
         }
     }
 
@@ -109,7 +106,6 @@ impl Bundle for ProbeBundle {
         match self.cleanup {
             CleanupBehavior::Ok => Ok(()),
             CleanupBehavior::Error => Err(CleanupError::new(format!("cleanup:{}", self.name))),
-            CleanupBehavior::Panic => panic!("cleanup:{}", self.name),
             CleanupBehavior::Pending => std::future::pending().await,
         }
     }
@@ -133,7 +129,7 @@ pub(crate) async fn install_owned(
 ) -> Result<InstalledComponents, InstallError> {
     let mut bundles = Vec::new();
     let mut installer = Installer::default();
-    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+    let install_all = || -> Result<(), InstallError> {
         for bundle in owners {
             bundles.push(bundle);
             bundles
@@ -142,13 +138,8 @@ pub(crate) async fn install_owned(
                 .install(agent, session, &mut installer)?;
         }
         Ok(())
-    }))
-    .unwrap_or_else(|panic| {
-        Err(InstallError::new(format!(
-            "installation panicked: {}",
-            panic_message(panic)
-        )))
-    });
+    };
+    let result = install_all();
     InstalledComponents::finish_install(installer, bundles, result).await
 }
 
@@ -156,6 +147,16 @@ pub struct SharedTool {
     pub state: Arc<ProbeState>,
     pub id: ToolId,
     pub name: String,
+}
+
+/// A tool taking no arguments that succeeds without effects, for tests that
+/// only need some tool. It reports `id` as its registered identity.
+pub(crate) fn test_tool(name: &str, id: ToolId) -> ToolKind {
+    ToolKind::BundleProbe(SharedTool {
+        state: Arc::default(),
+        id,
+        name: name.into(),
+    })
 }
 
 impl SharedTool {

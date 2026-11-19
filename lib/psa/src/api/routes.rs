@@ -19,7 +19,7 @@ pub const MODELS_RESYNC: &str = "/models/resync";
 
 /// GET registered agent configurations or POST a batch upsert.
 pub const AGENT_CONFIGS: &str = "/agent-configs";
-/// POST a configuration ID to retrieve its current configuration/status.
+/// GET one configuration and its status, identified by `ConfigLookup` query parameters.
 pub const AGENT_CONFIG_LOOKUP: &str = "/agent-configs/lookup";
 /// GET an immutable definition snapshot by definition ID.
 pub const AGENT_SNAPSHOT: &str = "/agent-snapshots/{definition_id}";

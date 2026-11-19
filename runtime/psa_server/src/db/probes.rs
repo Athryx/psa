@@ -1,8 +1,35 @@
-use super::{DatabaseCursor, DbError, schema::ProbeRow};
+use super::{DbError, ReadCursor, WriteCursor, schema::ProbeRow};
 use psa::api::{Probe, ProbeId, ProbeMetadata};
 use time::OffsetDateTime;
 
-impl DatabaseCursor {
+impl ReadCursor {
+    pub async fn get_probe(&mut self, id: ProbeId) -> Result<Probe, DbError> {
+        let key = id.to_string();
+        let row = sqlx::query_as!(
+            ProbeRow,
+            "SELECT metadata, created_at, last_connected_at FROM probes WHERE id = ?",
+            key
+        )
+        .fetch_optional(self.connection())
+        .await?
+        .ok_or(DbError::ProbeNotFound(id))?;
+
+        row.try_into()
+    }
+
+    pub async fn list_probes(&mut self) -> Result<Vec<Probe>, DbError> {
+        let rows = sqlx::query_as!(
+            ProbeRow,
+            "SELECT metadata, created_at, last_connected_at FROM probes ORDER BY created_at, id"
+        )
+        .fetch_all(self.connection())
+        .await?;
+
+        rows.into_iter().map(TryInto::try_into).collect()
+    }
+}
+
+impl WriteCursor {
     pub async fn upsert_probe(&mut self, metadata: &ProbeMetadata) -> Result<Probe, DbError> {
         metadata.validate().map_err(DbError::InvalidInput)?;
 
@@ -40,31 +67,6 @@ impl DatabaseCursor {
 
         self.get_probe(probe_id).await
     }
-
-    pub async fn get_probe(&mut self, id: ProbeId) -> Result<Probe, DbError> {
-        let key = id.to_string();
-        let row = sqlx::query_as!(
-            ProbeRow,
-            "SELECT metadata, created_at, last_connected_at FROM probes WHERE id = ?",
-            key
-        )
-        .fetch_optional(self.connection())
-        .await?
-        .ok_or(DbError::ProbeNotFound(id))?;
-
-        row.try_into()
-    }
-
-    pub async fn list_probes(&mut self) -> Result<Vec<Probe>, DbError> {
-        let rows = sqlx::query_as!(
-            ProbeRow,
-            "SELECT metadata, created_at, last_connected_at FROM probes ORDER BY created_at, id"
-        )
-        .fetch_all(self.connection())
-        .await?;
-
-        rows.into_iter().map(TryInto::try_into).collect()
-    }
 }
 
 #[cfg(test)]
@@ -101,14 +103,14 @@ mod tests {
         let database = Database::open(&path).await.unwrap();
         let host = metadata(true);
         let other = metadata(false);
-        let mut cursor = database.cursor().await.unwrap();
+        let mut cursor = database.write().await.unwrap();
         assert!(cursor.upsert_probe(&host).await.unwrap().metadata.host);
         assert!(!cursor.upsert_probe(&other).await.unwrap().metadata.host);
         cursor.commit().await.unwrap();
         database.close().await;
 
         let database = Database::open(&path).await.unwrap();
-        let mut cursor = database.cursor().await.unwrap();
+        let mut cursor = database.write().await.unwrap();
         assert!(cursor.get_probe(host.id).await.unwrap().metadata.host);
         assert!(!cursor.get_probe(other.id).await.unwrap().metadata.host);
         assert_eq!(cursor.list_probes().await.unwrap().len(), 2);
@@ -128,7 +130,7 @@ mod tests {
             .unwrap();
         let mut host = metadata(true);
         let mut replacement = metadata(false);
-        let mut cursor = database.cursor().await.unwrap();
+        let mut cursor = database.write().await.unwrap();
         cursor.upsert_probe(&host).await.unwrap();
         cursor.upsert_probe(&replacement).await.unwrap();
         host.hostname = "reconnected".into();
@@ -139,7 +141,7 @@ mod tests {
         cursor.commit().await.unwrap();
 
         replacement.host = true;
-        let mut cursor = database.cursor().await.unwrap();
+        let mut cursor = database.write().await.unwrap();
         let error = cursor.upsert_probe(&replacement).await.unwrap_err();
         assert!(matches!(error, DbError::InvalidInput(ref message)
             if message.contains("host probe") && message.contains(&host.id.to_string())));
@@ -161,7 +163,7 @@ mod tests {
         cursor.upsert_probe(&replacement).await.unwrap();
         cursor.commit().await.unwrap();
 
-        let mut cursor = database.cursor().await.unwrap();
+        let mut cursor = database.write().await.unwrap();
         assert!(!cursor.get_probe(host.id).await.unwrap().metadata.host);
         assert!(
             cursor
@@ -184,7 +186,7 @@ mod tests {
         let register = |host| {
             let database = database.clone();
             async move {
-                let mut cursor = database.cursor().await.unwrap();
+                let mut cursor = database.write().await.unwrap();
                 let result = cursor.upsert_probe(&host).await;
                 cursor.commit().await.unwrap();
                 result
@@ -197,7 +199,7 @@ mod tests {
             results => panic!("expected exactly one successful host registration: {results:?}"),
         }
 
-        let mut cursor = database.cursor().await.unwrap();
+        let mut cursor = database.write().await.unwrap();
         let probes = cursor.list_probes().await.unwrap();
         assert_eq!(probes.len(), 1);
         assert!(probes[0].metadata.host);
@@ -223,7 +225,7 @@ mod tests {
             host: false,
             sandboxes: false,
         };
-        let mut cursor = database.cursor().await.unwrap();
+        let mut cursor = database.write().await.unwrap();
         assert!(matches!(
             cursor.get_probe(id).await,
             Err(DbError::ProbeNotFound(_))
@@ -234,7 +236,7 @@ mod tests {
         metadata.label = Some("sandbox".into());
         metadata.data_dir = "/two".into();
         metadata.home_dir = Some("/home/sandbox".into());
-        let mut cursor = database.cursor().await.unwrap();
+        let mut cursor = database.write().await.unwrap();
         let second = cursor.upsert_probe(&metadata).await.unwrap();
         assert_eq!(second.created_at, first.created_at);
         assert!(second.last_connected_at >= first.last_connected_at);

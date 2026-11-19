@@ -5,7 +5,7 @@
 //! Context rebuilt by compaction is recorded once: the copied system prompt, model,
 //! and retained conversation events are skipped, leaving a single compaction event.
 
-use crate::agents::{Agent, session_manager::RuntimeError, sessions::Sessions};
+use crate::agents::{Agent, runtime_handle::RuntimeHandle, supervisor::RuntimeError};
 use crate::db::EventRange;
 use agent_trace::{
     AgentMeta, AgentTrace, Event as TraceEvent, EventKind, FinishOutcome, ImageRef, Inference,
@@ -26,7 +26,7 @@ const PAGE_SIZE: u32 = 1000;
 
 /// Load every agent of a session and convert it to a trace.
 pub async fn export_session(
-    sessions: &Sessions,
+    sessions: &RuntimeHandle,
     session_id: SessionId,
 ) -> Result<SessionTrace, RuntimeError> {
     let session = sessions.get_session(session_id).await?;
@@ -63,7 +63,7 @@ pub async fn export_session(
 }
 
 async fn load_all_events(
-    sessions: &Sessions,
+    sessions: &RuntimeHandle,
     session_id: SessionId,
     agent: &Agent,
 ) -> Result<Vec<Event>, RuntimeError> {
@@ -462,7 +462,7 @@ mod tests {
             id: AgentId(7),
             session_id: SessionId(1),
             definition_id: AgentDefinitionId(1),
-            parent_id: None,
+            forked_from: None,
             subagent_parent_id: Some(AgentId(2)),
             first_event_id: EventId(0),
             next_event_id: EventId(0),

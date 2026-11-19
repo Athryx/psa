@@ -90,7 +90,7 @@ async fn recent_to_sse_gap_replays_then_live_promotions_keep_identity() {
         .upsert(session.id, agent.id, "draft".into(), event.kind.clone())
         .await;
     assert!(
-        matches!(next(&mut stream).await, api::StreamMessage::Upsert { pending } if pending.id == "draft")
+        matches!(next(&mut stream).await, api::StreamMessage::Upsert { pending } if pending.id.as_str() == "draft")
     );
     state
         .publication
@@ -104,7 +104,7 @@ async fn recent_to_sse_gap_replays_then_live_promotions_keep_identity() {
         .await
         .unwrap();
     assert!(
-        matches!(next(&mut stream).await, api::StreamMessage::Committed { pending_id: Some(id), .. } if id == "draft")
+        matches!(next(&mut stream).await, api::StreamMessage::Committed { pending_id: Some(id), .. } if id.as_str() == "draft")
     );
     let older = client
         .list_events(

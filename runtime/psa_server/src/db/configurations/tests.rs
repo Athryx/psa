@@ -13,7 +13,6 @@ fn config(name: &str, children: &[&str]) -> AgentConfig {
         description: name.into(),
         selectable: true,
         bundles: vec![],
-        hooks: HookConfigs::default(),
         models: vec![ModelSelection::Global],
         first_model_default: true,
         subagents: IncludedItems {
@@ -44,7 +43,7 @@ async fn database() -> (tempfile::TempDir, Database) {
 #[tokio::test]
 async fn cycles_forward_references_dedup_and_transitive_updates() {
     let (_dir, db) = database().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor
         .upsert_agent_configs(vec![
             config("a", &["b"]),
@@ -54,7 +53,7 @@ async fn cycles_forward_references_dedup_and_transitive_updates() {
         .await
         .unwrap();
     let first = cursor
-        .resolve_agent_config(&id("a"), &HashMap::new(), &HashMap::new())
+        .resolve_agent_config(&id("a"), None, &HashMap::new(), &HashMap::new())
         .await
         .unwrap();
     let b = cursor
@@ -67,13 +66,13 @@ async fn cycles_forward_references_dedup_and_transitive_updates() {
         .unwrap();
     assert_eq!(c.permitted_subagents, vec![b.id]);
     let repeated = cursor
-        .resolve_agent_config(&id("a"), &HashMap::new(), &HashMap::new())
+        .resolve_agent_config(&id("a"), None, &HashMap::new(), &HashMap::new())
         .await
         .unwrap();
     assert_eq!(first.definition.id, repeated.definition.id);
     // Resolving a component as a root reuses its already-published cyclic snapshot.
     let root_b = cursor
-        .resolve_agent_config(&id("b"), &HashMap::new(), &HashMap::new())
+        .resolve_agent_config(&id("b"), None, &HashMap::new(), &HashMap::new())
         .await
         .unwrap();
     assert_eq!(root_b.definition.id, b.id);
@@ -81,7 +80,7 @@ async fn cycles_forward_references_dedup_and_transitive_updates() {
     changed.description = "changed".into();
     cursor.upsert_agent_configs(vec![changed]).await.unwrap();
     let second = cursor
-        .resolve_agent_config(&id("a"), &HashMap::new(), &HashMap::new())
+        .resolve_agent_config(&id("a"), None, &HashMap::new(), &HashMap::new())
         .await
         .unwrap();
     assert_ne!(first.definition.id, second.definition.id);
@@ -105,7 +104,7 @@ async fn cycles_forward_references_dedup_and_transitive_updates() {
 #[tokio::test]
 async fn missing_prunes_restoration_and_mutable_skill_identity() {
     let (_dir, db) = database().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let mut a = config("a", &["missing"]);
     a.skills.items = vec![id("s")];
     cursor.upsert_agent_configs(vec![a.clone()]).await.unwrap();
@@ -120,7 +119,7 @@ async fn missing_prunes_restoration_and_mutable_skill_identity() {
         2
     );
     let empty = cursor
-        .resolve_agent_config(&id("a"), &HashMap::new(), &HashMap::new())
+        .resolve_agent_config(&id("a"), None, &HashMap::new(), &HashMap::new())
         .await
         .unwrap();
     assert!(empty.references.skills.is_empty());
@@ -136,12 +135,12 @@ async fn missing_prunes_restoration_and_mutable_skill_identity() {
     let paths = HashMap::from([(registered.id, PathBuf::from("/probe/s"))]);
     assert!(
         cursor
-            .resolve_agent_config(&id("a"), &HashMap::new(), &HashMap::new())
+            .resolve_agent_config(&id("a"), None, &HashMap::new(), &HashMap::new())
             .await
             .is_err()
     );
     let full = cursor
-        .resolve_agent_config(&id("a"), &paths, &HashMap::new())
+        .resolve_agent_config(&id("a"), None, &paths, &HashMap::new())
         .await
         .unwrap();
     assert_eq!(full.references.skills, vec![registered.id]);
@@ -153,7 +152,7 @@ async fn missing_prunes_restoration_and_mutable_skill_identity() {
     assert_eq!(
         full.definition.id,
         cursor
-            .resolve_agent_config(&id("a"), &paths, &HashMap::new())
+            .resolve_agent_config(&id("a"), None, &paths, &HashMap::new())
             .await
             .unwrap()
             .definition
@@ -176,7 +175,7 @@ async fn missing_prunes_restoration_and_mutable_skill_identity() {
     assert_eq!(
         empty.definition.id,
         cursor
-            .resolve_agent_config(&id("a"), &HashMap::new(), &HashMap::new())
+            .resolve_agent_config(&id("a"), None, &HashMap::new(), &HashMap::new())
             .await
             .unwrap()
             .definition
@@ -215,7 +214,7 @@ async fn missing_prunes_restoration_and_mutable_skill_identity() {
     let reopened = Database::open(_dir.path().join("registry.sqlite3"))
         .await
         .unwrap();
-    let mut cursor = reopened.cursor().await.unwrap();
+    let mut cursor = reopened.write().await.unwrap();
     assert_eq!(
         cursor.get_skill(registered.id).await.unwrap().id,
         registered.id
@@ -245,11 +244,11 @@ async fn missing_prunes_restoration_and_mutable_skill_identity() {
 }
 
 #[tokio::test]
-async fn hook_prompt_payload_roundtrips_and_changes_snapshot_identity() {
+async fn prompt_bundle_payload_roundtrips_and_changes_snapshot_identity() {
     let (directory, db) = database().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let mut initial = config("prompt-payload", &[]);
-    initial.hooks.agent_create = vec![psa::api::HookConfig::ExtraSystemPrompt {
+    initial.bundles = vec![psa::api::BundleConfig::ExtraSystemPrompt {
         prompt: "  Original instructions.\n<literal> & text\n".into(),
     }];
     cursor
@@ -257,19 +256,19 @@ async fn hook_prompt_payload_roundtrips_and_changes_snapshot_identity() {
         .await
         .unwrap();
     let first = cursor
-        .resolve_agent_config(&initial.config_id, &HashMap::new(), &HashMap::new())
+        .resolve_agent_config(&initial.config_id, None, &HashMap::new(), &HashMap::new())
         .await
         .unwrap();
     let cached = cursor
-        .resolve_agent_config(&initial.config_id, &HashMap::new(), &HashMap::new())
+        .resolve_agent_config(&initial.config_id, None, &HashMap::new(), &HashMap::new())
         .await
         .unwrap();
     assert_eq!(cached.definition.id, first.definition.id);
-    assert_eq!(first.definition.hooks, initial.hooks);
-    assert_eq!(first.config.hooks, initial.hooks);
+    assert_eq!(first.definition.bundles, initial.bundles);
+    assert_eq!(first.config.bundles, initial.bundles);
 
     let mut changed = initial.clone();
-    changed.hooks.agent_create = vec![psa::api::HookConfig::ExtraSystemPrompt {
+    changed.bundles = vec![psa::api::BundleConfig::ExtraSystemPrompt {
         prompt: "Different instructions.".into(),
     }];
     cursor
@@ -277,49 +276,49 @@ async fn hook_prompt_payload_roundtrips_and_changes_snapshot_identity() {
         .await
         .unwrap();
     let second = cursor
-        .resolve_agent_config(&changed.config_id, &HashMap::new(), &HashMap::new())
+        .resolve_agent_config(&changed.config_id, None, &HashMap::new(), &HashMap::new())
         .await
         .unwrap();
     assert_ne!(second.definition.id, first.definition.id);
-    assert_eq!(second.definition.hooks, changed.hooks);
+    assert_eq!(second.definition.bundles, changed.bundles);
     let retained = cursor
         .get_resolved_agent_config(first.definition.id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(retained.definition.hooks, initial.hooks);
-    assert_eq!(retained.config.hooks, initial.hooks);
+    assert_eq!(retained.definition.bundles, initial.bundles);
+    assert_eq!(retained.config.bundles, initial.bundles);
     cursor.commit().await.unwrap();
     db.close().await;
 
     let reopened = Database::open(directory.path().join("registry.sqlite3"))
         .await
         .unwrap();
-    let mut cursor = reopened.cursor().await.unwrap();
+    let mut cursor = reopened.read().await.unwrap();
     assert_eq!(
         cursor
             .get_agent_definition(first.definition.id)
             .await
             .unwrap()
-            .hooks,
-        initial.hooks
+            .bundles,
+        initial.bundles
     );
     assert_eq!(
         cursor
             .get_agent_definition(second.definition.id)
             .await
             .unwrap()
-            .hooks,
-        changed.hooks
+            .bundles,
+        changed.bundles
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     reopened.close().await;
 }
 
 #[tokio::test]
 async fn single_model_defaults_are_normalized_for_api_and_discovered_registration() {
     let (directory, db) = database().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let mut api = config("single-api", &[]);
     api.first_model_default = false;
     let mut multiple = config("multiple-api", &[]);
@@ -372,7 +371,7 @@ async fn single_model_defaults_are_normalized_for_api_and_discovered_registratio
     let reopened = Database::open(directory.path().join("registry.sqlite3"))
         .await
         .unwrap();
-    let mut cursor = reopened.cursor().await.unwrap();
+    let mut cursor = reopened.read().await.unwrap();
     for name in ["single-api", "single-discovered"] {
         assert!(
             cursor
@@ -393,14 +392,14 @@ async fn single_model_defaults_are_normalized_for_api_and_discovered_registratio
                 .first_model_default
         );
     }
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     reopened.close().await;
 }
 
 #[tokio::test]
 async fn atomic_batches_group_precedence_and_discovery_ownership() {
     let (_dir, db) = database().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor
         .upsert_agent_configs(vec![config("api", &[])])
         .await
@@ -444,7 +443,7 @@ async fn atomic_batches_group_precedence_and_discovery_ownership() {
     all.subagents.groups = vec![ConfigGroup::Global];
     cursor.upsert_agent_configs(vec![all]).await.unwrap();
     let resolved = cursor
-        .resolve_agent_config(&id("all"), &HashMap::new(), &HashMap::new())
+        .resolve_agent_config(&id("all"), None, &HashMap::new(), &HashMap::new())
         .await
         .unwrap();
     assert_eq!(resolved.references.subagents.len(), 1); // self excluded from group selection
@@ -456,8 +455,72 @@ async fn atomic_batches_group_precedence_and_discovery_ownership() {
         }],
     };
     assert_eq!(
-        select_items(&explicit, &[id("api")], None)[0].config_group,
+        select_items(&explicit, &[id("api")], None, None)[0].config_group,
         ConfigGroup::Custom("override".into())
+    );
+    cursor.commit().await.unwrap();
+    db.close().await;
+}
+
+#[tokio::test]
+async fn session_placeholder_selects_the_session_group() {
+    let (_dir, db) = database().await;
+    let mut cursor = db.write().await.unwrap();
+    // A Custom group stands in for the session's discovered `.agents` group.
+    let project = ConfigGroup::Custom("project".into());
+    let in_project = |name: &str| ConfigId {
+        config_group: project.clone(),
+        name: name.into(),
+    };
+    let mut helper = config("helper", &[]);
+    helper.config_id = in_project("helper");
+    let mut opted_in = config("opted-in", &[]);
+    opted_in.subagents.groups = vec![ConfigGroup::Session];
+    opted_in.skills.groups = vec![ConfigGroup::Session];
+    let opted_out = config("opted-out", &[]);
+    cursor
+        .upsert_agent_configs(vec![helper, opted_in, opted_out])
+        .await
+        .unwrap();
+    let mut project_skill = skill("tool");
+    project_skill.config_id = in_project("tool");
+    cursor.upsert_skills(vec![project_skill]).await.unwrap();
+
+    let selected = |graph: &AgentConfigGraph| {
+        let mut ids: Vec<_> = graph
+            .configs
+            .iter()
+            .map(|config| config.config_id.clone())
+            .chain(graph.skills.iter().map(|skill| skill.config_id.clone()))
+            .collect();
+        ids.sort_by(|a, b| a.name.cmp(&b.name));
+        ids
+    };
+    let graph = cursor
+        .get_agent_config_graph(&id("opted-in"), Some(&project))
+        .await
+        .unwrap();
+    assert_eq!(
+        selected(&graph),
+        vec![in_project("helper"), id("opted-in"), in_project("tool")]
+    );
+    let without_session = cursor
+        .get_agent_config_graph(&id("opted-in"), None)
+        .await
+        .unwrap();
+    assert_eq!(selected(&without_session), vec![id("opted-in")]);
+    let opted_out = cursor
+        .get_agent_config_graph(&id("opted-out"), Some(&project))
+        .await
+        .unwrap();
+    assert_eq!(selected(&opted_out), vec![id("opted-out")]);
+    let mut placeholder = config("placeholder", &[]);
+    placeholder.config_id.config_group = ConfigGroup::Session;
+    assert!(
+        cursor
+            .upsert_agent_configs(vec![placeholder])
+            .await
+            .is_err()
     );
     cursor.commit().await.unwrap();
     db.close().await;
@@ -467,7 +530,7 @@ async fn atomic_batches_group_precedence_and_discovery_ownership() {
 async fn deferred_project_discovery_distinguishes_unknown_from_known_absent() {
     let (_dir, db) = database().await;
     crate::test_support::register_probe(&db).await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let probe_id = psa::api::ProbeId(psa::api::probes::Uuid::nil());
     let session = cursor
         .create_session(crate::sessions::NewSession {
@@ -534,20 +597,20 @@ async fn deferred_project_discovery_distinguishes_unknown_from_known_absent() {
 #[tokio::test]
 async fn unchanged_leaf_reused_and_pinned_creation_does_not_advance_edges() {
     let (_dir, db) = database().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor
         .upsert_agent_configs(vec![config("a", &["b"]), config("b", &[])])
         .await
         .unwrap();
     let first = cursor
-        .resolve_agent_config(&id("a"), &HashMap::new(), &HashMap::new())
+        .resolve_agent_config(&id("a"), None, &HashMap::new(), &HashMap::new())
         .await
         .unwrap();
     let mut changed = config("a", &["b"]);
     changed.description = "v2".into();
     cursor.upsert_agent_configs(vec![changed]).await.unwrap();
     let second = cursor
-        .resolve_agent_config(&id("a"), &HashMap::new(), &HashMap::new())
+        .resolve_agent_config(&id("a"), None, &HashMap::new(), &HashMap::new())
         .await
         .unwrap();
     assert_ne!(first.definition.id, second.definition.id);

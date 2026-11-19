@@ -317,9 +317,9 @@ fn api_error(status: StatusCode, code: &str, message: &str) -> Response {
 async fn list_probes(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<psa::api::Probe>>, crate::http::HttpError> {
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let mut probes = cursor.list_probes().await?;
-    cursor.rollback().await?;
+    cursor.close().await?;
 
     for probe in &mut probes {
         probe.is_active = state.probes.is_active(probe.metadata.id).await;
@@ -331,9 +331,9 @@ async fn get_probe(
     State(state): State<AppState>,
     crate::http::ApiPath(id): crate::http::ApiPath<ProbeId>,
 ) -> Result<Json<psa::api::Probe>, crate::http::HttpError> {
-    let mut cursor = state.database.cursor().await?;
+    let mut cursor = state.database.read().await?;
     let mut probe = cursor.get_probe(id).await?;
-    cursor.rollback().await?;
+    cursor.close().await?;
 
     probe.is_active = state.probes.is_active(id).await;
     Ok(Json(probe))
@@ -360,7 +360,7 @@ async fn list_probe_directory(
     // Distinguish an unknown probe from a registered but disconnected one.
     let mut cursor = state
         .database
-        .cursor()
+        .read()
         .await
         .map_err(|error| crate::http::HttpError::from(error).into_response())?;
     cursor
@@ -368,7 +368,7 @@ async fn list_probe_directory(
         .await
         .map_err(|error| crate::http::HttpError::from(error).into_response())?;
     cursor
-        .rollback()
+        .close()
         .await
         .map_err(|error| crate::http::HttpError::from(error).into_response())?;
 
@@ -518,7 +518,7 @@ async fn register_probe(
     database: &Database,
     metadata: &psa::api::ProbeMetadata,
 ) -> Result<(), crate::db::DbError> {
-    let mut cursor = database.cursor().await?;
+    let mut cursor = database.write().await?;
     cursor.upsert_probe(metadata).await?;
     cursor.commit().await
 }

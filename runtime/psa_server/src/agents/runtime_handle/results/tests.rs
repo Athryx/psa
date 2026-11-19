@@ -2,7 +2,7 @@ use super::*;
 use crate::agents::{
     agent_manager::AgentManagerState,
     publication::status_event,
-    sessions::tests::{Fixture, create_agent_request},
+    runtime_handle::tests::{Fixture, create_agent_request},
 };
 use crate::db::NewEvent;
 use psa::api::{AgentResult, ForkPoint, ForkSession};
@@ -24,7 +24,7 @@ async fn create_fixture() -> (Fixture, SessionId, AgentId) {
     (fixture, session.id, agent.id)
 }
 
-async fn append(sessions: &Sessions, agent: AgentId, events: &[NewEvent]) -> Vec<Event> {
+async fn append(sessions: &RuntimeHandle, agent: AgentId, events: &[NewEvent]) -> Vec<Event> {
     let mut state = AgentManagerState::load_persisted(
         sessions.database.clone(),
         sessions.publication.clone(),
@@ -72,7 +72,7 @@ impl Drop for ResultWait {
 }
 
 fn spawn_wait(
-    sessions: &Sessions,
+    sessions: &RuntimeHandle,
     session: SessionId,
     agent: AgentId,
     after: Option<EventId>,
@@ -331,7 +331,7 @@ async fn lagged_subscription_resyncs_from_durable_state() {
     // in-progress read transaction, but cannot consume these notifications until
     // the bounded channel has lagged.
     let publication = sessions.publication.lock().await;
-    let mut cursor = sessions.database.cursor().await.unwrap();
+    let mut cursor = sessions.database.write().await.unwrap();
     cursor
         .add_events(
             agent,
@@ -402,14 +402,14 @@ async fn cancellation_and_shutdown_interrupt_gate_and_database_waits() {
     cancel.send(()).unwrap();
     assert!(matches!(finish(wait).await, Err(RuntimeError::Cancelled)));
     drop(publication);
-    let cursor = sessions.database.cursor().await.unwrap();
+    let cursor = sessions.database.read().await.unwrap();
     let (_cancel, cancellation) = Cancellation::channel();
     let wait = spawn_wait(sessions, session, agent, None, cancellation);
     tokio::pin!(wait);
     assert_pending(wait.as_mut()).await;
     sessions.publication.close();
     assert!(matches!(finish(wait).await, Err(RuntimeError::Unavailable)));
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     let (_cancel, mut cancellation) = Cancellation::channel();
     assert!(matches!(
         finish(sessions.await_result(session, agent, None, &mut cancellation)).await,
@@ -492,7 +492,7 @@ async fn unrelated_agent_publications_do_not_resolve_the_wait() {
 #[tokio::test]
 async fn standalone_runtime_shutdown_releases_result_waits() {
     let (fixture, session, agent) = create_fixture().await;
-    let runtime = crate::agents::session_manager::Runtime::start(
+    let runtime = crate::agents::supervisor::Runtime::start(
         fixture.sessions.database.clone(),
         fixture.sessions.publication.clone(),
         crate::providers::ProviderRegistry::default(),

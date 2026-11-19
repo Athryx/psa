@@ -29,7 +29,7 @@ impl Hook for ToolDefinitionsHook {
         _cancellation: Cancellation,
     ) -> Result<(), HookError> {
         // Forks retain their inherited snapshots; adding them again is invalid.
-        if context.agent().parent_id.is_some() {
+        if context.agent().forked_from.is_some() {
             return Ok(());
         }
 

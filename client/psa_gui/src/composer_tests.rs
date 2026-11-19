@@ -114,7 +114,7 @@ fn composer_fixture() -> Element {
         state.settings.active_profile_mut().connection.api_url = "invalid-url".into();
         state.sessions.push(
             serde_json::from_value(serde_json::json!({
-                "id":1,"parent_id":null,"name":"test","working_directory":"/tmp",
+                "id":1,"forked_from":null,"name":"test","working_directory":"/tmp",
                 "probe_id":"00000000-0000-0000-0000-000000000001",
                 "model_config":{"model":"openrouter/alpha","effort":"Low"},
                 "busy":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"
@@ -122,7 +122,7 @@ fn composer_fixture() -> Element {
             .unwrap(),
         );
         state.agents.insert(SessionId(1), vec![serde_json::from_value(serde_json::json!({
-            "id":2,"definition_id":1,"session_id":1,"parent_id":null,"subagent_parent_id":null,
+            "id":2,"definition_id":1,"session_id":1,"forked_from":null,"subagent_parent_id":null,
             "name":"worker","hidden":false,"interactive":true,"state":"Idle",
             "usage":{"input_tokens":100,"output_tokens":30,"total_tokens":130,"cached_input_tokens":25,"reasoning_output_tokens":10},
             "next_event_id":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"

@@ -40,7 +40,7 @@ impl ListSessions {
         let sessions = tokio::select! {
             biased;
             _ = cancellation.cancelled() => return ToolOutput::error(prompts::tool_interrupted()),
-            result = context.sessions().list_sessions(parent) => match result {
+            result = context.runtime().list_sessions(parent) => match result {
                 Ok(sessions) => sessions,
                 Err(error) => {
                     return ToolOutput::error(prompts::text(format!("Failed to list sessions: {error}")));

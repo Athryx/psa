@@ -8,7 +8,7 @@ use crate::{
         AgentState, NewAgent,
         agent_manager::AgentClient,
         publication::{Publication, status_event},
-        session_manager::Runtime,
+        supervisor::Runtime,
     },
     components::{
         cancellation::Cancellation,
@@ -121,7 +121,7 @@ impl Fixture {
     }
 
     async fn create_agent_in(&self, cwd: &str, events: &[NewEvent]) -> Agent {
-        let mut cursor = self.database.cursor().await.unwrap();
+        let mut cursor = self.database.write().await.unwrap();
         let session = cursor
             .create_session(NewSession {
                 decision_model: None,
@@ -241,7 +241,7 @@ async fn trace_queries_match_database_and_bind_inherited_fork_history() {
     transcript.extend(inference_events(false));
     transcript.push(log("parent tail"));
     let parent = fixture.create_agent(&transcript).await;
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.write().await.unwrap();
     let other = cursor
         .create_agent(
             parent.session_id,
@@ -272,7 +272,7 @@ async fn trace_queries_match_database_and_bind_inherited_fork_history() {
     let child = fork
         .agents
         .iter()
-        .find(|agent| agent.parent_id == Some(parent.id))
+        .find(|agent| agent.forked_from == Some(parent.id))
         .unwrap()
         .clone();
     cursor
@@ -320,7 +320,7 @@ async fn trace_queries_match_database_and_bind_inherited_fork_history() {
     assert!(std::ptr::eq(context.probe().unwrap(), &probe));
     assert_eq!(
         context
-            .sessions()
+            .runtime()
             .get_agent(child.session_id, child.id)
             .await
             .unwrap()
@@ -444,7 +444,7 @@ struct TraceTool {
 
 impl Tool for TraceTool {
     fn tool_definition(&self) -> api::ToolDefinition {
-        crate::components::tools::tool_definition(psa::api::ToolId::Noop).unwrap()
+        crate::components::tools::tool_definition(psa::api::ToolId::ListSessions).unwrap()
     }
 
     fn cancellation_timeout(&self) -> Duration {
@@ -654,13 +654,13 @@ async fn tool_trace_and_status_are_saved_separately_from_worker_response() {
         .save_tool_output("call-1".into(), output)
         .await
         .unwrap();
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     let saved = cursor.load_all_events(agent.id).await.unwrap();
     assert_eq!(
         cursor.get_agent(agent.id).await.unwrap().state,
         AgentState::Interrupted
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     assert_eq!(saved.len(), before_response.len() + 1);
     let EventType::ToolResult(result) = &saved.last().unwrap().kind else {
         panic!("worker must persist a separate response");
@@ -688,7 +688,7 @@ impl Hook for TraceHook {
         _cancellation: Cancellation,
     ) -> Result<(), HookError> {
         let agent = context
-            .sessions()
+            .runtime()
             .get_agent(context.session().id, context.agent().id)
             .await?;
         assert_eq!(agent.id, context.agent().id);
@@ -736,12 +736,12 @@ async fn stop_without_tools_does_not_complete_when_cancelled_during_trace_read()
     // Hold the writer reservation so the hook has checked its token but cannot
     // finish loading the trace before cancellation arrives.
     {
-        let cursor = fixture.database.cursor().await.unwrap();
+        let cursor = fixture.database.read().await.unwrap();
         let run = hook.run(&mut context, cancellation);
         tokio::pin!(run);
         assert!(futures_util::poll!(&mut run).is_pending());
         sender.send(()).unwrap();
-        cursor.rollback().await.unwrap();
+        cursor.close().await.unwrap();
         tokio::time::timeout(Duration::from_secs(2), &mut run)
             .await
             .unwrap()
@@ -777,9 +777,9 @@ async fn stop_without_tools_only_completes_answers_without_tool_calls() {
         };
         assert_eq!(context.agent().state, expected);
         assert_eq!(context.projection().status, expected);
-        let mut cursor = fixture.database.cursor().await.unwrap();
+        let mut cursor = fixture.database.read().await.unwrap();
         assert_eq!(cursor.get_agent(agent.id).await.unwrap().state, expected);
-        cursor.rollback().await.unwrap();
+        cursor.close().await.unwrap();
     }
     fixture.close().await;
 }
@@ -829,17 +829,13 @@ async fn extra_system_prompt_hook_persists_verbatim_system_message_and_skips_emp
         " \n",
         "  Follow these extra instructions.\n<literal> & text\n",
     ] {
-        let hook_config = psa::api::HookConfig::ExtraSystemPrompt {
-            prompt: prompt.into(),
-        };
-        let mut cursor = fixture.database.cursor().await.unwrap();
+        let mut cursor = fixture.database.write().await.unwrap();
         let definition = cursor
             .create_agent_definition(crate::db::CreateAgentDefinition {
                 name: "extra prompt".into(),
-                hooks: psa::api::HookConfigs {
-                    agent_create: vec![hook_config.clone()],
-                    ..Default::default()
-                },
+                bundles: vec![psa::api::BundleConfig::ExtraSystemPrompt {
+                    prompt: prompt.into(),
+                }],
                 ..Default::default()
             })
             .await
@@ -860,7 +856,9 @@ async fn extra_system_prompt_hook_persists_verbatim_system_message_and_skips_emp
         cursor.commit().await.unwrap();
 
         let mut state = fixture.load_state(&agent).await;
-        let mut hook = crate::components::hooks::HookKind::from_config(&hook_config);
+        let mut hook = crate::components::hooks::HookKind::ExtraSystemPrompt(
+            crate::components::hooks::ExtraSystemPromptHook::new(prompt.into()),
+        );
         let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
         let (_controls, mut controls) = actors::unbounded_channel();
         assert!(
@@ -889,6 +887,47 @@ async fn extra_system_prompt_hook_persists_verbatim_system_message_and_skips_emp
         }
     }
 
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn extra_system_prompt_hook_skips_forks_which_inherit_it() {
+    let fixture = Fixture::new().await;
+    let seed = fixture.create_agent(&[]).await;
+    let probe = fixture
+        .probes
+        .handle(support::probe_metadata().id)
+        .await
+        .unwrap();
+    let mut cursor = fixture.database.write().await.unwrap();
+    let fork = cursor
+        .fork_session(
+            seed.session_id,
+            crate::sessions::SessionFork {
+                point: crate::sessions::ForkPoint::Head,
+                metadata: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+    cursor.commit().await.unwrap();
+    let forked = &fork.agents[0];
+    assert_eq!(forked.forked_from, Some(seed.id));
+
+    let mut state = fixture.load_state(forked).await;
+    let mut hook = crate::components::hooks::HookKind::ExtraSystemPrompt(
+        crate::components::hooks::ExtraSystemPromptHook::new("Extra instructions".into()),
+    );
+    let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
+    let before = context.load_all_events().await.unwrap().len();
+    let (_controls, mut controls) = actors::unbounded_channel();
+    assert!(
+        !run_hook(&mut hook, &mut context, &mut controls)
+            .await
+            .unwrap()
+    );
+
+    assert_eq!(context.load_all_events().await.unwrap().len(), before);
     fixture.close().await;
 }
 
@@ -1153,8 +1192,9 @@ async fn run_project_context(fixture: &Fixture, cwd: &str) -> Vec<Event> {
         .handle(support::probe_metadata().id)
         .await
         .unwrap();
-    let mut hook =
-        crate::components::hooks::HookKind::from_config(&psa::api::HookConfig::ProjectContext);
+    let mut hook = crate::components::hooks::HookKind::ProjectContext(
+        crate::components::hooks::ProjectContextHook,
+    );
     let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
     let (_controls, mut controls) = actors::unbounded_channel();
     assert!(
@@ -1335,8 +1375,9 @@ async fn project_context_cancelled_before_discovery_saves_no_partial_prompt() {
         .handle(support::probe_metadata().id)
         .await
         .unwrap();
-    let mut hook =
-        crate::components::hooks::HookKind::from_config(&psa::api::HookConfig::ProjectContext);
+    let mut hook = crate::components::hooks::HookKind::ProjectContext(
+        crate::components::hooks::ProjectContextHook,
+    );
     let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
     let (sender, cancellation) = Cancellation::channel();
     sender.send(()).unwrap();
@@ -1356,8 +1397,9 @@ async fn project_context_cancels_a_pending_remote_operation() {
         .handle(support::probe_metadata().id)
         .await
         .unwrap();
-    let mut hook =
-        crate::components::hooks::HookKind::from_config(&psa::api::HookConfig::ProjectContext);
+    let mut hook = crate::components::hooks::HookKind::ProjectContext(
+        crate::components::hooks::ProjectContextHook,
+    );
     let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
     let (sender, cancellation) = Cancellation::channel();
     {
@@ -1435,8 +1477,9 @@ async fn project_context_disconnected_probe_is_fatal_and_saves_no_prompt() {
         server,
     } = fixture;
     probe.disconnect(&probes).await;
-    let mut hook =
-        crate::components::hooks::HookKind::from_config(&psa::api::HookConfig::ProjectContext);
+    let mut hook = crate::components::hooks::HookKind::ProjectContext(
+        crate::components::hooks::ProjectContextHook,
+    );
     let mut context = AgentContext::new(&mut state, &probe_handle, &runtime.handle);
     let (_sender, cancellation) = Cancellation::channel();
     assert!(hook.run(&mut context, cancellation).await.is_err());
@@ -1478,7 +1521,7 @@ async fn model_facing_tool_error_does_not_change_running_status() {
         .unwrap();
     assert_eq!(state.agent().state, AgentState::Running);
     assert_eq!(state.context().status, AgentState::Running);
-    let mut cursor = fixture.database.cursor().await.unwrap();
+    let mut cursor = fixture.database.read().await.unwrap();
     let saved = cursor.load_all_events(agent.id).await.unwrap();
     assert_eq!(saved.len(), events.len() + 1);
     assert!(matches!(&saved.last().unwrap().kind, EventType::ToolResult(result) if result.error));
@@ -1486,6 +1529,6 @@ async fn model_facing_tool_error_does_not_change_running_status() {
         cursor.get_agent(agent.id).await.unwrap().state,
         AgentState::Running
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     fixture.close().await;
 }

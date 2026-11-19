@@ -119,7 +119,7 @@ impl ConfigRegistry {
         &self,
         location: &SkillLocation,
     ) -> Result<(), DiscoveryError> {
-        let _guard = self.gate.lock().await;
+        let _guard = self.gate.write().await;
         let SkillLocation::Global(path) = location else {
             return Ok(());
         };
@@ -168,7 +168,7 @@ impl ConfigRegistry {
         upload: &NewSkill,
     ) -> Result<SkillRegistration, DiscoveryError> {
         let data = decode_archive(upload).await?;
-        let _guard = self.gate.lock().await;
+        let _guard = self.gate.write().await;
         let entries = validate_archive(&data)?;
         let metadata = entries
             .iter()

@@ -15,7 +15,7 @@ pub(super) async fn install_bundle(harness: &Harness) -> (BashBundle, BashHandle
     let database = Database::open(harness.dir.path().join("server.sqlite3"))
         .await
         .unwrap();
-    let mut cursor = database.cursor().await.unwrap();
+    let mut cursor = database.write().await.unwrap();
     let definition = cursor
         .create_agent_definition(psa_server::db::CreateAgentDefinition {
             name: "bash integration".into(),

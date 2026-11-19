@@ -5,8 +5,8 @@ use crate::{
         agent_manager::AgentManagerState,
         client_queries::ClientQueries,
         publication::Publication,
-        session_manager::{ManagerClient, ManagerCommand, RuntimeError},
-        sessions::Sessions,
+        runtime_handle::RuntimeHandle,
+        supervisor::{RuntimeError, SupervisorClient, SupervisorCommand},
     },
     components::bundles::session::SessionBundleResources,
     db::Database,
@@ -22,8 +22,8 @@ struct Fixture {
     _directory: tempfile::TempDir,
     database: Database,
     queries: ClientQueries,
-    sessions: Sessions,
-    manager: actors::Mailbox<ManagerCommand>,
+    sessions: RuntimeHandle,
+    manager: actors::Mailbox<SupervisorCommand>,
     state: AgentManagerState,
     resources: SessionBundleResources,
 }
@@ -35,7 +35,7 @@ impl Fixture {
             .await
             .unwrap();
         crate::test_support::register_probe(&database).await;
-        let mut cursor = database.cursor().await.unwrap();
+        let mut cursor = database.write().await.unwrap();
         let worker = cursor
             .create_agent_definition(crate::db::CreateAgentDefinition {
                 name: "worker-template".into(),
@@ -83,10 +83,10 @@ impl Fixture {
                 .unwrap();
         let queries = ClientQueries::start(publication.clone());
         let (commands, manager) = actors::channel(32);
-        let sessions = Sessions::new(
+        let sessions = RuntimeHandle::new(
             database.clone(),
             publication,
-            ManagerClient::new(commands),
+            SupervisorClient::new(commands),
             queries.handle(),
         );
         let resources = SessionBundleResources::start(session.id, sessions.clone(), None);
@@ -134,8 +134,8 @@ fn output_text(output: &ToolOutput) -> String {
 
 async fn next_command<F: Future<Output = ToolOutput>>(
     run: Pin<&mut F>,
-    manager: &mut actors::Mailbox<ManagerCommand>,
-) -> ManagerCommand {
+    manager: &mut actors::Mailbox<SupervisorCommand>,
+) -> SupervisorCommand {
     tokio::time::timeout(WAIT, async {
         tokio::select! {
             biased;
@@ -163,7 +163,7 @@ async fn cancelled_creation(cancel_at: CancelAt, fail_submission: bool, fail_int
         let mut cancel = Some(cancel);
         let run = tool.execute(arguments(), &mut context, cancellation);
         tokio::pin!(run);
-        let ManagerCommand::AgentsCreated { agents } =
+        let SupervisorCommand::AgentsCreated { agents } =
             next_command(run.as_mut(), &mut fixture.manager).await
         else {
             panic!("expected child creation notification");
@@ -174,7 +174,7 @@ async fn cancelled_creation(cancel_at: CancelAt, fail_submission: bool, fail_int
             cancel.take().unwrap().send(()).unwrap();
         }
 
-        let ManagerCommand::Submit {
+        let SupervisorCommand::Submit {
             session: owner,
             agent,
             request,
@@ -217,7 +217,7 @@ async fn cancelled_creation(cancel_at: CancelAt, fail_submission: bool, fail_int
         };
         reply.send(submitted).unwrap();
 
-        let ManagerCommand::Submit {
+        let SupervisorCommand::Submit {
             session: owner,
             agent,
             request,
@@ -298,13 +298,13 @@ async fn uncancelled_creation_reports_submission_result_without_interrupting() {
             let (_cancel, cancellation) = Cancellation::channel();
             let run = tool.execute(arguments(), &mut context, cancellation);
             tokio::pin!(run);
-            let ManagerCommand::AgentsCreated { agents } =
+            let SupervisorCommand::AgentsCreated { agents } =
                 next_command(run.as_mut(), &mut fixture.manager).await
             else {
                 panic!("expected child creation notification");
             };
             let child = agents[0];
-            let ManagerCommand::Submit {
+            let SupervisorCommand::Submit {
                 agent,
                 request,
                 reply,

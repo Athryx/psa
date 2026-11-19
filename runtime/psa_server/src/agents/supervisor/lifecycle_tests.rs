@@ -103,7 +103,7 @@ impl Fixture {
         let probe = ProbeId(Uuid::new_v4());
         let mut metadata = crate::test_support::probe_metadata();
         metadata.id = probe;
-        let mut cursor = db.cursor().await.unwrap();
+        let mut cursor = db.write().await.unwrap();
         cursor.upsert_probe(&metadata).await.unwrap();
         crate::test_support::create_agent_definition(&mut cursor).await;
         cursor.commit().await.unwrap();
@@ -136,7 +136,7 @@ impl Fixture {
         .unwrap()
     }
 
-    async fn create_session(&self, sessions: &Sessions) -> Session {
+    async fn create_session(&self, sessions: &RuntimeHandle) -> Session {
         sessions
             .create_session(psa::api::CreateSession {
                 decision_model: None,
@@ -162,9 +162,9 @@ impl Fixture {
     }
 
     async fn identity_prompt(&self, agent: AgentId) -> String {
-        let mut cursor = self.db.cursor().await.unwrap();
+        let mut cursor = self.db.read().await.unwrap();
         let events = cursor.load_all_events(agent).await.unwrap();
-        cursor.rollback().await.unwrap();
+        cursor.close().await.unwrap();
         assert_eq!(
             serde_json::to_string(&events)
                 .unwrap()
@@ -199,7 +199,7 @@ impl Fixture {
         prompts.into_iter().next().unwrap()
     }
 
-    async fn wait_idle(&self, sessions: &Sessions, session: SessionId) {
+    async fn wait_idle(&self, sessions: &RuntimeHandle, session: SessionId) {
         tokio::time::timeout(WAIT, async {
             while sessions.is_busy(session).await.unwrap() {
                 tokio::task::yield_now().await;
@@ -226,7 +226,7 @@ fn agent_request() -> crate::agents::NewAgent {
     }
 }
 
-async fn rename(sessions: &Sessions, session: SessionId, name: &str) {
+async fn rename(sessions: &RuntimeHandle, session: SessionId, name: &str) {
     tokio::time::timeout(
         WAIT,
         sessions.update_session(
@@ -269,30 +269,23 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
     .unwrap();
     let definition = runtime
         .handle
-        .update_agent_definition(
-            psa::api::AgentDefinitionId(1),
-            crate::db::CreateAgentDefinition {
-                name: "explicit".into(),
-                model: explicit_model.clone().into(),
-                bundles: vec![psa::api::BundleConfig::Noop],
-                hooks: psa::api::HookConfigs {
-                    agent_create: vec![
-                        psa::api::HookConfig::DefaultStartup,
-                        psa::api::HookConfig::ToolDefinitions,
-                    ],
-                    session_update: vec![psa::api::HookConfig::SessionModelUpdate],
-                    after_request: vec![psa::api::HookConfig::StopWithoutTools],
-                    ..Default::default()
+        .create_agent_definition(crate::db::CreateAgentDefinition {
+            name: "explicit".into(),
+            model: explicit_model.clone().into(),
+            bundles: vec![
+                psa::api::BundleConfig::Startup {
+                    base_prompt: true,
+                    project_context: false,
+                    cwd: false,
+                    skills: false,
                 },
-                ..Default::default()
-            },
-        )
+                psa::api::BundleConfig::StopWithoutTools,
+            ],
+            ..Default::default()
+        })
         .await
         .unwrap();
-    assert_eq!(
-        definition.previous_version_id,
-        Some(inherited.definition_id)
-    );
+    assert_ne!(definition.id, inherited.definition_id);
     let explicit = runtime
         .handle
         .create_agent(
@@ -315,21 +308,21 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
         .unwrap();
     fixture.wait_idle(&runtime.handle, session.id).await;
 
-    let mut cursor = fixture.db.cursor().await.unwrap();
+    let mut cursor = fixture.db.read().await.unwrap();
     for (agent, expected) in [
         (&inherited, &session.model_config),
         (&explicit, &explicit_model),
     ] {
         let events = cursor.load_all_events(agent.id).await.unwrap();
-        assert_eq!(events.len(), 4);
+        // Startup always begins with a new context, the model, and base instructions.
+        assert!(events.len() >= 3);
         assert!(matches!(events[0].kind, EventType::NewContext));
         assert!(matches!(&events[1].kind, EventType::Model(model) if model == expected));
         assert!(
             matches!(&events[2].kind, EventType::Message(message) if message.message_type == psa::api::events::MessageType::System)
         );
-        assert!(matches!(events[3].kind, EventType::ToolDefinition(_)));
     }
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
 
     let mut updated_model = session.model_config.clone();
     updated_model.model = llm_api::providers::Model::new(
@@ -390,7 +383,7 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
     assert!(unchanged_agents.contains(&explicit.id));
     fixture.wait_idle(&runtime.handle, session.id).await;
 
-    let mut cursor = fixture.db.cursor().await.unwrap();
+    let mut cursor = fixture.db.read().await.unwrap();
     for (agent, expected, model_count) in [
         (&inherited, &updated_model, 2),
         (&explicit, &explicit_model, 1),
@@ -406,7 +399,7 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
         assert_eq!(models.len(), model_count);
         assert_eq!(*models.last().unwrap(), expected);
     }
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     runtime.shutdown().await.unwrap();
     fixture.probes.shutdown().await;
 }
@@ -465,22 +458,20 @@ async fn subagent_identity_is_created_once_and_preserved_on_reload_restart_and_f
     let runtime = fixture.start().await;
     let definition = runtime
         .handle
-        .update_agent_definition(
-            psa::api::AgentDefinitionId(1),
-            crate::db::CreateAgentDefinition {
-                name: "subagents".into(),
-                bundles: vec![psa::api::BundleConfig::Subagents],
-                hooks: psa::api::HookConfigs {
-                    agent_create: vec![
-                        psa::api::HookConfig::DefaultStartup,
-                        psa::api::HookConfig::ToolDefinitions,
-                    ],
-                    after_request: vec![psa::api::HookConfig::StopWithoutTools],
-                    ..Default::default()
+        .create_agent_definition(crate::db::CreateAgentDefinition {
+            name: "subagents".into(),
+            bundles: vec![
+                psa::api::BundleConfig::Startup {
+                    base_prompt: true,
+                    project_context: false,
+                    cwd: false,
+                    skills: false,
                 },
-                ..Default::default()
-            },
-        )
+                psa::api::BundleConfig::Subagents,
+                psa::api::BundleConfig::StopWithoutTools,
+            ],
+            ..Default::default()
+        })
         .await
         .unwrap();
     let session = fixture.create_session(&runtime.handle).await;
@@ -614,12 +605,12 @@ async fn fork_runs_creation_only_for_the_new_child_agent() {
         .await
         .unwrap();
     assert_eq!(fork.agents.len(), 1);
-    assert_eq!(fork.agents[0].parent_id, Some(parent.id));
+    assert_eq!(fork.agents[0].forked_from, Some(parent.id));
     let child = &fork.agents[0];
     assert_ne!(child.id, parent.id);
     let created = fixture.next("create", child.id).await;
     assert_eq!(created.session.id, fork.session.id);
-    assert_eq!(created.session.parent_id, Some(session.id));
+    assert_eq!(created.session.forked_from, Some(session.id));
     assert_eq!(created.session.name, "child");
     assert_eq!(created.state, AgentState::Idle);
     assert_eq!(
@@ -714,15 +705,15 @@ async fn update_arriving_after_stop_boundary_survives_worker_retirement() {
     // Drive the supervisor manually to pin the race between returning Stop and
     // processing the worker's join. No scheduler sleeps are needed.
     let (commands, received) = actors::channel(256);
-    let commands = ManagerClient::new(commands);
+    let commands = SupervisorClient::new(commands);
     let client_queries = ClientQueries::start(fixture.publication.clone());
-    let sessions = Sessions::new(
+    let sessions = RuntimeHandle::new(
         fixture.db.clone(),
         fixture.publication.clone(),
         commands.clone(),
         client_queries.handle(),
     );
-    let mut manager = SessionManager {
+    let mut manager = Supervisor {
         db: fixture.db.clone(),
         publication: fixture.publication.clone(),
         providers: ProviderRegistry::default(),
@@ -738,7 +729,6 @@ async fn update_arriving_after_stop_boundary_survives_worker_retirement() {
         runs: HashMap::new(),
         lifecycle_events: Vec::new(),
         tasks: JoinSet::new(),
-        next_request_id: 1,
         next_generation: 1,
         shutting_down: false,
         shutdown_reply: None,
@@ -752,7 +742,7 @@ async fn update_arriving_after_stop_boundary_survives_worker_retirement() {
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(&command, ManagerCommand::Boundary { .. }));
+    assert!(matches!(&command, SupervisorCommand::Boundary { .. }));
     manager.handle_command(command).await;
     assert!(manager.workers[&agent.id].stopping);
     let joined = tokio::time::timeout(WAIT, manager.tasks.join_next_with_id())

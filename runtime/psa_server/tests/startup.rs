@@ -82,6 +82,12 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
     assert_eq!(
         config.agent_defaults.bundles,
         vec![
+            psa::api::BundleConfig::Startup {
+                base_prompt: true,
+                project_context: true,
+                cwd: true,
+                skills: true,
+            },
             psa::api::BundleConfig::FileTools { read_only: false },
             psa::api::BundleConfig::Bash,
             psa::api::BundleConfig::Subagents,
@@ -95,20 +101,6 @@ async fn config_uses_data_directory_and_never_overwrites_invalid_or_explicit_fil
             },
         ]
     );
-    assert_eq!(
-        config.agent_defaults.hooks.agent_create,
-        vec![
-            psa::api::HookConfig::DefaultStartup,
-            psa::api::HookConfig::ToolDefinitions,
-            psa::api::HookConfig::Skills,
-        ]
-    );
-    assert_eq!(
-        config.agent_defaults.hooks.session_update,
-        vec![psa::api::HookConfig::SessionModelUpdate]
-    );
-    assert!(config.agent_defaults.hooks.before_request.is_empty());
-    assert!(config.agent_defaults.hooks.after_request.is_empty());
     tokio::fs::write(&config.config_path, "broken TOML [")
         .await
         .unwrap();
@@ -300,41 +292,28 @@ async fn config_parses_agent_defaults_and_preserves_explicit_empty_lists() {
         config: Some(path.clone()),
         ..Default::default()
     };
-    tokio::fs::write(&path, format!("{base}\n[agent_defaults]\nbundles = [{{ FileTools = {{ read_only = false }} }}, \"Bash\"]\n[agent_defaults.hooks]\nagent_create = [\"DefaultStartup\", \"Skills\"]\nbefore_request = [\"Noop\"]\n"))
+    tokio::fs::write(&path, format!("{base}\n[agent_defaults]\nbundles = [{{ Startup = {{ cwd = false }} }}, {{ FileTools = {{ read_only = false }} }}, \"Bash\"]\n"))
         .await.unwrap();
     let defaults = options().resolve().await.unwrap().agent_defaults;
     assert_eq!(
         defaults.bundles,
         vec![
+            psa::api::BundleConfig::Startup {
+                base_prompt: true,
+                project_context: true,
+                cwd: false,
+                skills: true,
+            },
             psa::api::BundleConfig::FileTools { read_only: false },
             psa::api::BundleConfig::Bash
         ]
     );
-    assert_eq!(
-        defaults.hooks.agent_create,
-        vec![
-            psa::api::HookConfig::DefaultStartup,
-            psa::api::HookConfig::Skills
-        ]
-    );
-    assert_eq!(
-        defaults.hooks.before_request,
-        vec![psa::api::HookConfig::Noop]
-    );
-    assert!(defaults.hooks.session_update.is_empty());
-    assert!(defaults.hooks.after_request.is_empty());
 
-    tokio::fs::write(
-        &path,
-        format!(
-            "{base}\n[agent_defaults]\nbundles = []\n[agent_defaults.hooks]\nagent_create = []\n"
-        ),
-    )
-    .await
-    .unwrap();
+    tokio::fs::write(&path, format!("{base}\n[agent_defaults]\nbundles = []\n"))
+        .await
+        .unwrap();
     let defaults = options().resolve().await.unwrap().agent_defaults;
     assert!(defaults.bundles.is_empty());
-    assert!(defaults.hooks.agent_create.is_empty());
 
     for tools in ["[]", "[\"Read\"]", "[\"InvalidTool\"]"] {
         tokio::fs::write(

@@ -146,7 +146,7 @@ mod tests {
         use crate::{
             agents::{
                 NewAgent, agent_manager::AgentManagerState, publication::Publication,
-                session_manager::Runtime,
+                supervisor::Runtime,
             },
             components::{
                 bundles::{InstalledComponents, goal::load_goal_state},
@@ -245,7 +245,7 @@ mod tests {
                     AgentState::Running,
                 ),
             ] {
-                let mut cursor = database.cursor().await.unwrap();
+                let mut cursor = database.write().await.unwrap();
                 let name = format!(
                     "goal-{interactive}-{interactive_only}-{reason:?}-{active}-{completed}-{interrupted}-{cancelled}"
                 );
@@ -412,9 +412,9 @@ mod tests {
                             && matches!(&pair[1].kind, EventType::StatusChange(status) if status.new_status == AgentState::Idle)
                     }));
                 }
-                let mut cursor = database.cursor().await.unwrap();
+                let mut cursor = database.read().await.unwrap();
                 assert_eq!(cursor.get_agent(agent.id).await.unwrap().state, expected);
-                cursor.rollback().await.unwrap();
+                cursor.close().await.unwrap();
                 drop(context);
                 drop(state);
                 components.cleanup().await.unwrap();

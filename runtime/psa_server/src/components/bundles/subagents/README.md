@@ -2,7 +2,7 @@
 
 Subagent ancestry is core agent metadata. `Agent.subagent_parent_id` records an
 immutable parent in the same session and is saved atomically with agent creation.
-`Agent.parent_id` continues to mean fork lineage. The create/get/list API and
+`Agent.forked_from` continues to mean fork lineage. The create/get/list API and
 agent snapshot events expose ancestry without requiring this bundle. Session
 forks remap subagent links to copied agents and clear links to absent parents.
 Existing agents default to no subagent parent; legacy `psa.subagents/v1:` logs
@@ -30,7 +30,7 @@ checks cancellation and requests interruption of the child, reporting its ID.
 This does not delete the child or undo work already done. Forced timeout can
 still cut the sequence short; creation and task submission are not atomic.
 
-`wait_message` wraps core `Sessions::wait_for_steering` without consuming queued
+`wait_message` wraps core `RuntimeHandle::wait_for_steering` without consuming queued
 messages. It returns `steering_available` or `timeout`, with no acknowledgement
 IDs. The timeout defaults to 120 seconds and must be positive and at most 600.
 The small session-shared bundle actor tracks logical active runs, guarded wait

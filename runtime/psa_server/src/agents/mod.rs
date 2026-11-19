@@ -13,8 +13,8 @@ pub mod agent_projection;
 pub mod client_queries;
 pub mod lifecycle;
 pub mod publication;
-pub mod session_manager;
-pub mod sessions;
+pub mod runtime_handle;
+pub mod supervisor;
 
 /// Server-only convenience for taking a tool definition snapshot.
 pub trait ToolDefinitionExt: Sized {
@@ -36,7 +36,7 @@ pub struct Agent {
     pub id: AgentId,
     pub session_id: SessionId,
     pub definition_id: AgentDefinitionId,
-    pub parent_id: Option<AgentId>,
+    pub forked_from: Option<AgentId>,
     pub subagent_parent_id: Option<AgentId>,
     pub first_event_id: EventId,
     pub next_event_id: EventId,
@@ -56,7 +56,7 @@ impl From<Agent> for psa::api::Agent {
             id: agent.id,
             session_id: agent.session_id,
             definition_id: agent.definition_id,
-            parent_id: agent.parent_id,
+            forked_from: agent.forked_from,
             subagent_parent_id: agent.subagent_parent_id,
             name: agent.name,
             interactive: agent.interactive,

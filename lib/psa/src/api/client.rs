@@ -331,8 +331,11 @@ impl Client {
     /// Fetch the current named configuration and its dependency status.
     /// Returns HTTP 404 if the configuration is unknown.
     pub async fn get_agent_config(&self, id: &ConfigId) -> Result<AgentConfigStatus, ClientError> {
-        self.send(Method::POST, routes::AGENT_CONFIG_LOOKUP, id)
-            .await
+        self.get(
+            routes::AGENT_CONFIG_LOOKUP,
+            &crate::api::ConfigLookup::from(id),
+        )
+        .await
     }
 
     /// Fetch an immutable definition snapshot and its source policies/references.
@@ -409,7 +412,7 @@ impl Client {
     }
 
     /// Create a child session with inherited history through the requested boundary.
-    /// Returns the new session and forked agents, with source IDs in `parent_id`.
+    /// Returns the new session and forked agents, with source IDs in `forked_from`.
     pub async fn fork_session(
         &self,
         id: SessionId,

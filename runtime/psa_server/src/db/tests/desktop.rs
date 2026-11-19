@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn recent_pages_include_fork_inheritance_and_merge_multiple_agent_positions() {
     let (_dir, db, session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor
         .add_events(
             agent.id,
@@ -102,7 +102,7 @@ async fn recent_pages_include_fork_inheritance_and_merge_multiple_agent_position
 #[tokio::test]
 async fn summary_equal_timestamps_use_descending_id_keysets_and_direct_children() {
     let (_dir, db, session, _agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let fork = cursor
         .fork_session(
             session.id,
@@ -118,7 +118,7 @@ async fn summary_equal_timestamps_use_descending_id_keysets_and_direct_children(
         .execute(&db.pool)
         .await
         .unwrap();
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let query = psa::api::SessionsQuery {
         flat: true,
         limit: 1,
@@ -154,7 +154,7 @@ async fn summary_equal_timestamps_use_descending_id_keysets_and_direct_children(
 #[tokio::test]
 async fn summary_filters_match_names_probes_and_projects_like_the_shared_filter() {
     let (_dir, db, global, _agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let project = psa::api::ProjectId("Pipeline".into());
     let in_project = cursor
         .create_session(NewSession {

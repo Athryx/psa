@@ -12,7 +12,7 @@ use std::time::Duration;
 #[tokio::test]
 async fn commit_persists_multiple_operations_together() {
     let (_dir, db, _session, _agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     let session = cursor
         .create_session(NewSession {
             decision_model: None,
@@ -64,7 +64,7 @@ async fn commit_persists_multiple_operations_together() {
     assert_eq!(session_count, 1);
     cursor.commit().await.unwrap();
 
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     assert_eq!(
         cursor.get_session(session.id).await.unwrap().name,
         "atomic setup"
@@ -94,7 +94,7 @@ async fn commit_persists_multiple_operations_together() {
 async fn explicit_rollback_and_drop_discard_all_cursor_changes() {
     let (_dir, db, session, agent) = fixture().await;
     for explicit in [true, false] {
-        let mut cursor = db.cursor().await.unwrap();
+        let mut cursor = db.write().await.unwrap();
         cursor
             .update_session(
                 session.id,
@@ -141,7 +141,7 @@ async fn explicit_rollback_and_drop_discard_all_cursor_changes() {
             drop(cursor);
         }
 
-        let mut cursor = db.cursor().await.unwrap();
+        let mut cursor = db.write().await.unwrap();
         let unchanged = cursor.get_session(session.id).await.unwrap();
         assert_eq!(unchanged.name, session.name);
         assert_eq!(unchanged.next_position, session.next_position);
@@ -171,7 +171,7 @@ async fn explicit_rollback_and_drop_discard_all_cursor_changes() {
 #[tokio::test]
 async fn failed_operation_does_not_discard_earlier_cursor_writes() {
     let (_dir, db, session, agent) = fixture().await;
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.write().await.unwrap();
     cursor
         .update_session(
             session.id,
@@ -202,7 +202,7 @@ async fn failed_operation_does_not_discard_earlier_cursor_writes() {
     ));
     cursor.commit().await.unwrap();
 
-    let mut cursor = db.cursor().await.unwrap();
+    let mut cursor = db.read().await.unwrap();
     assert_eq!(
         cursor.get_session(session.id).await.unwrap().name,
         "keep this"
@@ -218,7 +218,7 @@ async fn failed_operation_does_not_discard_earlier_cursor_writes() {
             .len(),
         1
     );
-    cursor.rollback().await.unwrap();
+    cursor.close().await.unwrap();
     db.close().await;
 }
 
@@ -229,7 +229,7 @@ async fn cancelling_a_task_rolls_back_its_cursor() {
         let writer = db.clone();
         let (ready, wait) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
-            let mut cursor = writer.cursor().await.unwrap();
+            let mut cursor = writer.write().await.unwrap();
             cursor
                 .add_events(agent.id, &[state_change(AgentState::Running)])
                 .await
@@ -241,7 +241,7 @@ async fn cancelling_a_task_rolls_back_its_cursor() {
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
 
-        let mut cursor = db.cursor().await.unwrap();
+        let mut cursor = db.write().await.unwrap();
         assert_eq!(
             cursor.get_agent(agent.id).await.unwrap().state,
             AgentState::Idle
@@ -258,6 +258,38 @@ async fn cancelling_a_task_rolls_back_its_cursor() {
                 .is_empty()
         );
         cursor.rollback().await.unwrap();
+        db.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn read_cursors_do_not_wait_for_an_open_writer() {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let (_dir, db, _session, agent) = fixture().await;
+        let mut writer = db.write().await.unwrap();
+        writer
+            .add_events(agent.id, &[state_change(AgentState::Running)])
+            .await
+            .unwrap();
+
+        // A second writer would wait out the busy timeout; readers see the
+        // last committed snapshot immediately.
+        let mut reader = db.read().await.unwrap();
+        assert_eq!(
+            reader.get_agent(agent.id).await.unwrap().state,
+            AgentState::Idle
+        );
+        reader.close().await.unwrap();
+
+        writer.commit().await.unwrap();
+        let mut reader = db.read().await.unwrap();
+        assert_eq!(
+            reader.get_agent(agent.id).await.unwrap().state,
+            AgentState::Running
+        );
+        reader.close().await.unwrap();
         db.close().await;
     })
     .await
