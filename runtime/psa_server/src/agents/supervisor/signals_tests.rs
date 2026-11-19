@@ -5,7 +5,7 @@ use std::time::Duration;
 
 struct Fixture {
     _directory: tempfile::TempDir,
-    manager: SessionManager,
+    manager: Supervisor,
     session: SessionId,
     agent: AgentId,
 }
@@ -58,15 +58,15 @@ impl Fixture {
         cursor.commit().await.unwrap();
         let publication = Publication::default();
         let (commands, received) = actors::channel(256);
-        let commands = ManagerClient::new(commands);
+        let commands = SupervisorClient::new(commands);
         let client_queries = ClientQueries::start(publication.clone());
-        let sessions = Sessions::new(
+        let sessions = RuntimeHandle::new(
             db.clone(),
             publication.clone(),
             commands.clone(),
             client_queries.handle(),
         );
-        let manager = SessionManager {
+        let manager = Supervisor {
             db,
             publication,
             providers: ProviderRegistry::new(vec![
@@ -84,7 +84,6 @@ impl Fixture {
             runs: HashMap::new(),
             lifecycle_events: Vec::new(),
             tasks: JoinSet::new(),
-            next_request_id: 1,
             next_generation: 1,
             shutting_down: false,
             shutdown_reply: None,
@@ -796,7 +795,7 @@ async fn completion_hook_reports_children_without_bundle_and_preserves_outcomes(
             },
         );
         let receive = async {
-            let ManagerCommand::SubmitIfNotInterrupted {
+            let SupervisorCommand::SubmitIfNotInterrupted {
                 session,
                 agent,
                 request,

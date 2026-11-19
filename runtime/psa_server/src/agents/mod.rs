@@ -13,8 +13,8 @@ pub mod agent_projection;
 pub mod client_queries;
 pub mod lifecycle;
 pub mod publication;
-pub mod session_manager;
-pub mod sessions;
+pub mod runtime_handle;
+pub mod supervisor;
 
 /// Server-only convenience for taking a tool definition snapshot.
 pub trait ToolDefinitionExt: Sized {

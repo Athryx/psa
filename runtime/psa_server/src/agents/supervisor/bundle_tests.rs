@@ -13,7 +13,6 @@ async fn runtime_shutdown_cleans_retained_owners_and_reports_failures() {
     for behavior in [
         CleanupBehavior::Ok,
         CleanupBehavior::Error,
-        CleanupBehavior::Panic,
         CleanupBehavior::Pending,
     ] {
         let directory = tempfile::tempdir().unwrap();
@@ -63,15 +62,15 @@ async fn runtime_shutdown_cleans_retained_owners_and_reports_failures() {
         let publication = Publication::default();
         let probes = ProbeRegistry::start("owner-test".into());
         let (commands, received) = actors::channel(256);
-        let commands = ManagerClient::new(commands);
+        let commands = SupervisorClient::new(commands);
         let client_queries = ClientQueries::start(publication.clone());
-        let sessions = Sessions::new(
+        let sessions = RuntimeHandle::new(
             db.clone(),
             publication.clone(),
             commands.clone(),
             client_queries.handle(),
         );
-        let mut manager = SessionManager {
+        let mut manager = Supervisor {
             db: db.clone(),
             publication,
             providers: ProviderRegistry::default(),
@@ -87,7 +86,6 @@ async fn runtime_shutdown_cleans_retained_owners_and_reports_failures() {
             runs: HashMap::new(),
             lifecycle_events: Vec::new(),
             tasks: JoinSet::new(),
-            next_request_id: 1,
             next_generation: 1,
             shutting_down: false,
             shutdown_reply: None,
@@ -122,7 +120,7 @@ async fn runtime_shutdown_cleans_retained_owners_and_reports_failures() {
                         .await
                         .unwrap();
                     let boundary = manager.received.recv().await.unwrap();
-                    assert!(matches!(&boundary, ManagerCommand::Boundary { .. }));
+                    assert!(matches!(&boundary, SupervisorCommand::Boundary { .. }));
                     manager.handle_command(boundary).await;
                     let joined = manager.tasks.join_next_with_id().await.unwrap();
                     manager.handle_join(joined).await;

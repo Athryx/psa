@@ -23,7 +23,7 @@ use std::{
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 /// Largest accepted skill upload archive.
@@ -52,7 +52,8 @@ pub enum DiscoveryError {
 pub struct ConfigRegistry {
     data_dir: PathBuf,
     agent_defaults: AgentDefaults,
-    gate: Arc<Mutex<()>>,
+    /// Rescans and uploads rewrite skill sources; copying them to probes only reads.
+    gate: Arc<RwLock<()>>,
 }
 
 impl ConfigRegistry {
@@ -60,7 +61,7 @@ impl ConfigRegistry {
         Self {
             data_dir,
             agent_defaults: AgentDefaults::default(),
-            gate: Arc::new(Mutex::new(())),
+            gate: Arc::default(),
         }
     }
 
@@ -108,7 +109,7 @@ impl ConfigRegistry {
         database: &Database,
         agents_dirs: &[(ProbeHandle, ConfigGroup)],
     ) -> Result<(), DiscoveryError> {
-        let _guard = self.gate.lock().await;
+        let _guard = self.gate.write().await;
         tokio::fs::create_dir_all(&self.data_dir).await?;
         let global_root = tokio::fs::canonicalize(&self.data_dir).await?;
         let mut cursor = database.cursor().await?;
@@ -234,7 +235,7 @@ impl ConfigRegistry {
         metadata: &ProbeMetadata,
         selected: &[Skill],
     ) -> Result<HashMap<SkillId, PathBuf>, DiscoveryError> {
-        let _guard = self.gate.lock().await;
+        let _guard = self.gate.read().await;
         let mut paths = HashMap::new();
         for skill in selected {
             let directory = match &skill.skill_location {

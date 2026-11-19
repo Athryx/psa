@@ -3,8 +3,8 @@
 use crate::db::{DatabaseCursor, EventRange};
 use crate::{
     agents::{
-        client_queries::ClientQueryError, publication::Publication, session_manager::RuntimeError,
-        sessions::Sessions,
+        client_queries::ClientQueryError, publication::Publication, runtime_handle::RuntimeHandle,
+        supervisor::RuntimeError,
     },
     db::{Database, DbError},
 };
@@ -76,7 +76,7 @@ impl<S: Send + Sync, T: serde::de::DeserializeOwned + Send> axum::extract::FromR
 pub struct AppState {
     pub database: Database,
     pub publication: Publication,
-    pub runtime: Sessions,
+    pub runtime: RuntimeHandle,
     pub accepting: Arc<AtomicBool>,
     pub probes: crate::probes::ProbeRegistry,
     pub client_key: Arc<str>,
@@ -211,7 +211,7 @@ pub fn router(state: AppState) -> Router {
             routes::AGENT_CONFIGS,
             post(upsert_agent_configs).get(list_agent_configs),
         )
-        .route(routes::AGENT_CONFIG_LOOKUP, post(get_agent_config))
+        .route(routes::AGENT_CONFIG_LOOKUP, get(get_agent_config))
         .route(routes::AGENT_SNAPSHOT, get(get_resolved_agent_config))
         .route(
             routes::SKILLS,
@@ -375,8 +375,9 @@ async fn refresh_configs(
 
 async fn get_agent_config(
     State(state): State<AppState>,
-    ApiJson(id): ApiJson<api::ConfigId>,
+    ApiQuery(lookup): ApiQuery<api::ConfigLookup>,
 ) -> Result<Json<api::AgentConfigStatus>, HttpError> {
+    let id = api::ConfigId::try_from(lookup).map_err(HttpError::Invalid)?;
     Ok(Json(state.runtime.get_agent_config(id).await?))
 }
 
@@ -1173,7 +1174,7 @@ mod desktop_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::{NewAgent, session_manager::Runtime};
+    use crate::agents::{NewAgent, supervisor::Runtime};
     use crate::{providers::ProviderRegistry, sessions};
 
     #[test]
@@ -1260,7 +1261,7 @@ mod tests {
             ("GET", routes::CONFIG),
             ("GET", routes::AGENT_CONFIGS),
             ("POST", routes::AGENT_CONFIGS),
-            ("POST", routes::AGENT_CONFIG_LOOKUP),
+            ("GET", routes::AGENT_CONFIG_LOOKUP),
             ("GET", routes::AGENT_SNAPSHOT),
             ("GET", routes::SKILLS),
             ("POST", routes::SKILLS),
@@ -1351,7 +1352,6 @@ mod tests {
                     skills: false,
                 },
                 api::BundleConfig::FileTools { read_only: false },
-                api::BundleConfig::Noop,
                 api::BundleConfig::StopWithoutTools,
             ],
         };

@@ -13,7 +13,7 @@ async fn create_compacting_agent(
             prompt: "Keep this system instruction.".into(),
         },
         wire::BundleConfig::StopWithoutTools,
-        wire::BundleConfig::Noop,
+        wire::BundleConfig::FileTools { read_only: true },
         wire::BundleConfig::Compaction {
             reserve_tokens: 0,
             keep_recent_tokens: 2,

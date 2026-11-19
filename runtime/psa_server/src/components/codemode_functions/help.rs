@@ -85,10 +85,7 @@ fn format_function_list(entries: &[CodeModeEntry]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{
-        codemode_functions::{CodeModeFunctionKind, CodeModeListing},
-        tools::{Noop, ToolKind},
-    };
+    use crate::components::codemode_functions::{CodeModeFunctionKind, CodeModeListing};
 
     #[test]
     fn stub_matches_prompt_rendering_and_list_summarizes_each_function() {
@@ -98,7 +95,9 @@ mod tests {
                 listing: CodeModeListing::SystemPrompt,
             },
             CodeModeEntry {
-                function: CodeModeFunctionKind::Tool(ToolKind::Noop(Noop)),
+                function: CodeModeFunctionKind::Tool(
+                    crate::components::bundles::testing::test_tool("noop", psa::api::ToolId::Edit),
+                ),
                 listing: CodeModeListing::HelpOnly,
             },
         ];

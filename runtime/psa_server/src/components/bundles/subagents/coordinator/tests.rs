@@ -2,13 +2,13 @@ use super::*;
 use crate::agents::{
     client_queries::ClientQueries,
     publication::Publication,
-    session_manager::{ManagerClient, ManagerCommand},
+    supervisor::{SupervisorClient, SupervisorCommand},
 };
 
 async fn fixture() -> (
     tempfile::TempDir,
     ClientQueries,
-    actors::Mailbox<ManagerCommand>,
+    actors::Mailbox<SupervisorCommand>,
     State,
 ) {
     let directory = tempfile::tempdir().unwrap();
@@ -18,10 +18,10 @@ async fn fixture() -> (
     let publication = Publication::default();
     let queries = ClientQueries::start(publication.clone());
     let (sender, manager) = actors::channel(32);
-    let sessions = Sessions::new(
+    let sessions = RuntimeHandle::new(
         database,
         publication,
-        ManagerClient::new(sender),
+        SupervisorClient::new(sender),
         queries.handle(),
     );
     (

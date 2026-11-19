@@ -44,7 +44,7 @@ intended interruption behavior.
 
 ## Ownership and cancellation
 
-The session manager owns one `ClientQueries` service for its runtime. A dedicated
+The supervisor owns one `ClientQueries` service for its runtime. A dedicated
 workspace-`actors` actor owns pending requests and one-shot response senders.
 Only the calling tool/hook awaits a human answer; the actor continues processing
 other registrations, responses, cancellations, and shutdown messages.

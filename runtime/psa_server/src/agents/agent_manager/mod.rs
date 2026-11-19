@@ -5,8 +5,8 @@ use super::{
     agent_context::AgentContext,
     agent_projection::AgentProjection,
     publication::{Publication, status_event},
-    session_manager::{BoundaryReply, CommandWork, LifecycleHook, ManagerClient},
-    sessions::Sessions,
+    runtime_handle::RuntimeHandle,
+    supervisor::{BoundaryReply, CommandWork, LifecycleHook, SupervisorClient},
 };
 use crate::db::NewEvent;
 use crate::{
@@ -30,7 +30,7 @@ use llm_api::api::{
     RequestConfig,
 };
 use psa::api::events::*;
-use std::{panic::AssertUnwindSafe, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 use tokio::{sync::Mutex, task::JoinHandle};
 
 pub(crate) mod tool_execution;
@@ -127,7 +127,7 @@ impl AgentManagerState {
         .await?;
         #[cfg(test)]
         let components = {
-            use super::session_manager::lifecycle_tests::RecordLifecycle;
+            use super::supervisor::lifecycle_tests::RecordLifecycle;
             use crate::components::hooks::HookKind;
             let mut components = components;
             components
@@ -193,7 +193,7 @@ impl AgentManagerState {
     async fn persist_promoted_events(
         &mut self,
         events: &[NewEvent],
-        promotions: &[(usize, String)],
+        promotions: &[(usize, psa::api::PendingEventId)],
     ) -> Result<Vec<Event>, AgentError> {
         let batch: Vec<_> = events.iter().cloned().map(EventBatchItem::Public).collect();
         self.persist_event_batch_with_promotions(batch, promotions)
@@ -210,7 +210,7 @@ impl AgentManagerState {
     async fn persist_event_batch_with_promotions(
         &mut self,
         events: Vec<EventBatchItem>,
-        promotions: &[(usize, String)],
+        promotions: &[(usize, psa::api::PendingEventId)],
     ) -> Result<Vec<Event>, AgentError> {
         self.finish_persistence().await?;
         self.start_persistence(events, promotions);
@@ -218,7 +218,11 @@ impl AgentManagerState {
     }
 
     /// Start an append without borrowing the worker while the commit runs.
-    fn start_persistence(&mut self, events: Vec<EventBatchItem>, promotions: &[(usize, String)]) {
+    fn start_persistence(
+        &mut self,
+        events: Vec<EventBatchItem>,
+        promotions: &[(usize, psa::api::PendingEventId)],
+    ) {
         assert!(self.pending_persistence.is_none());
         let (events, promotions) = build_persistence_batch(events, promotions, self.agent.state);
         if events.is_empty() {
@@ -233,7 +237,7 @@ impl AgentManagerState {
         let publication = self.publication.clone();
         let agent = self.agent.id;
         let context = self.context.clone();
-        let finished = db.register_commit(agent);
+        let finished = publication.register_append(agent);
         self.pending_persistence = Some(tokio::spawn(async move {
             // Dropping this sender also signals completion on panic or task cancellation.
             let _finished = finished;
@@ -375,7 +379,7 @@ impl AgentManagerState {
         ))];
         let mut promotions = Vec::new();
         for (index, item) in response.items.iter().enumerate() {
-            promotions.push((events.len(), format!("{invocation}:{index}")));
+            promotions.push((events.len(), format!("{invocation}:{index}").into()));
             events.push(NewEvent::new(build_item_event(item)?));
         }
         events.push(NewEvent::new(EventType::InferenceResultEnd(
@@ -430,7 +434,7 @@ impl AgentManagerState {
                 .upsert(
                     self.agent.session_id,
                     self.agent.id,
-                    format!("{invocation}:{index}"),
+                    format!("{invocation}:{index}").into(),
                     build_item_event(item)?,
                 )
                 .await;
@@ -557,9 +561,9 @@ fn build_item_event(item: &HistoryItem) -> Result<EventType, AgentError> {
 /// Promotion offsets count public events, not batch items.
 fn build_persistence_batch(
     events: Vec<EventBatchItem>,
-    promotions: &[(usize, String)],
+    promotions: &[(usize, psa::api::PendingEventId)],
     mut status: AgentState,
-) -> (Vec<EventBatchItem>, Vec<(usize, String)>) {
+) -> (Vec<EventBatchItem>, Vec<(usize, psa::api::PendingEventId)>) {
     let mut filtered = Vec::new();
     let mut filtered_promotions = Vec::new();
     let mut public_index = 0;
@@ -612,11 +616,11 @@ fn drain_controls(
 pub(crate) async fn run_worker(
     mut state: AgentManagerState,
     generation: u64,
-    manager: ManagerClient,
+    manager: SupervisorClient,
     mut controls: UnboundedMailbox<AgentManagerMessage>,
     providers: ProviderRegistry,
     probes: ProbeRegistry,
-    sessions: Sessions,
+    sessions: RuntimeHandle,
 ) -> Result<(), AgentError> {
     let shared = Arc::clone(
         state
@@ -626,7 +630,9 @@ pub(crate) async fn run_worker(
     );
     let mut components = shared.lock().await;
     let hooks = &mut components.hooks;
-    let outcome = AssertUnwindSafe(async {
+    // A panic unwinds straight to the supervisor, which drains registered
+    // commits before recovering the agent.
+    let outcome: Result<(), AgentError> = async {
         let mut invocation = 0u64;
 
         loop {
@@ -803,15 +809,14 @@ pub(crate) async fn run_worker(
                 .resolve_tools(&probe, &sessions, &mut controls)
                 .await?;
         }
-    })
-    .catch_unwind()
+    }
     .await;
 
     // Retain hooks and owners for the next worker generation. Only runtime
     // shutdown cleans resources; retirement and recovery release the borrow.
     drop(components);
 
-    // Do not let supervisor recovery race a save detached by a panicking tool.
+    // Finish saves still in flight before handing the agent back.
     let persistence = async {
         state.finish_persistence().await?;
         state.drain_invocation_saves().await
@@ -820,11 +825,7 @@ pub(crate) async fn run_worker(
     if let Err(error) = &persistence {
         tracing::error!(agent = state.agent.id.0, %error, "worker persistence cleanup failed");
     }
-    let result: Result<(), AgentError> = match outcome {
-        Ok(result) => result,
-        Err(panic) => std::panic::resume_unwind(panic),
-    };
-    result?;
+    outcome?;
     persistence?;
     Ok(())
 }

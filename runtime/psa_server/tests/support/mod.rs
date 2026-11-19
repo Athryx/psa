@@ -37,7 +37,7 @@ pub async fn create_agent_definition(
                     cwd: false,
                     skills: false,
                 },
-                psa::api::BundleConfig::Noop,
+                psa::api::BundleConfig::FileTools { read_only: true },
                 psa::api::BundleConfig::StopWithoutTools,
             ],
             ..Default::default()

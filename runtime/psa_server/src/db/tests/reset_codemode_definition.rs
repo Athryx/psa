@@ -4,8 +4,12 @@ use crate::db::NewEvent;
 #[tokio::test]
 async fn reset_codemode_definition_round_trips_through_persistence_and_reopen() {
     let (directory, db, _session, agent) = fixture().await;
-    let definitions = [ToolId::Noop, ToolId::CodeMode, ToolId::ResetCodeMode]
-        .map(|id| ToolDefinition::for_tool(id).unwrap());
+    let definitions = [
+        ToolId::ListSessions,
+        ToolId::CodeMode,
+        ToolId::ResetCodeMode,
+    ]
+    .map(|id| ToolDefinition::for_tool(id).unwrap());
     let events: Vec<_> = definitions
         .iter()
         .map(|definition| NewEvent::new(EventType::ToolDefinition(definition.clone())))
@@ -19,7 +23,7 @@ async fn reset_codemode_definition_round_trips_through_persistence_and_reopen() 
             .fetch_all(&db.pool)
             .await
             .unwrap();
-    assert_eq!(stored_ids, ["noop", "codemode", "reset_codemode"]);
+    assert_eq!(stored_ids, ["list_sessions", "codemode", "reset_codemode"]);
     db.close().await;
 
     let reopened = Database::open(directory.path().join("events.sqlite3"))

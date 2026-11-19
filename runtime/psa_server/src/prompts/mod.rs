@@ -69,9 +69,6 @@ pub fn text(content: impl Into<String>) -> Vec<ContentBlock> {
     })]
 }
 
-pub fn noop_description() -> String {
-    "A placeholder tool that does nothing.".into()
-}
 pub fn tool_interrupted() -> Vec<ContentBlock> {
     text("Tool execution was interrupted; its outcome is unknown and it may have had side effects.")
 }

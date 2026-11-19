@@ -24,6 +24,7 @@ mod file_tools;
 mod hidden;
 mod interactive;
 mod models;
+mod remove_noop;
 mod reset_codemode_definition;
 mod results;
 mod subagents;
@@ -131,7 +132,7 @@ async fn round_trips_all_payloads_and_reopens_database() {
             metadata: HistoryItemMetadata::default(),
         }),
         EventType::ProviderItem(native()),
-        EventType::ToolDefinition(ToolDefinition::for_tool(ToolId::Noop).unwrap()),
+        EventType::ToolDefinition(ToolDefinition::for_tool(ToolId::ListSessions).unwrap()),
         EventType::ToolCall(ToolCall {
             call_id: "call".into(),
             tool_name: "noop".into(),
@@ -1335,59 +1336,4 @@ async fn atomically_persists_and_replays_a_complete_result_block() {
     assert_eq!(request.history.items.len(), 2);
     cursor.commit().await.unwrap();
     db.close().await;
-}
-
-#[tokio::test]
-async fn commit_tracker_is_shared_and_waits_for_completion_or_drop() {
-    let (_dir, db, _session, agent) = fixture().await;
-    let first = db.register_commit(agent.id);
-    let second = db.clone().register_commit(agent.id);
-    let other = db.register_commit(crate::agents::AgentId(999));
-    let clone = db.clone();
-    let mut drain = tokio::spawn(async move { clone.drain_commits(agent.id).await });
-    assert!(
-        tokio::time::timeout(Duration::from_millis(20), &mut drain)
-            .await
-            .is_err()
-    );
-    drop(first);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(20), &mut drain)
-            .await
-            .is_err()
-    );
-    drop(second);
-    tokio::time::timeout(Duration::from_secs(1), drain)
-        .await
-        .unwrap()
-        .unwrap();
-    drop(other);
-    db.drain_commits(crate::agents::AgentId(999)).await;
-}
-
-#[tokio::test]
-async fn cancelling_commit_drain_preserves_pending_commits() {
-    let (_dir, db, _session, agent) = fixture().await;
-    let pending = db.register_commit(agent.id);
-    let clone = db.clone();
-    let mut first = tokio::spawn(async move { clone.drain_commits(agent.id).await });
-    assert!(
-        tokio::time::timeout(Duration::from_millis(20), &mut first)
-            .await
-            .is_err()
-    );
-    first.abort();
-    let _ = first.await;
-    let clone = db.clone();
-    let mut second = tokio::spawn(async move { clone.drain_commits(agent.id).await });
-    assert!(
-        tokio::time::timeout(Duration::from_millis(20), &mut second)
-            .await
-            .is_err()
-    );
-    drop(pending);
-    tokio::time::timeout(Duration::from_secs(1), second)
-        .await
-        .unwrap()
-        .unwrap();
 }

@@ -1,6 +1,6 @@
 use crate::agents::{
     publication::Publication,
-    session_manager::{Runtime, RuntimeError},
+    supervisor::{Runtime, RuntimeError},
 };
 use crate::{
     config::ResolvedConfig,

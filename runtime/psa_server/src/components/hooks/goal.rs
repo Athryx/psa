@@ -146,7 +146,7 @@ mod tests {
         use crate::{
             agents::{
                 NewAgent, agent_manager::AgentManagerState, publication::Publication,
-                session_manager::Runtime,
+                supervisor::Runtime,
             },
             components::{
                 bundles::{InstalledComponents, goal::load_goal_state},

@@ -6,7 +6,7 @@ use super::{
     client_queries::ClientQueries,
     lifecycle::{AgentLifecycleEvent, AgentRunOutcome},
     publication::Publication,
-    sessions::Sessions,
+    runtime_handle::RuntimeHandle,
 };
 use crate::db::{EventRange, NewEvent};
 use crate::{
@@ -22,7 +22,7 @@ use crate::{
 use actors::Mailbox;
 use psa::api::{
     AgentCommand, AgentRequest, CommandDelivery, CommandResult, MessageDelivery, RequestAccepted,
-    StreamMessage,
+    RequestId, StreamMessage,
     events::{AgentMessageLink, CommandRecord, EventId, EventType, Log, MessageType},
 };
 use std::{
@@ -44,6 +44,10 @@ mod signals_tests;
 mod tests;
 
 const MAX_PENDING: usize = 128;
+
+fn new_request_id() -> RequestId {
+    RequestId(psa::api::probes::Uuid::new_v4().to_string())
+}
 pub(crate) const EXECUTION_FAILURE_MESSAGE: &str =
     "Agent execution failed; see server logs for details.";
 
@@ -72,7 +76,7 @@ pub enum RuntimeError {
 }
 
 pub struct Runtime {
-    pub handle: Sessions,
+    pub handle: RuntimeHandle,
     task: JoinHandle<Result<(), RuntimeError>>,
 }
 
@@ -108,7 +112,7 @@ impl Runtime {
 
         // Repair incomplete event streams left by a server crash.
         for agent in agents {
-            db.drain_commits(agent.id).await;
+            publication.drain_appends(agent.id).await;
             recover_agent(&db, &publication, agent.id).await?;
         }
         let mut cursor = db.cursor().await?;
@@ -119,9 +123,9 @@ impl Runtime {
         }
 
         let (commands, received) = actors::channel(256);
-        let commands = ManagerClient::new(commands);
+        let commands = SupervisorClient::new(commands);
         let client_queries = ClientQueries::start(publication.clone());
-        let handle = Sessions::new(
+        let handle = RuntimeHandle::new(
             db.clone(),
             publication.clone(),
             commands.clone(),
@@ -130,7 +134,7 @@ impl Runtime {
         .with_catalog(providers.catalog().cloned())
         .with_default_model_config(default_model_config)
         .with_configuration(configuration, probes.clone());
-        let manager = SessionManager {
+        let manager = Supervisor {
             db,
             publication,
             providers,
@@ -147,7 +151,6 @@ impl Runtime {
             #[cfg(test)]
             lifecycle_events: Vec::new(),
             tasks: JoinSet::new(),
-            next_request_id: 1,
             next_generation: 1,
             shutting_down: false,
             shutdown_reply: None,
@@ -167,7 +170,7 @@ impl Runtime {
 
 #[derive(Clone)]
 pub(crate) struct QueuedRequest {
-    pub id: String,
+    pub id: RequestId,
     pub delivery: MessageDelivery,
     pub content: Vec<llm_api::api::ContentBlock>,
     pub message_type: MessageType,
@@ -176,7 +179,7 @@ pub(crate) struct QueuedRequest {
 }
 
 pub(crate) struct QueuedCommand {
-    pub id: String,
+    pub id: RequestId,
     pub delivery: CommandDelivery,
     pub work: CommandWork,
 }
@@ -201,7 +204,7 @@ enum QueuedItem {
 }
 
 impl QueuedItem {
-    fn id(&self) -> &str {
+    fn id(&self) -> &RequestId {
         match self {
             Self::Message(request) => &request.id,
             Self::Command(command) => &command.id,
@@ -255,8 +258,8 @@ pub(crate) enum BoundaryReply {
     Stop,
 }
 
-#[actors::mailbox(client = ManagerClient)]
-pub(crate) enum ManagerCommand {
+#[actors::mailbox(client = SupervisorClient)]
+pub(crate) enum SupervisorCommand {
     /// Check whether a session has any active workers.
     IsBusy {
         session: SessionId,
@@ -306,7 +309,7 @@ pub(crate) enum ManagerCommand {
     Consumed {
         agent: AgentId,
         generation: u64,
-        request_id: String,
+        request_id: RequestId,
     },
     /// Schedule the creation hook only for a newly committed agent.
     AgentsCreated { agents: Vec<AgentId> },
@@ -319,10 +322,10 @@ pub(crate) enum ManagerCommand {
     },
 }
 
-impl ManagerClient {
+impl SupervisorClient {
     pub(crate) async fn reserve_notification(
         &self,
-    ) -> Result<actors::MailboxPermit<'_, ManagerCommand>, RuntimeError> {
+    ) -> Result<actors::MailboxPermit<'_, SupervisorCommand>, RuntimeError> {
         self.handle
             .reserve()
             .await
@@ -337,7 +340,7 @@ struct Worker {
     controls: AgentClient,
     queue: VecDeque<QueuedItem>,
     lifecycle: VecDeque<LifecycleHook>,
-    in_flight: Option<String>,
+    in_flight: Option<RequestId>,
     stopping: bool,
 }
 
@@ -355,15 +358,15 @@ struct RunSummary {
     inference_outcome: Option<AgentRunOutcome>,
 }
 
-struct SessionManager {
+struct Supervisor {
     db: Database,
     publication: Publication,
     providers: ProviderRegistry,
     probes: ProbeRegistry,
-    sessions: Sessions,
+    sessions: RuntimeHandle,
     client_queries: ClientQueries,
-    commands: ManagerClient,
-    received: Mailbox<ManagerCommand>,
+    commands: SupervisorClient,
+    received: Mailbox<SupervisorCommand>,
     workers: HashMap<AgentId, Worker>,
     components: HashMap<AgentId, Arc<Mutex<InstalledComponents>>>,
     session_resources: HashMap<SessionId, SessionBundleResources>,
@@ -372,14 +375,13 @@ struct SessionManager {
     #[cfg(test)]
     lifecycle_events: Vec<AgentLifecycleEvent>,
     tasks: JoinSet<WorkerResult>,
-    next_request_id: u64,
     next_generation: u64,
     shutting_down: bool,
     shutdown_reply: Option<oneshot::Sender<()>>,
     cleanup_failed: bool,
 }
 
-impl SessionManager {
+impl Supervisor {
     fn is_busy(&self, session: SessionId) -> bool {
         self.workers
             .values()
@@ -715,12 +717,12 @@ impl SessionManager {
         Ok(summary)
     }
 
-    async fn handle_command(&mut self, command: ManagerCommand) {
+    async fn handle_command(&mut self, command: SupervisorCommand) {
         match command {
-            ManagerCommand::IsBusy { session, reply } => {
+            SupervisorCommand::IsBusy { session, reply } => {
                 let _ = reply.send(self.is_busy(session));
             }
-            ManagerCommand::SubmitIfNotInterrupted {
+            SupervisorCommand::SubmitIfNotInterrupted {
                 session,
                 agent,
                 request,
@@ -729,7 +731,7 @@ impl SessionManager {
                 let result = self.submit_request(session, agent, request, false).await;
                 let _ = reply.send(result);
             }
-            ManagerCommand::SubscribeSteering {
+            SupervisorCommand::SubscribeSteering {
                 session,
                 agent,
                 reply,
@@ -737,7 +739,7 @@ impl SessionManager {
                 let result = self.subscribe_steering(session, agent).await;
                 let _ = reply.send(result);
             }
-            ManagerCommand::Submit {
+            SupervisorCommand::Submit {
                 session,
                 agent,
                 request,
@@ -746,7 +748,7 @@ impl SessionManager {
                 let result = self.submit(session, agent, request).await;
                 let _ = reply.send(result);
             }
-            ManagerCommand::RunCommand {
+            SupervisorCommand::RunCommand {
                 session,
                 agent,
                 request,
@@ -755,7 +757,7 @@ impl SessionManager {
                 let result = self.submit_command(session, agent, request).await;
                 let _ = reply.send(result);
             }
-            ManagerCommand::Boundary {
+            SupervisorCommand::Boundary {
                 agent,
                 generation,
                 state,
@@ -763,7 +765,7 @@ impl SessionManager {
             } => {
                 self.handle_boundary(agent, generation, state, reply).await;
             }
-            ManagerCommand::Consumed {
+            SupervisorCommand::Consumed {
                 agent,
                 generation,
                 request_id,
@@ -772,24 +774,24 @@ impl SessionManager {
                     .workers
                     .get_mut(&agent)
                     .filter(|worker| worker.generation == generation)
-                    && worker.in_flight.as_deref() == Some(request_id.as_str())
+                    && worker.in_flight.as_ref() == Some(&request_id)
                 {
                     worker.in_flight = None;
                 }
             }
-            ManagerCommand::AgentsCreated { agents } => {
+            SupervisorCommand::AgentsCreated { agents } => {
                 for agent in agents {
                     if let Err(error) = self.schedule_agent_create(agent).await {
                         tracing::error!(agent = agent.0, %error, "failed to schedule agent creation hook");
                     }
                 }
             }
-            ManagerCommand::SessionUpdated { session } => {
+            SupervisorCommand::SessionUpdated { session } => {
                 if let Err(error) = self.schedule_session_update(&session).await {
                     tracing::error!(session = session.id.0, %error, "failed to schedule session update hooks");
                 }
             }
-            ManagerCommand::Shutdown { reply } => {
+            SupervisorCommand::Shutdown { reply } => {
                 self.shutdown_reply = Some(reply);
                 self.begin_shutdown().await;
             }
@@ -869,7 +871,7 @@ impl SessionManager {
 
         for (request_id, reason) in rejected {
             self.publication
-                .lock()
+                .lock_state()
                 .await
                 .publish(StreamMessage::RequestFailed {
                     session_id: session,
@@ -953,7 +955,7 @@ impl SessionManager {
                     let _ = worker.controls.interrupt();
                 }
                 return Ok(RequestAccepted {
-                    request_id: psa::api::probes::Uuid::new_v4().to_string(),
+                    request_id: new_request_id(),
                 });
             }
         };
@@ -1040,7 +1042,7 @@ impl SessionManager {
         &mut self,
         agent: AgentId,
         session: SessionId,
-        build: impl FnOnce(String) -> QueuedItem,
+        build: impl FnOnce(RequestId) -> QueuedItem,
     ) -> Result<RequestAccepted, RuntimeError> {
         if self
             .workers
@@ -1049,12 +1051,7 @@ impl SessionManager {
         {
             return Err(RuntimeError::Overloaded);
         }
-        let id = format!(
-            "{}-{}",
-            time::OffsetDateTime::now_utc().unix_timestamp_nanos(),
-            self.next_request_id
-        );
-        self.next_request_id += 1;
+        let id = new_request_id();
 
         self.ensure_worker(agent, session).await?;
         self.workers
@@ -1244,7 +1241,7 @@ impl SessionManager {
         let worker = self.workers.remove(&agent).expect("worker exists");
         // A hard-aborted worker can leave an append task detached. Reconcile it
         // before any recovery reads or a replacement worker loads its state.
-        self.db.drain_commits(agent).await;
+        self.publication.drain_appends(agent).await;
         if result.is_err() {
             self.finish_run(
                 agent,
@@ -1296,7 +1293,7 @@ impl SessionManager {
         tracing::error!(agent = agent.0, %error, "agent worker failed");
         if let Some(request_id) = &worker.in_flight {
             self.publication
-                .lock()
+                .lock_state()
                 .await
                 .publish(StreamMessage::RequestFailed {
                     session_id: worker.session,

@@ -2,7 +2,7 @@
 
 use super::{
     Agent, AgentError, agent_manager::AgentManagerState, agent_projection::AgentProjection,
-    client_queries::ClientQueryError, sessions::Sessions,
+    client_queries::ClientQueryError, runtime_handle::RuntimeHandle,
 };
 use crate::db::{EventRange, NewEvent};
 use crate::{
@@ -20,13 +20,13 @@ mod tests;
 /// Invocation capabilities with either borrowed hook state or owned tool snapshots.
 /// Lifecycle hooks also run when the session's probe is offline.
 /// Trace queries are scoped to this agent, including inherited fork history.
-/// Session/agent changes made through `Sessions` follow the normal manager API.
+/// Session/agent changes made through `RuntimeHandle` follow the normal manager API.
 /// Tool snapshots remain stable except for agent/projection updates from their
 /// own save replies; only the worker mutates authoritative state.
 pub struct AgentContext<'a> {
     state: ContextState<'a>,
     probe: Option<&'a ProbeHandle>,
-    sessions: &'a Sessions,
+    sessions: &'a RuntimeHandle,
 }
 
 enum ContextState<'a> {
@@ -52,7 +52,7 @@ impl<'a> AgentContext<'a> {
     pub(crate) fn invocation(
         snapshot: InvocationSnapshot,
         probe: &'a ProbeHandle,
-        sessions: &'a Sessions,
+        sessions: &'a RuntimeHandle,
     ) -> Self {
         Self {
             state: ContextState::Invocation(snapshot),
@@ -70,7 +70,7 @@ impl<'a> AgentContext<'a> {
     pub(crate) fn new(
         state: &'a mut AgentManagerState,
         probe: &'a ProbeHandle,
-        sessions: &'a Sessions,
+        sessions: &'a RuntimeHandle,
     ) -> Self {
         Self::with_optional_probe(state, Some(probe), sessions)
     }
@@ -78,7 +78,7 @@ impl<'a> AgentContext<'a> {
     pub(crate) fn with_optional_probe(
         state: &'a mut AgentManagerState,
         probe: Option<&'a ProbeHandle>,
-        sessions: &'a Sessions,
+        sessions: &'a RuntimeHandle,
     ) -> Self {
         Self {
             state: ContextState::Borrowed(state),
@@ -155,7 +155,7 @@ impl<'a> AgentContext<'a> {
         self.probe.ok_or(ProbeError::Disconnected)
     }
 
-    pub fn sessions(&self) -> &Sessions {
+    pub fn runtime(&self) -> &RuntimeHandle {
         self.sessions
     }
 
@@ -220,7 +220,7 @@ impl<'a> AgentContext<'a> {
     /// Load this agent's newest durable result, following its complete logical history.
     pub async fn load_last_result(
         &self,
-    ) -> Result<Option<psa::api::ResultRecord>, super::session_manager::RuntimeError> {
+    ) -> Result<Option<psa::api::ResultRecord>, super::supervisor::RuntimeError> {
         self.sessions
             .load_last_result(self.session().id, self.agent().id)
             .await
@@ -230,7 +230,7 @@ impl<'a> AgentContext<'a> {
     pub async fn load_last_results(
         &self,
         limit: u32,
-    ) -> Result<Vec<psa::api::ResultRecord>, super::session_manager::RuntimeError> {
+    ) -> Result<Vec<psa::api::ResultRecord>, super::supervisor::RuntimeError> {
         self.sessions
             .load_last_results(self.session().id, self.agent().id, limit)
             .await

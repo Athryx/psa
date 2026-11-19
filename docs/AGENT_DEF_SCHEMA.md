@@ -25,7 +25,7 @@ in `runtime/psa_server/src/db/configurations.rs`.
 | --- | --- | --- | --- |
 | `POST /agent-configs` | JSON array of `AgentConfigInput` | `Vec<AgentConfigStatus>` | `upsert_agent_configs(&[I])` (`I: Clone + Into<AgentConfigInput>`) |
 | `GET /agent-configs` | none | `Vec<AgentConfigStatus>` | `list_agent_configs()` |
-| `POST /agent-configs/lookup` | `ConfigId` JSON body | `AgentConfigStatus` | `get_agent_config(&ConfigId)` |
+| `GET /agent-configs/lookup` | `ConfigLookup` query (flattened `ConfigId`) | `AgentConfigStatus` | `get_agent_config(&ConfigId)` |
 | `GET /agent-snapshots/{definition_id}` | Internal snapshot ID | `ResolvedAgentConfig` (404 if unknown) | `get_resolved_agent_config(AgentDefinitionId)` |
 | `POST /skills` | `NewSkill` JSON body | `Skill` (201) | `upload_skill(&NewSkill)` |
 | `GET /skills` | none | `Vec<Skill>` | `list_skills()` |
@@ -82,7 +82,7 @@ enum ModelSelection {
 enum EffortSelection { Fixed(Effort), Parent, Global }
 
 enum BundleConfig {
-    Noop, Bash, Subagents, CodeMode, Traces, StopWithoutTools,
+    Bash, Subagents, CodeMode, Traces, StopWithoutTools,
     Startup { base_prompt: bool, project_context: bool, cwd: bool, skills: bool },
     ExtraSystemPrompt { prompt: String },
     FileTools { read_only: bool },
@@ -129,7 +129,7 @@ All tools and hooks are installed by bundles: there is no standalone tool or
 hook configuration, and no `tools` or `hooks` field on agent configs, stored
 definitions, or server defaults.
 `ToolId` remains a tool identity enum, not a construction selector.
-`Noop` is a unit bundle installing the Noop tool. `FileTools { read_only }`
+`FileTools { read_only }`
 requires a payload: `{"FileTools":{"read_only":true}}` installs only Read;
 false or omission inside the payload installs Read, Edit, and Write.
 Bare `"FileTools"` is invalid. TOML uses

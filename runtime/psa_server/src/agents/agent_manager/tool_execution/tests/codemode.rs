@@ -1,9 +1,6 @@
 use super::*;
 use crate::components::bundles::codemode::MontyEngine;
-use crate::components::{
-    codemode_functions::CodeModeFunctionKind,
-    tools::{CodeMode, Noop},
-};
+use crate::components::{codemode_functions::CodeModeFunctionKind, tools::CodeMode};
 use crate::db::NewEvent;
 use crate::db::PrivateEvent;
 use serde_json::json;
@@ -15,7 +12,7 @@ async fn nested_contexts_have_independent_snapshots_and_shared_registry() {
     let mut components = crate::components::bundles::InstalledComponents::default();
     components.codemode_functions =
         crate::components::codemode_functions::listed_entries([CodeModeFunctionKind::Tool(
-            ToolKind::Noop(Noop),
+            crate::components::bundles::testing::test_tool("noop", psa::api::ToolId::Edit),
         )]);
     let registry = components.codemode_functions.clone();
     state

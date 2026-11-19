@@ -255,13 +255,10 @@ async fn recovery_of_a_structured_result_fork_acknowledges_only_its_producer_and
         let definition = cursor
             .create_agent_definition(crate::db::CreateAgentDefinition {
                 name: "typed checkpoint".into(),
-                bundles: vec![
-                    psa::api::BundleConfig::TypedResult {
-                        schema: schema.into(),
-                        max_retries: 3,
-                    },
-                    psa::api::BundleConfig::Noop,
-                ],
+                bundles: vec![psa::api::BundleConfig::TypedResult {
+                    schema: schema.into(),
+                    max_retries: 3,
+                }],
                 ..Default::default()
             })
             .await
@@ -321,7 +318,7 @@ async fn recovery_of_a_structured_result_fork_acknowledges_only_its_producer_and
             NewEvent::new(EventType::Model(model())),
             NewEvent::new(EventType::ToolDefinition(record_metadata)),
             NewEvent::new(EventType::ToolDefinition(
-                ToolDefinition::for_tool(ToolId::Noop).unwrap(),
+                ToolDefinition::for_tool(ToolId::ListSessions).unwrap(),
             )),
         ];
         if previous_run {

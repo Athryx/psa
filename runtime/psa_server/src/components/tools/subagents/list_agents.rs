@@ -57,7 +57,7 @@ impl ListAgents {
 
     async fn list_agents(context: &AgentContext<'_>, all: bool) -> Result<String, String> {
         let agents = context
-            .sessions()
+            .runtime()
             .list_agents(context.session().id)
             .await
             .map_err(|error| error.to_string())?;
@@ -68,7 +68,7 @@ impl ListAgents {
             .filter(|agent| all || agent.subagent_parent_id == Some(caller))
         {
             let definition = context
-                .sessions()
+                .runtime()
                 .get_agent_definition(agent.definition_id)
                 .await
                 .map_err(|error| error.to_string())?;

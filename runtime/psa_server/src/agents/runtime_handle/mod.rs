@@ -3,7 +3,7 @@
 //! Returns server-native snapshots; HTTP handlers build wire representations.
 //!
 //! Database transactions and publication guards are released before awaiting the
-//! session manager, which owns request queues and worker lifecycles.
+//! supervisor, which owns request queues and worker lifecycles.
 
 use super::{
     Agent, AgentError, NewAgent,
@@ -11,7 +11,7 @@ use super::{
     agent_projection::AgentProjection,
     client_queries::{ClientQueriesHandle, ClientQueryError},
     publication::Publication,
-    session_manager::{ManagerClient, ManagerCommand, RuntimeError},
+    supervisor::{RuntimeError, SupervisorClient, SupervisorCommand},
 };
 use crate::{components::cancellation::Cancellation, db::Database, sessions};
 use psa::api::{self as api, AgentId, SessionId};
@@ -20,23 +20,25 @@ mod configurations;
 mod results;
 
 #[derive(Clone)]
-pub struct Sessions {
+pub struct RuntimeHandle {
     database: Database,
     publication: Publication,
-    pub(crate) commands: ManagerClient,
+    pub(crate) commands: SupervisorClient,
     queries: ClientQueriesHandle,
     catalog: Option<crate::models::ModelCatalog>,
     configuration: Option<crate::config_registry::ConfigRegistry>,
     probes: Option<crate::probes::ProbeRegistry>,
-    configuration_gate: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// Rescans and config writes take it exclusively; agent creation downgrades
+    /// to shared after its rescan, so creations on different probes overlap.
+    configuration_gate: std::sync::Arc<tokio::sync::RwLock<()>>,
     default_model_config: llm_api::providers::ModelConfig,
 }
 
-impl Sessions {
+impl RuntimeHandle {
     pub(crate) fn new(
         database: Database,
         publication: Publication,
-        commands: ManagerClient,
+        commands: SupervisorClient,
         queries: ClientQueriesHandle,
     ) -> Self {
         Self {
@@ -224,7 +226,7 @@ impl Sessions {
         id: SessionId,
         request: api::UpdateSession,
     ) -> Result<sessions::Session, RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
+        let _guard = self.configuration_gate.write().await;
         self.validate_decision_model(request.decision_model.as_ref())
             .await?;
         let agents_dir = if let Some(cwd) = &request.working_directory {
@@ -258,7 +260,7 @@ impl Sessions {
         }
         cursor.commit().await?;
 
-        notification.send(ManagerCommand::SessionUpdated {
+        notification.send(SupervisorCommand::SessionUpdated {
             session: session.clone(),
         });
         let busy = publication.is_session_busy(id);
@@ -273,7 +275,7 @@ impl Sessions {
         id: SessionId,
         request: api::ForkSession,
     ) -> Result<sessions::ForkedSession, RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
+        let _guard = self.configuration_gate.write().await;
         self.validate_decision_model(request.metadata.decision_model.as_ref())
             .await?;
         let agents_dir = if let Some(cwd) = &request.metadata.working_directory {
@@ -341,7 +343,7 @@ impl Sessions {
         }
         cursor.commit().await?;
 
-        notification.send(ManagerCommand::AgentsCreated {
+        notification.send(SupervisorCommand::AgentsCreated {
             agents: agents.iter().map(|agent| agent.id).collect(),
         });
         for message in committed_messages {
@@ -380,7 +382,7 @@ impl Sessions {
         // Reserve before mutation, then enqueue synchronously after commit and
         // before publication, so cancellation/backpressure cannot lose the hook
         // or let a subscriber submit work ahead of agent creation.
-        notification.send(ManagerCommand::AgentsCreated {
+        notification.send(SupervisorCommand::AgentsCreated {
             agents: vec![agent.id],
         });
         publication.publish(api::StreamMessage::AgentUpdated {
@@ -618,15 +620,15 @@ impl Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{agents::session_manager::ManagerCommand, db::DbError};
+    use crate::{agents::supervisor::SupervisorCommand, db::DbError};
     use psa::api::events::{EventId, EventType, StatusChange};
     use std::time::Duration;
 
     pub(super) struct Fixture {
         _directory: tempfile::TempDir,
-        pub(super) sessions: Sessions,
+        pub(super) sessions: RuntimeHandle,
         _queries: crate::agents::client_queries::ClientQueries,
-        received: actors::Mailbox<ManagerCommand>,
+        received: actors::Mailbox<SupervisorCommand>,
     }
 
     impl Fixture {
@@ -641,10 +643,10 @@ mod tests {
             let queries = crate::agents::client_queries::ClientQueries::start(publication.clone());
             Self {
                 _directory: directory,
-                sessions: Sessions::new(
+                sessions: RuntimeHandle::new(
                     database,
                     publication,
-                    ManagerClient::new(commands),
+                    SupervisorClient::new(commands),
                     queries.handle(),
                 ),
                 _queries: queries,
@@ -902,7 +904,8 @@ mod tests {
         let serve_manager = async {
             // Only the two explicit reads below consult the manager; the update uses the projection.
             for busy in [true, false] {
-                let ManagerCommand::IsBusy { session: id, reply } = received.recv().await.unwrap()
+                let SupervisorCommand::IsBusy { session: id, reply } =
+                    received.recv().await.unwrap()
                 else {
                     panic!("expected busy query");
                 };
@@ -918,7 +921,7 @@ mod tests {
                     .unwrap();
                 reply.send(busy).unwrap();
             }
-            let ManagerCommand::SessionUpdated { session: updated } =
+            let SupervisorCommand::SessionUpdated { session: updated } =
                 received.recv().await.unwrap()
             else {
                 panic!("expected updated session notification");
@@ -1117,7 +1120,7 @@ mod tests {
                     .await
                     .unwrap()
                     .request_id,
-                "accepted"
+                psa::api::RequestId::from("accepted")
             );
             assert_eq!(
                 sessions
@@ -1125,7 +1128,7 @@ mod tests {
                     .await
                     .unwrap()
                     .request_id,
-                "accepted"
+                psa::api::RequestId::from("accepted")
             );
             assert!(matches!(
                 sessions.resume(SessionId(1), AgentId(2), content).await,
@@ -1137,7 +1140,7 @@ mod tests {
                     .await
                     .unwrap()
                     .request_id,
-                "accepted"
+                psa::api::RequestId::from("accepted")
             );
         };
         let respond = async {
@@ -1147,7 +1150,7 @@ mod tests {
                 Some(api::MessageDelivery::Resume),
                 None,
             ] {
-                let ManagerCommand::Submit {
+                let SupervisorCommand::Submit {
                     session,
                     agent,
                     request,

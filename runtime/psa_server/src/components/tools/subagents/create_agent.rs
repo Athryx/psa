@@ -143,7 +143,7 @@ impl CreateAgent {
         let result = async {
             let _guard = handle.begin_operation()?;
             let agent = context
-                .sessions()
+                .runtime()
                 .create_agent_with_model(
                     context.session().id,
                     crate::agents::NewAgent {
@@ -158,7 +158,7 @@ impl CreateAgent {
                 .await
                 .map_err(|error| error.to_string())?;
             let submitted = context
-                .sessions()
+                .runtime()
                 .send_subagent_message(
                     context.session().id,
                     &agent,
@@ -171,7 +171,7 @@ impl CreateAgent {
             // The runner can still force-drop this future when grace expires.
             if cancellation.is_cancelled() {
                 context
-                    .sessions()
+                    .runtime()
                     .interrupt(context.session().id, agent.id)
                     .await
                     .map_err(|error| {

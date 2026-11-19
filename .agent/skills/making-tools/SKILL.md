@@ -34,7 +34,7 @@ to introduce new general-purpose capabilities.
   and `hooks/` hold their respective implementations. Shared invocation
   cancellation lives in `components/cancellation.rs`.
 - `tools/mod.rs` owns common infrastructure and dispatch, not concrete tool logic.
-- Use `tools/noop.rs` and the Noop bundle as working references. `ToolId`
+- Use `tools/list_sessions.rs` and the Traces bundle as working references. `ToolId`
   identifies tools; every tool is installed by a bundle. There is no standalone
   tool configuration type, agent/defaults `tools` field, or tool config factory.
   Follow bundle installation and existing definition dispatch; do not create a
@@ -109,7 +109,7 @@ with a generic success or dump the input payload into the response.
 ## Every tool requires a bundle
 
 Define a Rust bundle for every tool feature, even an unrelated single unit tool;
-the Noop bundle is the minimal working example. Related tools and hooks share
+the Traces bundle is a minimal working example. Related tools and hooks share
 an owner through their bundle. Tools cannot be configured individually. Keep
 each concrete tool in its own file; typed invocation arguments and the execution
 macro are unchanged.
@@ -124,7 +124,7 @@ macro are unchanged.
   demonstrate state shared by two constructed tools and a hook.
 - Agent definitions select ordered bundle configurations, e.g.
   `"bundles": [{"FileTools":{"read_only":false}}, "Bash"]`.
-  `Noop` is a unit bundle installing Noop. `CodeMode` installs a sequential
+  `Bash` is a unit bundle installing the bash tools. `CodeMode` installs a sequential
   Python REPL tool using its own bundle-owned Monty runtime.
   `FileTools { read_only }` requires a payload: false or omission inside that
   payload installs Read, Edit, and Write;
@@ -278,7 +278,7 @@ to reach around their ownership or lifecycle rules.
 - `tools()`: available tool instances; `projection()`: current agent projection.
 - `probe() -> Result<&ProbeHandle, ProbeError>`: the invocation's remote connection;
   it can be unavailable. Do not silently fall back to the server's filesystem.
-- `sessions() -> &Sessions`: async session/agent facade described below.
+- `runtime() -> &RuntimeHandle`: async session/agent facade described below.
 - `query_client(query, &mut cancellation).await`: sends a typed `psa::api::ClientQuery`
   scoped to the invocation's session/agent and waits for `ClientQueryResponse`.
   The runtime owns pending requests; clients receive them through existing SSE
@@ -313,7 +313,7 @@ to reach around their ownership or lifecycle rules.
   `load_last_inference_result()`, and `load_agent_envelopes(range)`. These are
   scoped to the agent, including inherited fork history. Use them rather than SQL.
 
-### `Sessions` (`runtime/psa_server/src/agents/sessions/mod.rs`)
+### `RuntimeHandle` (`runtime/psa_server/src/agents/runtime_handle/mod.rs`)
 
 Existing async operations cover agent-definition create/get/list/update;
 session create/get/list/update/fork; agent create/get/list (including immutable

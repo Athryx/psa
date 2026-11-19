@@ -8,7 +8,7 @@ use crate::{
         AgentState, NewAgent,
         agent_manager::AgentClient,
         publication::{Publication, status_event},
-        session_manager::Runtime,
+        supervisor::Runtime,
     },
     components::{
         cancellation::Cancellation,
@@ -320,7 +320,7 @@ async fn trace_queries_match_database_and_bind_inherited_fork_history() {
     assert!(std::ptr::eq(context.probe().unwrap(), &probe));
     assert_eq!(
         context
-            .sessions()
+            .runtime()
             .get_agent(child.session_id, child.id)
             .await
             .unwrap()
@@ -444,7 +444,7 @@ struct TraceTool {
 
 impl Tool for TraceTool {
     fn tool_definition(&self) -> api::ToolDefinition {
-        crate::components::tools::tool_definition(psa::api::ToolId::Noop).unwrap()
+        crate::components::tools::tool_definition(psa::api::ToolId::ListSessions).unwrap()
     }
 
     fn cancellation_timeout(&self) -> Duration {
@@ -688,7 +688,7 @@ impl Hook for TraceHook {
         _cancellation: Cancellation,
     ) -> Result<(), HookError> {
         let agent = context
-            .sessions()
+            .runtime()
             .get_agent(context.session().id, context.agent().id)
             .await?;
         assert_eq!(agent.id, context.agent().id);

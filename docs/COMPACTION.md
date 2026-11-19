@@ -81,7 +81,7 @@ existing matching names when reconstructed. Summary agents have no subagent pare
 so completion does not inject an unsolicited subagent message into the source.
 The cached summarizer definition is nonselectable.
 
-`Sessions::await_result(session, agent, after, cancellation)` waits for a durable
+`RuntimeHandle::await_result(session, agent, after, cancellation)` waits for a durable
 result using publication notifications. An optional event boundary excludes older
 results. Interruption/failure without a result, cancellation, and runtime shutdown
 release the waiter. A newly created idle agent may still start after submission;

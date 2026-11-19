@@ -31,7 +31,7 @@ use psa_server::db::NewEvent;
 use psa_server::{
     agents::{
         NewAgent, ToolDefinitionExt, agent_manager::AgentManagerState, publication::Publication,
-        session_manager::Runtime,
+        supervisor::Runtime,
     },
     components::tools::ToolId,
     db::{Database, DbError},
@@ -111,8 +111,8 @@ async fn inference(State(mut fake): State<Fake>, Json(body): Json<Value>) -> Res
     fake.requests.send(body).unwrap();
     let mut delta = match script {
         Script::Tools | Script::TextTools => json!({"role":"assistant", "tool_calls":[
-            {"index":0,"id":"call-ok","type":"function","function":{"name":"noop","arguments":"{}"}},
-            {"index":1,"id":"call-bad","type":"function","function":{"name":"noop","arguments":"{bad json"}}
+            {"index":0,"id":"call-ok","type":"function","function":{"name":"read","arguments":"{\"path\":\"/work/notes.txt\"}"}},
+            {"index":1,"id":"call-bad","type":"function","function":{"name":"read","arguments":"{bad json"}}
         ]}),
         Script::Calls(calls) => {
             json!({"role":"assistant", "tool_calls": calls.iter().enumerate().map(|(index, (id, name, arguments))| {
@@ -172,7 +172,9 @@ impl Harness {
     }
 
     async fn start_with_probe(scripts: Vec<Script>, connect_probe: bool) -> Self {
-        Self::start_with_files(scripts, connect_probe, fake_probe::FakeFiles::default()).await
+        // Scripted `read` calls target this file.
+        let files = fake_probe::FakeFiles::default().file("/work/notes.txt", "notes");
+        Self::start_with_files(scripts, connect_probe, files).await
     }
 
     async fn start_with_files(
@@ -250,7 +252,7 @@ impl Harness {
         let mut default = agent_config("default");
         default.bundles = vec![
             startup(),
-            psa::api::BundleConfig::Noop,
+            psa::api::BundleConfig::FileTools { read_only: true },
             psa::api::BundleConfig::StopWithoutTools,
         ];
         client.upsert_agent_configs(&[default]).await.unwrap();
@@ -547,7 +549,7 @@ async fn config_routes_preserve_snapshots_and_explicit_bundle_configuration() {
     request.description = "An HTTP snapshot fixture".into();
     request.selectable = true;
     request.bundles = vec![
-        psa::api::BundleConfig::Noop,
+        psa::api::BundleConfig::FileTools { read_only: true },
         psa::api::BundleConfig::ExtraSystemPrompt {
             prompt: "Review carefully.".into(),
         },
@@ -611,7 +613,7 @@ async fn config_routes_preserve_snapshots_and_explicit_bundle_configuration() {
             prompt: "Updated prompt.".into(),
         },
         startup(),
-        psa::api::BundleConfig::Noop,
+        psa::api::BundleConfig::FileTools { read_only: true },
     ];
     harness.upsert_config(replacement.clone()).await;
     let updated = harness
@@ -958,7 +960,7 @@ async fn startup_bundle_orders_offline_context_hooks() {
         ),
     ] {
         // Startup creation hooks run first even when listed after other bundles.
-        let mut bundles = vec![psa::api::BundleConfig::Noop];
+        let mut bundles = vec![psa::api::BundleConfig::FileTools { read_only: true }];
         bundles.extend(startup);
         let definition = harness
             .upsert_config(wire::AgentConfig {
@@ -994,7 +996,8 @@ async fn startup_bundle_orders_offline_context_hooks() {
             continue;
         }
 
-        assert_eq!(events.len(), if name == "ordered" { 5 } else { 4 });
+        // The read tool's definition is followed by its usage and rules messages.
+        assert_eq!(events.len(), if name == "ordered" { 7 } else { 6 });
         assert!(matches!(events[0].kind, EventType::NewContext));
         assert!(matches!(&events[1].kind, EventType::Model(config) if config == &model()));
         let EventType::Message(base) = &events[2].kind else {
@@ -1009,10 +1012,10 @@ async fn startup_bundle_orders_offline_context_hooks() {
             .unwrap()
         );
         assert!(
-            matches!(&events[3].kind, EventType::ToolDefinition(tool) if tool.id == ToolId::Noop)
+            matches!(&events[3].kind, EventType::ToolDefinition(tool) if tool.id == ToolId::Read)
         );
         if name == "ordered" {
-            let EventType::Message(cwd) = &events[4].kind else {
+            let EventType::Message(cwd) = &events[6].kind else {
                 panic!("cwd must follow the tool definitions");
             };
             assert_eq!(cwd.message_type, MessageType::System);
@@ -1051,7 +1054,7 @@ async fn startup_bundle_orders_offline_context_hooks() {
     let events = cursor.load_all_events(ordered.id).await.unwrap();
     assert_eq!(
         events.len(),
-        6,
+        8,
         "forks inherit startup and tools, but refresh cwd"
     );
     assert_eq!(
@@ -1221,18 +1224,17 @@ async fn busy_queries_track_all_workers_and_request_ids_ignore_generations() {
         harness.wait_stopped(session.id).await;
         assert!(!harness.client.get_session(session.id).await.unwrap().busy);
 
-        for (index, agent) in [first.id, second.id].into_iter().enumerate() {
+        let mut request_ids = Vec::new();
+        for agent in [first.id, second.id] {
             let accepted = harness
                 .client
                 .submit_request(session.id, agent, &message(MessageDelivery::Queue))
                 .await
                 .unwrap();
-            assert_eq!(
-                accepted.request_id.rsplit('-').next().unwrap(),
-                (index + 1).to_string()
-            );
+            request_ids.push(accepted.request_id);
             harness.requests.recv().await.unwrap();
         }
+        assert_ne!(request_ids[0], request_ids[1]);
 
         let updated = harness
             .client
@@ -1382,9 +1384,15 @@ async fn http_tools_hooks_usage_streaming_and_reconnect() {
         .await
         .unwrap();
     let first = harness.requests.recv().await.unwrap();
-    assert_eq!(first["messages"].as_array().unwrap().len(), 2);
-    assert_eq!(first["messages"][0]["role"], "system");
-    assert_eq!(first["messages"][1]["role"], "user");
+    // Base instructions, then the read tool's usage and rules, then the prompt.
+    let messages = first["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 4);
+    assert!(
+        messages[..3]
+            .iter()
+            .all(|message| message["role"] == "system")
+    );
+    assert_eq!(messages[3]["role"], "user");
     let mut pending_seen = false;
     let mut promoted = false;
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -1485,7 +1493,8 @@ async fn http_tools_hooks_usage_streaming_and_reconnect() {
             _ => {}
         }
     }
-    assert_eq!(replayed, page.events.len() - 4); // initial NewContext + Model + System + ToolDefinition
+    // Startup: NewContext, Model, base System, ToolDefinition, and its usage and rules.
+    assert_eq!(replayed, page.events.len() - 6);
     let other = harness
         .client
         .create_session(&wire::CreateSession {
@@ -1611,7 +1620,7 @@ fn inference_events(id: u64) -> Vec<NewEvent> {
         })),
         NewEvent::new(EventType::ToolCall(ToolCall {
             call_id: format!("call-{id}"),
-            tool_name: "noop".into(),
+            tool_name: "read".into(),
             arguments: "{}".into(),
             metadata: Default::default(),
         })),
@@ -1686,7 +1695,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
                 NewEvent::new(EventType::NewContext),
                 NewEvent::new(EventType::Model(model())),
                 NewEvent::new(EventType::ToolDefinition(
-                    ToolDefinition::for_tool(ToolId::Noop).unwrap(),
+                    ToolDefinition::for_tool(ToolId::Read).unwrap(),
                 )),
             ],
         )

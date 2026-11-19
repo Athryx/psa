@@ -1,7 +1,7 @@
 use super::*;
 use crate::db::NewEvent;
 use crate::{
-    agents::{NewAgent, session_manager::Runtime},
+    agents::{NewAgent, supervisor::Runtime},
     components::tools::{ToolId, ToolSystemPrompt, typed_tool_execute},
     http::AppState,
     sessions::NewSession,
@@ -136,7 +136,7 @@ impl ExecutionProbe {
 impl Tool for ExecutionProbe {
     fn tool_definition(&self) -> api::ToolDefinition {
         let name = match self.id {
-            ToolId::Noop => "parallel",
+            ToolId::ListSessions => "parallel",
             ToolId::Read => "sequential",
             _ => "later",
         };
@@ -375,7 +375,7 @@ async fn finish(run: JoinHandle<(AgentManagerState, Result<(), AgentError>)>) ->
 async fn parallel_calls_overlap_with_stable_snapshots_and_call_id_results() {
     let fixture = Fixture::new().await;
     let (sender, mut notices) = mpsc::unbounded_channel();
-    let (parallel, release) = tool(ToolId::Noop, ExecutionMode::Parallel, &sender);
+    let (parallel, release) = tool(ToolId::ListSessions, ExecutionMode::Parallel, &sender);
     let state = fixture
         .state(
             vec![parallel],
@@ -419,7 +419,7 @@ async fn parallel_calls_overlap_with_stable_snapshots_and_call_id_results() {
 async fn sequential_calls_are_barriers_before_and_after() {
     let fixture = Fixture::new().await;
     let (sender, mut notices) = mpsc::unbounded_channel();
-    let (parallel, first) = tool(ToolId::Noop, ExecutionMode::Parallel, &sender);
+    let (parallel, first) = tool(ToolId::ListSessions, ExecutionMode::Parallel, &sender);
     let (sequential, middle) = tool(ToolId::Read, ExecutionMode::Sequential, &sender);
     let (later, last) = tool(ToolId::Edit, ExecutionMode::Parallel, &sender);
     let state = fixture
@@ -452,7 +452,7 @@ async fn sequential_calls_are_barriers_before_and_after() {
 async fn one_control_consumer_cancels_every_active_call_and_skips_pending_calls() {
     let fixture = Fixture::new().await;
     let (sender, mut notices) = mpsc::unbounded_channel();
-    let (parallel, _) = tool(ToolId::Noop, ExecutionMode::Parallel, &sender);
+    let (parallel, _) = tool(ToolId::ListSessions, ExecutionMode::Parallel, &sender);
     let (sequential, _) = tool(ToolId::Read, ExecutionMode::Sequential, &sender);
     let state = fixture
         .state(
@@ -496,7 +496,7 @@ async fn one_control_consumer_cancels_every_active_call_and_skips_pending_calls(
 async fn concurrent_saves_are_serialized_and_refresh_only_the_saving_invocation() {
     let fixture = Fixture::new().await;
     let (sender, mut notices) = mpsc::unbounded_channel();
-    let (parallel, release) = tool(ToolId::Noop, ExecutionMode::Parallel, &sender);
+    let (parallel, release) = tool(ToolId::ListSessions, ExecutionMode::Parallel, &sender);
     let state = fixture
         .state(
             vec![parallel],
@@ -541,7 +541,7 @@ async fn concurrent_saves_are_serialized_and_refresh_only_the_saving_invocation(
 async fn invalid_invocation_batch_replies_with_error_and_sibling_continues() {
     let fixture = Fixture::new().await;
     let (sender, mut notices) = mpsc::unbounded_channel();
-    let (parallel, release) = tool(ToolId::Noop, ExecutionMode::Parallel, &sender);
+    let (parallel, release) = tool(ToolId::ListSessions, ExecutionMode::Parallel, &sender);
     let state = fixture
         .state(
             vec![parallel],
@@ -595,7 +595,7 @@ async fn invalid_invocation_batch_replies_with_error_and_sibling_continues() {
 async fn a_non_running_save_cancels_peers_and_preserves_the_intentional_status() {
     let fixture = Fixture::new().await;
     let (sender, mut notices) = mpsc::unbounded_channel();
-    let (parallel, _) = tool(ToolId::Noop, ExecutionMode::Parallel, &sender);
+    let (parallel, _) = tool(ToolId::ListSessions, ExecutionMode::Parallel, &sender);
     let state = fixture
         .state(
             vec![parallel],

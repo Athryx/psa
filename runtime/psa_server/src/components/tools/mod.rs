@@ -22,7 +22,6 @@ mod export_trace;
 mod file_ops;
 pub(crate) mod goal;
 mod list_sessions;
-mod noop;
 mod read;
 mod record_result;
 mod reset_codemode;
@@ -36,7 +35,6 @@ pub use edit::Edit;
 pub use export_trace::ExportTrace;
 pub use goal::{SetGoal, SetGoalStatus};
 pub use list_sessions::ListSessions;
-pub use noop::Noop;
 pub use read::Read;
 pub use record_result::RecordResult;
 pub use reset_codemode::ResetCodeMode;
@@ -163,7 +161,6 @@ pub fn tool_definition(id: ToolId) -> Option<ToolDefinition> {
     Some(match id {
         ToolId::RecordResult => return None,
         ToolId::AskQuestion => AskQuestion::definition(),
-        ToolId::Noop => Noop::definition(),
         ToolId::CodeMode => CodeMode::definition(),
         ToolId::ResetCodeMode => ResetCodeMode::definition(),
         ToolId::Read => Read.tool_definition(),
@@ -279,7 +276,6 @@ pub(crate) fn failed_tool_result(call_id: String, content: ToolResult) -> ToolRe
 pub enum ToolKind {
     AskQuestion(AskQuestion),
     RecordResult(RecordResult),
-    Noop(Noop),
     CodeMode(CodeMode),
     ResetCodeMode(ResetCodeMode),
     Read(Read),
@@ -307,7 +303,6 @@ impl ToolKind {
         match self {
             Self::AskQuestion(_) => ToolId::AskQuestion,
             Self::RecordResult(_) => ToolId::RecordResult,
-            Self::Noop(_) => ToolId::Noop,
             Self::CodeMode(_) => ToolId::CodeMode,
             Self::ResetCodeMode(_) => ToolId::ResetCodeMode,
             Self::Read(_) => ToolId::Read,
@@ -335,7 +330,6 @@ impl ToolKind {
         match self {
             Self::AskQuestion(tool) => tool.tool_definition(),
             Self::RecordResult(tool) => tool.tool_definition(),
-            Self::Noop(tool) => tool.tool_definition(),
             Self::CodeMode(tool) => tool.tool_definition(),
             Self::ResetCodeMode(tool) => tool.tool_definition(),
             Self::Read(tool) => tool.tool_definition(),
@@ -369,7 +363,6 @@ impl Tool for ToolKind {
         match self {
             Self::AskQuestion(tool) => tool.system_prompt(),
             Self::RecordResult(tool) => tool.system_prompt(),
-            Self::Noop(tool) => tool.system_prompt(),
             Self::CodeMode(tool) => tool.system_prompt(),
             Self::ResetCodeMode(tool) => tool.system_prompt(),
             Self::Read(tool) => tool.system_prompt(),
@@ -397,7 +390,6 @@ impl Tool for ToolKind {
         match self {
             Self::AskQuestion(tool) => tool.execution_mode(),
             Self::RecordResult(tool) => tool.execution_mode(),
-            Self::Noop(tool) => tool.execution_mode(),
             Self::CodeMode(tool) => tool.execution_mode(),
             Self::ResetCodeMode(tool) => tool.execution_mode(),
             Self::Read(tool) => tool.execution_mode(),
@@ -425,7 +417,6 @@ impl Tool for ToolKind {
         match self {
             Self::AskQuestion(tool) => tool.cancellation_timeout(),
             Self::RecordResult(tool) => tool.cancellation_timeout(),
-            Self::Noop(tool) => tool.cancellation_timeout(),
             Self::CodeMode(tool) => tool.cancellation_timeout(),
             Self::ResetCodeMode(tool) => tool.cancellation_timeout(),
             Self::Read(tool) => tool.cancellation_timeout(),
@@ -468,7 +459,6 @@ impl Tool for ToolKind {
         match self {
             Self::AskQuestion(tool) => tool.execute(arguments, context, cancellation).await,
             Self::RecordResult(tool) => tool.execute(arguments, context, cancellation).await,
-            Self::Noop(tool) => tool.execute(arguments, context, cancellation).await,
             Self::CodeMode(tool) => tool.execute(arguments, context, cancellation).await,
             Self::ResetCodeMode(tool) => tool.execute(arguments, context, cancellation).await,
             Self::Read(tool) => tool.execute(arguments, context, cancellation).await,

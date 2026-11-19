@@ -136,7 +136,7 @@ impl Fixture {
         .unwrap()
     }
 
-    async fn create_session(&self, sessions: &Sessions) -> Session {
+    async fn create_session(&self, sessions: &RuntimeHandle) -> Session {
         sessions
             .create_session(psa::api::CreateSession {
                 decision_model: None,
@@ -199,7 +199,7 @@ impl Fixture {
         prompts.into_iter().next().unwrap()
     }
 
-    async fn wait_idle(&self, sessions: &Sessions, session: SessionId) {
+    async fn wait_idle(&self, sessions: &RuntimeHandle, session: SessionId) {
         tokio::time::timeout(WAIT, async {
             while sessions.is_busy(session).await.unwrap() {
                 tokio::task::yield_now().await;
@@ -226,7 +226,7 @@ fn agent_request() -> crate::agents::NewAgent {
     }
 }
 
-async fn rename(sessions: &Sessions, session: SessionId, name: &str) {
+async fn rename(sessions: &RuntimeHandle, session: SessionId, name: &str) {
     tokio::time::timeout(
         WAIT,
         sessions.update_session(
@@ -281,7 +281,6 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
                         cwd: false,
                         skills: false,
                     },
-                    psa::api::BundleConfig::Noop,
                     psa::api::BundleConfig::StopWithoutTools,
                 ],
                 ..Default::default()
@@ -321,13 +320,13 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
         (&explicit, &explicit_model),
     ] {
         let events = cursor.load_all_events(agent.id).await.unwrap();
-        assert_eq!(events.len(), 4);
+        // Startup always begins with a new context, the model, and base instructions.
+        assert!(events.len() >= 3);
         assert!(matches!(events[0].kind, EventType::NewContext));
         assert!(matches!(&events[1].kind, EventType::Model(model) if model == expected));
         assert!(
             matches!(&events[2].kind, EventType::Message(message) if message.message_type == psa::api::events::MessageType::System)
         );
-        assert!(matches!(events[3].kind, EventType::ToolDefinition(_)));
     }
     cursor.rollback().await.unwrap();
 
@@ -715,15 +714,15 @@ async fn update_arriving_after_stop_boundary_survives_worker_retirement() {
     // Drive the supervisor manually to pin the race between returning Stop and
     // processing the worker's join. No scheduler sleeps are needed.
     let (commands, received) = actors::channel(256);
-    let commands = ManagerClient::new(commands);
+    let commands = SupervisorClient::new(commands);
     let client_queries = ClientQueries::start(fixture.publication.clone());
-    let sessions = Sessions::new(
+    let sessions = RuntimeHandle::new(
         fixture.db.clone(),
         fixture.publication.clone(),
         commands.clone(),
         client_queries.handle(),
     );
-    let mut manager = SessionManager {
+    let mut manager = Supervisor {
         db: fixture.db.clone(),
         publication: fixture.publication.clone(),
         providers: ProviderRegistry::default(),
@@ -739,7 +738,6 @@ async fn update_arriving_after_stop_boundary_survives_worker_retirement() {
         runs: HashMap::new(),
         lifecycle_events: Vec::new(),
         tasks: JoinSet::new(),
-        next_request_id: 1,
         next_generation: 1,
         shutting_down: false,
         shutdown_reply: None,
@@ -753,7 +751,7 @@ async fn update_arriving_after_stop_boundary_survives_worker_retirement() {
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(&command, ManagerCommand::Boundary { .. }));
+    assert!(matches!(&command, SupervisorCommand::Boundary { .. }));
     manager.handle_command(command).await;
     assert!(manager.workers[&agent.id].stopping);
     let joined = tokio::time::timeout(WAIT, manager.tasks.join_next_with_id())

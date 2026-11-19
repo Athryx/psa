@@ -2,10 +2,8 @@
 
 use super::*;
 use crate::components::{
-    bundles::codemode::MontyEngine,
-    codemode_functions::CodeModeFunctionKind,
-    codemode_functions::prior_results::PriorResults,
-    tools::{CodeMode, Noop},
+    bundles::codemode::MontyEngine, codemode_functions::CodeModeFunctionKind,
+    codemode_functions::prior_results::PriorResults, tools::CodeMode,
 };
 use crate::db::NewEvent;
 use llm_api::api::ContentBlock;
@@ -98,7 +96,10 @@ async fn real_worker_persists_snapshots_errors_output_and_registered_functions()
         .state(vec![ToolKind::CodeMode(CodeMode::new(engine.clone()))], &[])
         .await;
     state.codemode_functions = crate::components::codemode_functions::listed_entries([
-        CodeModeFunctionKind::Tool(ToolKind::Noop(Noop)),
+        CodeModeFunctionKind::Tool(crate::components::bundles::testing::test_tool(
+            "noop",
+            psa::api::ToolId::Edit,
+        )),
         CodeModeFunctionKind::PriorResults(PriorResults),
     ]);
 
@@ -227,7 +228,7 @@ async fn real_worker_unknown_calls_raise_name_error_without_awaiting() {
         .await;
     state.codemode_functions =
         crate::components::codemode_functions::listed_entries([CodeModeFunctionKind::Tool(
-            ToolKind::Noop(Noop),
+            crate::components::bundles::testing::test_tool("noop", psa::api::ToolId::Edit),
         )]);
 
     for (index, expression) in [
@@ -322,7 +323,7 @@ async fn real_worker_sleeps_inline_and_concurrently_with_registered_functions() 
         .await;
     state.codemode_functions =
         crate::components::codemode_functions::listed_entries([CodeModeFunctionKind::Tool(
-            ToolKind::Noop(Noop),
+            crate::components::bundles::testing::test_tool("noop", psa::api::ToolId::Edit),
         )]);
 
     state = invoke_codemode(
@@ -633,7 +634,7 @@ async fn preflight_missing_worker_and_oversized_source_do_not_claim_host_effects
         .await;
     state.codemode_functions =
         crate::components::codemode_functions::listed_entries([CodeModeFunctionKind::Tool(
-            ToolKind::Noop(Noop),
+            crate::components::bundles::testing::test_tool("noop", psa::api::ToolId::Edit),
         )]);
 
     let oversized_source = "#".repeat(256 * 1024 + 1);

@@ -4,7 +4,7 @@ use crate::{
     api::{
         self, AgentCommand, AgentId, AgentResult, AgentState, ClientQueryId, ClientQueryRequest,
         ClientQueryResponse, CommandDelivery, CommandResult, EventEnvelope, EventSpan, EventsQuery,
-        MessageDelivery, RequestAccepted, ResultRecord, SessionId, events::EventType,
+        MessageDelivery, RequestAccepted, RequestId, ResultRecord, SessionId, events::EventType,
     },
     events::Scope,
 };
@@ -292,7 +292,7 @@ impl AgentHandle {
 /// current run.
 async fn wait_for_run_end(
     feed: &mut EventFeed,
-    request_id: &str,
+    request_id: &RequestId,
     joins_current_run: bool,
 ) -> Result<AgentState> {
     let mut started = joins_current_run;
@@ -312,7 +312,7 @@ async fn wait_for_run_end(
                 request_id: failed,
                 message,
                 ..
-            } if failed == request_id => return Err(Error::RequestFailed(message)),
+            } if &failed == request_id => return Err(Error::RequestFailed(message)),
             _ => {}
         }
     }

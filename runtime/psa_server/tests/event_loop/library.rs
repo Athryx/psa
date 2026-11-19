@@ -9,7 +9,7 @@ use wire::{AgentResult, BundleConfig};
 fn worker_layout() -> AgentLayout {
     AgentLayout::new("worker").bundles(vec![
         startup(),
-        BundleConfig::Noop,
+        BundleConfig::FileTools { read_only: true },
         BundleConfig::StopWithoutTools,
     ])
 }

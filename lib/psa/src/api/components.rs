@@ -38,8 +38,6 @@ pub enum DecisionModelSelection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub enum BundleConfig {
-    /// Installs a tool that performs no work.
-    Noop,
     /// Initializes a new root agent's context: model, base instructions, and tool
     /// definitions, plus the selected optional context. Also follows session model
     /// updates unless the definition pins its own model.
@@ -136,7 +134,6 @@ impl BundleConfig {
     /// Return the bundle's identity independently of its construction data.
     pub fn id(&self) -> BundleId {
         match self {
-            Self::Noop => BundleId::Noop,
             Self::Startup { .. } => BundleId::Startup,
             Self::StopWithoutTools => BundleId::StopWithoutTools,
             Self::ExtraSystemPrompt { .. } => BundleId::ExtraSystemPrompt,
@@ -191,8 +188,6 @@ fn default_interactive_only() -> bool {
 /// Use [`BundleConfig`] when selecting a bundle installation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BundleId {
-    /// Installs a tool that performs no work.
-    Noop,
     /// Initializes a new agent's context and follows session model updates.
     Startup,
     /// Installs the ordinary stop-after-a-response-without-tools completion policy.
@@ -225,8 +220,6 @@ pub enum BundleId {
 /// Tools are installed through their owning [`BundleConfig`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolId {
-    /// Performs no work.
-    Noop,
     /// Reads file contents.
     Read,
     /// Edits a file using exact text replacements.
@@ -308,7 +301,6 @@ mod tests {
     #[test]
     fn component_configurations_preserve_identity_and_roundtrip() {
         for (config, id) in [
-            (BundleConfig::Noop, BundleId::Noop),
             (
                 BundleConfig::Startup {
                     base_prompt: true,
@@ -492,7 +484,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|variant| variant["const"] == "Noop")
+                .any(|variant| variant["const"] == "Bash")
         );
     }
 

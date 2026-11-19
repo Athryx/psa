@@ -1,7 +1,7 @@
 //! Event pages and live server-sent streams for transcripts and session summaries.
 
 use crate::api::{
-    Agent, AgentId, ClientQueryId, ClientQueryRequest, Session, SessionId,
+    Agent, AgentId, ClientQueryId, ClientQueryRequest, RequestId, Session, SessionId,
     events::{Event, EventType},
 };
 use serde::{Deserialize, Serialize};
@@ -168,11 +168,41 @@ pub struct EventEnvelope {
     pub event: Event,
 }
 
+/// Identifier of a provisional event.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PendingEventId(pub String);
+
+impl PendingEventId {
+    /// The identifier text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for PendingEventId {
+    fn from(id: String) -> Self {
+        Self(id)
+    }
+}
+
+impl From<&str> for PendingEventId {
+    fn from(id: &str) -> Self {
+        Self(id.to_owned())
+    }
+}
+
+impl std::fmt::Display for PendingEventId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 /// A provisional transcript item that may be updated, committed, or removed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingEvent {
     /// Identifier of this provisional item.
-    pub id: String,
+    pub id: PendingEventId,
     /// Revision of this provisional item's contents.
     pub revision: u64,
     /// Session containing the provisional item.
@@ -241,7 +271,7 @@ pub enum StreamMessage {
         /// Committed event and its session location.
         event: EventEnvelope,
         /// Provisional identifier replaced by this commit, if any.
-        pending_id: Option<String>,
+        pending_id: Option<PendingEventId>,
     },
     /// Removes a provisional event without committing it.
     Removed {
@@ -250,7 +280,7 @@ pub enum StreamMessage {
         /// Agent that published the provisional item.
         agent_id: AgentId,
         /// Identifier of the removed provisional item.
-        id: String,
+        id: PendingEventId,
     },
     /// Publishes refreshed agent metadata.
     AgentUpdated {
@@ -270,7 +300,7 @@ pub enum StreamMessage {
         /// Target agent identifier.
         agent_id: AgentId,
         /// Identifier returned when the request was accepted.
-        request_id: String,
+        request_id: RequestId,
         /// Human-readable failure description.
         message: String,
     },

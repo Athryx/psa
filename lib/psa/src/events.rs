@@ -6,7 +6,8 @@ use crate::{
     Error, Result,
     api::{
         self, Agent, AgentId, ClientQueryId, ClientQueryRequest, EventEnvelope, EventSpan,
-        EventsPage, EventsQuery, PendingEvent, Session, SessionId, StreamMessage,
+        EventsPage, EventsQuery, PendingEvent, PendingEventId, RequestId, Session, SessionId,
+        StreamMessage,
     },
 };
 use futures_util::{Stream, StreamExt, stream};
@@ -145,7 +146,7 @@ pub enum EventUpdate {
         /// Agent that published it.
         agent_id: AgentId,
         /// Provisional event identifier.
-        id: String,
+        id: PendingEventId,
     },
     /// An agent is waiting for a client answer.
     QueryRequested(ClientQueryRequest),
@@ -165,7 +166,7 @@ pub enum EventUpdate {
         /// Target agent.
         agent_id: AgentId,
         /// Identifier returned when the request was accepted.
-        request_id: String,
+        request_id: RequestId,
         /// Failure description.
         message: String,
     },

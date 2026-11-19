@@ -3,7 +3,7 @@ use crate::{
     agents::{
         agent_context::AgentContext,
         lifecycle::{AgentLifecycleEvent, SessionLifecycleHook},
-        sessions::Sessions,
+        runtime_handle::RuntimeHandle,
     },
     components::{
         bundles::CleanupError, cancellation::Cancellation,
@@ -31,7 +31,7 @@ mod tests;
 #[derive(Clone)]
 pub struct SubagentCoordinator {
     session: SessionId,
-    sessions: Sessions,
+    sessions: RuntimeHandle,
     sender: UnboundedMailboxHandle<Command>,
 }
 
@@ -54,7 +54,7 @@ pub(crate) struct CoordinatorRuntime {
 }
 
 impl CoordinatorRuntime {
-    pub(crate) fn start(session: SessionId, sessions: Sessions) -> Self {
+    pub(crate) fn start(session: SessionId, sessions: RuntimeHandle) -> Self {
         let (sender, mailbox) = actors::unbounded_channel();
         let handle = SubagentCoordinator {
             session,
@@ -120,7 +120,7 @@ struct Waiter {
 
 struct State {
     session: SessionId,
-    sessions: Sessions,
+    sessions: RuntimeHandle,
     active: HashMap<AgentId, String>,
     /// Recipients of delivered messages that have not reported a run start.
     /// A recipient already running never starts again, so entries expire.
@@ -132,7 +132,7 @@ struct State {
 }
 
 impl State {
-    fn new(session: SessionId, sessions: Sessions) -> Self {
+    fn new(session: SessionId, sessions: RuntimeHandle) -> Self {
         Self {
             session,
             sessions,

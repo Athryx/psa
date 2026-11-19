@@ -206,6 +206,9 @@ Reading (on both `AgentHandle` and `SessionHandle`):
   `Committed`, `Pending`, `PendingRemoved`, `QueryRequested`, `QueryRemoved`,
   `Agent`, `Session`, and `RequestFailed` updates. It reconnects by itself after
   a server resync or when a following stream ends; a transport error ends it.
+  `PendingRemoved { id }` carries a `PendingEventId` and `RequestFailed
+  { request_id }` the `RequestId` from the accepting `RequestAccepted`; both are
+  string-backed newtypes in `psa::api`.
 
 `events`/`event_pages` with `EventEnd::Follow`, or context bounds on a session,
 fail with `Error::InvalidRange`. Provisional events only appear in streams.

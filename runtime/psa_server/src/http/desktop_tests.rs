@@ -1,7 +1,7 @@
 use super::*;
 use crate::db::NewEvent;
 use crate::{
-    agents::{NewAgent, session_manager::Runtime},
+    agents::{NewAgent, supervisor::Runtime},
     providers::ProviderRegistry,
     sessions,
 };

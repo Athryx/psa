@@ -308,7 +308,8 @@ fn unrelated_payloads_never_publish_or_clone_other_transcripts() {
     ));
     assert_eq!(ui.peek().transcripts[&target(3)], other);
     assert_eq!(
-        ui.peek().transcripts[&target(2)].pending["pending"].revision,
+        ui.peek().transcripts[&target(2)].pending[&psa::api::PendingEventId::from("pending")]
+            .revision,
         1
     );
 }
@@ -669,7 +670,8 @@ async fn full_stream_batch_applies_backpressure_until_frame_and_query_is_immedia
         }
         assert_eq!(reads.load(Ordering::Relaxed), MAX_STREAM_BATCH + 1);
         assert_eq!(
-            ui.peek().transcripts[&target(2)].pending["pending"].revision,
+            ui.peek().transcripts[&target(2)].pending[&psa::api::PendingEventId::from("pending")]
+                .revision,
             (MAX_STREAM_BATCH - 1) as u64
         );
     });
@@ -697,7 +699,8 @@ async fn stream_error_flushes_ordered_updates_but_profile_change_discards_them()
                 .is_err()
         );
         assert_eq!(
-            ui.peek().transcripts[&target(2)].pending["pending"].revision,
+            ui.peek().transcripts[&target(2)].pending[&psa::api::PendingEventId::from("pending")]
+                .revision,
             1
         );
         ui.write()

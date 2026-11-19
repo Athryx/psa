@@ -4,7 +4,6 @@ pub mod cwd;
 pub mod default_startup;
 pub mod extra_system_prompt;
 pub mod goal;
-pub mod noop;
 pub mod project_context;
 pub mod require_result;
 pub mod session_model_update;
@@ -22,7 +21,6 @@ pub use cwd::CwdHook;
 pub use default_startup::DefaultStartupHook;
 pub use extra_system_prompt::ExtraSystemPromptHook;
 pub use goal::GoalHook;
-pub use noop::NoopHook;
 pub use project_context::ProjectContextHook;
 pub use require_result::RequireResult;
 pub use session_model_update::SessionModelUpdateHook;
@@ -35,7 +33,7 @@ use super::cancellation::{Cancellation, run_cancellable};
 use crate::{
     agents::{
         AgentError, agent_context::AgentContext, agent_manager::AgentManagerMessage,
-        session_manager::RuntimeError,
+        supervisor::RuntimeError,
     },
     db::DbError,
 };
@@ -54,7 +52,7 @@ pub enum HookError {
     #[error(transparent)]
     Probe(#[from] ProbeError),
     #[error(transparent)]
-    Sessions(#[from] RuntimeError),
+    Runtime(#[from] RuntimeError),
     #[error("context compaction failed: {0}")]
     Compaction(String),
     #[error(transparent)]
@@ -108,7 +106,6 @@ pub trait Hook: Send {
 }
 
 pub enum HookKind {
-    Noop(NoopHook),
     StopWithoutTools(StopWithoutTools),
     DefaultStartup(DefaultStartupHook),
     ExtraSystemPrompt(ExtraSystemPromptHook),
@@ -123,7 +120,7 @@ pub enum HookKind {
     SubagentIdentity(SubagentIdentity),
     CodeModeFunctions(CodeModeFunctionsHook),
     #[cfg(test)]
-    RecordLifecycle(crate::agents::session_manager::lifecycle_tests::RecordLifecycle),
+    RecordLifecycle(crate::agents::supervisor::lifecycle_tests::RecordLifecycle),
     #[cfg(test)]
     BundleProbe(crate::components::bundles::testing::SharedHook),
 }
@@ -131,7 +128,6 @@ pub enum HookKind {
 impl Hook for HookKind {
     fn cancellation_timeout(&self) -> Duration {
         match self {
-            Self::Noop(hook) => hook.cancellation_timeout(),
             Self::StopWithoutTools(hook) => hook.cancellation_timeout(),
             Self::DefaultStartup(hook) => hook.cancellation_timeout(),
             Self::ExtraSystemPrompt(hook) => hook.cancellation_timeout(),
@@ -158,7 +154,6 @@ impl Hook for HookKind {
         cancellation: Cancellation,
     ) -> Result<(), HookError> {
         match self {
-            Self::Noop(hook) => hook.run(context, cancellation).await,
             Self::StopWithoutTools(hook) => hook.run(context, cancellation).await,
             Self::DefaultStartup(hook) => hook.run(context, cancellation).await,
             Self::ExtraSystemPrompt(hook) => hook.run(context, cancellation).await,

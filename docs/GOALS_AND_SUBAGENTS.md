@@ -157,7 +157,7 @@ Interruptions cancel all active tool futures, respecting individual cleanup grac
 periods. Dropping an invocation does not retract an already enqueued event save.
 Session updates affect later invocation batches, not in-flight snapshots.
 
-`Sessions::wait_for_steering` is a cancellation-safe, level-triggered notification:
+`RuntimeHandle::wait_for_steering` is a cancellation-safe, level-triggered notification:
 it observes queued steering without consuming it. Registration/checking are
 serialized by the manager, so steering cannot be lost between them. Runtime
 shutdown wakes waiters and cleans session resource owners as well as per-agent

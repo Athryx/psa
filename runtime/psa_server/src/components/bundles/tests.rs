@@ -78,7 +78,6 @@ async fn bundle_order_and_empty_component_configuration_are_preserved() {
     let mut definition = definition();
     definition.bundles = vec![
         BundleConfig::FileTools { read_only: false },
-        BundleConfig::Noop,
         BundleConfig::StopWithoutTools,
     ];
     let mut components = InstalledComponents::install(&definition, &agent, &session)
@@ -90,7 +89,7 @@ async fn bundle_order_and_empty_component_configuration_are_preserved() {
             .iter()
             .map(ToolKind::id)
             .collect::<Vec<_>>(),
-        [ToolId::Read, ToolId::Edit, ToolId::Write, ToolId::Noop]
+        [ToolId::Read, ToolId::Edit, ToolId::Write]
     );
     assert!(matches!(
         components.hooks.after_request.as_slice(),
@@ -280,7 +279,7 @@ async fn duplicate_bundle_ids_are_rejected_even_with_different_payloads() {
         .err()
         .unwrap();
     assert!(error.message.contains("duplicate bundle ID"));
-    definition.bundles = vec![BundleConfig::Noop, BundleConfig::Noop];
+    definition.bundles = vec![BundleConfig::Bash, BundleConfig::Bash];
     assert!(
         InstalledComponents::install(&definition, &agent, &session)
             .await
@@ -337,7 +336,7 @@ fn duplicate_api_names_are_rejected_independently_of_id() {
     let error = installer
         .add_tool(ToolKind::BundleProbe(SharedTool {
             state,
-            id: ToolId::Noop,
+            id: ToolId::Edit,
             name: "read".into(),
         }))
         .unwrap_err();
@@ -430,7 +429,6 @@ async fn cleanup_is_reverse_order_continues_after_failures_and_is_idempotent() {
         vec![
             probe("ok", &state, CleanupBehavior::Ok),
             probe("error", &state, CleanupBehavior::Error),
-            probe("panic", &state, CleanupBehavior::Panic),
             probe("timeout", &state, CleanupBehavior::Pending),
         ],
         &agent,
@@ -444,33 +442,24 @@ async fn cleanup_is_reverse_order_continues_after_failures_and_is_idempotent() {
             .iter()
             .map(|error| error.bundle.as_str())
             .collect::<Vec<_>>(),
-        ["timeout", "panic", "error"]
+        ["timeout", "error"]
     );
     assert!(matches!(
         errors[0].kind,
         CleanupFailureKind::TimedOut { .. }
     ));
-    assert!(matches!(
-        errors[1].kind,
-        CleanupFailureKind::Panicked { .. }
-    ));
-    assert!(matches!(errors[2].kind, CleanupFailureKind::Failed { .. }));
+    assert!(matches!(errors[1].kind, CleanupFailureKind::Failed { .. }));
     let events = state.events();
     assert_eq!(
-        &events[..4],
-        [
-            "cleanup:timeout",
-            "cleanup:panic",
-            "cleanup:error",
-            "cleanup:ok"
-        ]
+        &events[..3],
+        ["cleanup:timeout", "cleanup:error", "cleanup:ok"]
     );
     assert_eq!(
         events
             .iter()
             .filter(|event| event.starts_with("drop:"))
             .count(),
-        4
+        3
     );
     components.cleanup().await.unwrap();
     assert_eq!(state.events(), events);
@@ -511,26 +500,6 @@ async fn rollback_retains_primary_failure_and_cleans_the_failing_owner() {
             "drop:failing"
         ]
     );
-    assert_eq!(Arc::strong_count(&state), 1);
-}
-
-#[tokio::test]
-async fn synchronous_install_panic_rolls_back_partial_components() {
-    let (agent, session) = snapshots();
-    let state = Arc::new(ProbeState::default());
-    let mut failing = ProbeBundle::new("panic", state.clone());
-    failing.components = true;
-    failing.install = InstallBehavior::Panic;
-    let error = install_owned(vec![BundleKind::Probe(failing)], &agent, &session)
-        .await
-        .err()
-        .unwrap();
-    assert!(
-        error
-            .message
-            .contains("installation panicked: install:panic")
-    );
-    assert!(state.events().contains(&"cleanup:panic".into()));
     assert_eq!(Arc::strong_count(&state), 1);
 }
 

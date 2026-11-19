@@ -3,7 +3,7 @@ use super::{Hook, HookError};
 use crate::components::bundles::subagents::ChildTemplate;
 use crate::db::NewEvent;
 use crate::{
-    agents::{agent_context::AgentContext, session_manager::RuntimeError},
+    agents::{agent_context::AgentContext, supervisor::RuntimeError},
     components::cancellation::Cancellation,
 };
 use psa::api::events::{EventType, Message};
@@ -22,7 +22,7 @@ impl SubagentIdentity {
         let parent = match agent.subagent_parent_id {
             Some(id) => Some(
                 context
-                    .sessions()
+                    .runtime()
                     .get_agent(context.session().id, id)
                     .await
                     .map_err(|error| error.to_string())?

@@ -231,11 +231,127 @@ pub struct RefreshConfigs {
     pub session_ids: Vec<SessionId>,
 }
 
+/// A [`ConfigId`] flattened into query parameters for `GET` lookups. `custom`
+/// names a `Custom` group; `path` and `probe_id` locate an `AgentsDir` group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigLookup {
+    /// Configuration name within its group.
+    pub name: String,
+    /// Which kind of group contains the configuration.
+    pub group: ConfigGroupKind,
+    /// `Custom` group name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom: Option<String>,
+    /// `AgentsDir` directory path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// `AgentsDir` owning probe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_id: Option<ProbeId>,
+}
+
+/// The variant of a [`ConfigGroup`], without its data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConfigGroupKind {
+    /// [`ConfigGroup::Custom`].
+    Custom,
+    /// [`ConfigGroup::Global`].
+    Global,
+    /// [`ConfigGroup::AgentsDir`].
+    AgentsDir,
+    /// [`ConfigGroup::Session`].
+    Session,
+}
+
+impl From<&ConfigId> for ConfigLookup {
+    fn from(id: &ConfigId) -> Self {
+        let mut lookup = Self {
+            name: id.name.clone(),
+            group: ConfigGroupKind::Global,
+            custom: None,
+            path: None,
+            probe_id: None,
+        };
+        match &id.config_group {
+            ConfigGroup::Custom(name) => {
+                lookup.group = ConfigGroupKind::Custom;
+                lookup.custom = Some(name.clone());
+            }
+            ConfigGroup::Global => {}
+            ConfigGroup::AgentsDir { path, probe_id } => {
+                lookup.group = ConfigGroupKind::AgentsDir;
+                lookup.path = Some(path.clone());
+                lookup.probe_id = Some(*probe_id);
+            }
+            ConfigGroup::Session => lookup.group = ConfigGroupKind::Session,
+        }
+        lookup
+    }
+}
+
+impl TryFrom<ConfigLookup> for ConfigId {
+    type Error = String;
+
+    /// Requires exactly the parameters the group kind uses.
+    fn try_from(lookup: ConfigLookup) -> Result<Self, Self::Error> {
+        let config_group = match (lookup.group, lookup.custom, lookup.path, lookup.probe_id) {
+            (ConfigGroupKind::Custom, Some(name), None, None) => ConfigGroup::Custom(name),
+            (ConfigGroupKind::Global, None, None, None) => ConfigGroup::Global,
+            (ConfigGroupKind::AgentsDir, None, Some(path), Some(probe_id)) => {
+                ConfigGroup::AgentsDir { path, probe_id }
+            }
+            (ConfigGroupKind::Session, None, None, None) => ConfigGroup::Session,
+            (group, ..) => {
+                return Err(format!(
+                    "{group:?} lookups take `custom` only for Custom groups and \
+                     `path` with `probe_id` only for AgentsDir groups"
+                ));
+            }
+        };
+        Ok(Self {
+            config_group,
+            name: lookup.name,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::api::{CreateAgent, NewSkill};
     use serde_json::json;
+
+    #[test]
+    fn config_lookups_round_trip_every_group_and_reject_stray_parameters() {
+        let probe_id = ProbeId(uuid::Uuid::nil());
+        for config_group in [
+            ConfigGroup::Custom("team".into()),
+            ConfigGroup::Global,
+            ConfigGroup::AgentsDir {
+                path: "/work/.agents".into(),
+                probe_id,
+            },
+            ConfigGroup::Session,
+        ] {
+            let id = ConfigId {
+                config_group,
+                name: "agent".into(),
+            };
+            assert_eq!(ConfigId::try_from(ConfigLookup::from(&id)), Ok(id));
+        }
+
+        let mut lookup = ConfigLookup::from(&ConfigId {
+            config_group: ConfigGroup::Global,
+            name: "agent".into(),
+        });
+        lookup.path = Some("/work/.agents".into());
+        assert!(ConfigId::try_from(lookup.clone()).is_err());
+        lookup.group = ConfigGroupKind::AgentsDir;
+        assert!(ConfigId::try_from(lookup.clone()).is_err());
+        lookup.probe_id = Some(probe_id);
+        assert!(ConfigId::try_from(lookup).is_ok());
+    }
 
     #[test]
     fn configuration_requests_have_explicit_models_and_closed_nested_inputs() {

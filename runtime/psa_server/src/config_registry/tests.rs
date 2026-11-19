@@ -132,16 +132,16 @@ fn bundle_flag_payloads_parse_from_toml_and_default_to_interactive_only() {
 }
 
 #[test]
-fn file_tools_payloads_parse_read_only_and_noop_bundle_selection() {
+fn file_tools_payloads_parse_read_only_and_unit_bundle_selection() {
     let config = lower_config(
-        "name = 'example'\nbundles = [{ FileTools = {} }, 'Noop']",
+        "name = 'example'\nbundles = [{ FileTools = {} }, 'Bash']",
         &AgentDefaults::default(),
     );
     assert_eq!(
         config.bundles,
         vec![
             BundleConfig::FileTools { read_only: false },
-            BundleConfig::Noop
+            BundleConfig::Bash
         ]
     );
     let config = lower_config(

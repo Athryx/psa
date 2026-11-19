@@ -130,7 +130,7 @@ mod tests {
 
     fn pending(id: usize, kind: EventType) -> PendingEvent {
         PendingEvent {
-            id: format!("{id:06}"),
+            id: format!("{id:06}").into(),
             revision: 1,
             session_id: SessionId(1),
             agent_id: AgentId(1),

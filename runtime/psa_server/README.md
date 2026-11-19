@@ -425,9 +425,11 @@ upserting by `ConfigId { config_group, name }` after resolving server component
 defaults. The client accepts either `AgentConfigInput` or normalized `AgentConfig`;
 the latter sends every component list explicitly, including empty lists. Use
 `AgentConfigInput::new(config_id, models)` to inherit defaults. `GET /agent-configs` lists
-`AgentConfigStatus`; `POST /agent-configs/lookup` takes a `ConfigId` body and reads
-its current configuration/status. `GET /agent-snapshots/{definition_id}` reads an
-immutable `ResolvedAgentConfig` snapshot (JSON `null` when absent). Existing
+`AgentConfigStatus`; `GET /agent-configs/lookup` takes a `ConfigLookup` query
+(`name`, `group`, plus `custom` for Custom groups or `path` and `probe_id` for
+AgentsDir groups) and reads its current configuration/status.
+`GET /agent-snapshots/{definition_id}` reads an immutable `ResolvedAgentConfig`
+snapshot (HTTP 404 when absent). Existing
 agents and forks keep their pinned snapshots when current configurations change.
 There is no compatibility API: `/agent-definitions` CRUD routes and client
 methods are removed.
@@ -442,10 +444,12 @@ to true for single-model configurations; multiple choices with
 `first_model_default = false` require explicit selection. Model and effort inheritance resolve
 at creation.
 
-`POST /skills` uploads `NewSkill { config_id, tar_data }`, a complete skill tar
-archive represented as JSON bytes. `GET /skills` and `GET /agent-configs` refresh
-source metadata before listing; optional `?session_id=...` also refreshes that
-session's selected project. Global files live in `<data_dir>/{agents,skills}`;
+`POST /skills` uploads `NewSkill { config_id, tar_data, compression }`, a complete
+skill tar archive, base64-encoded in JSON and optionally compressed. `GET /skills`
+and `GET /agent-configs` list what is already registered without rescanning.
+`POST /configs/refresh` with `RefreshConfigs { session_ids }` rescans the global
+sources and the listed sessions' `.agents` directories; agent creation refreshes
+the global sources and its own session first. Global files live in `<data_dir>/{agents,skills}`;
 projects use the nearest probe-local `.agents/{agents,skills}`. Server-owned
 skills are synchronized to managed remote-probe caches before agent creation.
 For a probe advertising `host: true`, server-owned skills instead use their
@@ -484,7 +488,7 @@ Unknown extra configuration/creation JSON fields are rejected.
 
 Normalized configs and snapshots persist ordered `bundles`; omitted input
 inherits server defaults, while explicit `[]` selects no bundles.
-`BundleConfig::Noop` installs Noop. `BundleConfig::FileTools { read_only: false }`
+`BundleConfig::FileTools { read_only: false }`
 installs Read, Edit, and Write; true installs only Read. FileTools requires a
 payload, with `read_only` defaulting to false inside it; bare `"FileTools"` is
 invalid. JSON uses `{"FileTools":{"read_only":true}}`, and TOML bundle entries
@@ -510,7 +514,7 @@ Bundles install in list order. Configured `agent_create` hooks run before
 bundle creation hooks, so startup initializes context before bundle prompts.
 Other stages run bundle hooks before explicit hooks. There is no standalone tool
 configuration or agent/config/defaults `tools` field; every tool requires a bundle. Duplicate bundle IDs, tool IDs, or tool
-names are rejected during component installation. The session manager retains
+names are rejected during component installation. The supervisor retains
 owners and instances by agent ID across worker retirement/failure. Forked agents
 have independent resources; server restart does not restore runtime resources.
 Shared session resources do not share tool instances or mutable hooks across
@@ -563,7 +567,6 @@ Built-in hooks:
   records a durable text Result and Idle for no-tool completion, including
   token-limited text. It is incompatible with Goal and TypedResult completion,
   including when inherited from defaults.
-- `Noop`: does nothing.
 
 One global session-manager task supervises lazy per-agent workers. Creation
 callbacks still run for newly forked agents, but not on worker reload or server
@@ -588,7 +591,7 @@ than forwarding an unfinished native tool call to the provider.
 
 Tools and hooks borrow `agents::agent_context::AgentContext` for each invocation.
 It exposes `agent()`, `session()`, the pinned `definition()`, agent-runtime
-`tools()`, `projection()`, the iteration's `probe()`, and `sessions()`.
+`tools()`, `projection()`, the iteration's `probe()`, and `runtime()`.
 `probe()` returns a `Result`: lifecycle hooks run even with an offline probe, and accessing it then returns `ProbeError::Disconnected`. Each session-update
 hook sees the snapshot for that update. Trace methods mirror the database queries
 with the current agent ID filled in: `load_events`, `load_all_events`, `load_context_window`,
@@ -631,10 +634,10 @@ interrupts without inference if the probe is missing. A mid-iteration disconnect
 is reported through probe-operation errors; tools/hooks decide whether to change
 status. Operations are never automatically retried.
 
-`agents::sessions::Sessions` is the shared async facade for config batch upsert,
+`agents::runtime_handle::RuntimeHandle` is the shared async facade for config batch upsert,
 lookup/list and snapshot reads, skill upload/list, session create/query/update/fork,
 configured agent create/query, request submission, steering, resume, interrupt,
-and busy queries. `Runtime::handle` and `AgentContext::sessions()` expose it.
+and busy queries. `Runtime::handle` and `AgentContext::runtime()` expose it.
 Registration uses `psa::api::AgentConfigInput`, normalized configs use
 `psa::api::AgentConfig`, and executable snapshots use `psa::api::AgentDefinition`.
 Session/agent operations

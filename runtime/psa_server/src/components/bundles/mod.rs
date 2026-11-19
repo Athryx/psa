@@ -14,7 +14,6 @@ pub(crate) mod decision_models;
 mod extra_system_prompt;
 mod file_tools;
 pub mod goal;
-mod noop;
 pub mod session;
 mod startup;
 mod stop_without_tools;
@@ -35,7 +34,6 @@ pub use decision_models::DecisionModelsBundle;
 pub use extra_system_prompt::ExtraSystemPromptBundle;
 pub use file_tools::FileToolsBundle;
 pub use goal::GoalBundle;
-pub use noop::NoopBundle;
 pub use psa::api::BundleConfig;
 pub use startup::StartupBundle;
 pub use stop_without_tools::StopWithoutToolsBundle;
@@ -54,11 +52,7 @@ use crate::{
     },
     sessions::Session,
 };
-use futures_util::FutureExt;
-use std::{
-    any::Any, collections::HashSet, future::Future, panic::AssertUnwindSafe, sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashSet, future::Future, sync::Arc, time::Duration};
 
 /// A single non-cloneable agent-runtime owner. Installation only registers already
 /// constructed components; async resource shutdown belongs in cleanup.
@@ -79,7 +73,6 @@ pub trait Bundle: Send + Sync {
 
 /// Static Rust dispatch, not a dynamic registry or a second tool execution path.
 pub enum BundleKind {
-    Noop(NoopBundle),
     Startup(StartupBundle),
     StopWithoutTools(StopWithoutToolsBundle),
     ExtraSystemPrompt(ExtraSystemPromptBundle),
@@ -103,7 +96,6 @@ impl BundleKind {
         resources: Option<&session::SessionBundleHandle>,
     ) -> Result<Self, InstallError> {
         let bundle = match config {
-            BundleConfig::Noop => Self::Noop(NoopBundle),
             BundleConfig::Startup {
                 base_prompt,
                 project_context,
@@ -169,7 +161,6 @@ impl BundleKind {
 
     fn label(&self) -> String {
         match self {
-            Self::Noop(_) => "Noop".into(),
             Self::Startup(_) => "Startup".into(),
             Self::StopWithoutTools(_) => "StopWithoutTools".into(),
             Self::ExtraSystemPrompt(_) => "ExtraSystemPrompt".into(),
@@ -197,7 +188,6 @@ impl Bundle for BundleKind {
         installer: &mut Installer,
     ) -> Result<(), InstallError> {
         match self {
-            Self::Noop(bundle) => bundle.install(agent, session, installer),
             Self::Startup(bundle) => bundle.install(agent, session, installer),
             Self::StopWithoutTools(bundle) => bundle.install(agent, session, installer),
             Self::ExtraSystemPrompt(bundle) => bundle.install(agent, session, installer),
@@ -218,7 +208,6 @@ impl Bundle for BundleKind {
 
     async fn cleanup(&mut self) -> Result<(), CleanupError> {
         match self {
-            Self::Noop(bundle) => bundle.cleanup().await,
             Self::Startup(bundle) => bundle.cleanup().await,
             Self::StopWithoutTools(bundle) => bundle.cleanup().await,
             Self::ExtraSystemPrompt(bundle) => bundle.cleanup().await,
@@ -239,7 +228,6 @@ impl Bundle for BundleKind {
 
     fn cleanup_timeout(&self) -> Duration {
         match self {
-            Self::Noop(bundle) => bundle.cleanup_timeout(),
             Self::Startup(bundle) => bundle.cleanup_timeout(),
             Self::StopWithoutTools(bundle) => bundle.cleanup_timeout(),
             Self::ExtraSystemPrompt(bundle) => bundle.cleanup_timeout(),
@@ -410,7 +398,8 @@ impl InstalledComponents {
         let child_templates = Self::load_child_templates(definition, resources).await?;
         let mut installer = Installer::default();
         let mut bundles = Vec::new();
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // A failed install still hands every owner created so far to rollback.
+        let mut install_all = || -> Result<(), InstallError> {
             let mut ids = HashSet::new();
             for config in &definition.bundles {
                 let id = config.id();
@@ -434,13 +423,8 @@ impl InstalledComponents {
                 }
             }
             Ok(())
-        }))
-        .unwrap_or_else(|panic| {
-            Err(InstallError::new(format!(
-                "installation panicked: {}",
-                panic_message(panic)
-            )))
-        });
+        };
+        let result = install_all();
 
         Self::finish_install(installer, bundles, result).await
     }
@@ -489,7 +473,7 @@ impl InstalledComponents {
     }
 
     /// Releases owned component references first, then cleans owners in reverse
-    /// installation order. Every owner is attempted despite errors or panics.
+    /// installation order. Every owner is attempted despite errors or timeouts.
     /// Draining ownership makes repeated calls harmless, including after errors.
     pub async fn cleanup(&mut self) -> Result<(), CleanupErrors> {
         self.tools = Arc::default();
@@ -499,23 +483,13 @@ impl InstalledComponents {
         let mut bundles = std::mem::take(&mut self.bundles);
         for bundle in bundles.iter_mut().rev() {
             let label = bundle.label();
-            let outcome = AssertUnwindSafe(async {
-                let timeout = bundle.cleanup_timeout();
-                match tokio::time::timeout(timeout, bundle.cleanup()).await {
-                    Ok(Ok(())) => None,
-                    Ok(Err(error)) => Some(CleanupFailureKind::Failed {
-                        message: error.message,
-                    }),
-                    Err(_) => Some(CleanupFailureKind::TimedOut { timeout }),
-                }
-            })
-            .catch_unwind()
-            .await;
-            let failure = match outcome {
-                Ok(failure) => failure,
-                Err(panic) => Some(CleanupFailureKind::Panicked {
-                    message: panic_message(panic),
+            let timeout = bundle.cleanup_timeout();
+            let failure = match tokio::time::timeout(timeout, bundle.cleanup()).await {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(CleanupFailureKind::Failed {
+                    message: error.message,
                 }),
+                Err(_) => Some(CleanupFailureKind::TimedOut { timeout }),
             };
             if let Some(kind) = failure {
                 errors.push(CleanupFailure {
@@ -575,21 +549,10 @@ pub struct CleanupFailure {
 pub enum CleanupFailureKind {
     Failed { message: String },
     TimedOut { timeout: Duration },
-    Panicked { message: String },
 }
 
 #[derive(Debug, thiserror::Error)]
 #[error("bundle cleanup failures: {errors:?}")]
 pub struct CleanupErrors {
     pub errors: Vec<CleanupFailure>,
-}
-
-fn panic_message(panic: Box<dyn Any + Send>) -> String {
-    if let Some(message) = panic.downcast_ref::<String>() {
-        message.clone()
-    } else if let Some(message) = panic.downcast_ref::<&str>() {
-        (*message).into()
-    } else {
-        "non-string panic payload".into()
-    }
 }

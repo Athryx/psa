@@ -194,7 +194,6 @@ other bundle's, wherever it is listed. Each bundle may appear once. Unit
 bundles are written as a string (`"Bash"`); bundles with fields as a table
 (`{ Goal = { interactive_only = true } }`).
 
-- `Noop` — installs a tool that does nothing.
 - `Startup { base_prompt = true, project_context = true, cwd = true, skills = true }` — on creation, starts a new root agent's context with its model and, with `base_prompt`, the base assistant instructions, and publishes the installed tools' definitions, then optionally loads project instructions from the working directory hierarchy (`project_context`), adds the session working directory (`cwd`), and loads the skill catalogue (`skills`). Forks keep their inherited startup and tool definitions but rerun the enabled optional context. Also follows session model updates unless the agent pins its own model. All flags default to true. Without it, an agent has no base context or tool definitions.
 - `StopWithoutTools` — stops after a response with no tool calls: the ordinary completion policy. At most one of `StopWithoutTools`, `Goal`, and `TypedResult` may be configured.
 - `ExtraSystemPrompt { prompt }` — appends a system message with the given text when the agent is created, after `Startup`.

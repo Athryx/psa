@@ -73,7 +73,7 @@ fn HistoryFixture() -> Element {
         let mut transcript = Transcript::new(target.session_id, Some(target.agent_id));
         for i in 0..151 {
             let pending = PendingEvent {
-                id: format!("{i:03}"),
+                id: format!("{i:03}").into(),
                 revision: 1,
                 session_id: target.session_id,
                 agent_id: target.agent_id,

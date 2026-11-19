@@ -94,9 +94,8 @@ fn build_result_class(name: &str, schema: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{
-        codemode_functions::{CodeModeFunctionKind, CodeModeListing, prior_results::PriorResults},
-        tools::{Noop, ToolKind},
+    use crate::components::codemode_functions::{
+        CodeModeFunctionKind, CodeModeListing, prior_results::PriorResults,
     };
 
     #[test]
@@ -107,7 +106,9 @@ mod tests {
                 listing: CodeModeListing::SystemPrompt,
             },
             CodeModeEntry {
-                function: CodeModeFunctionKind::Tool(ToolKind::Noop(Noop)),
+                function: CodeModeFunctionKind::Tool(
+                    crate::components::bundles::testing::test_tool("noop", psa::api::ToolId::Edit),
+                ),
                 listing: CodeModeListing::SystemPrompt,
             },
         ];

@@ -4,7 +4,7 @@ use crate::components::bundles::BundleConfig;
 use crate::{
     agents::{
         NewAgent, agent_context::AgentContext, agent_manager::AgentManagerState,
-        publication::Publication, session_manager::Runtime,
+        publication::Publication, supervisor::Runtime,
     },
     components::{
         bundles::decision_models::{DecisionAccess, DecisionHandle, DecisionPolicy},

@@ -8,7 +8,7 @@ use super::{CommandHook, Hook, HookError};
 use crate::agents::NewAgent;
 use crate::db::{CreateAgentDefinition, EventRange, NewEvent};
 use crate::{
-    agents::{AgentState, agent_context::AgentContext, session_manager::RuntimeError},
+    agents::{AgentState, agent_context::AgentContext, supervisor::RuntimeError},
     components::cancellation::Cancellation,
 };
 use llm_api::{
@@ -63,7 +63,7 @@ impl CompactionHook {
         };
         let window = match self.context_window {
             Some(window) => Some(window),
-            None => match context.sessions().model_catalog() {
+            None => match context.runtime().model_catalog() {
                 Some(catalog) => catalog
                     .model_info(&model.model)
                     .await
@@ -169,7 +169,7 @@ impl CompactionHook {
         if cancellation.is_cancelled() {
             return Err(RuntimeError::Cancelled.into());
         }
-        let sessions = context.sessions();
+        let sessions = context.runtime();
         let session = context.session().id;
         let mut summarizers = self.summarizers.lock().await;
         let definition_id = match &summarizers.definition {
@@ -327,7 +327,7 @@ impl Hook for CompactionHook {
         mut cancellation: Cancellation,
     ) -> Result<(), HookError> {
         match self.compact_if_needed(context, &mut cancellation).await {
-            Err(HookError::Sessions(RuntimeError::Cancelled)) if cancellation.is_cancelled() => {
+            Err(HookError::Runtime(RuntimeError::Cancelled)) if cancellation.is_cancelled() => {
                 Ok(())
             }
             result => result,
@@ -358,7 +358,7 @@ impl CommandHook for CompactionHook {
             .await
         {
             Ok(()) => (CommandOutcome::Succeeded, None),
-            Err(HookError::Sessions(RuntimeError::Cancelled)) if cancellation.is_cancelled() => {
+            Err(HookError::Runtime(RuntimeError::Cancelled)) if cancellation.is_cancelled() => {
                 (CommandOutcome::Interrupted, None)
             }
             Err(error @ (HookError::Database(_) | HookError::Agent(_))) => return Err(error),

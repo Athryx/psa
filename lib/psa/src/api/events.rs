@@ -90,7 +90,7 @@ pub enum MessageType {
 #[serde(deny_unknown_fields)]
 pub struct AgentMessageLink {
     /// Server-assigned request that delivered the message.
-    pub request_id: String,
+    pub request_id: crate::api::RequestId,
     /// Sending agent.
     pub sender: AgentId,
     /// Sending agent's name captured at submission.

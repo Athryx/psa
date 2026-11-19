@@ -13,7 +13,7 @@ fn invalid(error: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Invalid(error.to_string())
 }
 
-impl Sessions {
+impl RuntimeHandle {
     /// `Some(None)` is a completed scan that found no `.agents` directory;
     /// `None` defers discovery because the probe is offline.
     pub(super) async fn discover_session_agents_dir(
@@ -98,7 +98,7 @@ impl Sessions {
     }
 
     pub async fn refresh_configs(&self, sessions: &[SessionId]) -> Result<(), RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
+        let _guard = self.configuration_gate.write().await;
         self.refresh_configuration(sessions).await
     }
 
@@ -106,7 +106,7 @@ impl Sessions {
         &self,
         configs: Vec<I>,
     ) -> Result<Vec<api::AgentConfigStatus>, RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
+        let _guard = self.configuration_gate.write().await;
         let defaults = self
             .configuration
             .as_ref()
@@ -150,7 +150,7 @@ impl Sessions {
     }
 
     pub async fn upload_skill(&self, request: api::NewSkill) -> Result<api::Skill, RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
+        let _guard = self.configuration_gate.write().await;
         let configuration = self
             .configuration
             .as_ref()
@@ -252,8 +252,10 @@ impl Sessions {
         id: SessionId,
         request: api::CreateAgent,
     ) -> Result<Agent, RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
+        let guard = self.configuration_gate.write().await;
         self.refresh_configuration(&[id]).await?;
+        // Resolution only reads sources, so other creations may proceed alongside.
+        let _guard = guard.downgrade();
         let session = self.get_session(id).await?;
         let mut cursor = self.database.cursor().await?;
         let session_group = cursor.get_session_agents_dir(id).await?;
@@ -301,12 +303,13 @@ impl Sessions {
         mut request: crate::agents::NewAgent,
         model: Option<ModelSelection>,
     ) -> Result<Agent, RuntimeError> {
-        let _guard = self.configuration_gate.lock().await;
+        let guard = self.configuration_gate.write().await;
         let snapshot = self
             .get_resolved_agent_config(request.definition_id)
             .await?;
         if let Some(snapshot) = snapshot {
             self.refresh_configuration(&[id]).await?;
+            let _guard = guard.downgrade();
             let session = self.get_session(id).await?;
             let model = self
                 .creation_model(

@@ -154,8 +154,9 @@ snapshot ID. The current routes and async client methods are:
 - `POST /configs/refresh` / `refresh_configs(&session_ids)` rescans the server's
   global configuration directory and each listed session's `.agents` directory
   (`ConfigGroup::AgentsDir`), discovering it on first use; HTTP 204 on success.
-- `POST /agent-configs/lookup` / `get_agent_config(&config_id)` accepts a JSON
-  `ConfigId` and returns its current `AgentConfigStatus`, or HTTP 404 if unknown.
+- `GET /agent-configs/lookup` / `get_agent_config(&config_id)` sends the
+  `ConfigId` as `ConfigLookup` query parameters (`name`, `group`, and `custom`
+  or `path` with `probe_id` as the group needs) and returns its current `AgentConfigStatus`, or HTTP 404 if unknown.
   A status contains the normalized `config` and `status.missing_components`.
 - `GET /agent-snapshots/{definition_id}` /
   `get_resolved_agent_config(definition_id)` returns a `ResolvedAgentConfig`,
@@ -238,7 +239,7 @@ permission boundary. Extra system text comes only from explicitly configured
 `ExtraSystemPrompt` bundle payloads.
 
 `bundles` is an ordered list of `BundleConfig` values, defaulting to `[]` in both
-requests and responses. `Noop` installs the Noop tool.
+requests and responses.
 `{"FileTools":{"read_only":false}}` installs Read, Edit, and Write in that order;
 true installs only Read. The flag defaults to false inside the required payload;
 bare `"FileTools"` is invalid. TOML uses `{ FileTools = { read_only = true } }`. `Bash` installs `Bash`, `InteractBash`, and `CloseBash`.
@@ -273,7 +274,7 @@ remain available during cleanup. Resources are not persisted across server resta
 `bundles` clears the list in the new version without changing the old version or
 agents pinned to it. Migration 0009 gives existing definitions an empty list.
 
-Supported tool IDs are `Noop`, `Read`, `Edit`, `Write`, `Bash`, `InteractBash`,
+Supported tool IDs are `Read`, `Edit`, `Write`, `Bash`, `InteractBash`,
 `CloseBash`, `SetGoal`, `SetGoalStatus`, `CreateAgent`, `SendMessage`, `WaitMessage`,
 `ListAgents`, `AskQuestion`, and `RecordResult`. All tools require their corresponding
 bundles; configuring them as standalone tools is rejected. See `../docs/BASH_TOOLS.md` for names, waits, logs,

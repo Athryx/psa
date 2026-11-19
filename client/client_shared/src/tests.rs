@@ -39,7 +39,7 @@ fn follow_is_view_local_and_tail_is_bounded() {
     for i in 0..10 {
         transcript.apply(StreamMessage::Upsert {
             pending: PendingEvent {
-                id: format!("{i:02}"),
+                id: format!("{i:02}").into(),
                 revision: 1,
                 session_id: SessionId(1),
                 agent_id: AgentId(2),

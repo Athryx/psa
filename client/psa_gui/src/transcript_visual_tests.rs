@@ -289,7 +289,7 @@ fn GroupedTranscriptFixture() -> Element {
         for (index, kind) in kinds.into_iter().enumerate() {
             transcript.apply(StreamMessage::Upsert {
                 pending: PendingEvent {
-                    id: format!("{index:04}"),
+                    id: format!("{index:04}").into(),
                     revision: 1,
                     session_id: target.session_id,
                     agent_id: target.agent_id,

@@ -18,8 +18,6 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
         bundles: vec![
             BundleConfig::FileTools { read_only: false },
             BundleConfig::FileTools { read_only: true },
-            BundleConfig::Noop,
-            BundleConfig::Noop,
             BundleConfig::Startup {
                 base_prompt: true,
                 project_context: true,

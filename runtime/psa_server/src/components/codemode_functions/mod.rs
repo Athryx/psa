@@ -306,20 +306,20 @@ mod typed_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        components::tools::{Noop, ToolKind},
-        prompts,
-    };
+    use crate::{components::tools::ToolKind, prompts};
 
     #[test]
     fn adapter_uses_tool_definition_and_typed_schema() {
-        let function = CodeModeFunctionKind::Tool(ToolKind::Noop(Noop));
+        let test_tool =
+            || crate::components::bundles::testing::test_tool("noop", psa::api::ToolId::Edit);
+        let function = CodeModeFunctionKind::Tool(test_tool());
         let definition = function.definition();
-        let tool = Noop.tool_definition();
-        assert_eq!(definition.name, tool.name);
-        assert_eq!(definition.description, tool.description);
-        assert_eq!(definition.parameters, tool.parameters);
-        assert_eq!(function.cancellation_timeout(), Noop.cancellation_timeout());
+        let tool = test_tool();
+        let tool_definition = tool.tool_definition();
+        assert_eq!(definition.name, tool_definition.name);
+        assert_eq!(definition.description, tool_definition.description);
+        assert_eq!(definition.parameters, tool_definition.parameters);
+        assert_eq!(function.cancellation_timeout(), tool.cancellation_timeout());
     }
 
     #[test]
@@ -334,7 +334,10 @@ mod tests {
         assert!(!text.contains("__str__"));
         assert!(!text.contains("_text"));
 
-        let noop = CodeModeFunctionKind::Tool(ToolKind::Noop(Noop));
+        let noop = CodeModeFunctionKind::Tool(crate::components::bundles::testing::test_tool(
+            "noop",
+            psa::api::ToolId::Edit,
+        ));
         assert!(noop.python_stub().function.contains("-> str:"));
     }
 
@@ -352,11 +355,15 @@ mod tests {
     fn duplicate_function_names_are_rejected() {
         let mut installer = crate::components::bundles::Installer::default();
         installer
-            .add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::Noop(Noop)))
+            .add_codemode_function(CodeModeFunctionKind::Tool(
+                crate::components::bundles::testing::test_tool("noop", psa::api::ToolId::Edit),
+            ))
             .unwrap();
         assert!(
             installer
-                .add_codemode_function(CodeModeFunctionKind::Tool(ToolKind::Noop(Noop)))
+                .add_codemode_function(CodeModeFunctionKind::Tool(
+                    crate::components::bundles::testing::test_tool("noop", psa::api::ToolId::Edit)
+                ))
                 .is_err()
         );
     }

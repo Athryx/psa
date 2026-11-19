@@ -253,7 +253,6 @@ pub(super) async fn insert_payload(
         }
         EventType::ToolDefinition(value) => {
             let tool_id = match value.id {
-                ToolId::Noop => "noop",
                 ToolId::Read => "read",
                 ToolId::Edit => "edit",
                 ToolId::Write => "write",
@@ -535,7 +534,7 @@ pub(super) async fn load_payloads(
                 .request_id
                 .map(|request_id| {
                     Ok::<_, DbError>(AgentMessageLink {
-                        request_id,
+                        request_id: psa::api::RequestId(request_id),
                         sender: psa::api::AgentId(decode_integer(
                             r.source_agent_id
                                 .ok_or_else(|| invalid("subagent sender id"))?,
@@ -578,7 +577,6 @@ pub(super) async fn load_payloads(
         "SELECT p.event_pk, p.tool_id, p.name, p.description, p.parameters, p.strict FROM event_tool_definition p JOIN events e ON e.event_pk=p.event_pk WHERE e.agent_id=? AND e.event_seq BETWEEN ? AND ?",
         |r| EventType::ToolDefinition(ToolDefinition {
             id: match r.tool_id.as_str() {
-                "noop" => ToolId::Noop,
                 "read" => ToolId::Read,
                 "edit" => ToolId::Edit,
                 "write" => ToolId::Write,
@@ -631,7 +629,7 @@ pub(super) async fn load_payloads(
             ) {
                 (Some(recipient), Some(request_id), Some(sender_name), Some(recipient_name)) => {
                     Some(AgentMessageLink {
-                        request_id,
+                        request_id: psa::api::RequestId(request_id),
                         sender: owner,
                         sender_name,
                         recipient: psa::api::AgentId(decode_integer(recipient)?),

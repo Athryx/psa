@@ -365,7 +365,7 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
                     cwd: true,
                     skills: true,
                 },
-                psa::api::BundleConfig::Noop,
+                psa::api::BundleConfig::FileTools { read_only: true },
             ],
             models: vec![psa::api::ModelSelection::Global],
             first_model_default: true,
@@ -402,12 +402,13 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
             .await
             .unwrap();
         let events: Vec<_> = page.events.iter().map(|event| &event.event.kind).collect();
-        assert_eq!(events.len(), 6, "unexpected startup events: {events:#?}");
+        assert_eq!(events.len(), 8, "unexpected startup events: {events:#?}");
         assert!(matches!(events[0], EventType::NewContext));
         assert!(matches!(events[1], EventType::Model(_)));
         assert!(matches!(events[2], EventType::Message(message) if message.message_type == MessageType::System));
         assert!(matches!(events[3], EventType::ToolDefinition(_)));
-        let EventType::Message(cwd_message) = events[4] else {
+        // The read tool's usage and rules messages follow its definition.
+        let EventType::Message(cwd_message) = events[6] else {
             panic!("cwd must follow tool definitions");
         };
         assert_eq!(cwd_message.message_type, MessageType::System);
@@ -416,7 +417,7 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
             serde_json::to_value(&cwd_message.content).unwrap(),
             serde_json::to_value(psa_server::prompts::text(format!("<cwd>\n{escaped_cwd}\n</cwd>"))).unwrap()
         );
-        let catalogue = events[5..].iter().find_map(|event| match event {
+        let catalogue = events[7..].iter().find_map(|event| match event {
             EventType::Message(message) if message.message_type == MessageType::System => Some(message),
             _ => None,
         }).expect("skills must emit a system catalogue after cwd");

@@ -73,7 +73,7 @@ impl AgentManagerState {
     pub(super) async fn resolve_tools(
         &mut self,
         probe: &ProbeHandle,
-        sessions: &Sessions,
+        sessions: &RuntimeHandle,
         controls: &mut UnboundedMailbox<AgentManagerMessage>,
     ) -> Result<(), AgentError> {
         self.finish_persistence().await?;
@@ -251,7 +251,7 @@ async fn invoke(
     call_id: String,
     arguments: serde_json::Value,
     probe: &ProbeHandle,
-    sessions: &Sessions,
+    sessions: &RuntimeHandle,
     mut cancelled: watch::Receiver<bool>,
 ) -> (String, ToolOutput) {
     let tools = Arc::clone(&snapshot.tools);
