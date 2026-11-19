@@ -5,7 +5,7 @@ use crate::{
     db::{Database, DbError},
     sessions::{ForkPoint, SessionFork, SessionUpdate},
 };
-use psa::api::{AgentDefinitionId, BundleConfig, HookConfig, HookConfigs};
+use psa::api::{AgentDefinitionId, BundleConfig};
 
 #[tokio::test]
 async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
@@ -20,23 +20,17 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
             BundleConfig::FileTools { read_only: true },
             BundleConfig::Noop,
             BundleConfig::Noop,
+            BundleConfig::Startup {
+                base_prompt: true,
+                project_context: true,
+                cwd: false,
+                skills: true,
+            },
+            BundleConfig::ExtraSystemPrompt {
+                prompt: " \n literal prompt \n ".into(),
+            },
+            BundleConfig::StopWithoutTools,
         ],
-        hooks: HookConfigs {
-            agent_create: vec![
-                HookConfig::Noop,
-                HookConfig::DefaultStartup,
-                HookConfig::Noop,
-            ],
-            session_update: vec![HookConfig::SessionModelUpdate],
-            before_request: vec![
-                HookConfig::Noop,
-                HookConfig::ExtraSystemPrompt {
-                    prompt: " \n literal prompt \n ".into(),
-                },
-                HookConfig::Noop,
-            ],
-            after_request: vec![HookConfig::StopWithoutTools, HookConfig::Noop],
-        },
         model: model().into(),
         skills: vec![
             "relative/../skill".into(),
@@ -81,9 +75,7 @@ async fn definitions_roundtrip_literal_values_and_insert_immutable_versions() {
     assert_eq!(next.previous_version_id, Some(first.id));
     assert_eq!(next.version, 2);
     assert!(next.bundles.is_empty());
-    assert!(next.hooks.agent_create.is_empty());
     assert_eq!(next.model, psa::api::AgentModel::Global);
-    assert!(next.hooks.before_request.is_empty());
     assert_eq!(
         serde_json::to_value(cursor.get_agent_definition(first.id).await.unwrap()).unwrap(),
         expected

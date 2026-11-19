@@ -16,8 +16,7 @@ use llm_api::{
     providers::ModelConfig,
 };
 use psa::api::{
-    AgentCommand, AgentDefinitionId, AgentResult, CommandOutcome, CommandResult, HookConfig,
-    HookConfigs,
+    AgentCommand, AgentDefinitionId, AgentResult, BundleConfig, CommandOutcome, CommandResult,
     events::{Compaction, CompactionSummary, Event, EventType, Log, MessageType},
 };
 use std::{sync::Arc, time::Duration};
@@ -180,16 +179,18 @@ impl CompactionHook {
                     .create_agent_definition(CreateAgentDefinition {
                         name: "_internal_compaction".into(),
                         model: model.clone().into(),
-                        hooks: HookConfigs {
-                            agent_create: vec![
-                                HookConfig::SessionModelUpdate,
-                                HookConfig::ExtraSystemPrompt {
-                                    prompt: prompts::SUMMARIZATION_SYSTEM_PROMPT.into(),
-                                },
-                            ],
-                            after_request: vec![HookConfig::StopWithoutTools],
-                            ..Default::default()
-                        },
+                        bundles: vec![
+                            BundleConfig::Startup {
+                                base_prompt: false,
+                                project_context: false,
+                                cwd: false,
+                                skills: false,
+                            },
+                            BundleConfig::ExtraSystemPrompt {
+                                prompt: prompts::SUMMARIZATION_SYSTEM_PROMPT.into(),
+                            },
+                            BundleConfig::StopWithoutTools,
+                        ],
                         ..Default::default()
                     })
                     .await?;

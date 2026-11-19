@@ -1,4 +1,5 @@
-//! Typed construction configuration for hooks and tool-owning feature bundles.
+//! Typed construction configuration for feature bundles, which own every installed
+//! tool and lifecycle hook.
 //!
 //! Configuration values select and parameterize an installation. The corresponding
 //! identity enums describe installed components and do not carry construction data.
@@ -28,46 +29,44 @@ pub enum DecisionModelSelection {
     Pinned,
 }
 
-/// Construction configuration for a lifecycle hook.
-///
-/// Hooks run in the order configured for their stage. Each installation carries
-/// its own construction data; prompt text belongs to the hook, not the agent.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub enum HookConfig {
-    /// Installs a hook that performs no work.
-    Noop,
-    /// Stops after a response without tool calls, unless installed goal policy applies.
-    StopWithoutTools,
-    /// Initializes a new root agent's model and system context.
-    DefaultStartup,
-    /// Appends a configured system message when this hook runs.
-    ExtraSystemPrompt {
-        /// System prompt text owned by this hook installation.
-        prompt: String,
-    },
-    /// Loads project instructions from the working directory hierarchy.
-    ProjectContext,
-    /// Publishes the installed tools' model-facing definitions.
-    ToolDefinitions,
-    /// Adds the current session working directory to context.
-    Cwd,
-    /// Loads the definition's configured skill catalogue.
-    Skills,
-    /// Follows session model updates unless the definition pins its own model.
-    SessionModelUpdate,
-}
-
 /// Construction configuration for a feature bundle that owns related components.
 ///
-/// Bundles install all tools in list order before explicit hooks. Bundle ownership
-/// keeps shared state and cleanup together instead of independently constructing
-/// each component from its identity.
+/// Bundles install their tools and hooks in list order, except that `Startup`
+/// creation hooks run before every other creation hook. Bundle ownership keeps
+/// shared state and cleanup together instead of independently constructing each
+/// component from its identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub enum BundleConfig {
     /// Installs a tool that performs no work.
     Noop,
+    /// Initializes a new root agent's context: model, base instructions, and tool
+    /// definitions, plus the selected optional context. Also follows session model
+    /// updates unless the definition pins its own model.
+    Startup {
+        /// Add the base assistant instructions to the new context. When false,
+        /// startup only begins the context and sets its model. Defaults to true.
+        #[serde(default = "enabled")]
+        base_prompt: bool,
+        /// Load project instructions from the working directory hierarchy.
+        /// Defaults to true.
+        #[serde(default = "enabled")]
+        project_context: bool,
+        /// Add the session working directory to context. Defaults to true.
+        #[serde(default = "enabled")]
+        cwd: bool,
+        /// Load the definition's skill catalogue. Defaults to true.
+        #[serde(default = "enabled")]
+        skills: bool,
+    },
+    /// Stops after a response without tool calls. This is the ordinary completion
+    /// policy, incompatible with Goal and TypedResult.
+    StopWithoutTools,
+    /// Appends a configured system message when the agent is created, after startup.
+    ExtraSystemPrompt {
+        /// System prompt text owned by this bundle installation.
+        prompt: String,
+    },
     /// Installs file tools, optionally restricted to reading.
     FileTools {
         /// When true, install only Read; when false, also install Edit and Write.
@@ -138,6 +137,9 @@ impl BundleConfig {
     pub fn id(&self) -> BundleId {
         match self {
             Self::Noop => BundleId::Noop,
+            Self::Startup { .. } => BundleId::Startup,
+            Self::StopWithoutTools => BundleId::StopWithoutTools,
+            Self::ExtraSystemPrompt { .. } => BundleId::ExtraSystemPrompt,
             Self::FileTools { .. } => BundleId::FileTools,
             Self::Bash => BundleId::Bash,
             Self::CodeMode => BundleId::CodeMode,
@@ -185,29 +187,18 @@ fn default_interactive_only() -> bool {
     true
 }
 
-/// Ordered explicit hook configurations for each lifecycle stage.
-///
-/// Missing stages deserialize as empty lists. Omission-aware configuration input
-/// uses [`crate::api::HookOverrides`] to distinguish inherited stages from empty ones.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct HookConfigs {
-    /// Hooks run only when an agent is first created, not when its worker reloads.
-    pub agent_create: Vec<HookConfig>,
-    /// Hooks run for session updates, including while the agent is idle.
-    pub session_update: Vec<HookConfig>,
-    /// Hooks run before an inference request.
-    pub before_request: Vec<HookConfig>,
-    /// Hooks run after an inference request.
-    pub after_request: Vec<HookConfig>,
-}
-
 /// Identity of a built-in feature bundle, without its construction data.
 /// Use [`BundleConfig`] when selecting a bundle installation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BundleId {
     /// Installs a tool that performs no work.
     Noop,
+    /// Initializes a new agent's context and follows session model updates.
+    Startup,
+    /// Installs the ordinary stop-after-a-response-without-tools completion policy.
+    StopWithoutTools,
+    /// Appends a configured system message on creation.
+    ExtraSystemPrompt,
     /// Installs Read and, unless read-only, Edit and Write.
     FileTools,
     /// Installs the Bash, InteractBash, and CloseBash tools with shared sessions.
@@ -280,37 +271,27 @@ pub enum CompletionConfigurationError {
     /// More than one distinct completion policy was selected, including defaults.
     #[error("StopWithoutTools, Goal, and TypedResult completion modes are mutually exclusive")]
     IncompatibleModes,
-    /// A terminal-response hook was assigned to a nonterminal lifecycle stage.
-    #[error("StopWithoutTools must be configured in after_request")]
-    InvalidStopperStage,
 }
 
 /// Validate completion-policy selection after applying server defaults.
 ///
-/// Goal and TypedResult are incompatible with each other and with StopWithoutTools,
-/// even when a bundle's installation policy could skip a particular agent.
-/// Repeated copies of the same hook do not select a second completion mode.
-/// The server additionally compiles TypedResult schemas when saving configs.
+/// StopWithoutTools, Goal, and TypedResult are mutually incompatible, even when a
+/// bundle's installation policy could skip a particular agent. Duplicate bundles
+/// are rejected at installation, not here. The server
+/// additionally compiles TypedResult schemas when saving configs.
 pub fn validate_completion_modes(
     bundles: &[BundleConfig],
-    hooks: &HookConfigs,
 ) -> Result<(), CompletionConfigurationError> {
-    let is_stopper = |hook: &HookConfig| matches!(hook, HookConfig::StopWithoutTools);
-    if hooks.agent_create.iter().any(is_stopper)
-        || hooks.session_update.iter().any(is_stopper)
-        || hooks.before_request.iter().any(is_stopper)
-    {
-        return Err(CompletionConfigurationError::InvalidStopperStage);
-    }
-
-    let ordinary = hooks.after_request.iter().any(is_stopper);
-    let goal = bundles
-        .iter()
-        .any(|bundle| matches!(bundle, BundleConfig::Goal { .. }));
-    let typed = bundles
-        .iter()
-        .any(|bundle| matches!(bundle, BundleConfig::TypedResult { .. }));
-    if u8::from(ordinary) + u8::from(goal) + u8::from(typed) > 1 {
+    let selects = |mode: BundleId| bundles.iter().any(|bundle| bundle.id() == mode);
+    let modes = [
+        BundleId::StopWithoutTools,
+        BundleId::Goal,
+        BundleId::TypedResult,
+    ]
+    .into_iter()
+    .filter(|mode| selects(*mode))
+    .count();
+    if modes > 1 {
         return Err(CompletionConfigurationError::IncompatibleModes);
     }
 
@@ -328,6 +309,22 @@ mod tests {
     fn component_configurations_preserve_identity_and_roundtrip() {
         for (config, id) in [
             (BundleConfig::Noop, BundleId::Noop),
+            (
+                BundleConfig::Startup {
+                    base_prompt: true,
+                    project_context: false,
+                    cwd: true,
+                    skills: false,
+                },
+                BundleId::Startup,
+            ),
+            (BundleConfig::StopWithoutTools, BundleId::StopWithoutTools),
+            (
+                BundleConfig::ExtraSystemPrompt {
+                    prompt: "Follow these instructions. 🦀".into(),
+                },
+                BundleId::ExtraSystemPrompt,
+            ),
             (
                 BundleConfig::FileTools { read_only: false },
                 BundleId::FileTools,
@@ -375,22 +372,6 @@ mod tests {
                 serde_json::from_value::<BundleConfig>(wire).unwrap(),
                 config
             );
-        }
-        for config in [
-            HookConfig::Noop,
-            HookConfig::StopWithoutTools,
-            HookConfig::DefaultStartup,
-            HookConfig::ExtraSystemPrompt {
-                prompt: "Follow these instructions. 🦀".into(),
-            },
-            HookConfig::ProjectContext,
-            HookConfig::ToolDefinitions,
-            HookConfig::Cwd,
-            HookConfig::Skills,
-            HookConfig::SessionModelUpdate,
-        ] {
-            let wire = serde_json::to_value(&config).unwrap();
-            assert_eq!(serde_json::from_value::<HookConfig>(wire).unwrap(), config);
         }
     }
 
@@ -443,7 +424,6 @@ mod tests {
             serde_json::from_value::<BundleConfig>(wire).unwrap(),
             config
         );
-        assert!(serde_json::from_value::<HookConfig>(json!({"Compaction": {}})).is_err());
         for invalid in [
             serde_json::json!("Compaction"),
             serde_json::json!({"Compaction": {"reserve_tokens": -1}}),
@@ -711,10 +691,11 @@ mod tests {
     }
 
     #[test]
-    fn prompt_hook_payload_is_required_closed_and_described_by_schema() {
+    fn prompt_bundle_payload_is_required_closed_and_described_by_schema() {
         let wire = json!({"ExtraSystemPrompt": {"prompt": "Be concise."}});
-        let hook: HookConfig = serde_json::from_value(wire.clone()).unwrap();
-        assert_eq!(serde_json::to_value(hook).unwrap(), wire);
+        let bundle: BundleConfig = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(bundle.id(), BundleId::ExtraSystemPrompt);
+        assert_eq!(serde_json::to_value(bundle).unwrap(), wire);
         for invalid in [
             json!("ExtraSystemPrompt"),
             json!({"ExtraSystemPrompt": {}}),
@@ -723,12 +704,12 @@ mod tests {
             json!({"ExtraSystemPrompt": {"prompt": "text"}, "unknown": true}),
         ] {
             assert!(
-                serde_json::from_value::<HookConfig>(invalid.clone()).is_err(),
+                serde_json::from_value::<BundleConfig>(invalid.clone()).is_err(),
                 "{invalid}"
             );
         }
 
-        let schema = serde_json::to_value(schemars::schema_for!(HookConfig)).unwrap();
+        let schema = serde_json::to_value(schemars::schema_for!(BundleConfig)).unwrap();
         let prompt_variant = schema["oneOf"]
             .as_array()
             .unwrap()
@@ -743,26 +724,43 @@ mod tests {
     }
 
     #[test]
-    fn hook_stages_default_to_empty_and_reject_unknown_fields() {
+    fn startup_payload_flags_default_to_true() {
+        let config: BundleConfig = serde_json::from_value(json!({"Startup": {}})).unwrap();
         assert_eq!(
-            serde_json::from_value::<HookConfigs>(json!({})).unwrap(),
-            HookConfigs::default()
+            config,
+            BundleConfig::Startup {
+                base_prompt: true,
+                project_context: true,
+                cwd: true,
+                skills: true,
+            }
         );
-        let hooks = HookConfigs {
-            agent_create: vec![HookConfig::ExtraSystemPrompt {
-                prompt: "Local prompt".into(),
-            }],
-            ..Default::default()
-        };
-        let wire = serde_json::to_value(&hooks).unwrap();
-        assert_eq!(serde_json::from_value::<HookConfigs>(wire).unwrap(), hooks);
-        assert!(serde_json::from_value::<HookConfigs>(json!({"unknown_stage": []})).is_err());
-        assert!(
-            serde_json::from_value::<crate::api::HookOverrides>(json!({"unknown_stage": []}))
-                .is_err()
+        let config: BundleConfig =
+            serde_json::from_value(json!({"Startup": {"cwd": false}})).unwrap();
+        assert_eq!(
+            config,
+            BundleConfig::Startup {
+                base_prompt: true,
+                project_context: true,
+                cwd: false,
+                skills: true,
+            }
         );
-        let schema = serde_json::to_value(schemars::schema_for!(HookConfigs)).unwrap();
-        assert_eq!(schema["additionalProperties"], false);
+        for invalid in [
+            json!("Startup"),
+            json!({"Startup": null}),
+            json!({"Startup": {"skills": "true"}}),
+            json!({"Startup": {"unknown": true}}),
+        ] {
+            assert!(
+                serde_json::from_value::<BundleConfig>(invalid.clone()).is_err(),
+                "{invalid}"
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(BundleConfig::StopWithoutTools).unwrap(),
+            json!("StopWithoutTools")
+        );
     }
 
     fn typed() -> BundleConfig {
@@ -774,19 +772,16 @@ mod tests {
 
     #[test]
     fn rejects_incompatible_modes_including_skippable_goal_policy() {
-        let ordinary = HookConfigs {
-            after_request: vec![HookConfig::StopWithoutTools],
-            ..Default::default()
-        };
+        let ordinary = BundleConfig::StopWithoutTools;
         let goal = BundleConfig::Goal {
             interactive_only: true,
         };
-        assert!(validate_completion_modes(&[], &ordinary).is_ok());
-        assert!(validate_completion_modes(&[goal.clone()], &HookConfigs::default()).is_ok());
-        assert!(validate_completion_modes(&[typed()], &HookConfigs::default()).is_ok());
-        assert!(validate_completion_modes(&[goal.clone()], &ordinary).is_err());
-        assert!(validate_completion_modes(&[typed()], &ordinary).is_err());
-        assert!(validate_completion_modes(&[goal, typed()], &HookConfigs::default()).is_err());
+        assert!(validate_completion_modes(&[ordinary.clone()]).is_ok());
+        assert!(validate_completion_modes(&[goal.clone()]).is_ok());
+        assert!(validate_completion_modes(&[typed()]).is_ok());
+        assert!(validate_completion_modes(&[goal.clone(), ordinary.clone()]).is_err());
+        assert!(validate_completion_modes(&[typed(), ordinary]).is_err());
+        assert!(validate_completion_modes(&[goal, typed()]).is_err());
     }
 
     #[test]
@@ -796,18 +791,6 @@ mod tests {
             keep_recent_tokens: 20000,
             context_window: None,
         };
-        assert!(validate_completion_modes(&[compact, typed()], &HookConfigs::default()).is_ok());
-    }
-
-    #[test]
-    fn rejects_nonterminal_stopper_stages() {
-        let hooks = HookConfigs {
-            before_request: vec![HookConfig::StopWithoutTools],
-            ..Default::default()
-        };
-        assert!(matches!(
-            validate_completion_modes(&[], &hooks),
-            Err(CompletionConfigurationError::InvalidStopperStage)
-        ));
+        assert!(validate_completion_modes(&[compact, typed()]).is_ok());
     }
 }

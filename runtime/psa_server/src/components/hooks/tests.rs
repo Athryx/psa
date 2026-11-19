@@ -1,55 +1,5 @@
-use super::{HookKind, Hooks};
 use crate::components::tools::{Edit, Noop, Read, Tool, ToolKind, Write, tool_definition};
-use psa::api::{HookConfig, HookConfigs, ToolId};
-
-#[test]
-fn hook_construction_preserves_configured_order_and_empty_lists() {
-    let hooks = Hooks::from_configs(&HookConfigs {
-        agent_create: vec![
-            HookConfig::Noop,
-            HookConfig::DefaultStartup,
-            HookConfig::ExtraSystemPrompt {
-                prompt: "Configured prompt".into(),
-            },
-            HookConfig::ProjectContext,
-            HookConfig::Cwd,
-            HookConfig::ToolDefinitions,
-            HookConfig::Skills,
-        ],
-        session_update: vec![HookConfig::SessionModelUpdate],
-        before_request: vec![],
-        after_request: vec![HookConfig::StopWithoutTools, HookConfig::Noop],
-    });
-
-    assert!(matches!(
-        hooks.agent_create.as_slice(),
-        [
-            HookKind::Noop(_),
-            HookKind::DefaultStartup(_),
-            HookKind::ExtraSystemPrompt(_),
-            HookKind::ProjectContext(_),
-            HookKind::Cwd(_),
-            HookKind::ToolDefinitions(_),
-            HookKind::Skills(_),
-        ]
-    ));
-    assert!(matches!(
-        hooks.session_update.as_slice(),
-        [HookKind::SessionModelUpdate(_)]
-    ));
-    assert!(hooks.before_request.is_empty());
-    assert!(matches!(
-        hooks.after_request.as_slice(),
-        [HookKind::StopWithoutTools(_), HookKind::Noop(_)]
-    ));
-
-    let empty = Hooks::from_configs(&HookConfigs::default());
-    assert!(empty.agent_create.is_empty());
-    assert!(empty.session_update.is_empty());
-    assert!(empty.before_request.is_empty());
-    assert!(empty.after_request.is_empty());
-    let _ = super::NoopHook;
-}
+use psa::api::ToolId;
 
 #[test]
 fn file_tool_instances_have_stable_ids_definitions_and_prompt_guidance() {

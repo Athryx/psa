@@ -358,16 +358,15 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
             config_id: config_id.clone(),
             description: String::new(),
             selectable: true,
-            bundles: vec![psa::api::BundleConfig::Noop],
-            hooks: psa::api::HookConfigs {
-                agent_create: vec![
-                    psa::api::HookConfig::DefaultStartup,
-                    psa::api::HookConfig::ToolDefinitions,
-                    psa::api::HookConfig::Cwd,
-                    psa::api::HookConfig::Skills,
-                ],
-                ..Default::default()
-            },
+            bundles: vec![
+                psa::api::BundleConfig::Startup {
+                    base_prompt: true,
+                    project_context: false,
+                    cwd: true,
+                    skills: true,
+                },
+                psa::api::BundleConfig::Noop,
+            ],
             models: vec![psa::api::ModelSelection::Global],
             first_model_default: true,
             subagents: Default::default(),

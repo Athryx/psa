@@ -8,6 +8,11 @@ async fn create_compacting_agent(
 ) -> (wire::Session, wire::Agent) {
     let mut config = agent_config("compacting");
     config.bundles = vec![
+        startup(),
+        wire::BundleConfig::ExtraSystemPrompt {
+            prompt: "Keep this system instruction.".into(),
+        },
+        wire::BundleConfig::StopWithoutTools,
         wire::BundleConfig::Noop,
         wire::BundleConfig::Compaction {
             reserve_tokens: 0,
@@ -15,17 +20,6 @@ async fn create_compacting_agent(
             context_window: Some(context_window),
         },
     ];
-    config.hooks = wire::HookConfigs {
-        agent_create: vec![
-            wire::HookConfig::DefaultStartup,
-            wire::HookConfig::ToolDefinitions,
-            wire::HookConfig::ExtraSystemPrompt {
-                prompt: "Keep this system instruction.".into(),
-            },
-        ],
-        after_request: vec![wire::HookConfig::StopWithoutTools],
-        ..Default::default()
-    };
     harness.upsert_config(config).await;
     let (session, _) = harness.create_agent().await;
     harness.wait_stopped(session.id).await;

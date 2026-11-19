@@ -108,23 +108,20 @@ fn provider_info_only_transmits_identity_and_authentication() {
 }
 
 #[test]
-fn definitions_have_flat_versioned_wire_types_and_default_empty_hooks() {
-    assert_eq!(
-        serde_json::from_str::<HookConfigs>("{}").unwrap(),
-        HookConfigs::default()
-    );
-    let hooks = HookConfigs {
-        agent_create: vec![
-            HookConfig::DefaultStartup,
-            HookConfig::ExtraSystemPrompt {
-                prompt: "Extra instructions".into(),
-            },
-            HookConfig::ProjectContext,
-        ],
-        session_update: vec![HookConfig::SessionModelUpdate],
-        before_request: vec![HookConfig::Noop],
-        after_request: vec![HookConfig::StopWithoutTools],
-    };
+fn definitions_have_flat_versioned_wire_types_and_only_bundles() {
+    let bundles = vec![
+        BundleConfig::Startup {
+            base_prompt: true,
+            project_context: true,
+            cwd: false,
+            skills: true,
+        },
+        BundleConfig::ExtraSystemPrompt {
+            prompt: "Extra instructions".into(),
+        },
+        BundleConfig::FileTools { read_only: false },
+        BundleConfig::StopWithoutTools,
+    ];
     let definition = AgentDefinition {
         id: AgentDefinitionId(9),
         previous_version_id: Some(AgentDefinitionId(4)),
@@ -132,8 +129,7 @@ fn definitions_have_flat_versioned_wire_types_and_default_empty_hooks() {
         name: "assistant".into(),
         description: "Reusable assistant".into(),
         selectable: true,
-        bundles: vec![BundleConfig::FileTools { read_only: false }],
-        hooks: hooks.clone(),
+        bundles: bundles.clone(),
         model: model_config().into(),
         skills: vec!["/skills/example".into()],
         permitted_subagents: vec![AgentDefinitionId(3)],
@@ -144,25 +140,21 @@ fn definitions_have_flat_versioned_wire_types_and_default_empty_hooks() {
     assert_eq!(json["version"], 2);
     assert_eq!(
         json["bundles"],
-        serde_json::json!([{"FileTools": {"read_only": false}}])
+        serde_json::json!([
+            {"Startup": {"base_prompt": true, "project_context": true, "cwd": false, "skills": true}},
+            {"ExtraSystemPrompt": {"prompt": "Extra instructions"}},
+            {"FileTools": {"read_only": false}},
+            "StopWithoutTools",
+        ])
     );
     assert!(json.get("tools").is_none());
-    assert_eq!(json["hooks"]["agent_create"][0], "DefaultStartup");
-    assert_eq!(
-        json["hooks"]["agent_create"][1],
-        serde_json::json!({"ExtraSystemPrompt": {"prompt": "Extra instructions"}})
-    );
+    assert!(json.get("hooks").is_none());
     assert!(json.get("extra_system_prompt").is_none());
-    assert_eq!(json["hooks"]["agent_create"][2], "ProjectContext");
     assert_eq!(json["skills"][0], "/skills/example");
     assert_eq!(json["permitted_subagents"][0], 3);
     assert!(json.get("config").is_none());
     let decoded: AgentDefinition = serde_json::from_value(json.clone()).unwrap();
-    assert_eq!(
-        decoded.bundles,
-        vec![BundleConfig::FileTools { read_only: false }]
-    );
-    assert_eq!(decoded.hooks, hooks);
+    assert_eq!(decoded.bundles, bundles);
     assert_eq!(decoded.model, model_config().into());
 }
 

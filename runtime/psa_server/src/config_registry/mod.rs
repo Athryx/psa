@@ -13,8 +13,8 @@ use crate::{
 };
 use psa::api::probes::{DirectoryEntry, Event};
 use psa::api::{
-    AgentConfig, AgentConfigInput, BundleConfig, ConfigGroup, ConfigId, HookOverrides,
-    IncludedItems, ModelSelection, ProbeId, ProbeMetadata, Skill, SkillId, SkillLocation,
+    AgentConfig, AgentConfigInput, BundleConfig, ConfigGroup, ConfigId, IncludedItems,
+    ModelSelection, ProbeId, ProbeMetadata, Skill, SkillId, SkillLocation,
 };
 use psa_shared::probe_transport::ProbeError;
 use serde::Deserialize;
@@ -599,8 +599,6 @@ pub struct AgentDefinitionConfig {
     pub selectable: bool,
     #[serde(default)]
     pub bundles: Option<Vec<BundleConfig>>,
-    #[serde(default)]
-    pub hooks: HookOverrides,
     #[serde(default = "default_models")]
     pub models: Vec<ModelSelection>,
     #[serde(default = "yes", alias = "default")]
@@ -687,7 +685,6 @@ impl AgentDefinitionConfig {
             description: self.description,
             selectable: self.selectable,
             bundles: self.bundles,
-            hooks: self.hooks,
             models: self.models,
             first_model_default: self.first_model_default,
             subagents,
@@ -697,7 +694,8 @@ impl AgentDefinitionConfig {
 }
 
 /// Default groups are Global and/or the config's own group; named items
-/// resolve in the own group first, then in Global.
+/// resolve in the own group first, then in Global. A Global config's own-group
+/// defaults also select the creating session's `.agents` group.
 fn expand_inclusions(
     global: bool,
     own_group: bool,
@@ -711,6 +709,9 @@ fn expand_inclusions(
     }
     if own_group && !groups.contains(current) {
         groups.push(current.clone());
+    }
+    if own_group && *current == ConfigGroup::Global {
+        groups.push(ConfigGroup::Session);
     }
     let items = names
         .iter()

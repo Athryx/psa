@@ -1,15 +1,17 @@
 use super::*;
-use psa::api::{HookConfig, HookConfigs};
 
 fn configured_defaults() -> AgentDefaults {
     AgentDefaults {
-        bundles: vec![BundleConfig::FileTools { read_only: true }],
-        hooks: HookConfigs {
-            agent_create: vec![HookConfig::Skills],
-            session_update: vec![HookConfig::SessionModelUpdate],
-            before_request: vec![HookConfig::Noop],
-            after_request: vec![HookConfig::StopWithoutTools],
-        },
+        bundles: vec![
+            BundleConfig::Startup {
+                base_prompt: true,
+                project_context: false,
+                cwd: false,
+                skills: true,
+            },
+            BundleConfig::FileTools { read_only: true },
+            BundleConfig::StopWithoutTools,
+        ],
     }
 }
 
@@ -33,60 +35,43 @@ fn omitted_components_inherit_configured_defaults() {
         ConfigRegistry::new(PathBuf::from("/tmp/defaults")).with_agent_defaults(defaults.clone());
     let config = lower_config("name = 'example'", registry.agent_defaults());
     assert_eq!(config.bundles, defaults.bundles);
-    assert_eq!(config.hooks, defaults.hooks);
 }
 
 #[test]
 fn explicit_empty_components_disable_configured_defaults() {
     let defaults = configured_defaults();
-    let config = lower_config(
-        "name = 'example'\nbundles = []\n[hooks]\nagent_create = []\nsession_update = []\nbefore_request = []\nafter_request = []",
-        &defaults,
-    );
+    let config = lower_config("name = 'example'\nbundles = []", &defaults);
     assert!(config.bundles.is_empty());
-    assert_eq!(config.hooks, HookConfigs::default());
 }
 
 #[test]
-fn hook_stages_inherit_and_override_independently() {
-    let defaults = configured_defaults();
+fn parameterized_bundle_configuration_is_parsed_from_toml() {
     let config = lower_config(
-        "name = 'example'\n[hooks]\nagent_create = []\nafter_request = ['Noop']",
-        &defaults,
-    );
-    assert!(config.hooks.agent_create.is_empty());
-    assert_eq!(config.hooks.session_update, defaults.hooks.session_update);
-    assert_eq!(config.hooks.before_request, defaults.hooks.before_request);
-    assert_eq!(config.hooks.after_request, vec![HookConfig::Noop]);
-    assert_eq!(config.bundles, defaults.bundles);
-}
-
-#[test]
-fn parameterized_hook_configuration_is_local_to_each_stage() {
-    let config = lower_config(
-        "name = 'example'\n[hooks]\nagent_create = ['DefaultStartup', { ExtraSystemPrompt = { prompt = 'First prompt' } }]\nbefore_request = [{ ExtraSystemPrompt = { prompt = 'Second prompt' } }]",
+        "name = 'example'\nbundles = [{ Startup = { cwd = false } }, { ExtraSystemPrompt = { prompt = 'First prompt' } }, 'StopWithoutTools']",
         &AgentDefaults::default(),
     );
     assert_eq!(
-        config.hooks.agent_create,
+        config.bundles,
         vec![
-            HookConfig::DefaultStartup,
-            HookConfig::ExtraSystemPrompt {
+            BundleConfig::Startup {
+                base_prompt: true,
+                project_context: true,
+                cwd: false,
+                skills: true,
+            },
+            BundleConfig::ExtraSystemPrompt {
                 prompt: "First prompt".into()
-            }
+            },
+            BundleConfig::StopWithoutTools,
         ]
-    );
-    assert_eq!(
-        config.hooks.before_request,
-        vec![HookConfig::ExtraSystemPrompt {
-            prompt: "Second prompt".into()
-        }]
     );
     for invalid in [
         "extra_system_prompt = 'legacy agent field'",
-        "[hooks]\nagent_create = ['ExtraSystemPrompt']",
-        "[hooks]\nagent_create = [{ ExtraSystemPrompt = {} }]",
-        "[hooks]\nagent_create = [{ ExtraSystemPrompt = { prompt = 'text', unknown = true } }]",
+        "[hooks]\nagent_create = ['DefaultStartup']",
+        "bundles = ['ExtraSystemPrompt']",
+        "bundles = [{ ExtraSystemPrompt = {} }]",
+        "bundles = [{ ExtraSystemPrompt = { prompt = 'text', unknown = true } }]",
+        "bundles = ['Startup']",
         "tools = []",
         "tools = ['Bash']",
         "tools = ['CreateAgent']",
@@ -279,15 +264,20 @@ async fn relative_additional_paths_metadata_and_failed_scans_are_atomic() {
 }
 
 #[tokio::test]
-async fn goal_source_must_explicitly_clear_inherited_ordinary_completion() {
+async fn goal_source_must_not_also_select_ordinary_completion() {
     let directory = tempfile::tempdir().unwrap();
     let global = directory.path().join("global");
     tokio::fs::create_dir_all(global.join("agents"))
         .await
         .unwrap();
     let path = global.join("agents/goal.toml");
-    let base = "name = 'goal'\nbundles = [{ Goal = { interactive_only = false } }]\n";
-    tokio::fs::write(&path, base).await.unwrap();
+    let goal = "{ Goal = { interactive_only = false } }";
+    tokio::fs::write(
+        &path,
+        format!("name = 'goal'\nbundles = [{goal}, 'StopWithoutTools']\n"),
+    )
+    .await
+    .unwrap();
     let db = Database::open(directory.path().join("registry.sqlite3"))
         .await
         .unwrap();
@@ -297,14 +287,14 @@ async fn goal_source_must_explicitly_clear_inherited_ordinary_completion() {
     assert!(cursor.list_agent_configs().await.unwrap().is_empty());
     cursor.rollback().await.unwrap();
 
-    tokio::fs::write(&path, format!("{base}\n[hooks]\nafter_request = []\n"))
+    // An explicit list replaces the defaults, including their StopWithoutTools.
+    tokio::fs::write(&path, format!("name = 'goal'\nbundles = [{goal}]\n"))
         .await
         .unwrap();
     registry.refresh(&db, &[]).await.unwrap();
     let mut cursor = db.cursor().await.unwrap();
     let configs = cursor.list_agent_configs().await.unwrap();
     assert_eq!(configs.len(), 1);
-    assert!(configs[0].config.hooks.after_request.is_empty());
     assert_eq!(
         configs[0].config.bundles,
         vec![BundleConfig::Goal {
@@ -360,4 +350,20 @@ async fn duplicate_metadata_names_and_empty_models_are_errors() {
         .await
         .is_err()
     );
+}
+
+#[test]
+fn global_group_defaults_include_the_session_group() {
+    let available = HashSet::new();
+    let global = expand_inclusions(true, true, &[], &ConfigGroup::Global, &available);
+    assert_eq!(
+        global.groups,
+        vec![ConfigGroup::Global, ConfigGroup::Session]
+    );
+    let global_only = expand_inclusions(true, false, &[], &ConfigGroup::Global, &available);
+    assert_eq!(global_only.groups, vec![ConfigGroup::Global]);
+
+    let project = ConfigGroup::Custom("project".into());
+    let own = expand_inclusions(true, true, &[], &project, &available);
+    assert_eq!(own.groups, vec![ConfigGroup::Global, project]);
 }

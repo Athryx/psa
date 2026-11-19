@@ -4,9 +4,6 @@ use crate::{agents::agent_context::AgentContext, components::cancellation::Cance
 use psa::api::events::{EventType, Message};
 use std::time::Duration;
 
-#[cfg(test)]
-mod tests;
-
 /// Adds its configured extra system prompt to the model context.
 pub struct ExtraSystemPromptHook {
     prompt: String,

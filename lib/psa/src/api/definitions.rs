@@ -1,6 +1,6 @@
 //! Immutable agent definition snapshots and their model policy.
 
-use crate::api::{AgentConfig, BundleConfig, HookConfigs, SkillId};
+use crate::api::{AgentConfig, BundleConfig, SkillId};
 use llm_api::providers::{Effort, Model, ModelConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -81,10 +81,9 @@ pub struct AgentDefinition {
     pub description: String,
     /// Whether this definition is offered for selection.
     pub selectable: bool,
-    /// Ordered feature bundle construction configurations.
+    /// Ordered feature bundle construction configurations, which install all
+    /// tools and hooks.
     pub bundles: Vec<BundleConfig>,
-    /// Ordered hook construction configurations for each lifecycle stage.
-    pub hooks: HookConfigs,
     /// Model policy, re-resolved against the session model whenever it changes.
     pub model: AgentModel,
     /// Paths to skill files or directories.

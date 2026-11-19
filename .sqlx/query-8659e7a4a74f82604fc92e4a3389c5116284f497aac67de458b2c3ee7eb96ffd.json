@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, previous_version_id, version, name, description, selectable, agent_create_hooks, session_update_hooks, before_request_hooks, after_request_hooks, model_config, skills, permitted_subagents, bundles FROM agent_definitions WHERE id = ?",
+  "query": "SELECT id, previous_version_id, version, name, description, selectable, model_config, skills, permitted_subagents, bundles FROM agent_definitions WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -70,52 +70,8 @@
         }
       },
       {
-        "name": "agent_create_hooks",
-        "ordinal": 6,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "agent_definitions",
-            "name": "agent_create_hooks"
-          }
-        }
-      },
-      {
-        "name": "session_update_hooks",
-        "ordinal": 7,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "agent_definitions",
-            "name": "session_update_hooks"
-          }
-        }
-      },
-      {
-        "name": "before_request_hooks",
-        "ordinal": 8,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "agent_definitions",
-            "name": "before_request_hooks"
-          }
-        }
-      },
-      {
-        "name": "after_request_hooks",
-        "ordinal": 9,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "agent_definitions",
-            "name": "after_request_hooks"
-          }
-        }
-      },
-      {
         "name": "model_config",
-        "ordinal": 10,
+        "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -126,7 +82,7 @@
       },
       {
         "name": "skills",
-        "ordinal": 11,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -137,7 +93,7 @@
       },
       {
         "name": "permitted_subagents",
-        "ordinal": 12,
+        "ordinal": 8,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -148,7 +104,7 @@
       },
       {
         "name": "bundles",
-        "ordinal": 13,
+        "ordinal": 9,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -168,15 +124,11 @@
       false,
       false,
       false,
-      false,
-      false,
-      false,
-      false,
       true,
       false,
       false,
       false
     ]
   },
-  "hash": "c08da03240234b16f035675b71ad3f68485b6e3c4603f2f76ae08fae80602651"
+  "hash": "8659e7a4a74f82604fc92e4a3389c5116284f497aac67de458b2c3ee7eb96ffd"
 }

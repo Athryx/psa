@@ -256,7 +256,10 @@ impl Sessions {
         self.refresh_configuration(&[id]).await?;
         let session = self.get_session(id).await?;
         let mut cursor = self.database.cursor().await?;
-        let graph = cursor.get_agent_config_graph(&request.config_id).await?;
+        let session_group = cursor.get_session_agents_dir(id).await?;
+        let graph = cursor
+            .get_agent_config_graph(&request.config_id, session_group.as_ref())
+            .await?;
         cursor.rollback().await?;
         let root = graph
             .configs
@@ -275,7 +278,7 @@ impl Sessions {
         let models = HashMap::from([(request.config_id.clone(), model)]);
         let mut cursor = self.database.cursor().await?;
         let snapshot = cursor
-            .resolve_agent_config(&request.config_id, &paths, &models)
+            .resolve_agent_config(&request.config_id, session_group.as_ref(), &paths, &models)
             .await?;
         cursor.commit().await?;
         self.commit_agent(

@@ -1,8 +1,8 @@
 use super::select_model;
 use llm_api::providers::{Effort, Model, ModelConfig, ProviderType};
 use psa::api::{
-    AgentConfig, AgentEffort, AgentModel, ConfigGroup, ConfigId, EffortSelection, HookConfigs,
-    IncludedItems, ModelSelection,
+    AgentConfig, AgentEffort, AgentModel, ConfigGroup, ConfigId, EffortSelection, IncludedItems,
+    ModelSelection,
 };
 
 fn session() -> ModelConfig {
@@ -32,7 +32,6 @@ fn config(models: Vec<ModelSelection>, default: bool) -> AgentConfig {
         description: String::new(),
         selectable: true,
         bundles: vec![],
-        hooks: HookConfigs::default(),
         models,
         first_model_default: default,
         subagents: IncludedItems::default(),

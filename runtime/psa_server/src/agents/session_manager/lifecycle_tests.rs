@@ -274,16 +274,16 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
             crate::db::CreateAgentDefinition {
                 name: "explicit".into(),
                 model: explicit_model.clone().into(),
-                bundles: vec![psa::api::BundleConfig::Noop],
-                hooks: psa::api::HookConfigs {
-                    agent_create: vec![
-                        psa::api::HookConfig::DefaultStartup,
-                        psa::api::HookConfig::ToolDefinitions,
-                    ],
-                    session_update: vec![psa::api::HookConfig::SessionModelUpdate],
-                    after_request: vec![psa::api::HookConfig::StopWithoutTools],
-                    ..Default::default()
-                },
+                bundles: vec![
+                    psa::api::BundleConfig::Startup {
+                        base_prompt: true,
+                        project_context: false,
+                        cwd: false,
+                        skills: false,
+                    },
+                    psa::api::BundleConfig::Noop,
+                    psa::api::BundleConfig::StopWithoutTools,
+                ],
                 ..Default::default()
             },
         )
@@ -469,15 +469,16 @@ async fn subagent_identity_is_created_once_and_preserved_on_reload_restart_and_f
             psa::api::AgentDefinitionId(1),
             crate::db::CreateAgentDefinition {
                 name: "subagents".into(),
-                bundles: vec![psa::api::BundleConfig::Subagents],
-                hooks: psa::api::HookConfigs {
-                    agent_create: vec![
-                        psa::api::HookConfig::DefaultStartup,
-                        psa::api::HookConfig::ToolDefinitions,
-                    ],
-                    after_request: vec![psa::api::HookConfig::StopWithoutTools],
-                    ..Default::default()
-                },
+                bundles: vec![
+                    psa::api::BundleConfig::Startup {
+                        base_prompt: true,
+                        project_context: false,
+                        cwd: false,
+                        skills: false,
+                    },
+                    psa::api::BundleConfig::Subagents,
+                    psa::api::BundleConfig::StopWithoutTools,
+                ],
                 ..Default::default()
             },
         )

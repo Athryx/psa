@@ -54,15 +54,9 @@ path = "psa.sqlite3"
 model = "openai_codex/gpt-5"
 effort = "Medium"
 
-# Optional fallbacks for omitted API/TOML agent component fields.
+# Optional fallback bundles for API/TOML agents that omit `bundles`.
 [agent_defaults]
-bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents", { Goal = { interactive_only = true } }, { Compaction = {} }]
-
-[agent_defaults.hooks]
-agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
-session_update = ["SessionModelUpdate"]
-before_request = []
-after_request = []
+bundles = [{ Startup = {} }, { FileTools = { read_only = false } }, "Bash", "Subagents", { Goal = { interactive_only = true } }, { Compaction = {} }]
 ```
 
 A newly generated configuration also writes two global agent files to
@@ -86,9 +80,7 @@ returned in session responses; reloads, updates, and forks do not reapply defaul
 Changing creation defaults requires a server restart.
 
 Omitted `bundles` inherit the whole default list; explicit lists replace
-it, and `[]` disables it. Hook stages inherit independently: an omitted stage
-inherits, while `after_request = []` disables only that stage. No
-`[agent_defaults]` means all fallbacks are empty. Defaults apply during API
+it, and `[]` disables it. No `[agent_defaults]` means the fallback is empty. Defaults apply during API
 registration/file refresh, not additively or to existing snapshots. Restart to
 load changed server defaults; API callers must resubmit omission-aware input to
 adopt them. Library servers can use
@@ -158,7 +150,7 @@ not necessarily persisted or executed at the time HTTP 202 is returned.
 
 ```rust,no_run
 use psa::api::{Client, CreateSession, CreateAgent, AgentConfigInput, AgentRequest,
-    ConfigGroup, ConfigId, HookConfig, HookOverrides, IncludedItems, MessageDelivery, ModelSelection,
+    BundleConfig, ConfigGroup, ConfigId, IncludedItems, MessageDelivery, ModelSelection,
     ProjectId};
 use llm_api::{api::{ContentBlock, TextBlock}, providers::{Effort, Model, ModelConfig, ProviderType}};
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -180,16 +172,12 @@ let config_id = ConfigId { config_group: ConfigGroup::Custom("examples".into()),
 let mut config = AgentConfigInput::new(config_id.clone(), vec![ModelSelection::Global]);
 config.description = "Example assistant".into();
 config.selectable = true;
-config.bundles = Some(vec![psa::api::BundleConfig::FileTools { read_only: false }]); // Replace defaults.
-config.hooks = HookOverrides {
-    agent_create: Some(vec![
-        HookConfig::DefaultStartup, HookConfig::ToolDefinitions, HookConfig::Cwd, HookConfig::Skills,
-    ]),
-    session_update: Some(vec![HookConfig::SessionModelUpdate]),
-    after_request: Some(vec![HookConfig::StopWithoutTools]),
-    ..Default::default() // Omitted before_request inherits its server default.
-};
-config.skills = IncludedItems { groups: vec![ConfigGroup::Global], items: vec![] };
+config.bundles = Some(vec![ // Replace defaults.
+    BundleConfig::Startup { base_prompt: true, project_context: false, cwd: true, skills: true },
+    BundleConfig::FileTools { read_only: false },
+    BundleConfig::StopWithoutTools,
+]);
+config.skills = IncludedItems { groups: vec![ConfigGroup::Global], ..Default::default() };
 client.upsert_agent_configs(&[config]).await?;
 let agent = client.create_agent(session.id, &CreateAgent {
     config_id,
@@ -270,16 +258,13 @@ CodeMode and read-only file access:
 
 ```toml
 [agent_defaults]
-bundles = ["CodeMode", { FileTools = { read_only = true } }]
-
-[agent_defaults.hooks]
-agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
+bundles = [{ Startup = { project_context = false, cwd = false } }, "CodeMode", { FileTools = { read_only = true } }]
 ```
 
 For an API configuration, the corresponding JSON field is:
 
 ```json
-{"bundles": ["CodeMode", {"FileTools": {"read_only": true}}]}
+{"bundles": [{"Startup": {"project_context": false, "cwd": false}}, "CodeMode", {"FileTools": {"read_only": true}}]}
 ```
 
 Rust clients can use `BundleConfig::CodeMode` and
@@ -487,12 +472,12 @@ always contain the concrete persisted configuration, which `UpdateSession` can
 replace explicitly. Reloading, updating, or forking never resets it to defaults.
 Each input/normalized config supplies a nonempty `models` policy list (`Global`, `Parent`,
 or `Fixed` with an effort policy), plus `description`, `selectable`, and inclusions.
-Extra prompts are explicit `HookConfig::ExtraSystemPrompt { prompt }` payloads,
+Extra prompts are explicit `BundleConfig::ExtraSystemPrompt { prompt }` payloads,
 not a separate agent/config field. Resolution produces an internal executable
 `AgentDefinition` with `model_config`, probe-local skill paths, and
 `permitted_subagents` snapshot IDs; `ResolvedAgentConfig.references` separately
-stores `SkillId` and subagent IDs. Skill paths are consumed only when `SkillsHook`
-is explicitly configured. Metadata does not automatically select agents or inject
+stores `SkillId` and subagent IDs. Skill paths are consumed only when the `Startup`
+bundle enables `skills`. Metadata does not automatically select agents or inject
 extra system prompts. The opt-in Subagents tool checks pinned permitted IDs when
 creating children; trusted-client config-based creation remains unrestricted.
 Unknown extra configuration/creation JSON fields are rejected.
@@ -536,29 +521,31 @@ connected until cleanup finishes. See `../../docs/BASH_TOOLS.md` for process too
 Omitting bundles during an omission-aware upsert uses the server default list;
 explicit `[]` clears it. Existing executable snapshots are not changed.
 
-Each normalized config uses `HookConfigs` with ordered `HookConfig` lists at `agent_create`,
-`session_update`, `before_request`, and `after_request`. Omitted input stages
-inherit independently from `[agent_defaults.hooks]`; explicit empty stages disable
-those defaults. Without server defaults, all lists are empty. Selected bundles
-can additionally supply their own hooks. Built-ins:
+Configs have no hook lists: bundles install every hook. `Startup { base_prompt,
+project_context, cwd, skills }` installs `DefaultStartup`, `ToolDefinitions`, and the enabled
+`ProjectContext`, `Cwd`, and `Skills` creation hooks (in that order, before any
+other bundle's creation hooks), plus `SessionModelUpdate`. `StopWithoutTools`
+and `ExtraSystemPrompt { prompt }` are bundles installing the same-named hooks.
+Built-in hooks:
 
-- `DefaultStartup`: normally bound to `agent_create`; saves `NewContext`, the
-  resolved `Model`, and a `System` message with the base assistant identity for a
+- `DefaultStartup`: runs on `agent_create`; saves `NewContext`, the
+  resolved `Model`, and (unless `base_prompt` is false) a `System` message with
+  the base assistant identity for a
   new root agent. It does not emit tool definitions. It skips forked agents
   entirely so inherited context and its model are not reset; an explicit session
   update can synchronize an inherited model afterward.
 - `ToolDefinitions`: separately emits tool-definition events from the worker's
   tool instances, then separate `<tools>` and `<rules>` system messages for any
-  tool-provided directions. Empty sections are omitted. Normally bound after
+  tool-provided directions. Empty sections are omitted. Runs after
   `DefaultStartup` on `agent_create`; it also skips forks to preserve inherited
   tool definitions and prompt sections.
-- `ExtraSystemPrompt { prompt }`: opt-in hook configuration that appends its
-  explicit prompt as a separate `System` message (unless empty), including on
+- `ExtraSystemPrompt { prompt }`: opt-in bundle that appends its
+  explicit prompt on creation as a separate `System` message (unless empty), including on
   forks. JSON uses `{"ExtraSystemPrompt":{"prompt":"Follow project conventions."}}`;
-  no agent-level prompt field or empty default prompt hook is installed.
+  no agent-level prompt field or empty default prompt is installed.
 - `Cwd`: emits a `System` message containing `<cwd>\nSESSION_CWD\n</cwd>`, with the
-  session working directory XML-escaped. It does not skip forks. Bind it to
-  `agent_create` and optionally `session_update` to reflect directory changes.
+  session working directory XML-escaped. It does not skip forks, so a fork
+  records its own working directory.
 - `Skills`: reads only explicit `AgentDefinition.skills` locations on the session
   probe. Relative locations resolve against the session's `working_directory`;
   locations can be Markdown (`.md`) files or directories containing `SKILL.md`.
@@ -567,12 +554,12 @@ can additionally supply their own hooks. Built-ins:
   omitted; the first duplicate name wins. Missing or malformed skills produce
   warning `Log` events and are skipped. An empty catalogue emits no system
   message. A nonempty skills list requires a connected probe; a disconnected
-  probe is an error rather than a missing-skill warning. Bind it after `Cwd` on
-  `agent_create`; without this hook, skills locations are not consumed.
-- `SessionModelUpdate`: normally bound to `session_update`; saves a changed
+  probe is an error rather than a missing-skill warning. Without this hook, skills
+  locations are not consumed.
+- `SessionModelUpdate`: runs on `session_update`; saves a changed
   session model unless the definition has its own model override. It does not
   emit `NewContext` or clear inherited history.
-- `StopWithoutTools`: ordinary completion mode, normally bound to `after_request`;
+- `StopWithoutTools`: ordinary completion mode, run on `after_request`;
   records a durable text Result and Idle for no-tool completion, including
   token-limited text. It is incompatible with Goal and TypedResult completion,
   including when inherited from defaults.
@@ -625,8 +612,7 @@ Hooks implement `Hook` and return `Result<(), HookError>`. Tools implement `Tool
 and return `ToolOutput { content, error }`. Neither trait requires `new`.
 Construct stateless unit structs directly; stateful bundle components receive
 explicit shared handles from their owner. Tools are constructed only by bundles;
-`HookKind::from_config(&HookConfig)` and `Hooks::from_configs(&HookConfigs)`
-dispatch construction from payload-ready configurations.
+hooks are constructed only by bundles' `install`.
 `BundleKind::from_config(&BundleConfig, Option<&SessionBundleHandle>)` returns
 `Result<Self, InstallError>` and requires session resources for `Subagents`;
 there is no unbound fallback. Runtime-owned resources are supplied by the runtime,

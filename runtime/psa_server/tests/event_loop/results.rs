@@ -1,5 +1,5 @@
 use super::*;
-use wire::{AgentResult, BundleConfig, HookConfig, HookConfigs};
+use wire::{AgentResult, BundleConfig};
 
 #[derive(Debug, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -9,14 +9,10 @@ struct Answer {
 
 fn typed_config(name: &str, max_retries: u32) -> wire::AgentConfig {
     wire::AgentConfig {
-        bundles: vec![BundleConfig::typed_result_with_retries::<Answer>(
-            max_retries,
-        )],
-        hooks: HookConfigs {
-            agent_create: vec![HookConfig::DefaultStartup, HookConfig::ToolDefinitions],
-            after_request: vec![],
-            ..Default::default()
-        },
+        bundles: vec![
+            startup(),
+            BundleConfig::typed_result_with_retries::<Answer>(max_retries),
+        ],
         ..agent_config(name)
     }
 }
@@ -511,34 +507,27 @@ async fn typed_result_retry_budgets_stop_without_fabricating_results_and_reset_o
 async fn incompatible_completion_modes_and_nonobject_result_schemas_are_rejected_before_creation() {
     let harness = Harness::start(vec![]).await;
     let typed = BundleConfig::typed_result::<Answer>();
-    for (bundles, after_request) in [
-        (
-            vec![BundleConfig::Goal {
+    for bundles in [
+        vec![
+            BundleConfig::Goal {
                 interactive_only: true,
-            }],
-            vec![HookConfig::StopWithoutTools],
-        ),
-        (vec![typed.clone()], vec![HookConfig::StopWithoutTools]),
-        (
-            vec![
-                BundleConfig::Goal {
-                    interactive_only: false,
-                },
-                typed,
-            ],
-            vec![],
-        ),
-        (
-            vec![BundleConfig::TypedResult {
-                schema: json!({"type":"array","items":{"type":"string"}}).into(),
-                max_retries: 3,
-            }],
-            vec![],
-        ),
+            },
+            BundleConfig::StopWithoutTools,
+        ],
+        vec![typed.clone(), BundleConfig::StopWithoutTools],
+        vec![
+            BundleConfig::Goal {
+                interactive_only: false,
+            },
+            typed,
+        ],
+        vec![BundleConfig::TypedResult {
+            schema: json!({"type":"array","items":{"type":"string"}}).into(),
+            max_retries: 3,
+        }],
     ] {
         let mut config = agent_config("invalid-completion");
         config.bundles = bundles;
-        config.hooks.after_request = after_request;
         assert!(matches!(
             harness.client.upsert_agent_configs(&[config]).await,
             Err(wire::ClientError::Api { status: 400, .. })

@@ -40,7 +40,7 @@ use crate::{
     db::DbError,
 };
 use actors::UnboundedMailbox;
-pub use psa::api::{AgentCommand, CommandResult, HookConfig, HookConfigs};
+pub use psa::api::{AgentCommand, CommandResult};
 use psa_shared::probe_transport::ProbeError;
 use std::time::Duration;
 
@@ -126,25 +126,6 @@ pub enum HookKind {
     RecordLifecycle(crate::agents::session_manager::lifecycle_tests::RecordLifecycle),
     #[cfg(test)]
     BundleProbe(crate::components::bundles::testing::SharedHook),
-}
-
-impl HookKind {
-    /// Builds an agent-local instance from configuration without performing IO.
-    pub fn from_config(config: &HookConfig) -> Self {
-        match config {
-            HookConfig::Noop => Self::Noop(NoopHook),
-            HookConfig::StopWithoutTools => Self::StopWithoutTools(StopWithoutTools),
-            HookConfig::DefaultStartup => Self::DefaultStartup(DefaultStartupHook),
-            HookConfig::ExtraSystemPrompt { prompt } => {
-                Self::ExtraSystemPrompt(ExtraSystemPromptHook::new(prompt.clone()))
-            }
-            HookConfig::ProjectContext => Self::ProjectContext(ProjectContextHook),
-            HookConfig::ToolDefinitions => Self::ToolDefinitions(ToolDefinitionsHook),
-            HookConfig::Cwd => Self::Cwd(CwdHook),
-            HookConfig::Skills => Self::Skills(SkillsHook),
-            HookConfig::SessionModelUpdate => Self::SessionModelUpdate(SessionModelUpdateHook),
-        }
-    }
 }
 
 impl Hook for HookKind {
@@ -295,18 +276,4 @@ pub struct Hooks {
     pub after_request: Vec<HookKind>,
     /// Bundle-installed handlers for submitted agent commands.
     pub command: Vec<CommandHookKind>,
-}
-
-impl Hooks {
-    pub fn from_configs(configs: &HookConfigs) -> Self {
-        let build = |configs: &[HookConfig]| configs.iter().map(HookKind::from_config).collect();
-
-        Self {
-            agent_create: build(&configs.agent_create),
-            session_update: build(&configs.session_update),
-            before_request: build(&configs.before_request),
-            after_request: build(&configs.after_request),
-            command: Vec::new(),
-        }
-    }
 }

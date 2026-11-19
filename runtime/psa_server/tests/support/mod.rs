@@ -30,16 +30,16 @@ pub async fn create_agent_definition(
     cursor
         .create_agent_definition(psa_server::db::CreateAgentDefinition {
             name: "default".into(),
-            bundles: vec![psa::api::BundleConfig::Noop],
-            hooks: psa::api::HookConfigs {
-                agent_create: vec![
-                    psa::api::HookConfig::DefaultStartup,
-                    psa::api::HookConfig::ToolDefinitions,
-                ],
-                session_update: vec![psa::api::HookConfig::SessionModelUpdate],
-                after_request: vec![psa::api::HookConfig::StopWithoutTools],
-                ..Default::default()
-            },
+            bundles: vec![
+                psa::api::BundleConfig::Startup {
+                    base_prompt: true,
+                    project_context: false,
+                    cwd: false,
+                    skills: false,
+                },
+                psa::api::BundleConfig::Noop,
+                psa::api::BundleConfig::StopWithoutTools,
+            ],
             ..Default::default()
         })
         .await

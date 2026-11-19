@@ -2,7 +2,7 @@ use super::{
     DatabaseCursor, DbError,
     schema::{decode_integer, encode_integer},
 };
-use psa::api::{AgentDefinition, AgentDefinitionId, AgentModel, BundleConfig, HookConfigs};
+use psa::api::{AgentDefinition, AgentDefinitionId, AgentModel, BundleConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -14,10 +14,6 @@ struct DefinitionRow {
     description: String,
     selectable: bool,
     bundles: String,
-    agent_create_hooks: String,
-    session_update_hooks: String,
-    before_request_hooks: String,
-    after_request_hooks: String,
     model_config: Option<String>,
     skills: String,
     permitted_subagents: String,
@@ -39,12 +35,6 @@ impl TryFrom<DefinitionRow> for AgentDefinition {
             description: row.description,
             selectable: row.selectable,
             bundles: serde_json::from_str(&row.bundles)?,
-            hooks: HookConfigs {
-                agent_create: serde_json::from_str(&row.agent_create_hooks)?,
-                session_update: serde_json::from_str(&row.session_update_hooks)?,
-                before_request: serde_json::from_str(&row.before_request_hooks)?,
-                after_request: serde_json::from_str(&row.after_request_hooks)?,
-            },
             model: row
                 .model_config
                 .as_deref()
@@ -71,7 +61,7 @@ impl DatabaseCursor {
     ) -> Result<AgentDefinition, DbError> {
         let key = encode_integer(id.0)?;
         let row = sqlx::query_as!(DefinitionRow,
-            "SELECT id, previous_version_id, version, name, description, selectable, agent_create_hooks, session_update_hooks, before_request_hooks, after_request_hooks, model_config, skills, permitted_subagents, bundles FROM agent_definitions WHERE id = ?", key)
+            "SELECT id, previous_version_id, version, name, description, selectable, model_config, skills, permitted_subagents, bundles FROM agent_definitions WHERE id = ?", key)
             .fetch_optional(self.connection()).await?
             .ok_or(DbError::NotFound { entity: "agent definition", id: id.0 })?;
         row.try_into()
@@ -80,7 +70,7 @@ impl DatabaseCursor {
     /// Lists every immutable version, including versions superseded by an update.
     pub async fn list_agent_definitions(&mut self) -> Result<Vec<AgentDefinition>, DbError> {
         let rows = sqlx::query_as!(DefinitionRow,
-            "SELECT id, previous_version_id, version, name, description, selectable, agent_create_hooks, session_update_hooks, before_request_hooks, after_request_hooks, model_config, skills, permitted_subagents, bundles FROM agent_definitions ORDER BY id")
+            "SELECT id, previous_version_id, version, name, description, selectable, model_config, skills, permitted_subagents, bundles FROM agent_definitions ORDER BY id")
             .fetch_all(self.connection()).await?;
         rows.into_iter().map(TryInto::try_into).collect()
     }
@@ -105,22 +95,18 @@ impl DatabaseCursor {
         version: u64,
         request: CreateAgentDefinition,
     ) -> Result<AgentDefinition, DbError> {
-        crate::components::bundles::validate_completion_config(&request.bundles, &request.hooks)
+        crate::components::bundles::validate_completion_config(&request.bundles)
             .map_err(|error| DbError::InvalidInput(error.to_string()))?;
 
         let previous = previous.map(|id| encode_integer(id.0)).transpose()?;
         let version = encode_integer(version)?;
         let bundles = serde_json::to_string(&request.bundles)?;
-        let agent_create = serde_json::to_string(&request.hooks.agent_create)?;
-        let session_update = serde_json::to_string(&request.hooks.session_update)?;
-        let before_request = serde_json::to_string(&request.hooks.before_request)?;
-        let after_request = serde_json::to_string(&request.hooks.after_request)?;
         let model_config = serde_json::to_string(&request.model)?;
         let skills = serde_json::to_string(&request.skills)?;
         let permitted_subagents = serde_json::to_string(&request.permitted_subagents)?;
         let result = sqlx::query!(
-            "INSERT INTO agent_definitions (previous_version_id, version, name, description, selectable, agent_create_hooks, session_update_hooks, before_request_hooks, after_request_hooks, model_config, skills, permitted_subagents, bundles) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            previous, version, request.name, request.description, request.selectable, agent_create, session_update, before_request, after_request, model_config, skills, permitted_subagents, bundles
+            "INSERT INTO agent_definitions (previous_version_id, version, name, description, selectable, model_config, skills, permitted_subagents, bundles) VALUES (?,?,?,?,?,?,?,?,?)",
+            previous, version, request.name, request.description, request.selectable, model_config, skills, permitted_subagents, bundles
         ).execute(self.connection()).await?;
         self.get_agent_definition(AgentDefinitionId(decode_integer(
             result.last_insert_rowid(),
@@ -144,9 +130,6 @@ pub struct CreateAgentDefinition {
     /// Ordered feature bundle configurations; defaults to empty.
     #[serde(default)]
     pub bundles: Vec<BundleConfig>,
-    /// Ordered lifecycle hook configurations; defaults to no hooks.
-    #[serde(default)]
-    pub hooks: HookConfigs,
     /// Model policy; defaults to following the session model.
     #[serde(default)]
     pub model: AgentModel,

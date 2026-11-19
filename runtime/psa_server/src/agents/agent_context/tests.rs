@@ -829,17 +829,13 @@ async fn extra_system_prompt_hook_persists_verbatim_system_message_and_skips_emp
         " \n",
         "  Follow these extra instructions.\n<literal> & text\n",
     ] {
-        let hook_config = psa::api::HookConfig::ExtraSystemPrompt {
-            prompt: prompt.into(),
-        };
         let mut cursor = fixture.database.cursor().await.unwrap();
         let definition = cursor
             .create_agent_definition(crate::db::CreateAgentDefinition {
                 name: "extra prompt".into(),
-                hooks: psa::api::HookConfigs {
-                    agent_create: vec![hook_config.clone()],
-                    ..Default::default()
-                },
+                bundles: vec![psa::api::BundleConfig::ExtraSystemPrompt {
+                    prompt: prompt.into(),
+                }],
                 ..Default::default()
             })
             .await
@@ -860,7 +856,9 @@ async fn extra_system_prompt_hook_persists_verbatim_system_message_and_skips_emp
         cursor.commit().await.unwrap();
 
         let mut state = fixture.load_state(&agent).await;
-        let mut hook = crate::components::hooks::HookKind::from_config(&hook_config);
+        let mut hook = crate::components::hooks::HookKind::ExtraSystemPrompt(
+            crate::components::hooks::ExtraSystemPromptHook::new(prompt.into()),
+        );
         let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
         let (_controls, mut controls) = actors::unbounded_channel();
         assert!(
@@ -1153,8 +1151,9 @@ async fn run_project_context(fixture: &Fixture, cwd: &str) -> Vec<Event> {
         .handle(support::probe_metadata().id)
         .await
         .unwrap();
-    let mut hook =
-        crate::components::hooks::HookKind::from_config(&psa::api::HookConfig::ProjectContext);
+    let mut hook = crate::components::hooks::HookKind::ProjectContext(
+        crate::components::hooks::ProjectContextHook,
+    );
     let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
     let (_controls, mut controls) = actors::unbounded_channel();
     assert!(
@@ -1335,8 +1334,9 @@ async fn project_context_cancelled_before_discovery_saves_no_partial_prompt() {
         .handle(support::probe_metadata().id)
         .await
         .unwrap();
-    let mut hook =
-        crate::components::hooks::HookKind::from_config(&psa::api::HookConfig::ProjectContext);
+    let mut hook = crate::components::hooks::HookKind::ProjectContext(
+        crate::components::hooks::ProjectContextHook,
+    );
     let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
     let (sender, cancellation) = Cancellation::channel();
     sender.send(()).unwrap();
@@ -1356,8 +1356,9 @@ async fn project_context_cancels_a_pending_remote_operation() {
         .handle(support::probe_metadata().id)
         .await
         .unwrap();
-    let mut hook =
-        crate::components::hooks::HookKind::from_config(&psa::api::HookConfig::ProjectContext);
+    let mut hook = crate::components::hooks::HookKind::ProjectContext(
+        crate::components::hooks::ProjectContextHook,
+    );
     let mut context = AgentContext::new(&mut state, &probe, &fixture.runtime.handle);
     let (sender, cancellation) = Cancellation::channel();
     {
@@ -1435,8 +1436,9 @@ async fn project_context_disconnected_probe_is_fatal_and_saves_no_prompt() {
         server,
     } = fixture;
     probe.disconnect(&probes).await;
-    let mut hook =
-        crate::components::hooks::HookKind::from_config(&psa::api::HookConfig::ProjectContext);
+    let mut hook = crate::components::hooks::HookKind::ProjectContext(
+        crate::components::hooks::ProjectContextHook,
+    );
     let mut context = AgentContext::new(&mut state, &probe_handle, &runtime.handle);
     let (_sender, cancellation) = Cancellation::channel();
     assert!(hook.run(&mut context, cancellation).await.is_err());

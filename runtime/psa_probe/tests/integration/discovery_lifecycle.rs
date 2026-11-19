@@ -63,7 +63,8 @@ async fn assert_configured_creation(host: bool) {
         tokio::fs::create_dir_all(directory).await.unwrap();
     }
     // Default inclusion takes Global plus the agent's own `.agents` group.
-    let review_toml = "name = 'review'\n[hooks]\nagent_create = ['Skills']\n";
+    let review_toml =
+        "name = 'review'\nbundles = [{ Startup = { project_context = false, cwd = false } }]\n";
     tokio::fs::write(project.join(".agents/agents/review.toml"), review_toml)
         .await
         .unwrap();

@@ -114,9 +114,11 @@ the session is created.
   config of the same name.
 
 `AgentLayout::new(config_name)` defaults to following the session model
-(`ModelSelection::Global`), the server's default bundles and hooks, and no
+(`ModelSelection::Global`), the server's default bundles, and no
 subagents or skills. Builders: `.description(..)`, `.models(vec)` (first is the
-default), `.bundles(vec)` (exact list, replaces defaults), `.hooks(HookOverrides)`,
+default), `.bundles(vec)` (exact list, replaces defaults; bundles install all tools and
+hooks, so include `BundleConfig::Startup` and a completion bundle such as
+`StopWithoutTools` when replacing them),
 `.subagents(Inclusions)`, `.skills(Inclusions)`.
 
 `Inclusions<R>` (`R` is `AgentConfigRef` for subagents, `SkillRef` for

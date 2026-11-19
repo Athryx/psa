@@ -147,11 +147,15 @@ macro are unchanged.
   `Subagents` adds session-wide tools using session-shared resources. These
   component tool IDs also require their corresponding bundle.
   Unit configuration variants serialize as strings; variants with construction
-  arguments carry typed payloads. Definitions, defaults, and TOML use
-  `HookConfig`, `HookConfigs`, and `BundleConfig`, not identity IDs.
-  Hooks dispatch through `HookKind::from_config(&HookConfig)` and
-  `Hooks::from_configs(&HookConfigs)`. `ExtraSystemPrompt { prompt: String }`
-  owns its prompt; there is no agent-level `extra_system_prompt` field.
+  arguments carry typed payloads. Definitions, defaults, and TOML use only
+  `BundleConfig`, not identity IDs: there is no hook configuration. Every hook
+  is installed by a bundle. `Startup { base_prompt, project_context, cwd, skills }`
+  (flags default to true) installs DefaultStartup (with base instructions unless
+  `base_prompt` is false) and ToolDefinitions, the selected
+  ProjectContext/Cwd/Skills creation hooks, and SessionModelUpdate.
+  `StopWithoutTools` installs the ordinary completion hook.
+  `ExtraSystemPrompt { prompt: String }` owns its prompt and adds it on creation;
+  there is no agent-level `extra_system_prompt` field.
   `TypedResult { schema: ToolSchema, max_retries }` installs sequential
   `record_result` and a require-result completion hook. Its schema is a raw,
   explicit object-root Draft 2020-12 schema with local references, validated
@@ -160,8 +164,8 @@ macro are unchanged.
   Valid data atomically saves Result and Idle; acknowledgment is only
   `Result recorded.`. Invalid data yields an error, never a Result.
   TypedResult, Goal, and ordinary StopWithoutTools are incompatible completion
-  modes, including inherited defaults; explicit hook overrides must remove the
-  ordinary default completion hook when selecting a bundle completion mode.
+  modes, including inherited defaults; an explicit bundle list replaces the
+  defaults, so it must not also select StopWithoutTools.
   At most one policy may be configured; none is allowed but provides no automatic
   completion or Result. Interactive-only Goal supplies ordinary completion for
   noninteractive agents. Non-running Goal
@@ -171,11 +175,11 @@ macro are unchanged.
   default; the fourth violation interrupts with a reason, not a fake result.
   Zero fails immediately. Reset only on a new non-Running to Running transition,
   never on midrun steering. See `docs/AGENT_RESULTS.md` for full semantics.
-  Bundles install in definition order. Configured `agent_create` hooks run before
-  bundle-owned creation hooks so startup initializes context before bundle prompts;
-  other stages run bundle hooks before explicit hooks.
+  Bundles install in definition order, except that Startup's `agent_create`
+  hooks are moved before every other bundle's so startup initializes context
+  before bundle prompts, wherever Startup is listed.
   Duplicate bundle IDs, tool IDs, or model-facing tool names fail installation.
-  Hooks preserve their configured stage/order and are not silently deduplicated.
+  Hooks preserve their installed stage/order and are not silently deduplicated.
 - Implement `Bundle::install(&mut self, agent, session, &mut Installer)` without
   filesystem/network IO. Construct shared handles once and pass clones into
   concrete tool/hook instances. Register them with

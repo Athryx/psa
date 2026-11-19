@@ -1,10 +1,7 @@
 use super::{testing::*, *};
 use crate::{
     agents::AgentState,
-    components::{
-        hooks::{HookConfig, HookConfigs},
-        tools::{ExecutionMode, Read, Tool, ToolId},
-    },
+    components::tools::{ExecutionMode, Read, Tool, ToolId},
 };
 use llm_api::api::Usage;
 use psa::api::{AgentDefinitionId, AgentId, SessionId, events::EventId};
@@ -56,7 +53,6 @@ fn definition() -> AgentDefinition {
         description: String::new(),
         selectable: false,
         bundles: Vec::new(),
-        hooks: HookConfigs::default(),
         model: Default::default(),
         skills: Vec::new(),
         permitted_subagents: Vec::new(),
@@ -83,8 +79,8 @@ async fn bundle_order_and_empty_component_configuration_are_preserved() {
     definition.bundles = vec![
         BundleConfig::FileTools { read_only: false },
         BundleConfig::Noop,
+        BundleConfig::StopWithoutTools,
     ];
-    definition.hooks.before_request = vec![HookConfig::Noop, HookConfig::Noop];
     let mut components = InstalledComponents::install(&definition, &agent, &session)
         .await
         .unwrap();
@@ -96,10 +92,65 @@ async fn bundle_order_and_empty_component_configuration_are_preserved() {
             .collect::<Vec<_>>(),
         [ToolId::Read, ToolId::Edit, ToolId::Write, ToolId::Noop]
     );
-    assert_eq!(components.hooks.before_request.len(), 2);
+    assert!(matches!(
+        components.hooks.after_request.as_slice(),
+        [HookKind::StopWithoutTools(_)]
+    ));
     components.cleanup().await.unwrap();
     assert!(components.tools.is_empty());
-    assert!(components.hooks.before_request.is_empty());
+    assert!(components.hooks.after_request.is_empty());
+}
+
+#[tokio::test]
+async fn startup_creation_hooks_run_first_wherever_the_bundle_is_listed() {
+    let (agent, session) = snapshots();
+    let mut definition = definition();
+    definition.bundles = vec![
+        BundleConfig::ExtraSystemPrompt {
+            prompt: "Extra".into(),
+        },
+        BundleConfig::Startup {
+            base_prompt: true,
+            project_context: true,
+            cwd: true,
+            skills: true,
+        },
+    ];
+    let mut components = InstalledComponents::install(&definition, &agent, &session)
+        .await
+        .unwrap();
+    assert!(matches!(
+        components.hooks.agent_create.as_slice(),
+        [
+            HookKind::DefaultStartup(_),
+            HookKind::ToolDefinitions(_),
+            HookKind::ProjectContext(_),
+            HookKind::Cwd(_),
+            HookKind::Skills(_),
+            HookKind::ExtraSystemPrompt(_),
+        ]
+    ));
+    assert!(matches!(
+        components.hooks.session_update.as_slice(),
+        [HookKind::SessionModelUpdate(_)]
+    ));
+    assert!(components.hooks.after_request.is_empty());
+    components.cleanup().await.unwrap();
+
+    definition.bundles = vec![BundleConfig::Startup {
+        base_prompt: true,
+        project_context: false,
+        cwd: false,
+        skills: false,
+    }];
+    let mut components = InstalledComponents::install(&definition, &agent, &session)
+        .await
+        .unwrap();
+    assert!(matches!(
+        components.hooks.agent_create.as_slice(),
+        [HookKind::DefaultStartup(_), HookKind::ToolDefinitions(_)]
+    ));
+    components.cleanup().await.unwrap();
 }
 
 #[tokio::test]

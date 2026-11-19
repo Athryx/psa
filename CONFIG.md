@@ -52,29 +52,19 @@ model = "openai_codex/gpt-5"
 # One of: "Off", "Minimal", "Low", "Medium", "High", "Xhigh", "Max".
 effort = "Medium"
 
-# Fallbacks for omitted fields in agent files and API registrations.
+# Fallback bundles for agent files and API registrations that omit `bundles`.
 # An explicit list (even an empty one) in an agent replaces the default;
-# lists are never merged. Optional section; both lists default to empty.
+# lists are never merged. Optional section; defaults to empty.
 [agent_defaults]
 # Ordered bundle configurations. See the Agent section for all bundles.
 bundles = [
+    { Startup = {} },
     { FileTools = { read_only = false } },
     "Bash",
     "Subagents",
     { Goal = { interactive_only = true } },
     { Compaction = {} },
 ]
-
-# Per-stage hook defaults; each stage inherits independently and defaults to empty.
-[agent_defaults.hooks]
-# Run once when an agent is first created.
-agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
-# Run on session updates, including while the agent is idle.
-session_update = ["SessionModelUpdate"]
-# Run before every inference request.
-before_request = []
-# Run after every inference request.
-after_request = []
 ```
 
 `auth.toml` (same directory as `config.toml`) holds secrets and is not part of
@@ -134,9 +124,8 @@ One file per agent configuration, discovered in:
 - any **`.agents`** directory: `<dir>/.agents/agents/*.toml`, found by walking
   up from a session's working directory on its probe (the nearest one wins)
 
-Anything missing from the file is filled from `[agent_defaults]` in the server
-config (`bundles` and each hook stage inherit independently; an explicit
-empty list disables the default).
+An omitted `bundles` list is filled from `[agent_defaults]` in the server
+config; an explicit list, even an empty one, replaces the default.
 
 ```toml
 # Agent name, unique within its group. Required.
@@ -146,7 +135,7 @@ name = "root"
 description = "General-purpose assistant"
 
 # Offer this agent for selection when creating sessions. Default: false.
-# Selection metadata only; it does not install tools or hooks.
+# Selection metadata only; it does not install bundles.
 selectable = true
 
 # Ordered allowed model policies (non-empty). Default: ["Global"].
@@ -162,27 +151,23 @@ models = ["Global", { Fixed = { model = "openrouter/vendor/model", effort = { Fi
 first_model_default = true
 
 # Bundles to install, in order. Omit to inherit server defaults; [] for none.
-bundles = [{ FileTools = { read_only = false } }, "Bash", "Subagents"]
-
-# Hook lists per lifecycle stage. Omitted stages inherit server defaults;
-# [] disables that stage. Hooks run in listed order.
-[hooks]
-# Run once when the agent is first created (not on worker reload).
-agent_create = ["DefaultStartup", "ToolDefinitions", "Skills"]
-# Run on session updates, including while idle.
-session_update = ["SessionModelUpdate"]
-# Run before each inference request.
-before_request = []
-# Run after each inference request.
-after_request = []
-# Parameterized hooks use a table: { ExtraSystemPrompt = { prompt = "Be concise." } }
+# Bundles install every tool and hook; there is no separate hook list.
+bundles = [
+    { Startup = { cwd = false } },
+    { ExtraSystemPrompt = { prompt = "Be concise." } },
+    { FileTools = { read_only = false } },
+    "Bash",
+    "Subagents",
+    "StopWithoutTools",
+]
 
 # Which agents this agent may create as subagents. Name resolution: this
 # agent's own group first, then Global. Omitted section: both defaults true.
 [subagents]
 # Include every agent in the Global group. Default: true.
 global_defaults = true
-# Include every agent in this agent's own group. Default: true.
+# Include every agent in this agent's own group. For a global agent, this
+# also includes agents in the session's `.agents/agents`. Default: true.
 group_defaults = true
 # Additional named agents to include. Default: [].
 subagents = ["subagent"]
@@ -191,7 +176,8 @@ subagents = ["subagent"]
 [skills]
 # Include every skill in the Global group. Default: true.
 global_defaults = true
-# Include every skill in this agent's own group. Default: true.
+# Include every skill in this agent's own group. For a global agent, this
+# also includes skills in the session's `.agents/skills`. Default: true.
 group_defaults = true
 # Additional named skills to include. Default: [].
 skills = ["code-review"]
@@ -202,35 +188,26 @@ additional_paths = ["/path/to/my-skill"]
 
 ### Bundles
 
-Bundles install tools (in list order, before hooks) and own their shared
-state. Unit bundles are written as a string (`"Bash"`); bundles with fields as
-a table (`{ Goal = { interactive_only = true } }`).
+Bundles install all tools and lifecycle hooks, in list order, and own their
+shared state. The exception is `Startup`: its creation hooks run before every
+other bundle's, wherever it is listed. Each bundle may appear once. Unit
+bundles are written as a string (`"Bash"`); bundles with fields as a table
+(`{ Goal = { interactive_only = true } }`).
 
 - `Noop` — installs a tool that does nothing.
+- `Startup { base_prompt = true, project_context = true, cwd = true, skills = true }` — on creation, starts a new root agent's context with its model and, with `base_prompt`, the base assistant instructions, and publishes the installed tools' definitions, then optionally loads project instructions from the working directory hierarchy (`project_context`), adds the session working directory (`cwd`), and loads the skill catalogue (`skills`). Forks keep their inherited startup and tool definitions but rerun the enabled optional context. Also follows session model updates unless the agent pins its own model. All flags default to true. Without it, an agent has no base context or tool definitions.
+- `StopWithoutTools` — stops after a response with no tool calls: the ordinary completion policy. At most one of `StopWithoutTools`, `Goal`, and `TypedResult` may be configured.
+- `ExtraSystemPrompt { prompt }` — appends a system message with the given text when the agent is created, after `Startup`.
 - `FileTools { read_only = false }` — Read, plus Edit and Write unless `read_only = true`.
 - `Bash` — Bash, InteractBash, and CloseBash with shared process sessions.
 - `CodeMode` — CodeMode execution and reset tools.
-- `Goal { interactive_only = true }` — goal tools and goal-aware stopping; with `interactive_only` (default true), noninteractive agents only get StopWithoutTools.
+- `Goal { interactive_only = true }` — goal tools and goal-aware stopping; with `interactive_only` (default true), noninteractive agents get ordinary StopWithoutTools completion instead.
 - `AskQuestion { interactive_only = true }` — tool for requesting structured client input; skipped for noninteractive agents when `interactive_only` (default true).
 - `Subagents` — session-wide agent tools (create, send message, wait, list).
 - `TypedResult { schema, max_retries = 3 }` — schema-validated result recording and completion policy; `schema` is an object-root JSON Schema (required), `max_retries` is the correction retry budget.
 - `Traces` — tools for listing psa sessions and exporting them as traces.
 - `DecisionModels { models = [], first_model_default = true }` — CodeMode functions for calling decision models. `models` lists the allowed models in order: `{ Fixed = "provider/model" }`, `"Global"` (the session's decision model, if set), or `"Pinned"` (every pinned decision model, in catalog order). It is resolved at each call; a repeated model keeps its first position. With `first_model_default`, a call that names no model uses the first allowed one; without it, calls must name one.
 - `Compaction { reserve_tokens = 16384, keep_recent_tokens = 20000, context_window }` — summarizes older context near the context window and handles the `Compact` command; `context_window` overrides the catalog value (optional).
-
-### Hooks
-
-Unit hooks are strings; `ExtraSystemPrompt` is a table.
-
-- `Noop` — does nothing.
-- `StopWithoutTools` — stops after a response with no tool calls, unless goal policy applies.
-- `DefaultStartup` — initializes a new root agent's model and system context.
-- `ExtraSystemPrompt { prompt }` — appends a system message with the given text.
-- `ProjectContext` — loads project instructions from the working directory hierarchy.
-- `ToolDefinitions` — publishes the installed tools' model-facing definitions.
-- `Cwd` — adds the session working directory to context.
-- `Skills` — loads the configured skill catalogue.
-- `SessionModelUpdate` — follows session model updates unless the agent pins its own model.
 
 ## Skill (`<root>/skills/<dir>/SKILL.md`)
 

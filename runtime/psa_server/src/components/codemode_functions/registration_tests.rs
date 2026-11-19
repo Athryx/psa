@@ -1,10 +1,7 @@
 use super::*;
 use crate::{
     agents::{Agent, AgentDefinition, AgentState},
-    components::{
-        bundles::{BundleConfig, InstalledComponents},
-        hooks::HookConfigs,
-    },
+    components::bundles::{BundleConfig, InstalledComponents},
     sessions::Session,
 };
 use llm_api::api::Usage;
@@ -52,7 +49,6 @@ pub(super) fn snapshots() -> (AgentDefinition, Agent, Session) {
         description: String::new(),
         selectable: false,
         bundles: vec![],
-        hooks: HookConfigs::default(),
         model: Default::default(),
         skills: vec![],
         permitted_subagents: vec![],

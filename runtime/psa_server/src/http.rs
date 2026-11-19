@@ -1344,14 +1344,16 @@ mod tests {
         let probes = crate::probes::ProbeRegistry::start("test".into());
         let defaults = crate::config::AgentDefaults {
             bundles: vec![
+                api::BundleConfig::Startup {
+                    base_prompt: true,
+                    project_context: false,
+                    cwd: false,
+                    skills: false,
+                },
                 api::BundleConfig::FileTools { read_only: false },
                 api::BundleConfig::Noop,
+                api::BundleConfig::StopWithoutTools,
             ],
-            hooks: api::HookConfigs {
-                agent_create: vec![api::HookConfig::DefaultStartup],
-                after_request: vec![api::HookConfig::StopWithoutTools],
-                ..Default::default()
-            },
         };
         let runtime = Runtime::start_with_configuration(
             db.clone(),
@@ -1444,7 +1446,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(inherited[0].config.bundles, defaults.bundles);
-        assert_eq!(inherited[0].config.hooks, defaults.hooks);
 
         let http = reqwest::Client::new();
         let response = http
@@ -1453,8 +1454,7 @@ mod tests {
             .json(&serde_json::json!([{
                 "config_id": inherited_id,
                 "models": ["Global"],
-                "bundles": [],
-                "hooks": {"agent_create": []}
+                "bundles": []
             }]))
             .send()
             .await
@@ -1462,25 +1462,24 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let explicit: Vec<api::AgentConfigStatus> = response.json().await.unwrap();
         assert!(explicit[0].config.bundles.is_empty());
-        assert!(explicit[0].config.hooks.agent_create.is_empty());
-        assert_eq!(
-            explicit[0].config.hooks.after_request,
-            defaults.hooks.after_request
-        );
-        assert_eq!(
+        assert!(
             client
                 .get_agent_config(&inherited_id)
                 .await
                 .unwrap()
                 .config
-                .hooks,
-            explicit[0].config.hooks
+                .bundles
+                .is_empty()
         );
 
-        for tools in [serde_json::json!([]), serde_json::json!(["Noop"])] {
+        for (field, value) in [
+            ("tools", serde_json::json!([])),
+            ("tools", serde_json::json!(["Noop"])),
+            ("hooks", serde_json::json!({})),
+        ] {
             let response = http.post(format!("{base}/agent-configs"))
                 .bearer_auth("test-client-key")
-                .json(&serde_json::json!([{"config_id": inherited_id, "models": ["Global"], "tools": tools}]))
+                .json(&serde_json::json!([{"config_id": inherited_id, "models": ["Global"], field: value}]))
                 .send().await.unwrap();
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }

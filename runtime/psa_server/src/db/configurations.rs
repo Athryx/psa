@@ -36,6 +36,11 @@ fn validate_id(id: &ConfigId) -> Result<(), DbError> {
                 "AgentsDir group path must be absolute".into(),
             ));
         }
+        ConfigGroup::Session => {
+            return Err(DbError::InvalidInput(
+                "Session is only valid as an included group".into(),
+            ));
+        }
         _ => {}
     }
     Ok(())
@@ -45,7 +50,7 @@ fn validate_batch(agents: &[AgentConfig], skills: &[SkillRegistration]) -> Resul
     let mut seen = HashSet::new();
     for config in agents {
         validate_id(&config.config_id)?;
-        validate_completion_config(&config.bundles, &config.hooks)
+        validate_completion_config(&config.bundles)
             .map_err(|error| DbError::InvalidInput(error.to_string()))?;
         if !seen.insert(&config.config_id) {
             return Err(DbError::InvalidInput(
@@ -102,13 +107,22 @@ fn validate_batch(agents: &[AgentConfig], skills: &[SkillRegistration]) -> Resul
 
 /// Group order wins by name; explicit items win last, even when missing.
 /// Keeping a missing explicit override prevents silently falling back to a different source.
+/// `ConfigGroup::Session` stands for `session_group` and selects nothing without one.
 fn select_items(
     included: &IncludedItems,
     available: &[ConfigId],
     exclude: Option<&ConfigId>,
+    session_group: Option<&ConfigGroup>,
 ) -> Vec<ConfigId> {
     let mut selected = BTreeMap::new();
     for group in &included.groups {
+        let group = match group {
+            ConfigGroup::Session => match session_group {
+                Some(group) => group,
+                None => continue,
+            },
+            group => group,
+        };
         for id in available {
             if &id.config_group == group && Some(id) != exclude {
                 selected.insert(id.name.clone(), id.clone());
@@ -360,12 +374,14 @@ impl DatabaseCursor {
             .into_iter()
             .map(|config| {
                 let mut missing_components = Vec::new();
-                for config_id in select_items(&config.subagents, &agents, Some(&config.config_id)) {
+                for config_id in
+                    select_items(&config.subagents, &agents, Some(&config.config_id), None)
+                {
                     if !agents.contains(&config_id) {
                         missing_components.push(MissingComponent::Agent { config_id });
                     }
                 }
-                for config_id in select_items(&config.skills, &skill_ids, None) {
+                for config_id in select_items(&config.skills, &skill_ids, None, None) {
                     if !skill_ids.contains(&config_id) {
                         missing_components.push(MissingComponent::Skill { config_id });
                     }
@@ -386,9 +402,11 @@ impl DatabaseCursor {
             .ok_or_else(|| DbError::ConfigNotFound(id.clone()))
     }
 
+    /// `session_group` is the creating session's `.agents` group, if any.
     pub async fn get_agent_config_graph(
         &mut self,
         root: &ConfigId,
+        session_group: Option<&ConfigGroup>,
     ) -> Result<AgentConfigGraph, DbError> {
         let statuses = self.list_agent_configs().await?;
         let all_skills = self.list_skills().await?;
@@ -418,8 +436,18 @@ impl DatabaseCursor {
             let Some(item) = statuses.iter().find(|item| item.config.config_id == id) else {
                 continue;
             };
-            pending.extend(select_items(&item.config.subagents, &agents, Some(&id)));
-            selected_skills.extend(select_items(&item.config.skills, &skill_ids, None));
+            pending.extend(select_items(
+                &item.config.subagents,
+                &agents,
+                Some(&id),
+                session_group,
+            ));
+            selected_skills.extend(select_items(
+                &item.config.skills,
+                &skill_ids,
+                None,
+                session_group,
+            ));
             graph.configs.push(item.config.clone());
             graph.statuses.push(item.clone());
         }
@@ -436,10 +464,11 @@ impl DatabaseCursor {
     pub async fn resolve_agent_config(
         &mut self,
         root: &ConfigId,
+        session_group: Option<&ConfigGroup>,
         skill_paths: &HashMap<SkillId, PathBuf>,
         models: &Models,
     ) -> Result<ResolvedAgentConfig, DbError> {
-        let graph = self.get_agent_config_graph(root).await?;
+        let graph = self.get_agent_config_graph(root, session_group).await?;
         let agents: Vec<_> = graph
             .configs
             .iter()
@@ -452,13 +481,18 @@ impl DatabaseCursor {
             .collect();
         let mut nodes = HashMap::new();
         for config in graph.configs {
-            let children = select_items(&config.subagents, &agents, Some(&config.config_id))
-                .into_iter()
-                .filter(|id| agents.contains(id))
-                .collect();
+            let children = select_items(
+                &config.subagents,
+                &agents,
+                Some(&config.config_id),
+                session_group,
+            )
+            .into_iter()
+            .filter(|id| agents.contains(id))
+            .collect();
             let mut ids = Vec::new();
             let mut paths = Vec::new();
-            for id in select_items(&config.skills, &skills, None) {
+            for id in select_items(&config.skills, &skills, None, session_group) {
                 let Some(skill) = graph.skills.iter().find(|item| item.config_id == id) else {
                     continue;
                 };
@@ -620,7 +654,6 @@ impl DatabaseCursor {
             description: pinned.definition.description.clone(),
             selectable: pinned.definition.selectable,
             bundles: pinned.definition.bundles.clone(),
-            hooks: pinned.definition.hooks.clone(),
             model: pinned.definition.model.clone(),
             skills: pinned.definition.skills.clone(),
             permitted_subagents: pinned.definition.permitted_subagents.clone(),
@@ -726,7 +759,6 @@ fn snapshot_input(node: &SelectedNode, children: Vec<AgentDefinitionId>) -> Crea
         description: node.config.description.clone(),
         selectable: node.config.selectable,
         bundles: node.config.bundles.clone(),
-        hooks: node.config.hooks.clone(),
         model: node.model.clone(),
         skills: node.skill_paths.clone(),
         permitted_subagents: children,

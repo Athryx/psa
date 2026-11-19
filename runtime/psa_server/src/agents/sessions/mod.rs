@@ -827,12 +827,9 @@ mod tests {
                 description: "first version".into(),
                 selectable: true,
                 model: crate::test_support::model_config().into(),
-                hooks: api::HookConfigs {
-                    agent_create: vec![api::HookConfig::ExtraSystemPrompt {
-                        prompt: "original instructions".into(),
-                    }],
-                    ..Default::default()
-                },
+                bundles: vec![api::BundleConfig::ExtraSystemPrompt {
+                    prompt: "original instructions".into(),
+                }],
                 ..Default::default()
             })
             .await
@@ -856,15 +853,15 @@ mod tests {
         assert!(updated.description.is_empty());
         assert!(!updated.selectable);
         assert_eq!(updated.model, api::AgentModel::Global);
-        assert!(updated.hooks.agent_create.is_empty());
+        assert!(updated.bundles.is_empty());
         let original = sessions.get_agent_definition(initial.id).await.unwrap();
         assert_eq!(original.name, "custom");
         assert_eq!(original.description, "first version");
         assert!(original.selectable);
         assert_eq!(original.model, crate::test_support::model_config().into());
         assert_eq!(
-            original.hooks.agent_create,
-            vec![api::HookConfig::ExtraSystemPrompt {
+            original.bundles,
+            vec![api::BundleConfig::ExtraSystemPrompt {
                 prompt: "original instructions".into()
             }]
         );

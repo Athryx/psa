@@ -1,6 +1,6 @@
 //! Named, mutable agent configurations and their registration input.
 
-use crate::api::{BundleConfig, HookConfig, HookConfigs, ProbeId, SessionId};
+use crate::api::{BundleConfig, ProbeId, SessionId};
 use llm_api::providers::{Effort, Model};
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +31,10 @@ pub enum ConfigGroup {
         /// Probe that owns the directory.
         probe_id: ProbeId,
     },
+    /// Placeholder for the creating session's discovered `.agents` group, valid
+    /// only in `IncludedItems::groups`. It selects nothing when the session has
+    /// no `.agents` directory or outside agent creation.
+    Session,
 }
 
 /// Mutable configuration identity, distinct from an immutable snapshot ID.
@@ -92,15 +96,12 @@ pub struct AgentConfig {
     /// Human-readable description; defaults to empty.
     #[serde(default)]
     pub description: String,
-    /// Selection metadata; defaults to false and does not install tools or hooks.
+    /// Selection metadata; defaults to false and does not install bundles.
     #[serde(default)]
     pub selectable: bool,
     /// Ordered bundle construction configurations; omitted lists are empty, not inherited.
     #[serde(default)]
     pub bundles: Vec<BundleConfig>,
-    /// Explicit lifecycle hook configurations; omitted stages are empty.
-    #[serde(default)]
-    pub hooks: HookConfigs,
     /// Required nonempty ordered list of allowed model policies.
     pub models: Vec<ModelSelection>,
     /// Use the first model when no choice is supplied; defaults to true.
@@ -136,9 +137,6 @@ pub struct AgentConfigInput {
     /// Omission/null inherits server bundles; explicit lists replace them, even empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundles: Option<Vec<BundleConfig>>,
-    /// Per-stage overrides; absent stages independently inherit server defaults.
-    #[serde(default)]
-    pub hooks: HookOverrides,
     /// Required nonempty ordered list of allowed model policies.
     pub models: Vec<ModelSelection>,
     /// Use the first model when no choice is supplied; defaults to true.
@@ -159,7 +157,7 @@ fn enabled() -> bool {
 }
 
 impl AgentConfigInput {
-    /// Build input that inherits all component defaults and permits the first model
+    /// Build input that inherits the default bundles and permits the first model
     /// as the default choice. Other metadata and inclusion selections start empty.
     /// The caller must supply a nonempty model list; this constructor does not validate it.
     pub fn new(config_id: ConfigId, models: Vec<ModelSelection>) -> Self {
@@ -169,7 +167,6 @@ impl AgentConfigInput {
             description: String::new(),
             selectable: false,
             bundles: None,
-            hooks: HookOverrides::default(),
             first_model_default: true,
             subagents: IncludedItems::default(),
             skills: IncludedItems::default(),
@@ -177,7 +174,7 @@ impl AgentConfigInput {
     }
 }
 
-/// A normalized config is fully explicit, including empty component lists.
+/// A normalized config is fully explicit, including an empty bundle list.
 impl From<AgentConfig> for AgentConfigInput {
     fn from(config: AgentConfig) -> Self {
         Self {
@@ -185,40 +182,10 @@ impl From<AgentConfig> for AgentConfigInput {
             description: config.description,
             selectable: config.selectable,
             bundles: Some(config.bundles),
-            hooks: config.hooks.into(),
             models: config.models,
             first_model_default: config.first_model_default,
             subagents: config.subagents,
             skills: config.skills,
-        }
-    }
-}
-
-/// Each absent stage inherits independently; Some([]) disables that stage.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct HookOverrides {
-    /// Creation hooks; omission inherits defaults and an empty list disables them.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_create: Option<Vec<HookConfig>>,
-    /// Session-update hooks; omission inherits defaults and an empty list disables them.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_update: Option<Vec<HookConfig>>,
-    /// Before-request hooks; omission inherits defaults and an empty list disables them.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub before_request: Option<Vec<HookConfig>>,
-    /// After-request hooks; omission inherits defaults and an empty list disables them.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub after_request: Option<Vec<HookConfig>>,
-}
-
-impl From<HookConfigs> for HookOverrides {
-    fn from(hooks: HookConfigs) -> Self {
-        Self {
-            agent_create: Some(hooks.agent_create),
-            session_update: Some(hooks.session_update),
-            before_request: Some(hooks.before_request),
-            after_request: Some(hooks.after_request),
         }
     }
 }

@@ -61,13 +61,22 @@ fn config_id(name: &str) -> wire::ConfigId {
     }
 }
 
+/// Startup without the optional context, matching bare startup and tool definitions.
+fn startup() -> psa::api::BundleConfig {
+    psa::api::BundleConfig::Startup {
+        base_prompt: true,
+        project_context: false,
+        cwd: false,
+        skills: false,
+    }
+}
+
 fn agent_config(name: &str) -> wire::AgentConfig {
     wire::AgentConfig {
         config_id: config_id(name),
         description: String::new(),
         selectable: true,
         bundles: vec![],
-        hooks: Default::default(),
         models: vec![wire::ModelSelection::Global],
         first_model_default: true,
         subagents: Default::default(),
@@ -239,16 +248,11 @@ impl Harness {
 
         let client = wire::Client::new(&format!("http://{address}"), "test-client-key").unwrap();
         let mut default = agent_config("default");
-        default.bundles = vec![psa::api::BundleConfig::Noop];
-        default.hooks = wire::HookConfigs {
-            agent_create: vec![
-                wire::HookConfig::DefaultStartup,
-                wire::HookConfig::ToolDefinitions,
-            ],
-            session_update: vec![wire::HookConfig::SessionModelUpdate],
-            after_request: vec![wire::HookConfig::StopWithoutTools],
-            ..Default::default()
-        };
+        default.bundles = vec![
+            startup(),
+            psa::api::BundleConfig::Noop,
+            psa::api::BundleConfig::StopWithoutTools,
+        ];
         client.upsert_agent_configs(&[default]).await.unwrap();
 
         Self {
@@ -537,23 +541,17 @@ async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks
 }
 
 #[tokio::test]
-async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
+async fn config_routes_preserve_snapshots_and_explicit_bundle_configuration() {
     let harness = Harness::start(vec![]).await;
     let mut request = agent_config("custom");
     request.description = "An HTTP snapshot fixture".into();
     request.selectable = true;
-    request.bundles = vec![psa::api::BundleConfig::Noop];
-    request.hooks = wire::HookConfigs {
-        agent_create: vec![
-            wire::HookConfig::Noop,
-            wire::HookConfig::ExtraSystemPrompt {
-                prompt: "Review carefully.".into(),
-            },
-        ],
-        session_update: vec![wire::HookConfig::Noop],
-        before_request: vec![wire::HookConfig::Noop],
-        after_request: vec![wire::HookConfig::Noop],
-    };
+    request.bundles = vec![
+        psa::api::BundleConfig::Noop,
+        psa::api::BundleConfig::ExtraSystemPrompt {
+            prompt: "Review carefully.".into(),
+        },
+    ];
     harness.upsert_config(request.clone()).await;
     let loaded = harness
         .client
@@ -600,7 +598,7 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
     assert_eq!(
         events.events.len(),
         1,
-        "explicit hooks must not acquire default startup hooks"
+        "explicit bundles must not acquire default startup"
     );
     assert!(matches!(&events.events[0].event.kind,
         EventType::Message(message) if message.message_type == MessageType::System
@@ -608,12 +606,12 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
     ));
 
     let mut replacement = request.clone();
-    replacement.hooks.agent_create = vec![
-        wire::HookConfig::DefaultStartup,
-        wire::HookConfig::ExtraSystemPrompt {
+    replacement.bundles = vec![
+        psa::api::BundleConfig::ExtraSystemPrompt {
             prompt: "Updated prompt.".into(),
         },
-        wire::HookConfig::ToolDefinitions,
+        startup(),
+        psa::api::BundleConfig::Noop,
     ];
     harness.upsert_config(replacement.clone()).await;
     let updated = harness
@@ -656,11 +654,8 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
         .get_resolved_agent_config(updated.definition_id)
         .await
         .unwrap();
-    assert_eq!(
-        updated_snapshot.config.hooks.agent_create,
-        replacement.hooks.agent_create
-    );
-    assert_eq!(updated_snapshot.definition.hooks, replacement.hooks);
+    assert_eq!(updated_snapshot.config.bundles, replacement.bundles);
+    assert_eq!(updated_snapshot.definition.bundles, replacement.bundles);
     harness.client.refresh_configs(&[session.id]).await.unwrap();
     let configs = harness.client.list_agent_configs().await.unwrap();
     assert_eq!(
@@ -677,9 +672,8 @@ async fn config_routes_preserve_snapshots_and_explicit_hook_configuration() {
             .await
             .unwrap()
             .config
-            .hooks
-            .agent_create,
-        replacement.hooks.agent_create
+            .bundles,
+        replacement.bundles
     );
     harness.close().await;
 }
@@ -740,9 +734,8 @@ async fn config_batches_cycles_and_dependency_changes_pin_complete_graphs() {
     assert_eq!(child.references.subagents, vec![original.definition_id]);
 
     second
-        .hooks
-        .agent_create
-        .push(wire::HookConfig::ExtraSystemPrompt {
+        .bundles
+        .push(psa::api::BundleConfig::ExtraSystemPrompt {
             prompt: "Changed dependency".into(),
         });
     harness.upsert_config(second.clone()).await;
@@ -763,7 +756,7 @@ async fn config_batches_cycles_and_dependency_changes_pin_complete_graphs() {
         .get_resolved_agent_config(child.definition.id)
         .await
         .unwrap();
-    assert!(retained_child.config.hooks.agent_create.is_empty());
+    assert!(retained_child.config.bundles.is_empty());
 
     let mut invalid = agent_config("invalid-batch");
     invalid.models.clear();
@@ -936,7 +929,7 @@ async fn missing_explicit_dependencies_warn_and_resolve_again_when_registered() 
 }
 
 #[tokio::test]
-async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
+async fn startup_bundle_orders_offline_context_hooks() {
     let harness = Harness::start_with_probe(vec![], false).await;
     let session = harness
         .client
@@ -951,26 +944,25 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
         .await
         .unwrap();
 
-    for (name, hooks) in [
-        ("omitted", vec![]),
-        ("startup", vec![wire::HookConfig::DefaultStartup]),
-        ("tools", vec![wire::HookConfig::ToolDefinitions]),
+    for (name, startup) in [
+        ("omitted", None),
+        ("startup", Some(startup())),
         (
             "ordered",
-            vec![
-                wire::HookConfig::DefaultStartup,
-                wire::HookConfig::Cwd,
-                wire::HookConfig::ToolDefinitions,
-            ],
+            Some(psa::api::BundleConfig::Startup {
+                base_prompt: true,
+                project_context: false,
+                cwd: true,
+                skills: false,
+            }),
         ),
     ] {
+        // Startup creation hooks run first even when listed after other bundles.
+        let mut bundles = vec![psa::api::BundleConfig::Noop];
+        bundles.extend(startup);
         let definition = harness
             .upsert_config(wire::AgentConfig {
-                bundles: vec![psa::api::BundleConfig::Noop],
-                hooks: wire::HookConfigs {
-                    agent_create: hooks,
-                    ..Default::default()
-                },
+                bundles,
                 ..agent_config(name)
             })
             .await;
@@ -997,19 +989,12 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
         if name == "omitted" {
             assert!(
                 events.is_empty(),
-                "omitted hooks must not acquire startup or tools"
-            );
-            continue;
-        }
-        if name == "tools" {
-            assert_eq!(events.len(), 1);
-            assert!(
-                matches!(&events[0].kind, EventType::ToolDefinition(tool) if tool.id == ToolId::Noop)
+                "omitted startup must not add startup or tools"
             );
             continue;
         }
 
-        assert_eq!(events.len(), if name == "ordered" { 5 } else { 3 });
+        assert_eq!(events.len(), if name == "ordered" { 5 } else { 4 });
         assert!(matches!(events[0].kind, EventType::NewContext));
         assert!(matches!(&events[1].kind, EventType::Model(config) if config == &model()));
         let EventType::Message(base) = &events[2].kind else {
@@ -1023,9 +1008,12 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
             ))
             .unwrap()
         );
+        assert!(
+            matches!(&events[3].kind, EventType::ToolDefinition(tool) if tool.id == ToolId::Noop)
+        );
         if name == "ordered" {
-            let EventType::Message(cwd) = &events[3].kind else {
-                panic!("cwd must follow the base system message");
+            let EventType::Message(cwd) = &events[4].kind else {
+                panic!("cwd must follow the tool definitions");
             };
             assert_eq!(cwd.message_type, MessageType::System);
             assert_eq!(
@@ -1035,7 +1023,6 @@ async fn startup_tools_and_cwd_are_independent_ordered_offline_hooks() {
                 ))
                 .unwrap()
             );
-            assert!(matches!(events[4].kind, EventType::ToolDefinition(_)));
         }
     }
     assert!(harness.requests.is_empty());

@@ -11,10 +11,13 @@ pub mod codemode;
 mod compaction;
 mod completion;
 pub(crate) mod decision_models;
+mod extra_system_prompt;
 mod file_tools;
 pub mod goal;
 mod noop;
 pub mod session;
+mod startup;
+mod stop_without_tools;
 pub mod subagents;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -29,10 +32,13 @@ pub use codemode::CodeModeBundle;
 pub use compaction::CompactionBundle;
 pub use completion::{CompletionConfigError, validate_completion_config};
 pub use decision_models::DecisionModelsBundle;
+pub use extra_system_prompt::ExtraSystemPromptBundle;
 pub use file_tools::FileToolsBundle;
 pub use goal::GoalBundle;
 pub use noop::NoopBundle;
 pub use psa::api::BundleConfig;
+pub use startup::StartupBundle;
+pub use stop_without_tools::StopWithoutToolsBundle;
 pub use subagents::SubagentsBundle;
 pub use traces::TracesBundle;
 pub use typed_result::TypedResultBundle;
@@ -74,6 +80,9 @@ pub trait Bundle: Send + Sync {
 /// Static Rust dispatch, not a dynamic registry or a second tool execution path.
 pub enum BundleKind {
     Noop(NoopBundle),
+    Startup(StartupBundle),
+    StopWithoutTools(StopWithoutToolsBundle),
+    ExtraSystemPrompt(ExtraSystemPromptBundle),
     FileTools(FileToolsBundle),
     Bash(BashBundle),
     CodeMode(CodeModeBundle),
@@ -95,6 +104,21 @@ impl BundleKind {
     ) -> Result<Self, InstallError> {
         let bundle = match config {
             BundleConfig::Noop => Self::Noop(NoopBundle),
+            BundleConfig::Startup {
+                base_prompt,
+                project_context,
+                cwd,
+                skills,
+            } => Self::Startup(StartupBundle::new(
+                *base_prompt,
+                *project_context,
+                *cwd,
+                *skills,
+            )),
+            BundleConfig::StopWithoutTools => Self::StopWithoutTools(StopWithoutToolsBundle),
+            BundleConfig::ExtraSystemPrompt { prompt } => {
+                Self::ExtraSystemPrompt(ExtraSystemPromptBundle::new(prompt.clone()))
+            }
             BundleConfig::FileTools { read_only } => {
                 Self::FileTools(FileToolsBundle::new(*read_only))
             }
@@ -146,6 +170,9 @@ impl BundleKind {
     fn label(&self) -> String {
         match self {
             Self::Noop(_) => "Noop".into(),
+            Self::Startup(_) => "Startup".into(),
+            Self::StopWithoutTools(_) => "StopWithoutTools".into(),
+            Self::ExtraSystemPrompt(_) => "ExtraSystemPrompt".into(),
             Self::FileTools(_) => "FileTools".into(),
             Self::Bash(_) => "Bash".into(),
             Self::CodeMode(_) => "CodeMode".into(),
@@ -171,6 +198,9 @@ impl Bundle for BundleKind {
     ) -> Result<(), InstallError> {
         match self {
             Self::Noop(bundle) => bundle.install(agent, session, installer),
+            Self::Startup(bundle) => bundle.install(agent, session, installer),
+            Self::StopWithoutTools(bundle) => bundle.install(agent, session, installer),
+            Self::ExtraSystemPrompt(bundle) => bundle.install(agent, session, installer),
             Self::FileTools(bundle) => bundle.install(agent, session, installer),
             Self::Bash(bundle) => bundle.install(agent, session, installer),
             Self::CodeMode(bundle) => bundle.install(agent, session, installer),
@@ -189,6 +219,9 @@ impl Bundle for BundleKind {
     async fn cleanup(&mut self) -> Result<(), CleanupError> {
         match self {
             Self::Noop(bundle) => bundle.cleanup().await,
+            Self::Startup(bundle) => bundle.cleanup().await,
+            Self::StopWithoutTools(bundle) => bundle.cleanup().await,
+            Self::ExtraSystemPrompt(bundle) => bundle.cleanup().await,
             Self::FileTools(bundle) => bundle.cleanup().await,
             Self::Bash(bundle) => bundle.cleanup().await,
             Self::CodeMode(bundle) => bundle.cleanup().await,
@@ -207,6 +240,9 @@ impl Bundle for BundleKind {
     fn cleanup_timeout(&self) -> Duration {
         match self {
             Self::Noop(bundle) => bundle.cleanup_timeout(),
+            Self::Startup(bundle) => bundle.cleanup_timeout(),
+            Self::StopWithoutTools(bundle) => bundle.cleanup_timeout(),
+            Self::ExtraSystemPrompt(bundle) => bundle.cleanup_timeout(),
             Self::FileTools(bundle) => bundle.cleanup_timeout(),
             Self::Bash(bundle) => bundle.cleanup_timeout(),
             Self::CodeMode(bundle) => bundle.cleanup_timeout(),
@@ -369,7 +405,7 @@ impl InstalledComponents {
         session: &Session,
         resources: Option<&session::SessionBundleHandle>,
     ) -> Result<Self, InstallError> {
-        psa::api::validate_completion_modes(&definition.bundles, &definition.hooks)
+        psa::api::validate_completion_modes(&definition.bundles)
             .map_err(|error| InstallError::new(error.to_string()))?;
         let child_templates = Self::load_child_templates(definition, resources).await?;
         let mut installer = Installer::default();
@@ -383,29 +419,20 @@ impl InstalledComponents {
                 }
                 // Retain even the failing owner, before it can register anything.
                 bundles.push(BundleKind::from_config(config, resources)?);
-                if let BundleKind::Subagents(bundle) = bundles.last_mut().unwrap() {
-                    bundle.set_child_templates(child_templates.clone());
+                let bundle = bundles.last_mut().unwrap();
+                if let BundleKind::Subagents(subagents) = &mut *bundle {
+                    subagents.set_child_templates(child_templates.clone());
                 }
-                bundles
-                    .last_mut()
-                    .unwrap()
-                    .install(agent, session, &mut installer)?;
-            }
+                let create_hooks = installer.hooks.agent_create.len();
+                bundle.install(agent, session, &mut installer)?;
 
-            // Initialize context before bundle-owned creation prompts. Other
-            // stages retain bundle-first ordering.
-            let bundle_create_hooks = std::mem::take(&mut installer.hooks.agent_create);
-            for (stage, ids) in [
-                (HookStage::AgentCreate, &definition.hooks.agent_create),
-                (HookStage::SessionUpdate, &definition.hooks.session_update),
-                (HookStage::BeforeRequest, &definition.hooks.before_request),
-                (HookStage::AfterRequest, &definition.hooks.after_request),
-            ] {
-                for config in ids {
-                    installer.add_hook(stage, HookKind::from_config(config));
+                // Startup initializes context before any other bundle's creation
+                // prompts, wherever it is listed.
+                if matches!(bundle, BundleKind::Startup(_)) {
+                    let added = installer.hooks.agent_create.len() - create_hooks;
+                    installer.hooks.agent_create.rotate_right(added);
                 }
             }
-            installer.hooks.agent_create.extend(bundle_create_hooks);
             Ok(())
         }))
         .unwrap_or_else(|panic| {

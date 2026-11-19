@@ -145,8 +145,8 @@ snapshot ID. The current routes and async client methods are:
 
 - `POST /agent-configs` / `upsert_agent_configs(&configs)` atomically creates or
   replaces a JSON array of `AgentConfigInput` values and returns HTTP 200 with
-  `Vec<AgentConfigStatus>`. Omitted/null bundles and omitted hook stages inherit
-  server defaults; explicit lists replace them, including empty lists. Passing
+  `Vec<AgentConfigStatus>`. Omitted/null bundles inherit the server
+  defaults; an explicit list replaces them, even when empty. Passing
   normalized `AgentConfig` values through the client makes all lists explicit.
 - `GET /agent-configs` / `list_agent_configs()` returns all registered
   configurations and dependency statuses without rescanning. `GET /skills` /
@@ -171,40 +171,39 @@ removed, not retained as a compatibility API. See
 [configuration schema and resolution](../docs/AGENT_DEF_SCHEMA.md) for input
 fields, model policies, discovery, and snapshot semantics.
 
-Definitions contain `name`, `description`, `selectable`, `bundles`, `hooks`, an
+Definitions contain `name`, `description`, `selectable`, `bundles`, an
 optional `model_config` override, `skills` paths, and `permitted_subagents` IDs.
-Components use `Vec<BundleConfig>` and `HookConfigs` stage lists of `HookConfig`,
-not identity enums. Tools are installed only by bundles; there is no standalone
-tool configuration or `tools` field on configs, definitions, or defaults.
-`ToolId` remains a runtime tool identity.
-Hook lists (`agent_create`, `session_update`, `before_request`, `after_request`)
-default to empty in normalized definitions. Supported hook configurations are
-`Noop`, `StopWithoutTools`, `DefaultStartup`, `ToolDefinitions`, `Cwd`, `Skills`,
-`ExtraSystemPrompt`, `ProjectContext`, `SessionModelUpdate`, and
-`Compaction { reserve_tokens, keep_recent_tokens, context_window }`. Compaction
-runs only in `before_request`; omitted budgets default to 16384/20000 and the
-optional context-window override defaults to the model catalog. Generated server
-configs enable it. See [compaction](../docs/COMPACTION.md), including hidden
-summarizer agents and `Sessions::await_result`. For ordinary
-execution, explicitly configure
-`agent_create: [DefaultStartup, ToolDefinitions, Cwd, ProjectContext, Skills]` in that order,
-`session_update: [SessionModelUpdate]`, and `after_request: [StopWithoutTools]`.
-No global hooks are installed by default; explicit bundles may supply their own hooks.
+Components use `Vec<BundleConfig>`, not identity enums. Tools and hooks are
+installed only by bundles; there is no standalone tool or hook configuration,
+and no `tools` or `hooks` field on configs, definitions, or defaults. `ToolId`
+remains a runtime tool identity. `Compaction { reserve_tokens,
+keep_recent_tokens, context_window }` runs before requests; omitted budgets
+default to 16384/20000 and the optional context-window override defaults to the
+model catalog. Generated server configs enable it. See
+[compaction](../docs/COMPACTION.md), including hidden summarizer agents and
+`Sessions::await_result`. For ordinary execution, configure
+`{"Startup":{}}` and a completion bundle such as `"StopWithoutTools"`.
 
-`DefaultStartup` emits `NewContext`, the resolved `Model`, and a base assistant
+`Startup { base_prompt, project_context, cwd, skills }` (each flag defaults to
+true; `base_prompt = false` omits DefaultStartup's base instructions) installs,
+in order, the `DefaultStartup`, `ToolDefinitions`, and enabled `ProjectContext`,
+`Cwd`, and `Skills` creation hooks, plus the `SessionModelUpdate` session-update
+hook. Its creation hooks run before every other bundle's, wherever it is listed.
+
+`DefaultStartup` emits `NewContext`, the resolved `Model`, and (unless
+`base_prompt` is false) a base assistant
 identity `System` message for root agents, without tools. `ToolDefinitions`
 separately emits instance tool-definition events. Both skip forks to preserve
 inherited context. `Cwd` emits a `System` message containing
 `<cwd>\nSESSION_CWD\n</cwd>` with the session working directory XML-escaped; it
-does not skip forks and can also be bound to `session_update`.
+does not skip forks.
 
-`ExtraSystemPrompt { prompt: String }` emits its own configured prompt verbatim
-as a separate `System` message, unless empty. It is opt-in with a payload, not an
-empty startup hook or an agent-level `extra_system_prompt` field. JSON uses
-`{"ExtraSystemPrompt":{"prompt":"Follow the project conventions."}}`; a TOML
-stage entry is `{ ExtraSystemPrompt = { prompt = "Follow the project conventions." } }`.
-Other unit hook variants remain strings. Like `Cwd`, it does not skip forks;
-configure it only at stages where another copy of the prompt is wanted.
+The `ExtraSystemPrompt { prompt: String }` bundle emits its configured prompt
+verbatim as a separate `System` message on creation, after Startup, unless
+empty. It is opt-in with a payload, not an agent-level `extra_system_prompt`
+field. JSON uses `{"ExtraSystemPrompt":{"prompt":"Follow the project conventions."}}`;
+a TOML bundle entry is `{ ExtraSystemPrompt = { prompt = "Follow the project conventions." } }`.
+Like `Cwd`, it does not skip forks.
 
 `ProjectContext` discovers instruction files on the session's probe, from the
 filesystem root through the lexically normalized absolute `working_directory`.
@@ -216,17 +215,16 @@ An empty file still wins. Files are combined in ancestor-first order into one
 `<project_instructions path="...">` wrappers. Text is preserved verbatim except
 for stripping a leading UTF-8 BOM. No files means no system message.
 
-The hook rereads files on each configured invocation, including forks; it has no
-implicit installation, caching, descendant discovery, global Pi agent-directory
-loading, or Git-worktree special handling. Configure it on `agent_create` after
-`DefaultStartup`; optionally also on `session_update` to append refreshed context.
-Repeated invocations append rather than replace previous instructions. Remote
+The hook rereads files on each agent creation, including forks; it has no
+caching, descendant discovery, global Pi agent-directory loading, or
+Git-worktree special handling. Repeated invocations append rather than replace
+previous instructions. Remote
 file/listing failures, invalid UTF-8, and size limits emit warning `Log` events;
 disconnection and protocol failures propagate. Files are limited to 1 MiB each
 and 4 MiB combined, with oversized files skipped. Cancellation drops the active
 remote operation without emitting a partial prompt.
 
-Only the configured `SkillsHook` consumes `AgentDefinition.skills`. It reads
+Only the `SkillsHook`, installed by Startup with `skills`, consumes `AgentDefinition.skills`. It reads
 explicit locations on the session probe, resolving relative paths against the
 session `working_directory`; locations accept `.md` files or directories with
 `SKILL.md`. The emitted pi-style catalogue contains XML-escaped names,
@@ -237,7 +235,7 @@ a nonempty skills list with a disconnected probe errors. `selectable` remains
 selection metadata. `permitted_subagents` is preserved literally and is enforced
 by the Subagents tool when creating children, not as a global trusted-client API
 permission boundary. Extra system text comes only from explicitly configured
-`ExtraSystemPrompt` hook payloads.
+`ExtraSystemPrompt` bundle payloads.
 
 `bundles` is an ordered list of `BundleConfig` values, defaulting to `[]` in both
 requests and responses. `Noop` installs the Noop tool.
@@ -258,12 +256,12 @@ session-shared coordination resources. See `../docs/GOALS_AND_SUBAGENTS.md` for
 configuration, fixed limits, and persistence/fork behavior. For example:
 
 ```json
-{"name": "File assistant", "bundles": [{"FileTools": {"read_only": false}}], "hooks": {"agent_create": ["DefaultStartup", "ToolDefinitions"]}}
+{"name": "File assistant", "bundles": [{"Startup": {"project_context": false, "cwd": false, "skills": false}}, {"FileTools": {"read_only": false}}, "StopWithoutTools"]}
 ```
 
-Bundles are installed in list order before explicitly configured hooks.
-Tools have no independent configuration path. Duplicate bundle IDs, tool IDs, or
-tool names across bundle and explicit installations are rejected at component
+Bundles are installed in list order, except that Startup's creation hooks run
+first. Tools and hooks have no independent configuration path. Duplicate bundle
+IDs, tool IDs, or tool names across bundles are rejected at component
 installation, not normalized or silently deduplicated. The session manager keeps
 installed owners/components by agent ID across idle worker retirement and worker
 failures. Forked agents have independent owners. Installed tool/hook instances
@@ -463,9 +461,9 @@ returned in session responses, remains fixed, and is inherited on fork.
 completion artifact, excluded from model history. Completion policies produce
 at most one per run. Failure/cancellation does not synthesize one; a database
 save already accepted can still finish after cancellation. Completion modes are
-ordinary `StopWithoutTools` (text), Goal (text only once inactive), or
+the ordinary `StopWithoutTools` bundle (text), Goal (text only once inactive), or
 `TypedResult { schema: ToolSchema, max_retries }` (JSON). They are mutually
-incompatible, including inherited default hooks. No policy is allowed, but provides
+incompatible, including inherited default bundles. No policy is allowed, but provides
 no automatic completion or Result. Interactive-only Goal falls back to
 `StopWithoutTools` on noninteractive agents. Token-limited ordinary text can complete; running Goal continuation never
 treats a token limit as completion. Non-running Goal states include Blocked: the
