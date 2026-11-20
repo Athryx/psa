@@ -267,6 +267,9 @@ impl AgentManagerState {
         if let Some(usage) = result.new_usage {
             self.agent.usage = usage;
         }
+        if let Some(cache) = result.new_cache {
+            self.agent.cache = cache;
+        }
         self.agent.next_event_id.0 += result.events.len() as u64;
 
         Ok(result.events)

@@ -13,6 +13,8 @@ pub const SETUP_VAR: &str = "PSA_SETUP";
 pub const TEARDOWN_VAR: &str = "PSA_TEARDOWN";
 /// Whole seconds the teardown command may run before it is killed.
 pub const TEARDOWN_TIMEOUT_VAR: &str = "PSA_TEARDOWN_TIMEOUT";
+/// Sandbox name, set on the container so hooks can tell sandboxes apart.
+pub const SANDBOX_NAME_VAR: &str = "PSA_SANDBOX_NAME";
 /// Hook variables, kept out of processes the probe spawns for agents.
 pub const HOOK_VARS: [&str; 3] = [SETUP_VAR, TEARDOWN_VAR, TEARDOWN_TIMEOUT_VAR];
 

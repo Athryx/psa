@@ -269,6 +269,9 @@ fn AgentInfo(
     model: Option<String>,
     effort: Option<Effort>,
     usage: Option<Usage>,
+    /// Input a cache could have served; the hit rate's denominator.
+    #[props(default)]
+    cacheable_input: Option<u64>,
     mut open: Signal<bool>,
 ) -> Element {
     crate::app::register_modal(open);
@@ -278,7 +281,7 @@ fn AgentInfo(
     let cache_write = usage.as_ref().and_then(|u| u.cache_write_tokens);
     let hit = usage
         .as_ref()
-        .and_then(cache_hit_rate)
+        .and_then(|usage| cache_hit_rate(usage, cacheable_input))
         .map(|rate| format!("{:.1}%", rate * 100.0))
         .unwrap_or_else(|| "Unknown".into());
     let output = usage.as_ref().and_then(|u| u.output_tokens);
@@ -301,6 +304,7 @@ fn AgentInfo(
                     dt { "Model" } dd { "{model.as_deref().unwrap_or(\"Unknown\")}" " · " span { class:"{effort_class}", "{effort.map(|e| e.as_str()).unwrap_or(\"Unknown\")}" } }
                     dt { "Input tokens" } dd { "{count(input)}" }
                     dt { class:"info-detail", "Cached" } dd { "{count(cached)}" }
+                    dt { class:"info-detail", "Cacheable" } dd { "{count(cacheable_input)}" }
                     dt { class:"info-detail", "Cache hit rate" } dd { "{hit}" }
                     dt { class:"info-detail", "Uncached" } dd { "{count(token_difference(input, cached))}" }
                     if let Some(cache_write) = cache_write { dt { class:"info-detail", "Cache write" } dd { "{group_digits(cache_write)}" } }
@@ -1113,7 +1117,14 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
             .agents
             .get(&session_id)
             .and_then(|agents| agents.iter().find(|agent| agent.id == target.agent_id))
-            .map(|agent| (agent.name.clone(), agent.definition_id, agent.usage.clone()))
+            .map(|agent| {
+                (
+                    agent.name.clone(),
+                    agent.definition_id,
+                    agent.usage.clone(),
+                    agent.cacheable_input_tokens,
+                )
+            })
     });
     // Reading the selected source is also needed when loading/pending changes
     // without changing the resolved status.
@@ -1389,7 +1400,8 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
                         template:None, definition_id:info.read().as_ref().map(|info| info.1),
                         path:session.read().0.clone(), probe:session.read().1,
                         model:status_name.clone(), effort:status_effort,
-                        usage:info.read().as_ref().map(|info| info.2.clone()), open:info_open,
+                        usage:info.read().as_ref().map(|info| info.2.clone()),
+                        cacheable_input:info.read().as_ref().and_then(|info| info.3), open:info_open,
                     }
                 }
             }

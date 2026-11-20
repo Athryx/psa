@@ -470,7 +470,10 @@ impl WriteCursor {
             }
             let id = encode_integer(agent.id.0)?;
             sqlx::query("UPDATE agents SET usage = ? WHERE id = ?")
-                .bind(serde_json::to_string(&recomputed)?)
+                .bind(super::cache_usage::encode_stored_usage(
+                    &recomputed,
+                    agent.cache,
+                )?)
                 .bind(id)
                 .execute(self.connection())
                 .await?;
@@ -620,7 +623,7 @@ fn model_entry(totals: &mut BTreeMap<String, ModelUsage>, model: Model) -> &mut 
         .usage
 }
 
-fn parse_usage_row(row: &SqliteRow) -> Result<Usage, DbError> {
+pub(super) fn parse_usage_row(row: &SqliteRow) -> Result<Usage, DbError> {
     let count = |column: &str| -> Result<Option<u64>, DbError> {
         row.try_get::<Option<i64>, _>(column)?
             .map(decode_integer)

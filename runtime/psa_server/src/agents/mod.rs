@@ -46,6 +46,7 @@ pub struct Agent {
     pub hidden: bool,
     pub state: AgentState,
     pub usage: Usage,
+    pub cache: crate::db::CacheTracking,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -63,6 +64,7 @@ impl From<Agent> for psa::api::Agent {
             hidden: agent.hidden,
             state: agent.state,
             usage: agent.usage,
+            cacheable_input_tokens: agent.cache.cacheable_input_tokens,
             next_event_id: agent.next_event_id,
             created_at: agent.created_at,
             updated_at: agent.updated_at,

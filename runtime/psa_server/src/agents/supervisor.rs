@@ -116,10 +116,15 @@ impl Runtime {
             recover_agent(&db, &publication, agent.id).await?;
         }
         let mut cursor = db.write().await?;
+        // Backfill first: repairs rewrite totals and keep stored tracking.
+        let backfilled = cursor.backfill_cache_tracking().await?;
         let repaired = cursor.repair_unknown_usage().await?;
         cursor.commit().await?;
         if repaired > 0 {
             tracing::info!(repaired, "recomputed agent usage totals");
+        }
+        if backfilled > 0 {
+            tracing::info!(backfilled, "computed agent cache tracking");
         }
 
         let (commands, received) = actors::channel(256);

@@ -78,7 +78,10 @@ impl WriteCursor {
         .await?;
         // The schema's legacy default predates cache-write tracking.
         sqlx::query("UPDATE agents SET usage = ? WHERE id = ?")
-            .bind(serde_json::to_string(&llm_api::api::Usage::zero())?)
+            .bind(super::cache_usage::encode_stored_usage(
+                &llm_api::api::Usage::zero(),
+                super::CacheTracking::start(),
+            )?)
             .bind(result.last_insert_rowid())
             .execute(&mut *savepoint)
             .await?;

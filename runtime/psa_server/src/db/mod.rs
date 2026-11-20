@@ -2,6 +2,7 @@
 
 mod agent_definitions;
 mod agents;
+mod cache_usage;
 mod configurations;
 mod error;
 mod events;
@@ -22,6 +23,7 @@ use std::{
 };
 
 pub use agent_definitions::CreateAgentDefinition;
+pub use cache_usage::CacheTracking;
 pub use configurations::{AgentConfigGraph, SkillRegistration};
 pub use error::DbError;
 pub use events::{

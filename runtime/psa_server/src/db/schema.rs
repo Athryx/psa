@@ -111,6 +111,7 @@ pub(super) struct AgentRow {
 impl TryFrom<AgentRow> for Agent {
     type Error = DbError;
     fn try_from(row: AgentRow) -> Result<Self, DbError> {
+        let (usage, cache) = super::cache_usage::parse_stored_usage(&row.usage)?;
         Ok(Self {
             id: AgentId(decode_integer(row.id)?),
             session_id: SessionId(decode_integer(row.session_id)?),
@@ -132,7 +133,9 @@ impl TryFrom<AgentRow> for Agent {
             interactive: row.interactive,
             hidden: row.hidden,
             state: parse_agent_state(&row.state)?,
-            usage: serde_json::from_str(&row.usage)?,
+            usage,
+            // Untracked rows are backfilled at startup; until then, unknown.
+            cache: cache.unwrap_or_default(),
             created_at: decode_time(row.created_at_us)?,
             updated_at: decode_time(row.updated_at_us)?,
         })

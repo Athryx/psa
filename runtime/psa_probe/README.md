@@ -173,6 +173,9 @@ ENV PSA_TEARDOWN_TIMEOUT=30
   manager reads it from the image when creating the sandbox and sets Docker's
   stop timeout a few seconds longer; recreate the sandbox to apply a new value.
 
+- `PSA_SANDBOX_NAME` is set on every sandbox container to the sandbox's name,
+  so hooks (and agent commands) can tell sandboxes apart.
+
 Hook output is appended to `/opt/psa/data/image-hooks.log` in the container. The
 `PSA_*` hook variables are removed from the environment of commands agents run.
 

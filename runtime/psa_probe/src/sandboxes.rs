@@ -177,6 +177,8 @@ fn build_create_args(
         format!("{MANAGER_LABEL}={}", manager.manager_id),
         "--label".to_owned(),
         format!("{SANDBOX_LABEL}={}", spec.probe_id),
+        "--env".to_owned(),
+        format!("{}={}", image_hooks::SANDBOX_NAME_VAR, spec.name),
         "--mount".to_owned(),
         build_bind(&manager.probe_binary, Path::new(CONTAINER_PROBE), false),
         "--mount".to_owned(),
@@ -368,6 +370,7 @@ mod tests {
         assert!(args.windows(2).any(|w| w == ["--stop-timeout", "15"]));
         assert!(args.contains(&format!("psa.sandbox={}", spec.probe_id)));
         assert!(args.contains(&format!("psa.manager={}", manager().manager_id)));
+        assert!(args.contains(&format!("PSA_SANDBOX_NAME={}", spec.name)));
         assert!(
             args.contains(
                 &"type=bind,src=/bin/psa_probe,dst=/opt/psa/psa_probe,readonly".to_owned()

@@ -51,6 +51,13 @@ pub struct Agent {
     /// any call omitted it; `provider_details` stays empty. Do not sum forks to
     /// estimate provider spend.
     pub usage: Usage,
+    /// Input tokens a provider cache could have served: each request's input
+    /// repeated from the previous request in its context, or its cached input
+    /// if larger. Divide `usage.cached_input_tokens` by this for a hit rate
+    /// that ignores input no cache could hold. Unknown when any request's
+    /// input went unreported, or before the server tracked it.
+    #[serde(default)]
+    pub cacheable_input_tokens: Option<u64>,
     /// Next event sequence number to assign in this agent's lineage.
     pub next_event_id: EventId,
     /// Creation time in RFC 3339 format.

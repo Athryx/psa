@@ -472,6 +472,7 @@ mod tests {
             hidden: false,
             state: AgentState::Idle,
             usage: Default::default(),
+            cache: Default::default(),
             created_at: OffsetDateTime::UNIX_EPOCH,
             updated_at: OffsetDateTime::UNIX_EPOCH,
         }

@@ -124,7 +124,7 @@ fn composer_fixture() -> Element {
         state.agents.insert(SessionId(1), vec![serde_json::from_value(serde_json::json!({
             "id":2,"definition_id":1,"session_id":1,"forked_from":null,"subagent_parent_id":null,
             "name":"worker","hidden":false,"interactive":true,"state":"Idle",
-            "usage":{"input_tokens":100,"output_tokens":30,"total_tokens":130,"cached_input_tokens":25,"reasoning_output_tokens":10},
+            "usage":{"input_tokens":100,"output_tokens":30,"total_tokens":130,"cached_input_tokens":25,"reasoning_output_tokens":10},"cacheable_input_tokens":50,
             "next_event_id":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"
         })).unwrap()].into());
         for name in ["Alpha", "Beta"] {
@@ -280,8 +280,11 @@ fn info_command_shows_agent_usage_without_sending() {
         "Total tokens",
         "130",
         "Cached",
+        "Cacheable",
+        "50",
         "Cache hit rate",
-        "25.0%",
+        // Measured against cacheable input, not all 100 input tokens.
+        "50.0%",
         "Uncached",
         "75",
         "Thinking",

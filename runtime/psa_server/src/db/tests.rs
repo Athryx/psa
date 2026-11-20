@@ -1,5 +1,5 @@
 use super::{Database, DbError};
-use crate::db::{EventRange, NewEvent};
+use crate::db::{CacheTracking, EventRange, NewEvent};
 use crate::{
     agents::AgentState,
     agents::{Agent, NewAgent, ToolDefinitionExt},

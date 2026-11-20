@@ -120,6 +120,7 @@ pub struct AddEventResult {
     /// The last state in the batch, only if it differs from the previous state.
     pub new_state: Option<AgentState>,
     pub new_usage: Option<Usage>,
+    pub new_cache: Option<super::CacheTracking>,
 }
 
 impl ReadCursor {
@@ -297,6 +298,7 @@ impl WriteCursor {
                 events: Vec::new(),
                 new_state: None,
                 new_usage: None,
+                new_cache: None,
             });
         }
 
@@ -387,7 +389,9 @@ impl WriteCursor {
             })
             .filter(|state| *state != stream.state);
         let mut usage = stream.usage.clone();
+        let mut cache = stream.cache;
         for event in events {
+            cache.apply_event(&event.kind)?;
             match &event.kind {
                 EventType::InferenceResultEnd(end) => add_usage(&mut usage, &end.usage)?,
                 EventType::DecisionCall(call) => add_decision_cost(&mut usage, call),
@@ -399,8 +403,12 @@ impl WriteCursor {
                 _ => {}
             }
         }
+        let changed = usage != stream.usage || cache != stream.cache;
+        let encoded_usage = changed
+            .then(|| super::cache_usage::encode_stored_usage(&usage, cache))
+            .transpose()?;
         let new_usage = (usage != stream.usage).then_some(usage);
-        let encoded_usage = new_usage.as_ref().map(serde_json::to_string).transpose()?;
+        let new_cache = (cache != stream.cache).then_some(cache);
         let state = new_state.map(encode_agent_state);
         let now = now_us()?;
         sqlx::query!(
@@ -427,6 +435,7 @@ impl WriteCursor {
             events: saved,
             new_state,
             new_usage,
+            new_cache,
         })
     }
 }

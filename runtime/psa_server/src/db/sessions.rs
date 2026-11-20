@@ -330,8 +330,10 @@ async fn fork_agent(
     let cutoff = event_cutoff_at(conn, agent.id, position).await?;
     let state =
         encode_agent_state(agent_state_at(conn, agent.id, EventId(decode_integer(cutoff)?)).await?);
-    let usage = serde_json::to_string(
-        &super::queries::usage_at(conn, agent.id, EventId(decode_integer(cutoff)?)).await?,
+    let through = EventId(decode_integer(cutoff)?);
+    let usage = super::cache_usage::encode_stored_usage(
+        &super::queries::usage_at(conn, agent.id, through).await?,
+        super::cache_usage::cache_tracking_at(conn, agent.id, through).await?,
     )?;
     let first = cutoff
         .checked_add(1)

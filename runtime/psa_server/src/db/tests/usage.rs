@@ -65,6 +65,82 @@ async fn cache_writes_count_only_reported_values() {
     db.close().await;
 }
 
+fn cached(input: u64, cached: u64) -> NewEvent {
+    let mut usage = reported(input);
+    usage.cached_input_tokens = Some(cached);
+    result(usage)
+}
+
+#[tokio::test]
+async fn cacheable_input_counts_input_repeated_within_each_context() {
+    let (_dir, db, _session, agent) = fixture().await;
+    let mut cursor = db.write().await.unwrap();
+    let initial = cursor.get_agent(agent.id).await.unwrap().cache;
+    assert_eq!(initial.cacheable_input_tokens, Some(0));
+
+    // First request: only its shared-cache hit is cacheable. Later requests
+    // repeat the previous request's input, up to their own size.
+    let updated = cursor
+        .add_events(
+            agent.id,
+            &[cached(100, 40), cached(150, 90), cached(120, 120)],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        updated.new_cache.unwrap().cacheable_input_tokens,
+        Some(40 + 100 + 120)
+    );
+    // A new context starts over: nothing is repeated, and nothing was cached.
+    let updated = cursor
+        .add_events(
+            agent.id,
+            &[NewEvent::new(EventType::NewContext), cached(80, 0)],
+        )
+        .await
+        .unwrap();
+    let tracked = updated.new_cache.unwrap();
+    assert_eq!(tracked.cacheable_input_tokens, Some(260));
+    assert_eq!(tracked.previous_input_tokens, Some(80));
+    assert_eq!(cursor.get_agent(agent.id).await.unwrap().cache, tracked);
+
+    // Forks and backfills recompute the same tracking from events.
+    let through = psa::api::events::EventId(5);
+    assert_eq!(
+        super::super::cache_usage::cache_tracking_at(cursor.connection(), agent.id, through)
+            .await
+            .unwrap(),
+        tracked
+    );
+    let usage = cursor.get_agent(agent.id).await.unwrap().usage;
+    sqlx::query("UPDATE agents SET usage = ? WHERE id = ?")
+        .bind(serde_json::to_string(&usage).unwrap())
+        .bind(agent.id.0 as i64)
+        .execute(cursor.connection())
+        .await
+        .unwrap();
+    assert_eq!(
+        cursor.get_agent(agent.id).await.unwrap().cache,
+        CacheTracking::default()
+    );
+    assert_eq!(cursor.backfill_cache_tracking().await.unwrap(), 1);
+    let agent_now = cursor.get_agent(agent.id).await.unwrap();
+    assert_eq!(agent_now.cache, tracked);
+    assert_eq!(agent_now.usage, usage);
+    assert_eq!(cursor.backfill_cache_tracking().await.unwrap(), 0);
+
+    // An unreported input leaves the count unknown.
+    let mut unreported = reported(10);
+    unreported.input_tokens = None;
+    let updated = cursor
+        .add_events(agent.id, &[result(unreported)])
+        .await
+        .unwrap();
+    assert_eq!(updated.new_cache.unwrap().cacheable_input_tokens, None);
+    cursor.rollback().await.unwrap();
+    db.close().await;
+}
+
 #[tokio::test]
 async fn usage_batches_unknown_fields_and_rollback() {
     let (_dir, db, _session, agent) = fixture().await;

@@ -24,6 +24,7 @@ fn snapshots() -> (Agent, Session) {
         name: "bundles".into(),
         state: AgentState::Idle,
         usage: Usage::zero(),
+        cache: Default::default(),
         created_at: now,
         updated_at: now,
     };
