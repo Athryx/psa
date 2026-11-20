@@ -34,7 +34,10 @@ at the next worker boundary, including between turns of a run; `Queue` waits
 until the agent is not running. Commands share the request FIFO with messages
 but are not steering, so they never wake `wait_message`. The server rejects a
 command at submission unless the agent's definition selects the bundle that
-handles it.
+handles it and that bundle installs its handler for this agent (interactive-only
+Goal does not on noninteractive agents). Commands never end or continue a run;
+goal set and resume start one when the agent is not running (see
+[goal commands](GOALS_AND_SUBAGENTS.md#goal-commands)).
 
 Command hooks return `Some(CommandResult)` for commands they handle and `None`
 otherwise; they do not record anything about the command itself. After the

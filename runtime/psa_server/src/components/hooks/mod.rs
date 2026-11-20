@@ -75,12 +75,14 @@ pub trait CommandHook: Send {
 /// Static dispatch for bundle-installed command hooks.
 pub enum CommandHookKind {
     Compaction(compaction::CompactionHook),
+    Goal(goal::GoalHook),
 }
 
 impl CommandHook for CommandHookKind {
     fn cancellation_timeout(&self) -> Duration {
         match self {
             Self::Compaction(hook) => CommandHook::cancellation_timeout(hook),
+            Self::Goal(hook) => CommandHook::cancellation_timeout(hook),
         }
     }
 
@@ -92,6 +94,7 @@ impl CommandHook for CommandHookKind {
     ) -> Result<Option<CommandResult>, HookError> {
         match self {
             Self::Compaction(hook) => hook.handle_command(context, command, cancellation).await,
+            Self::Goal(hook) => hook.handle_command(context, command, cancellation).await,
         }
     }
 }
@@ -136,7 +139,7 @@ impl Hook for HookKind {
             Self::Cwd(hook) => hook.cancellation_timeout(),
             Self::Skills(hook) => hook.cancellation_timeout(),
             Self::SessionModelUpdate(hook) => hook.cancellation_timeout(),
-            Self::Goal(hook) => hook.cancellation_timeout(),
+            Self::Goal(hook) => Hook::cancellation_timeout(hook),
             Self::Compaction(hook) => Hook::cancellation_timeout(hook),
             Self::RequireResult(hook) => hook.cancellation_timeout(),
             Self::SubagentIdentity(hook) => hook.cancellation_timeout(),

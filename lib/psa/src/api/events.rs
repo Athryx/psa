@@ -107,7 +107,7 @@ pub struct Message {
     /// Link to the sending agent; set on, and only on, subagent messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<AgentMessageLink>,
-    /// Short display description, primarily for system instructions.
+    /// Short display label, for system instructions and harness messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Origin or role of this message.
@@ -136,6 +136,13 @@ impl Message {
     /// Creates a system instruction with a short transcript description.
     pub fn system(contents: impl Into<String>, description: impl Into<String>) -> Self {
         let mut message = Self::text(MessageType::System, contents);
+        message.description = Some(description.into());
+        message
+    }
+
+    /// Creates a harness message, such as a nudge, with a short transcript label.
+    pub fn harness(contents: impl Into<String>, description: impl Into<String>) -> Self {
+        let mut message = Self::text(MessageType::Harness, contents);
         message.description = Some(description.into());
         message
     }

@@ -230,7 +230,7 @@ impl QueuedItem {
         }
     }
 
-    /// Commands never start or resume runs, so only messages can become stale.
+    /// Commands run in any agent state, so only messages can become stale.
     fn rejection(&self, state: AgentState) -> Option<&'static str> {
         let Self::Message(request) = self else {
             return None;
@@ -1020,8 +1020,12 @@ impl Supervisor {
         let snapshot = cursor.require_agent_session(session, agent).await?;
         let definition = cursor.get_agent_definition(snapshot.definition_id).await?;
         cursor.close().await?;
-        crate::components::bundles::require_command_support(&definition, &request.command)
-            .map_err(RuntimeError::Invalid)?;
+        crate::components::bundles::require_command_support(
+            &definition,
+            snapshot.interactive,
+            &request.command,
+        )
+        .map_err(RuntimeError::Invalid)?;
 
         let (reply, result) = oneshot::channel();
         self.enqueue(agent, session, |id| {

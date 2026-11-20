@@ -1598,40 +1598,20 @@ pub async fn record_command(
 }
 
 /// Steers `/compact` to an existing agent and waits for it to finish; the
-/// server records it in the transcript. The draft clears only if unchanged
-/// since the command was captured; rejected commands keep it for editing.
+/// server records it in the transcript.
 pub fn submit_compact(
     ui: Signal<Ui>,
     target: TranscriptTarget,
     instructions: String,
 ) -> impl std::future::Future<Output = ()> {
-    let draft = capture_draft(ui, target);
+    let instructions = Some(instructions).filter(|text| !text.is_empty());
+    let sent = send_agent_command(ui, target, AgentCommand::Compact { instructions });
     async move {
-        let Ok(api) = client(ui) else {
+        let Some(result) = sent.await else {
             return;
         };
-        let instructions = Some(instructions).filter(|text| !text.is_empty());
-        let result = api
-            .send_command(
-                target.session_id,
-                target.agent_id,
-                CommandDelivery::Steer,
-                AgentCommand::Compact { instructions },
-            )
-            .await;
-        if ui.peek().generation != draft.generation {
-            return;
-        }
         let mut ui = ui;
         let mut state = ui.write();
-        let result = match result {
-            Ok(result) => result,
-            Err(error) => {
-                state.error = Some(format!("Unable to compact: {error}"));
-                return;
-            }
-        };
-        state.drafts.clear_if_revision(&target, draft.revision);
         match result.outcome {
             CommandOutcome::Succeeded => state.notice = Some("Compaction finished.".into()),
             CommandOutcome::Interrupted => state.notice = Some("Compaction interrupted.".into()),
@@ -1639,6 +1619,72 @@ pub fn submit_compact(
                 state.error = Some(result.output.unwrap_or_else(|| "Compaction failed.".into()))
             }
         }
+    }
+}
+
+/// Steers `/goal` to an existing agent. Steering lets pause and clear reach a
+/// running goal, which would otherwise keep its run going indefinitely.
+pub fn submit_goal(
+    ui: Signal<Ui>,
+    target: TranscriptTarget,
+    arguments: String,
+) -> impl std::future::Future<Output = ()> {
+    let command = AgentCommand::Goal(GoalCommand::parse(&arguments));
+    let sent = send_agent_command(ui, target, command);
+    async move {
+        let Some(result) = sent.await else {
+            return;
+        };
+        let mut ui = ui;
+        let mut state = ui.write();
+        match result.outcome {
+            CommandOutcome::Succeeded => state.notice = result.output,
+            CommandOutcome::Interrupted => state.notice = Some("Goal change interrupted.".into()),
+            CommandOutcome::Failed => {
+                state.error = Some(
+                    result
+                        .output
+                        .unwrap_or_else(|| "Goal change failed.".into()),
+                )
+            }
+        }
+    }
+}
+
+/// Steers an agent command and waits for its result. The draft clears only if
+/// unchanged since the command was captured; rejected commands keep it for
+/// editing. `None` when the command could not be sent or the UI moved on.
+fn send_agent_command(
+    ui: Signal<Ui>,
+    target: TranscriptTarget,
+    command: AgentCommand,
+) -> impl std::future::Future<Output = Option<CommandResult>> {
+    let draft = capture_draft(ui, target);
+    async move {
+        let api = client(ui).ok()?;
+        let name = command.name();
+        let result = api
+            .send_command(
+                target.session_id,
+                target.agent_id,
+                CommandDelivery::Steer,
+                command,
+            )
+            .await;
+        if ui.peek().generation != draft.generation {
+            return None;
+        }
+        let mut ui = ui;
+        let mut state = ui.write();
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                state.error = Some(format!("Unable to run /{name}: {error}"));
+                return None;
+            }
+        };
+        state.drafts.clear_if_revision(&target, draft.revision);
+        Some(result)
     }
 }
 

@@ -153,8 +153,9 @@ pub enum MessageDelivery {
     Resume,
 }
 
-/// Scheduling policy for a submitted agent command. Commands never start,
-/// continue, or resume a run; delivery only chooses when they execute.
+/// Scheduling policy for a submitted agent command. Delivery only chooses when
+/// a command executes. Commands never continue a run or end one; only goal
+/// set and resume commands start a run, when the agent is not already running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommandDelivery {
     /// Waits until the agent is no longer running before executing.
@@ -174,6 +175,9 @@ pub enum AgentCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         instructions: Option<String>,
     },
+    /// Shows or changes the agent's goal. Requires the `Goal` bundle, installed
+    /// for this agent under its `interactive_only` policy.
+    Goal(GoalCommand),
 }
 
 impl AgentCommand {
@@ -181,6 +185,7 @@ impl AgentCommand {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Compact { .. } => "compact",
+            Self::Goal(_) => "goal",
         }
     }
 
@@ -188,6 +193,73 @@ impl AgentCommand {
     pub fn args(&self) -> String {
         match self {
             Self::Compact { instructions } => instructions.clone().unwrap_or_default(),
+            Self::Goal(command) => command.args(),
+        }
+    }
+}
+
+/// A user change to an agent's goal, matching the goal tools' transitions.
+/// Changes add a note for the model. Pause and clear never stop a run: the
+/// model is told to stop working on the goal and finishes on its own.
+/// Deliver them with [`CommandDelivery::Steer`], since a running goal keeps
+/// its run going and a queued command would wait for that run to end.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum GoalCommand {
+    /// Reports the current goal without changing it.
+    Show,
+    /// Sets or replaces the goal and runs it, starting a run if the agent is
+    /// not running.
+    Set { goal: String },
+    /// Blocks the running goal; the model is told to stop working on it.
+    Pause {
+        /// Why the goal is paused; defaults to a generic user pause.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// Runs a blocked goal again, starting a run if the agent is not running.
+    Resume,
+    /// Drops the goal without completing it; the model is told to stop working on it.
+    Clear {
+        /// Why the goal is cleared; defaults to a generic user clear.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+}
+
+impl GoalCommand {
+    /// Parse `/goal` arguments: empty shows the goal, `pause`, `resume`, and
+    /// `clear` (optionally followed by a reason) change it, and any other text
+    /// sets it.
+    pub fn parse(arguments: &str) -> Self {
+        let arguments = arguments.trim();
+        let (keyword, rest) = arguments
+            .split_once(char::is_whitespace)
+            .unwrap_or((arguments, ""));
+        let reason = Some(rest.trim().to_owned()).filter(|reason| !reason.is_empty());
+        match keyword.to_ascii_lowercase().as_str() {
+            "" => Self::Show,
+            "pause" => Self::Pause { reason },
+            "resume" if reason.is_none() => Self::Resume,
+            "clear" => Self::Clear { reason },
+            _ => Self::Set {
+                goal: arguments.to_owned(),
+            },
+        }
+    }
+
+    /// Arguments as they would be typed after `/goal`.
+    pub fn args(&self) -> String {
+        let with_reason = |keyword: &str, reason: &Option<String>| match reason {
+            Some(reason) => format!("{keyword} {reason}"),
+            None => keyword.to_owned(),
+        };
+        match self {
+            Self::Show => String::new(),
+            Self::Set { goal } => goal.clone(),
+            Self::Pause { reason } => with_reason("pause", reason),
+            Self::Resume => "resume".into(),
+            Self::Clear { reason } => with_reason("clear", reason),
         }
     }
 }
@@ -282,4 +354,42 @@ impl std::fmt::Display for RequestId {
 pub struct RequestAccepted {
     /// Identifier used to correlate later request failures.
     pub request_id: RequestId,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GoalCommand;
+
+    #[test]
+    fn goal_command_parses_keywords_and_round_trips_arguments() {
+        let cases = [
+            ("", GoalCommand::Show),
+            ("  Pause ", GoalCommand::Pause { reason: None }),
+            (
+                "pause waiting on review",
+                GoalCommand::Pause {
+                    reason: Some("waiting on review".into()),
+                },
+            ),
+            ("resume", GoalCommand::Resume),
+            ("clear", GoalCommand::Clear { reason: None }),
+            (
+                "ship the release",
+                GoalCommand::Set {
+                    goal: "ship the release".into(),
+                },
+            ),
+            (
+                "resume the old project",
+                GoalCommand::Set {
+                    goal: "resume the old project".into(),
+                },
+            ),
+        ];
+        for (arguments, expected) in cases {
+            let parsed = GoalCommand::parse(arguments);
+            assert_eq!(parsed, expected, "{arguments:?}");
+            assert_eq!(GoalCommand::parse(&parsed.args()), parsed);
+        }
+    }
 }

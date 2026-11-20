@@ -1,5 +1,6 @@
 //! Linux probe runtime. Remote operations execute with this process's permissions.
 pub mod config;
+pub mod image_hooks;
 mod operations;
 pub mod sandboxes;
 pub mod tools;

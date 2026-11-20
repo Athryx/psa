@@ -46,7 +46,8 @@ fn failed_inference_displays_protocol_http_and_transport_errors() {
     ] {
         let html = render_outcome(Outcome::Failed(error));
         assert!(html.contains("Inference failed"), "{html}");
-        assert!(html.contains("class=\"message error\""), "{html}");
+        assert!(html.contains("class=\"item error\""), "{html}");
+        assert!(html.contains(">FAILED<"), "{html}");
         assert!(html.contains("role=\"alert\""), "{html}");
         assert!(html.contains(expected), "{html}");
     }
@@ -79,6 +80,7 @@ fn incomplete_inference_displays_reason() {
     ] {
         let html = render_outcome(Outcome::Incomplete { reason });
         assert!(html.contains("Inference incomplete"), "{html}");
+        assert!(html.contains("class=\"item item-line warning\""), "{html}");
         assert!(html.contains(expected), "{html}");
         assert!(!html.contains("Inference failed"), "{html}");
     }
@@ -88,7 +90,8 @@ fn incomplete_inference_displays_reason() {
 fn cancelled_inference_is_visible_without_failure_styling() {
     let html = render_outcome(Outcome::Cancelled);
     assert!(html.contains("Inference cancelled"), "{html}");
-    assert!(html.contains("class=\"message muted\""), "{html}");
+    assert!(html.contains("class=\"item item-line\""), "{html}");
+    assert!(html.contains(">CANCELLED<"), "{html}");
     assert!(!html.contains("role=\"alert\""), "{html}");
 }
 

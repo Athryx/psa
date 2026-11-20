@@ -9,6 +9,8 @@
   --accent:#9aaeff;
   --error:#ff9494;
   --tool:#7fb4ff;
+  --command:#8fd19e;
+  --warning:#e7cf8f;
   font:14px/1.55 system-ui,sans-serif
 }
 * {
@@ -480,20 +482,32 @@ textarea {
 }
 .message.human-message pre { margin:0 }
 /* Commands align with the user's messages but read as controls, not prompts. */
-.command-message {
-  border:1px solid #6a5a2e;
-  background:#2c2618;
-  color:#e7cf8f;
-  border-radius:7px;
-  box-sizing:border-box;
+.item.command > summary,.item.command > .command-line { justify-content:flex-end }
+.command-line {
+  display:flex;
+  align-items:baseline;
+  gap:10px;
+  padding:2px 0
+}
+/* The expand arrow leads instead of trailing, so every command ends flush right. */
+.item.command > summary::after { order:-1; margin-left:0 }
+.command-name { flex:none; color:var(--command) }
+.command-args {
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap
+}
+.item.command.failed .command-name { color:var(--error) }
+/* Mirrored rail: right-aligned commands open on the right. */
+.item.command > .item-body {
   width:fit-content;
   max-width:100%;
-  padding:4px 10px;
-  margin:0 0 0 auto;
-  font-family:ui-monospace,monospace;
-  font-size:.92em
+  margin:4px 3px 10px auto;
+  padding:0 13px 0 0;
+  border-left:0;
+  border-right:1px solid var(--line)
 }
-.command-message pre { margin:0 }
 .agent-link { font-weight:600 }
 .agent-message { color:#fff }
 .streaming-indicator { color:var(--muted); font-size:11px }
@@ -596,6 +610,14 @@ textarea {
 .item-label { flex:none }
 .group-label { padding:4px 0 2px }
 .item.tool .item-label,.group-label.tool { color:var(--tool) }
+.item.log .item-label { color:var(--tool) }
+.item.warning .item-label { color:var(--warning) }
+.item-line {
+  display:flex;
+  align-items:baseline;
+  gap:10px;
+  padding:2px 0
+}
 .item.error .item-label { color:var(--error) }
 .item.grouped {
   margin-left:3px;

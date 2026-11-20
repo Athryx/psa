@@ -91,7 +91,31 @@ completion modes. Do not retain `StopWithoutTools` with Goal, including through
 server defaults: an explicit `after_request: []` disables inherited completion
 hooks while the bundle supplies its own. See [durable results](AGENT_RESULTS.md)
 for JSON completion, retries, and fork-aware retrieval. There are no Pi footer
-widgets, slash-command control endpoints, or request-history filtering in this port.
+widgets or request-history filtering in this port.
+
+### Goal commands
+
+Users change goals with `AgentCommand::Goal(GoalCommand)`, typed in the GUI as
+`/goal`. The command handler is installed with the goal tools, so the server
+rejects goal commands when the tools are not installed for the agent. Changes
+use the same transitions and persisted state as the tools; the user need not
+give a reason. Each change also saves a `Harness` note telling the model what the
+user did, in the same batch as the new state.
+
+| Command | `/goal` arguments | Goal change | Agent status |
+|---|---|---|---|
+| `Show` | none | none; the result output describes the goal | unchanged |
+| `Set { goal }` | any other text | set or replace, running | starts a run unless running |
+| `Pause { reason? }` | `pause [reason]` | blocked; reason defaults to "Paused by the user" | unchanged |
+| `Resume` | `resume` | blocked to running only | starts a run unless running |
+| `Clear { reason? }` | `clear [reason]` | dropped without completion | unchanged |
+
+Pause and clear never stop a run. Their note tells the model to stop working on
+the goal; with the goal no longer running, its next final answer settles the run
+with an ordinary text Result. Deliver goal commands with `CommandDelivery::Steer`:
+a queued command waits until the agent stops running, which a running goal does
+not do on its own. A rejected change, such as resuming a goal that is not
+blocked, returns `Failed` with the reason and saves nothing.
 
 ## Subagent tools and core ancestry
 

@@ -35,6 +35,23 @@ pub fn describe_decision_call(call: &DecisionCall) -> String {
     lines.join("\n")
 }
 
+/// One-line summary for a collapsed row: the model, how the call ended, and
+/// how long it took.
+pub fn summarize_decision_call(call: &DecisionCall) -> String {
+    let outcome = match &call.response {
+        Err(message) => format!("failed: {}", message.lines().next().unwrap_or_default()),
+        Ok(response) => match response.answers.len() {
+            1 => "1 answer".into(),
+            count => format!("{count} answers"),
+        },
+    };
+    format!(
+        "{} · {outcome} · {}",
+        call.model().api_name,
+        describe_duration(call.duration)
+    )
+}
+
 /// Headline result only; probability distributions are left to the event.
 fn describe_answer(answer: Option<&DecisionAnswer>) -> String {
     match answer {
@@ -149,6 +166,10 @@ mod tests {
         assert_eq!(
             describe_decision_call(&failed),
             "Decision model vendor/decider\nfailed: HTTP 429: slow down\n40ms"
+        );
+        assert_eq!(
+            summarize_decision_call(&failed),
+            "vendor/decider · failed: HTTP 429: slow down · 40ms"
         );
     }
 }

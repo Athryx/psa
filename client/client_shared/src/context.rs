@@ -169,7 +169,9 @@ fn build_context_item(event: &Event, tool_names: &HashMap<&str, &str>) -> Option
                 MessageType::Subagent => (ContextCategory::Harness, "Subagent message"),
             };
             let label = match (&message.description, message.message_type) {
-                (Some(description), MessageType::System) => build_label(description, fallback),
+                (Some(description), MessageType::System | MessageType::Harness) => {
+                    build_label(description, fallback)
+                }
                 _ => build_label(first_text(&message.content), fallback),
             };
             (category, label, content_size(&message.content))

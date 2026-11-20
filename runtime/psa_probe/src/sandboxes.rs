@@ -1,4 +1,5 @@
 //! Docker sandbox containers running nested probes, managed through the `docker` CLI.
+use crate::image_hooks;
 use psa::api::{
     Mount, ProbeId, SandboxState,
     probes::{ContainerStatus, SandboxRequest, SandboxSpec},
@@ -6,6 +7,7 @@ use psa::api::{
 use std::{
     io,
     path::{Path, PathBuf},
+    time::Duration,
 };
 use tokio::io::AsyncWriteExt;
 
@@ -19,6 +21,9 @@ const CONTAINER_PROBE: &str = "/opt/psa/psa_probe";
 const CONTAINER_DATA: &str = "/opt/psa/data";
 const CONTAINER_CONFIG: &str = "/opt/psa/config/probe.toml";
 const CONTAINER_AUTH: &str = "/opt/psa/config/auth.toml";
+/// Docker's grace period beyond the image's teardown timeout, covering the
+/// probe's own shutdown before the container is killed.
+const STOP_MARGIN: Duration = Duration::from_secs(5);
 
 /// Settings a manager probe needs to configure nested probes.
 #[derive(Debug, Clone)]
@@ -60,11 +65,18 @@ impl SandboxManager {
             return Err(invalid("sandbox container already exists"));
         }
 
+        // `docker stop` must wait for the image's teardown hook, and its grace
+        // period is fixed when the container is created.
+        let image_env = read_image_env(&spec.image).await?;
+        let teardown_timeout =
+            image_hooks::find_teardown_timeout(image_env.iter().map(String::as_str));
+        let stop_timeout = teardown_timeout + STOP_MARGIN;
+
         let state_dir = self.state_dir(spec.probe_id);
         tokio::fs::create_dir_all(&state_dir).await?;
         let result = async {
             self.write_nested_config(&state_dir, &spec).await?;
-            let args = build_create_args(self, &spec, &state_dir);
+            let args = build_create_args(self, &spec, &state_dir, stop_timeout);
             run_docker(&args).await
         }
         .await;
@@ -119,6 +131,27 @@ impl SandboxManager {
     }
 }
 
+/// Read an image's `NAME=value` environment, pulling the image when it is not
+/// present locally (`docker create` would pull it anyway).
+async fn read_image_env(image: &str) -> Result<Vec<String>> {
+    let inspect = [
+        "image",
+        "inspect",
+        "--format",
+        "{{json .Config.Env}}",
+        image,
+    ];
+    let output = match run_docker(inspect).await {
+        Ok(output) => output,
+        Err(_) => {
+            run_docker(["pull", "--quiet", image]).await?;
+            run_docker(inspect).await?
+        }
+    };
+    let env: Option<Vec<String>> = serde_json::from_str(output.trim())?;
+    Ok(env.unwrap_or_default())
+}
+
 /// Docker container name for a sandbox, unique across managers on one host.
 pub fn container_name(spec: &SandboxSpec) -> String {
     let id = spec.probe_id.to_string();
@@ -129,6 +162,7 @@ fn build_create_args(
     manager: &SandboxManager,
     spec: &SandboxSpec,
     state_dir: &Path,
+    stop_timeout: Duration,
 ) -> Vec<String> {
     let mut args = vec![
         "create".to_owned(),
@@ -137,6 +171,8 @@ fn build_create_args(
         "--network".to_owned(),
         "host".to_owned(),
         "--init".to_owned(),
+        "--stop-timeout".to_owned(),
+        stop_timeout.as_secs().to_string(),
         "--label".to_owned(),
         format!("{MANAGER_LABEL}={}", manager.manager_id),
         "--label".to_owned(),
@@ -174,6 +210,7 @@ fn build_create_args(
         CONTAINER_CONFIG.to_owned(),
         "--data-dir".to_owned(),
         CONTAINER_DATA.to_owned(),
+        "--image-hooks".to_owned(),
     ]);
     args
 }
@@ -315,7 +352,12 @@ mod tests {
             },
         ];
         let spec = spec(mounts);
-        let args = build_create_args(&manager(), &spec, Path::new("/data/sandboxes/x"));
+        let args = build_create_args(
+            &manager(),
+            &spec,
+            Path::new("/data/sandboxes/x"),
+            Duration::from_secs(15),
+        );
 
         assert_eq!(
             &args[..3],
@@ -323,6 +365,7 @@ mod tests {
         );
         assert!(args.windows(2).any(|w| w == ["--network", "host"]));
         assert!(args.contains(&"--init".to_owned()));
+        assert!(args.windows(2).any(|w| w == ["--stop-timeout", "15"]));
         assert!(args.contains(&format!("psa.sandbox={}", spec.probe_id)));
         assert!(args.contains(&format!("psa.manager={}", manager().manager_id)));
         assert!(
@@ -344,7 +387,7 @@ mod tests {
         assert!(args.contains(&"type=bind,src=/src,dst=/work".to_owned()));
         assert!(args.contains(&"type=bind,src=/ref,dst=/ref,readonly".to_owned()));
         assert_eq!(
-            &args[args.len() - 8..],
+            &args[args.len() - 9..],
             [
                 "--entrypoint",
                 CONTAINER_PROBE,
@@ -353,7 +396,8 @@ mod tests {
                 "--config",
                 CONTAINER_CONFIG,
                 "--data-dir",
-                CONTAINER_DATA
+                CONTAINER_DATA,
+                "--image-hooks"
             ]
         );
     }

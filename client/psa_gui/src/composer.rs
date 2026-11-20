@@ -1355,6 +1355,12 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
             } if !root => {
                 spawn(network::submit_compact(ui, target, arguments));
             }
+            ComposerInput::Command {
+                id: CommandId::Goal,
+                arguments,
+            } if !root => {
+                spawn(network::submit_goal(ui, target, arguments));
+            }
             _ if root => {
                 spawn_forever(network::submit_draft_root(ui, target.session_id));
             }
@@ -1393,7 +1399,7 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
             if !root && matches!(parsed, ComposerInput::Command { id:CommandId::Agent, .. }) {
                 p { class:"command-hint", "The /agent command is only available before creating the root agent. Use //agent to send it as text." }
             }
-            if root && matches!(parsed, ComposerInput::Command { id:CommandId::Compact | CommandId::Fork, .. }) {
+            if root && matches!(parsed, ComposerInput::Command { id:CommandId::Compact | CommandId::Goal | CommandId::Fork, .. }) {
                 p { class:"command-hint", "This command needs an existing agent. Start with // to send it as text." }
             }
             if let Some(kind) = prompt() {

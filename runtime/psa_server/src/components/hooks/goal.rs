@@ -1,17 +1,25 @@
-//! Goal-aware replacement for StopWithoutTools on agents with Goal installed.
-use super::{Hook, HookError, stop_without_tools::build_text_completion_events};
+//! Goal-aware replacement for StopWithoutTools on agents with Goal installed,
+//! and the handler for user `/goal` commands.
+use super::{
+    AgentCommand, CommandHook, CommandResult, Hook, HookError,
+    stop_without_tools::build_text_completion_events,
+};
 use crate::db::NewEvent;
 use crate::{
-    agents::{AgentState, agent_context::AgentContext},
+    agents::{AgentState, agent_context::AgentContext, publication::status_event},
     components::{
-        bundles::goal::{GoalHandle, GoalState},
+        bundles::goal::{GoalHandle, GoalOperation, GoalState, GoalStatus, load_goal_state},
         cancellation::Cancellation,
     },
 };
 use llm_api::api::{Outcome, StopReason};
-use psa::api::events::{EventType, Message, MessageType};
+use psa::api::{
+    CommandOutcome, GoalCommand,
+    events::{EventType, Message},
+};
 use std::time::Duration;
 
+#[derive(Clone)]
 pub struct GoalHook {
     handle: GoalHandle,
 }
@@ -49,9 +57,9 @@ impl GoalHook {
             // Queued user policy intentionally waits until the goal is finished;
             // Steer and cancellation still intervene through the ordinary worker loop.
             context
-                .save_events(&[NewEvent::new(EventType::Message(Message::text(
-                    MessageType::Harness,
+                .save_events(&[NewEvent::new(EventType::Message(Message::harness(
                     format_reminder(&lease.state),
+                    "Goal reminder",
                 )))])
                 .await?;
         } else {
@@ -75,11 +83,150 @@ fn can_settle(outcome: &Outcome, has_tools: bool) -> bool {
 }
 
 fn format_reminder(state: &GoalState) -> String {
-    let goal = serde_json::to_string(state.goal.as_deref().unwrap_or_default())
-        .expect("goal string is serializable");
+    let goal = quote_goal(state.goal.as_deref().unwrap_or_default());
     format!(
         "Current goal: {goal}. Check whether it is completed or blocked. If there is strong evidence for either, call set_goal_status with that status and explain the evidence in reason. Otherwise keep working on the goal; do not just finish with a final answer."
     )
+}
+
+fn quote_goal(goal: &str) -> String {
+    serde_json::to_string(goal).expect("goal string is serializable")
+}
+
+/// The goal operation a user command performs; `None` for read-only `Show`.
+fn build_command_operation(command: &GoalCommand) -> Option<GoalOperation> {
+    let operation = match command {
+        GoalCommand::Show => return None,
+        GoalCommand::Set { goal } => GoalOperation::Set(goal.clone()),
+        GoalCommand::Pause { reason } => GoalOperation::Status {
+            status: GoalStatus::Blocked,
+            // Blocking requires a reason; users need not give one.
+            reason: Some(
+                reason
+                    .clone()
+                    .filter(|reason| !reason.trim().is_empty())
+                    .unwrap_or_else(|| "Paused by the user".into()),
+            ),
+        },
+        GoalCommand::Resume => GoalOperation::Status {
+            status: GoalStatus::Running,
+            reason: None,
+        },
+        GoalCommand::Clear { reason } => GoalOperation::Clear {
+            reason: reason.clone(),
+        },
+    };
+    Some(operation)
+}
+
+/// The model-facing note for a user goal change, so the model learns about the
+/// change before its next request rather than at the next reminder.
+fn build_command_note(command: &GoalCommand, previous: &GoalState, next: &GoalState) -> Message {
+    let goal = quote_goal(next.goal.as_deref().unwrap_or_default());
+    let previous_goal = quote_goal(previous.goal.as_deref().unwrap_or_default());
+    let reason = next
+        .reason
+        .as_ref()
+        .map(|reason| format!(" Reason: {}.", reason.trim_end_matches('.')))
+        .unwrap_or_default();
+    let (text, label) = match command {
+        GoalCommand::Set { .. } if previous.goal.is_some() => (
+            format!(
+                "The user replaced the goal {previous_goal} with a new goal: {goal}. Work on the new goal until it is completed or blocked."
+            ),
+            "Goal replaced",
+        ),
+        GoalCommand::Set { .. } => (
+            format!("The user set a goal: {goal}. Work on it until it is completed or blocked."),
+            "Goal set",
+        ),
+        GoalCommand::Pause { .. } => (
+            format!(
+                "The user paused the goal: {goal}.{reason} Stop working on it and wait until the user resumes it."
+            ),
+            "Goal paused",
+        ),
+        GoalCommand::Resume => (
+            format!(
+                "The user resumed the goal: {goal}. Continue working on it until it is completed or blocked."
+            ),
+            "Goal resumed",
+        ),
+        GoalCommand::Clear { .. } => (
+            format!(
+                "The user cleared the goal: {previous_goal}.{reason} It is no longer active; stop working on it."
+            ),
+            "Goal cleared",
+        ),
+        GoalCommand::Show => unreachable!("showing the goal changes nothing"),
+    };
+    Message::harness(text, label)
+}
+
+fn describe_goal_state(state: &GoalState) -> String {
+    let Some(goal) = &state.goal else {
+        return "No current goal.".into();
+    };
+    let status = match state.status {
+        GoalStatus::Running => "running",
+        GoalStatus::Blocked => "blocked",
+        GoalStatus::Completed => "completed",
+    };
+    match &state.reason {
+        Some(reason) => format!("Goal {status}: {goal} ({reason})"),
+        None => format!("Goal {status}: {goal}"),
+    }
+}
+
+impl CommandHook for GoalHook {
+    fn cancellation_timeout(&self) -> Duration {
+        Duration::from_secs(3)
+    }
+
+    async fn handle_command(
+        &mut self,
+        context: &mut AgentContext<'_>,
+        command: &AgentCommand,
+        mut cancellation: Cancellation,
+    ) -> Result<Option<CommandResult>, HookError> {
+        let AgentCommand::Goal(command) = command else {
+            return Ok(None);
+        };
+        let Some(operation) = build_command_operation(command) else {
+            let state = load_goal_state(context).await?;
+            return Ok(Some(CommandResult {
+                outcome: CommandOutcome::Succeeded,
+                output: Some(describe_goal_state(&state)),
+            }));
+        };
+
+        // Only running a goal starts a run; pause and clear leave stopping to
+        // the model, which settles once it replies without tools.
+        let start_run = matches!(command, GoalCommand::Set { .. } | GoalCommand::Resume)
+            && context.agent().state != AgentState::Running;
+        let result = self
+            .handle
+            .execute_with(operation, context, &mut cancellation, |previous, next| {
+                let note = build_command_note(command, previous, next);
+                let mut events = vec![NewEvent::new(EventType::Message(note))];
+                if start_run {
+                    events.push(status_event(AgentState::Running));
+                }
+                events
+            })
+            .await;
+
+        let (outcome, output) = match result {
+            Ok(execution) if execution.changed => (CommandOutcome::Succeeded, execution.message),
+            Ok(execution) => (CommandOutcome::Failed, execution.message),
+            Err(message) if cancellation.is_cancelled() => (CommandOutcome::Interrupted, message),
+            Err(message) => (CommandOutcome::Failed, message),
+        };
+        Ok(Some(CommandResult {
+            outcome,
+            output: Some(output),
+        }))
+    }
 }
 
 impl Hook for GoalHook {
@@ -102,7 +249,7 @@ impl Hook for GoalHook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{agents::publication::status_event, components::bundles::goal::GoalStatus};
+    use psa::api::events::MessageType;
     #[test]
     fn completed_without_tools_is_always_eligible_to_settle() {
         for reason in [

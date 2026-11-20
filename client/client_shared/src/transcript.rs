@@ -168,7 +168,7 @@ pub struct TurnNumber {
     pub exact: bool,
 }
 
-const DISPLAY_CATEGORIES: usize = 5;
+const DISPLAY_CATEGORIES: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RowId {
@@ -288,8 +288,14 @@ impl Transcript {
 
     fn display_category(kind: &EventType) -> Option<usize> {
         match kind {
+            EventType::Message(message)
+                if message.message_type == psa::api::events::MessageType::Harness =>
+            {
+                Some(5)
+            }
+            EventType::Log(log) if log.error => Some(6),
+            EventType::Log(_) => Some(7),
             EventType::Message(_)
-            | EventType::Log(_)
             | EventType::Command(_)
             | EventType::DecisionCall(_)
             | EventType::ToolCall(_)
@@ -487,6 +493,9 @@ impl Transcript {
             !preferences.hide_text_recorded_results,
             !preferences.hide_agent_statuses,
             preferences.turn_dividers != crate::TurnDividerDisplay::Hidden,
+            preferences.show_harness_messages,
+            preferences.log_level.shows(true),
+            preferences.log_level.shows(false),
         ]
     }
 
@@ -991,6 +1000,41 @@ mod tests {
         assert_ne!(rows[1], updated[1]);
         assert_eq!(snapshot.pending[&PendingEventId::from("p")].revision, 1);
         assert_eq!(transcript.pending[&PendingEventId::from("p")].revision, 2);
+    }
+
+    #[test]
+    fn harness_messages_and_logs_follow_their_display_settings() {
+        use psa::api::events::{Log, Message, MessageType};
+        let mut transcript = Transcript::new(SessionId(1), Some(AgentId(2)));
+        let kinds = [
+            EventType::Message(Message::text(MessageType::Human, "hi")),
+            EventType::Message(Message::harness("keep going", "Goal reminder")),
+            EventType::Log(Log {
+                error: false,
+                message: "state".into(),
+            }),
+            EventType::Log(Log {
+                error: true,
+                message: "failed".into(),
+            }),
+        ];
+        for (id, kind) in (1..).zip(kinds) {
+            let mut next = event(id);
+            next.event.kind = kind;
+            transcript.apply(StreamMessage::Committed {
+                event: next,
+                pending_id: None,
+            });
+        }
+
+        let mut preferences = crate::UiPreferences::default();
+        // Defaults: harness messages and error logs.
+        assert_eq!(transcript.display_count(&preferences), 3);
+        preferences.log_level = crate::TranscriptLogLevel::Info;
+        assert_eq!(transcript.display_count(&preferences), 4);
+        preferences.log_level = crate::TranscriptLogLevel::Hidden;
+        preferences.show_harness_messages = false;
+        assert_eq!(transcript.display_count(&preferences), 1);
     }
 
     #[test]

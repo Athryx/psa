@@ -8,7 +8,7 @@ use super::{Bundle, CleanupError, HookStage, InstallError, Installer};
 use crate::{
     agents::Agent,
     components::{
-        hooks::{HookKind, StopWithoutTools, goal::GoalHook},
+        hooks::{CommandHookKind, HookKind, StopWithoutTools, goal::GoalHook},
         tools::{
             ToolKind,
             goal::{SetGoal, SetGoalStatus},
@@ -57,10 +57,9 @@ impl Bundle for GoalBundle {
         installer.add_tool(ToolKind::SetGoalStatus(SetGoalStatus::with_handle(
             handle.clone(),
         )))?;
-        installer.add_hook(
-            HookStage::AfterRequest,
-            HookKind::Goal(GoalHook::with_handle(handle)),
-        );
+        let hook = GoalHook::with_handle(handle);
+        installer.add_command_hook(CommandHookKind::Goal(hook.clone()));
+        installer.add_hook(HookStage::AfterRequest, HookKind::Goal(hook));
         Ok(())
     }
 

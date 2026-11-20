@@ -8,7 +8,7 @@ use crate::{
     },
 };
 use llm_api::api::{Outcome, StopReason};
-use psa::api::events::{Event, EventId, EventType, Log, Message, MessageType, StatusChange};
+use psa::api::events::{Event, EventId, EventType, Log, Message, StatusChange};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
@@ -92,9 +92,9 @@ impl RequireResult {
             // There are no pending calls in this branch. For invalid record_result
             // calls, their ordinary tool errors supply feedback instead: inserting
             // a message between tool calls and their results breaks replay ordering.
-            updates.push(NewEvent::new(EventType::Message(Message::text(
-                MessageType::Harness,
+            updates.push(NewEvent::new(EventType::Message(Message::harness(
                 "A structured result is required. Continue the task if needed, then call record_result with an object matching its schema. An assistant message alone does not finish this run.",
+                "Result required",
             ))));
         }
 

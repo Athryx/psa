@@ -123,6 +123,16 @@ pub(crate) enum GoalOperation {
         status: GoalStatus,
         reason: Option<String>,
     },
+    /// Drops the goal without completing it; only users can clear goals.
+    Clear {
+        reason: Option<String>,
+    },
+}
+
+/// A goal operation's result message, and whether it changed the state.
+pub(crate) struct GoalExecution {
+    pub message: String,
+    pub changed: bool,
 }
 
 struct Transition {
@@ -186,6 +196,22 @@ fn apply_operation(state: &GoalState, operation: GoalOperation) -> Transition {
                 status,
                 reason,
                 message,
+            )
+        }
+        GoalOperation::Clear { reason } => {
+            let Some(goal) = &state.goal else {
+                return unchanged("No current goal to clear.");
+            };
+            let reason = reason
+                .as_deref()
+                .map(trim_goal_text)
+                .filter(|reason| !reason.is_empty())
+                .map(str::to_owned);
+            (
+                None,
+                GoalStatus::Completed,
+                reason,
+                format!("Goal cleared: {goal}"),
             )
         }
     };
@@ -357,6 +383,20 @@ impl GoalHandle {
         context: &mut AgentContext<'_>,
         mut cancellation: Cancellation,
     ) -> Result<String, String> {
+        self.execute_with(operation, context, &mut cancellation, |_, _| Vec::new())
+            .await
+            .map(|execution| execution.message)
+    }
+
+    /// Applies `operation`, saving `follow_up(previous, next)` events in the same
+    /// batch as a changed state, so they commit together or not at all.
+    pub(crate) async fn execute_with(
+        &self,
+        operation: GoalOperation,
+        context: &mut AgentContext<'_>,
+        cancellation: &mut Cancellation,
+        follow_up: impl FnOnce(&GoalState, &GoalState) -> Vec<NewEvent> + Send,
+    ) -> Result<GoalExecution, String> {
         let execute = async {
             let lease = self
                 .lease(context)
@@ -368,18 +408,28 @@ impl GoalHandle {
                 .request(|reply| Message::Apply { operation, reply })
                 .await
                 .map_err(|error| error.to_string())?;
-            if let Some(state) = transition.state {
-                context
-                    .save_events(&[state_event(&state)])
-                    .await
-                    .map_err(|error| error.to_string())?;
-                lease
-                    .sender
-                    .request(|reply| Message::Commit { state, reply })
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-            Ok(transition.message)
+            let Some(state) = transition.state else {
+                return Ok(GoalExecution {
+                    message: transition.message,
+                    changed: false,
+                });
+            };
+
+            let mut events = vec![state_event(&state)];
+            events.extend(follow_up(&lease.state, &state));
+            context
+                .save_events(&events)
+                .await
+                .map_err(|error| error.to_string())?;
+            lease
+                .sender
+                .request(|reply| Message::Commit { state, reply })
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(GoalExecution {
+                message: transition.message,
+                changed: true,
+            })
         };
         tokio::select! {
             biased;
@@ -443,6 +493,27 @@ mod tests {
         let completed = transition.state.unwrap();
         assert_eq!(completed.goal, None);
         assert_eq!(completed.generation, 4);
+    }
+    #[test]
+    fn clear_drops_any_goal_without_requiring_a_reason() {
+        let clear = |reason: Option<&str>| GoalOperation::Clear {
+            reason: reason.map(str::to_owned),
+        };
+        assert_eq!(
+            apply_operation(&GoalState::default(), clear(None)).message,
+            "No current goal to clear."
+        );
+        let running = apply(&GoalState::default(), GoalOperation::Set("goal".into()));
+        let blocked = apply(&running, status(GoalStatus::Blocked, Some("waiting")));
+        for state in [running, blocked] {
+            let transition = apply_operation(&state, clear(Some(" ")));
+            assert_eq!(transition.message, "Goal cleared: goal");
+            let cleared = transition.state.unwrap();
+            assert_eq!(cleared.goal, None);
+            assert_eq!(cleared.status, GoalStatus::Completed);
+            assert_eq!(cleared.reason, None);
+            assert!(!cleared.is_running());
+        }
     }
     #[test]
     fn restoration_ignores_unknown_invalid_logs_and_uses_branch_order() {

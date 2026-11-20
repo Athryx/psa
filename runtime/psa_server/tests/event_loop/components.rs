@@ -143,6 +143,216 @@ async fn goal_continues_after_a_final_answer_and_stops_after_explicit_completion
     harness.close().await;
 }
 
+async fn create_goal_agent(harness: &Harness, interactive: bool) -> (wire::Session, wire::Agent) {
+    let definition = harness
+        .upsert_config(AgentConfig {
+            bundles: vec![
+                startup(),
+                BundleConfig::Goal {
+                    interactive_only: true,
+                },
+            ],
+            ..agent_config("goal agent")
+        })
+        .await;
+    let session = create_session(harness).await;
+    let agent = harness
+        .client
+        .create_agent(
+            session.id,
+            &CreateAgent {
+                model: None,
+                subagent_parent_id: None,
+                interactive,
+                hidden: false,
+                name: "main".into(),
+                config_id: definition.config_id,
+            },
+        )
+        .await
+        .unwrap();
+    (session, agent)
+}
+
+async fn send_goal(
+    harness: &Harness,
+    agent: &wire::Agent,
+    delivery: wire::CommandDelivery,
+    command: wire::GoalCommand,
+) -> wire::CommandResult {
+    harness
+        .client
+        .send_command(
+            agent.session_id,
+            agent.id,
+            delivery,
+            wire::AgentCommand::Goal(command),
+        )
+        .await
+        .unwrap()
+}
+
+fn harness_notes(events: &[wire::EventEnvelope]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match &event.event.kind {
+            EventType::Message(message) if message.message_type == MessageType::Harness => {
+                Some(text(&message.content))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn goal_commands_start_runs_and_leave_stopping_to_the_model() {
+    // Unscripted requests answer with plain text, so a running goal keeps
+    // continuing until a command stops it.
+    let mut harness = Harness::start(Vec::new()).await;
+    let (session, agent) = create_goal_agent(&harness, true).await;
+    harness.wait_stopped(session.id).await;
+
+    let set = send_goal(
+        &harness,
+        &agent,
+        wire::CommandDelivery::Queue,
+        wire::GoalCommand::Set {
+            goal: "Verify the release".into(),
+        },
+    )
+    .await;
+    assert_eq!(set.outcome, wire::CommandOutcome::Succeeded);
+    assert_eq!(
+        set.output.as_deref(),
+        Some("Goal running: Verify the release")
+    );
+    let first = harness.requests.recv().await.unwrap().to_string();
+    assert!(first.contains("The user set a goal"), "{first}");
+
+    // Pausing never stops the run; the model settles after the note.
+    let pause = send_goal(
+        &harness,
+        &agent,
+        wire::CommandDelivery::Steer,
+        wire::GoalCommand::Pause { reason: None },
+    )
+    .await;
+    assert_eq!(pause.outcome, wire::CommandOutcome::Succeeded);
+    harness.wait_stopped(session.id).await;
+    let show = send_goal(
+        &harness,
+        &agent,
+        wire::CommandDelivery::Queue,
+        wire::GoalCommand::Show,
+    )
+    .await;
+    assert_eq!(
+        show.output.as_deref(),
+        Some("Goal blocked: Verify the release (Paused by the user)")
+    );
+
+    let resume = send_goal(
+        &harness,
+        &agent,
+        wire::CommandDelivery::Queue,
+        wire::GoalCommand::Resume,
+    )
+    .await;
+    assert_eq!(resume.outcome, wire::CommandOutcome::Succeeded);
+    let again = send_goal(
+        &harness,
+        &agent,
+        wire::CommandDelivery::Steer,
+        wire::GoalCommand::Resume,
+    )
+    .await;
+    assert_eq!(again.outcome, wire::CommandOutcome::Failed);
+    assert_eq!(
+        again.output.as_deref(),
+        Some("Only a blocked goal can be resumed.")
+    );
+    let clear = send_goal(
+        &harness,
+        &agent,
+        wire::CommandDelivery::Steer,
+        wire::GoalCommand::Clear { reason: None },
+    )
+    .await;
+    assert_eq!(clear.outcome, wire::CommandOutcome::Succeeded);
+    harness.wait_stopped(session.id).await;
+    let show = send_goal(
+        &harness,
+        &agent,
+        wire::CommandDelivery::Queue,
+        wire::GoalCommand::Show,
+    )
+    .await;
+    assert_eq!(show.output.as_deref(), Some("No current goal."));
+    assert_eq!(
+        harness
+            .client
+            .get_agent(session.id, agent.id)
+            .await
+            .unwrap()
+            .state,
+        AgentState::Idle
+    );
+
+    let page = harness
+        .client
+        .list_events(session.id, Some(agent.id), &Default::default())
+        .await
+        .unwrap();
+    let notes: Vec<_> = harness_notes(&page.events)
+        .into_iter()
+        .filter(|note| note.starts_with("The user"))
+        .collect();
+    assert_eq!(
+        notes,
+        [
+            r#"The user set a goal: "Verify the release". Work on it until it is completed or blocked."#,
+            r#"The user paused the goal: "Verify the release". Reason: Paused by the user. Stop working on it and wait until the user resumes it."#,
+            r#"The user resumed the goal: "Verify the release". Continue working on it until it is completed or blocked."#,
+            r#"The user cleared the goal: "Verify the release". It is no longer active; stop working on it."#,
+        ]
+    );
+    // Only set and resume start runs; pause and clear settle with ordinary results.
+    let starts = page
+        .events
+        .iter()
+        .filter(|event| {
+            matches!(&event.event.kind,
+            EventType::StatusChange(change) if change.new_status == AgentState::Running)
+        })
+        .count();
+    assert_eq!(starts, 2);
+    let results = harness
+        .client
+        .list_results(session.id, agent.id, 10)
+        .await
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn goal_commands_require_goal_tools_installed_for_the_agent() {
+    let harness = Harness::start(Vec::new()).await;
+    let (_, agent) = create_goal_agent(&harness, false).await;
+    let error = harness
+        .client
+        .send_command(
+            agent.session_id,
+            agent.id,
+            wire::CommandDelivery::Queue,
+            wire::AgentCommand::Goal(wire::GoalCommand::Show),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("Goal bundle"), "{error}");
+    harness.close().await;
+}
+
 #[tokio::test]
 async fn parallel_wait_then_create_receives_child_completion_and_keeps_agents_addressable() {
     let mut harness = Harness::start(vec![

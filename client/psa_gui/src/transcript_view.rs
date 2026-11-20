@@ -810,10 +810,13 @@ pub(crate) fn TranscriptView(tab: Tab, active: bool) -> Element {
 }
 
 fn row_is_visible(kind: &psa::api::events::EventType, preferences: &UiPreferences) -> bool {
-    use psa::api::events::EventType;
+    use psa::api::events::{EventType, MessageType};
     match kind {
+        EventType::Message(message) if message.message_type == MessageType::Harness => {
+            preferences.show_harness_messages
+        }
+        EventType::Log(log) => preferences.log_level.shows(log.error),
         EventType::Message(_)
-        | EventType::Log(_)
         | EventType::Command(_)
         | EventType::DecisionCall(_)
         | EventType::ToolCall(_)
@@ -880,6 +883,8 @@ impl GroupPosition {
 #[derive(PartialEq, Eq)]
 enum GroupKey<'a> {
     SystemPrompt,
+    Harness,
+    Decision,
     Reasoning,
     Tool(&'a str),
 }
@@ -893,6 +898,10 @@ fn group_key<'a>(
         EventType::Message(message) if message.message_type == MessageType::System => {
             Some(GroupKey::SystemPrompt)
         }
+        EventType::Message(message) if message.message_type == MessageType::Harness => {
+            Some(GroupKey::Harness)
+        }
+        EventType::DecisionCall(_) => Some(GroupKey::Decision),
         EventType::ToolCall(call) => Some(GroupKey::Tool(&call.tool_name)),
         EventType::Thinking(_) if preferences.reasoning_display == ReasoningDisplay::Collapsed => {
             Some(GroupKey::Reasoning)
@@ -906,6 +915,10 @@ fn is_compact_row(kind: &psa::api::events::EventType, preferences: &RowPreferenc
     use psa::api::events::EventType;
     match kind {
         EventType::ToolResult(_)
+        | EventType::Log(_)
+        | EventType::Command(_)
+        | EventType::StatusChange(_)
+        | EventType::InferenceResultEnd(_)
         | EventType::Compaction(_)
         | EventType::ProviderItem(_)
         | EventType::Result(_) => true,
@@ -1204,6 +1217,10 @@ fn error_details_are_large(error: &llm_api::Error) -> bool {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum DetailMode {
     System,
+    Harness,
+    Log,
+    Decision,
+    Command,
     Tool,
     Unmatched,
     Compaction,
@@ -1310,7 +1327,14 @@ fn EventDetails(
 fn DetailBody(kind: EventKind, result: Option<EventKind>, mode: DetailMode) -> Element {
     use psa::api::events::EventType;
     match (mode, kind.kind()) {
-        (DetailMode::System, EventType::Message(message)) => {
+        (DetailMode::Log, EventType::Log(log)) => rsx! { pre { "{log.message}" } },
+        (DetailMode::Decision, EventType::DecisionCall(call)) => {
+            rsx! { pre { "{client_shared::describe_decision_call(call)}" } }
+        }
+        (DetailMode::Command, EventType::Command(command)) => {
+            rsx! { pre { "{command.output.clone().unwrap_or_default()}" } }
+        }
+        (DetailMode::System | DetailMode::Harness, EventType::Message(message)) => {
             rsx! { pre { "{blocks(&message.content)}" } }
         }
         (DetailMode::Received, EventType::Message(message)) => message_markdown(&message.content),
@@ -1339,9 +1363,11 @@ fn DetailBody(kind: EventKind, result: Option<EventKind>, mode: DetailMode) -> E
             rsx! { pre { "{serde_json::to_string_pretty(result).unwrap_or_default()}" } }
         }
         (DetailMode::Error, EventType::InferenceResultEnd(end)) => match &end.outcome {
-            llm_api::api::Outcome::Failed(error) => {
-                rsx! { pre { "{serde_json::to_string_pretty(error).unwrap_or_default()}" } }
-            }
+            llm_api::api::Outcome::Failed(error) => rsx! {
+                pre { "{error}" }
+                h4 { "Error details" }
+                pre { "{serde_json::to_string_pretty(error).unwrap_or_default()}" }
+            },
             _ => rsx! {},
         },
         _ => rsx! {},
@@ -1523,6 +1549,12 @@ fn EventContent(
             }
         }
     };
+    // A labelled line with nothing to expand.
+    let line = |label: &str, class: &str, text: String| {
+        let class = format!("item item-line {class}");
+        let class = class.trim_end();
+        rsx! { div { class, span { class: "item-label", "{label}" } span { class: "item-text", "{text}" } } }
+    };
     match kind.kind() {
         EventType::Message(message) => {
             if matches!(message.message_type, psa::api::events::MessageType::System) {
@@ -1545,6 +1577,28 @@ fn EventContent(
                     "system-prompt",
                     blocks_are_large(&message.content),
                     rsx! { span { class: "item-text", "{description}" } },
+                );
+            }
+            if matches!(message.message_type, psa::api::events::MessageType::Harness) {
+                // Labelled nudges read by their label; unlabelled ones by a preview.
+                let summary = match &message.description {
+                    Some(description) => rsx! { span { class: "item-text", "{description}" } },
+                    None => {
+                        let preview = build_line_preview(message.content.iter().filter_map(
+                            |block| match block {
+                                ContentBlock::Text(text) => Some(text.text.as_str()),
+                                _ => None,
+                            },
+                        ));
+                        rsx! { span { class: "item-text item-preview", "{preview}" } }
+                    }
+                };
+                return compact(
+                    DetailMode::Harness,
+                    "Harness",
+                    "harness",
+                    blocks_are_large(&message.content),
+                    summary,
                 );
             }
             if let Some(source) = message
@@ -1590,26 +1644,56 @@ fn EventContent(
             } }
         }
         EventType::Log(log) => {
-            rsx! { article { class: if log.error { "message error" } else { "message muted" }, div { class: "role", "Harness log" } pre { "{log.message}" } } }
+            // One cut-off line, expanding to the full message like reasoning.
+            let (label, class) = if log.error {
+                ("ERROR", "log error")
+            } else {
+                ("INFO", "log")
+            };
+            let preview = build_line_preview(std::iter::once(log.message.as_str()));
+            compact(
+                DetailMode::Log,
+                label,
+                class,
+                log.message.len() > LAZY_DETAIL_BYTES,
+                rsx! { span { class: "item-text", "{preview}" } },
+            )
         }
         EventType::Command(command) => {
-            let text = client_shared::describe_command(command);
-            let class = if command.outcome == psa::api::CommandOutcome::Succeeded {
-                "message command-message"
-            } else {
-                "message command-message error"
+            // Right-aligned like the user's messages, but drawn as a control.
+            let status = match command.outcome {
+                psa::api::CommandOutcome::Succeeded => None,
+                psa::api::CommandOutcome::Failed => Some("failed"),
+                psa::api::CommandOutcome::Interrupted => Some("interrupted"),
             };
-            rsx! { article { class, title: "Command", pre { "{text}" } } }
-        }
-        EventType::DecisionCall(call) => {
-            let text = client_shared::describe_decision_call(call);
-            let class = if call.response.is_err() {
-                "message error"
+            let class = if status.is_some() {
+                "item command failed"
             } else {
-                "message muted"
+                "item command"
             };
-            rsx! { article { class, title: "Decision model call", pre { "{text}" } } }
+            let head = rsx! {
+                span { class: "command-name", "/{command.name}" }
+                if !command.args.is_empty() { span { class: "command-args", "{command.args}" } }
+                if let Some(status) = status { span { class: "item-status failed", "{status}" } }
+            };
+            if command.output.is_none() {
+                return rsx! { div { class, div { class: "command-line", {head} } } };
+            }
+            rsx! {
+                EventDetails { kind: kind.clone(), result: None, mode: DetailMode::Command, class: class.to_owned(), lazy: false, {head} }
+            }
         }
+        EventType::DecisionCall(call) => compact(
+            DetailMode::Decision,
+            "Decision",
+            if call.response.is_err() {
+                "event error"
+            } else {
+                "event"
+            },
+            false,
+            rsx! { span { class: "item-text", "{client_shared::summarize_decision_call(call)}" } },
+        ),
         EventType::ToolCall(call) => {
             let result = result.as_ref().and_then(|result| match result.kind() {
                 EventType::ToolResult(result) => Some(result),
@@ -1746,32 +1830,43 @@ fn EventContent(
                 rsx! { span { class: "item-text item-preview", "{preview}" } },
             )
         }
-        EventType::InferenceResultEnd(end) => {
-            let report = match &end.outcome {
-                llm_api::api::Outcome::Failed(error) => {
-                    rsx! { article { class: "message error", role: "alert", div { class: "role", "Inference failed" } pre { "{error}" } EventDetails { kind: kind.clone(), result: None, mode: DetailMode::Error, class: "item".to_owned(), lazy: error_details_are_large(error), span { class: "item-label", "Error details" } } } }
+        EventType::InferenceResultEnd(end) => match &end.outcome {
+            llm_api::api::Outcome::Failed(error) => {
+                let message = error.to_string();
+                let preview = build_line_preview([message.as_str()]);
+                rsx! {
+                    div { role: "alert",
+                        {compact(
+                            DetailMode::Error,
+                            "FAILED",
+                            "error",
+                            error_details_are_large(error),
+                            rsx! { span { class: "item-text", "Inference failed: {preview}" } },
+                        )}
+                    }
                 }
-                llm_api::api::Outcome::Cancelled => {
-                    rsx! { article { class: "message muted", div { class: "role", "Inference cancelled" } } }
-                }
-                llm_api::api::Outcome::Incomplete { reason } => {
-                    use llm_api::api::StopReason;
-                    let reason = match reason {
-                        StopReason::EndTurn => "End of turn",
-                        StopReason::ToolCalls => "Tool calls",
-                        StopReason::StopSequence => "Stop sequence",
-                        StopReason::TokenLimit => "Token limit reached",
-                        StopReason::ContentFilter => "Content filtered",
-                        StopReason::Other(reason) => reason,
-                    };
-                    rsx! { article { class: "message", div { class: "role", "Inference incomplete" } pre { "{reason}" } } }
-                }
-                llm_api::api::Outcome::Completed { .. } | llm_api::api::Outcome::InProgress => {
-                    rsx! {}
-                }
-            };
-            report
-        }
+            }
+            llm_api::api::Outcome::Cancelled => line("CANCELLED", "", "Inference cancelled".into()),
+            llm_api::api::Outcome::Incomplete { reason } => {
+                use llm_api::api::StopReason;
+                let reason = match reason {
+                    StopReason::EndTurn => "End of turn",
+                    StopReason::ToolCalls => "Tool calls",
+                    StopReason::StopSequence => "Stop sequence",
+                    StopReason::TokenLimit => "Token limit reached",
+                    StopReason::ContentFilter => "Content filtered",
+                    StopReason::Other(reason) => reason,
+                };
+                line(
+                    "INCOMPLETE",
+                    "warning",
+                    format!("Inference incomplete: {reason}"),
+                )
+            }
+            llm_api::api::Outcome::Completed { .. } | llm_api::api::Outcome::InProgress => {
+                rsx! {}
+            }
+        },
         EventType::InferenceResultStart(_) => match preferences.turn_dividers {
             TurnDividerDisplay::Hidden => rsx! {},
             TurnDividerDisplay::Line => {
@@ -1780,13 +1875,20 @@ fn EventContent(
             TurnDividerDisplay::Labeled => rsx! { TurnDivider { end: result.clone(), turn } },
         },
         EventType::StatusChange(status) => {
-            if status.new_status == AgentState::Interrupted {
-                rsx! { div { class: "error", "Agent Interrupted" } }
-            } else if preferences.hide_agent_statuses {
-                rsx! {}
-            } else {
-                rsx! { div { class: "muted", "Agent {status.new_status:?}" } }
+            let interrupted = status.new_status == AgentState::Interrupted;
+            if !interrupted && preferences.hide_agent_statuses {
+                return rsx! {};
             }
+            let state = match status.new_status {
+                AgentState::Idle => "Idle",
+                AgentState::Running => "Running",
+                AgentState::Interrupted => "Interrupted",
+            };
+            let text = match &status.reason {
+                Some(reason) => format!("{state} · {reason}"),
+                None => state.to_owned(),
+            };
+            line("AGENT", if interrupted { "error" } else { "" }, text)
         }
         _ => rsx! {},
     }

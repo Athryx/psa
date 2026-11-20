@@ -497,8 +497,9 @@ fn rows_beside_a_turn_divider_sit_nearer_and_runs_stop_at_it() {
             "row compact",
             "row near",
             "row compact near",
+            // The cancelled turn's report is a compact line too.
             "row compact tight",
-            "row",
+            "row compact tight",
             "row"
         ]
     );
@@ -507,7 +508,7 @@ fn rows_beside_a_turn_divider_sit_nearer_and_runs_stop_at_it() {
             .iter()
             .map(|layout| layout.spacing.gap_attribute())
             .collect::<Vec<_>>(),
-        [None, Some("6"), Some("6"), Some("0"), None, None]
+        [None, Some("6"), Some("6"), Some("0"), Some("0"), None]
     );
     use GroupPosition::*;
     assert_eq!(

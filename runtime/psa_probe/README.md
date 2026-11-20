@@ -152,6 +152,30 @@ A UUID identifies this data directory, rather than immutable hardware. Copying a
 probe config to another machine copies its identity; duplicate active UUIDs are
 rejected. Regenerate the UUID when deliberately creating another installation.
 
+## Sandbox images
+
+A probe with `supports_sandboxes = true` creates Docker sandboxes that run a
+nested probe as the container's entrypoint, so the image's own `ENTRYPOINT` and
+`CMD` do not run. Images can declare startup and shutdown work instead:
+
+```dockerfile
+ENV PSA_SETUP="service postgresql start"
+ENV PSA_TEARDOWN="service postgresql stop"
+ENV PSA_TEARDOWN_TIMEOUT=30
+```
+
+- `PSA_SETUP` runs with `/bin/sh -c` on every container start, before the probe
+  connects. Make it idempotent. Background daemons it starts keep running; only
+  the shell is awaited. A failure is logged and the probe connects anyway.
+- `PSA_TEARDOWN` runs when the container stops (including a plain `docker stop`).
+  It is best effort: a killed container, crash, or host reboot skips it.
+- `PSA_TEARDOWN_TIMEOUT` is in whole seconds (default 10, maximum 300). The
+  manager reads it from the image when creating the sandbox and sets Docker's
+  stop timeout a few seconds longer; recreate the sandbox to apply a new value.
+
+Hook output is appended to `/opt/psa/data/image-hooks.log` in the container. The
+`PSA_*` hook variables are removed from the environment of commands agents run.
+
 ## Server-side operations
 
 Retain a `psa_server::probes::ProbeRegistry` and pass it to

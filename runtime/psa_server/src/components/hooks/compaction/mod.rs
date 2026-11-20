@@ -349,6 +349,7 @@ impl CommandHook for CompactionHook {
         // New command variants must decide here whether compaction ignores them.
         let instructions = match command {
             AgentCommand::Compact { instructions } => instructions.as_deref(),
+            AgentCommand::Goal(_) => return Ok(None),
         };
 
         // A manual request reports failures in its command result rather than

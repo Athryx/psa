@@ -7,6 +7,7 @@ pub enum CommandId {
     Refresh,
     Info,
     Compact,
+    Goal,
     Rename,
     Fork,
     Sandbox,
@@ -17,7 +18,7 @@ impl CommandId {
     pub fn is_available(self, root: bool) -> bool {
         match self {
             Self::Agent => root,
-            Self::Compact | Self::Fork => !root,
+            Self::Compact | Self::Goal | Self::Fork => !root,
             Self::SessionModel
             | Self::SessionEffort
             | Self::Info
@@ -71,6 +72,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         id: CommandId::Compact,
         name: "compact",
         description: "Summarize this agent's older context now; optional focus instructions",
+        picker: false,
+    },
+    CommandSpec {
+        id: CommandId::Goal,
+        name: "goal",
+        description: "Show or set this agent's goal; pause, resume, or clear it",
         picker: false,
     },
     CommandSpec {
@@ -335,6 +342,14 @@ mod tests {
         );
         assert!(!CommandId::Compact.is_available(true));
         assert!(CommandId::Compact.is_available(false));
+        assert!(!CommandId::Goal.is_available(true) && CommandId::Goal.is_available(false));
+        assert_eq!(
+            parse_composer_input("/goal pause waiting on review"),
+            ComposerInput::Command {
+                id: CommandId::Goal,
+                arguments: "pause waiting on review".into(),
+            }
+        );
         assert!(CommandId::Rename.is_available(true) && CommandId::Rename.is_available(false));
         assert!(!CommandId::Agent.is_available(false));
         assert!(CommandId::Refresh.is_available(true) && CommandId::Refresh.is_available(false));

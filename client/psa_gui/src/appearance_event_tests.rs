@@ -62,7 +62,9 @@ fn interrupted_status_is_always_visible_as_error() {
             rsx! { AppearanceRoot { kind, hide_results: true, hide_statuses } },
         );
         assert!(
-            html.contains("Agent Interrupted") && html.contains("class=\"error\""),
+            html.contains(">AGENT<")
+                && html.contains(">Interrupted<")
+                && html.contains("class=\"item item-line error\""),
             "{html}"
         );
         let kind = EventType::StatusChange(StatusChange {
@@ -72,7 +74,7 @@ fn interrupted_status_is_always_visible_as_error() {
         let html = dioxus_ssr::render_element(
             rsx! { AppearanceRoot { kind, hide_results: true, hide_statuses } },
         );
-        assert_eq!(html.contains("Agent Running"), !hide_statuses, "{html}");
+        assert_eq!(html.contains(">Running<"), !hide_statuses, "{html}");
     }
 }
 
@@ -87,9 +89,33 @@ fn commands_render_as_right_aligned_command_rows() {
     let html = dioxus_ssr::render_element(
         rsx! { AppearanceRoot { kind, hide_results: true, hide_statuses: true } },
     );
-    assert!(html.contains("class=\"message command-message\""), "{html}");
-    assert!(html.contains("/compact tests"), "{html}");
+    assert!(html.contains("class=\"item command\""), "{html}");
+    assert!(html.contains(">/compact<"), "{html}");
+    assert!(html.contains("class=\"command-args\">tests<"), "{html}");
+    assert!(!html.contains("<details"), "{html}");
     assert!(!html.contains("class=\"role\""), "{html}");
+}
+
+#[test]
+fn failed_commands_with_output_expand_and_are_marked() {
+    let kind = EventType::Command(psa::api::events::CommandRecord {
+        name: "goal".into(),
+        args: "resume".into(),
+        outcome: psa::api::CommandOutcome::Failed,
+        output: Some("Only a blocked goal can be resumed.".into()),
+    });
+    let html = dioxus_ssr::render_element(
+        rsx! { AppearanceRoot { kind, hide_results: true, hide_statuses: true } },
+    );
+    assert!(
+        html.contains("<details class=\"item command failed\""),
+        "{html}"
+    );
+    assert!(html.contains(">failed<"), "{html}");
+    assert!(
+        html.contains("Only a blocked goal can be resumed."),
+        "{html}"
+    );
 }
 
 #[test]

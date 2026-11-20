@@ -774,6 +774,15 @@ pub fn Settings() -> Element {
                     _=>client_shared::TurnDividerDisplay::Labeled,
                 };
             },option{value:"Labeled","Divider with labels"}option{value:"Line","Divider without labels"}option{value:"Hidden","Hidden"}}
+            label{r#for:"log-level","Harness logs"}
+            select{id:"log-level",value:format!("{:?}",state.settings.preferences.log_level),onchange:move |e|{
+                ui.write().settings.preferences.log_level=match e.value().as_str(){
+                    "Hidden"=>client_shared::TranscriptLogLevel::Hidden,
+                    "Info"=>client_shared::TranscriptLogLevel::Info,
+                    _=>client_shared::TranscriptLogLevel::Error,
+                };
+            },option{value:"Info","Info and errors"}option{value:"Error","Errors only"}option{value:"Hidden","None"}}
+            label{input{r#type:"checkbox",checked:state.settings.preferences.show_harness_messages,onchange:move |e|ui.write().settings.preferences.show_harness_messages=e.checked()},"Show harness messages (goal reminders and other nudges)"}
             label{input{r#type:"checkbox",checked:state.settings.preferences.hide_text_recorded_results,onchange:move |e|ui.write().settings.preferences.hide_text_recorded_results=e.checked()},"Hide text recorded results"}
             label{input{r#type:"checkbox",checked:state.settings.preferences.hide_agent_statuses,onchange:move |e|ui.write().settings.preferences.hide_agent_statuses=e.checked()},"Hide agent statuses (interrupted always shown)"}
             label{input{r#type:"checkbox",checked:state.settings.preferences.double_click_session_opens_details,onchange:move |e|ui.write().settings.preferences.double_click_session_opens_details=e.checked()},"Open current session details when double-clicking a session"}

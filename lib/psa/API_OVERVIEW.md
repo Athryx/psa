@@ -43,7 +43,8 @@ not guarantee a matching agent configuration exists.
 - submit requests to interrupt, send a message, or record a finished client-side
   slash command (`AgentRequest::RecordCommand`)
 - run a typed command (`POST .../commands`, `Client::send_command`); the response
-  is its `CommandResult` once it finishes. See `docs/COMPACTION.md#commands`.
+  is its `CommandResult` once it finishes. See `docs/COMPACTION.md#commands`;
+  `AgentCommand::Goal` is described in `docs/GOALS_AND_SUBAGENTS.md#goal-commands`.
 
 `GET /sessions/{session_id}/agents/{agent_id}/context-state` returns an
 `AgentContextState` with the effective model configuration, the last inference's

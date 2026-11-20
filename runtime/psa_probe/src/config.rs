@@ -14,6 +14,9 @@ pub struct StartOptions {
     pub server: Option<String>,
     #[arg(long)]
     pub label: Option<String>,
+    /// Run the image's `PSA_SETUP` and `PSA_TEARDOWN` hooks; set by sandbox managers.
+    #[arg(long, hide = true)]
+    pub image_hooks: bool,
 }
 
 #[derive(Deserialize)]

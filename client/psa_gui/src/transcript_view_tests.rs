@@ -336,6 +336,50 @@ fn oversized_collapsed_system_prompt_does_not_build_its_body() {
     assert!(!html.contains("large-system-secret"));
 }
 
+#[test]
+fn harness_messages_render_as_labelled_compact_rows() {
+    let render = |message: psa::api::events::Message| {
+        let kind = psa::api::events::EventType::Message(message);
+        dioxus_ssr::render_element(
+            rsx! { EventRow { kind, provisional: false, results: Rc::new(HashMap::new()) } },
+        )
+    };
+    let labelled = render(psa::api::events::Message::harness(
+        "Current goal: \"ship\". Keep working.",
+        "Goal reminder",
+    ));
+    assert!(labelled.contains("item harness"), "{labelled}");
+    assert!(labelled.contains("Goal reminder"));
+    assert!(!labelled.contains("message muted"));
+
+    let unlabelled = render(psa::api::events::Message::text(
+        psa::api::events::MessageType::Harness,
+        "A structured result is required.",
+    ));
+    assert!(unlabelled.contains("item harness"), "{unlabelled}");
+    assert!(unlabelled.contains("A structured result is required."));
+}
+
+#[test]
+fn logs_render_as_collapsible_rows_labelled_by_severity() {
+    let render = |error: bool, message: &str| {
+        let kind = psa::api::events::EventType::Log(psa::api::events::Log {
+            error,
+            message: message.into(),
+        });
+        dioxus_ssr::render_element(
+            rsx! { EventRow { kind, provisional: false, results: Rc::new(HashMap::new()) } },
+        )
+    };
+    let info = render(false, "{\"namespace\":\"psa.goal.state\"}\nsecond line");
+    assert!(info.contains("item log"), "{info}");
+    assert!(info.contains(">INFO<"));
+    assert!(!info.contains("Harness log"));
+    let error = render(true, "probe disconnected");
+    assert!(error.contains("item log error"), "{error}");
+    assert!(error.contains(">ERROR<"));
+}
+
 #[component]
 fn ExpansionPane() -> Element {
     use_context_provider(ExpansionState::default);

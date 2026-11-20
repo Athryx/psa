@@ -90,6 +90,28 @@ pub enum ReasoningDisplay {
     Shown,
 }
 
+/// The least severe harness log shown in transcripts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TranscriptLogLevel {
+    /// No logs.
+    Hidden,
+    /// Only error logs.
+    #[default]
+    Error,
+    /// Error and informational logs.
+    Info,
+}
+
+impl TranscriptLogLevel {
+    pub fn shows(self, error: bool) -> bool {
+        match self {
+            Self::Hidden => false,
+            Self::Error => error,
+            Self::Info => true,
+        }
+    }
+}
+
 /// How the start of each model turn is marked in a transcript: the boundary
 /// between what the turn was sent and what it produced.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +136,9 @@ pub struct UiPreferences {
     pub hide_agent_statuses: bool,
     pub turn_dividers: TurnDividerDisplay,
     pub reasoning_display: ReasoningDisplay,
+    /// Harness messages, such as goal reminders, sent to the model.
+    pub show_harness_messages: bool,
+    pub log_level: TranscriptLogLevel,
 }
 impl Default for UiPreferences {
     fn default() -> Self {
@@ -127,6 +152,8 @@ impl Default for UiPreferences {
             hide_agent_statuses: true,
             turn_dividers: TurnDividerDisplay::default(),
             reasoning_display: ReasoningDisplay::default(),
+            show_harness_messages: true,
+            log_level: TranscriptLogLevel::default(),
         }
     }
 }
@@ -452,7 +479,11 @@ mod tests {
             settings.preferences.turn_dividers,
             TurnDividerDisplay::Labeled
         );
+        assert!(settings.preferences.show_harness_messages);
+        assert_eq!(settings.preferences.log_level, TranscriptLogLevel::Error);
 
+        settings.preferences.show_harness_messages = false;
+        settings.preferences.log_level = TranscriptLogLevel::Info;
         settings.preferences.hide_text_recorded_results = false;
         settings.preferences.hide_agent_statuses = false;
         settings.preferences.reasoning_display = ReasoningDisplay::Shown;
@@ -466,6 +497,8 @@ mod tests {
             ReasoningDisplay::Shown
         );
         assert_eq!(restored.preferences.turn_dividers, TurnDividerDisplay::Line);
+        assert!(!restored.preferences.show_harness_messages);
+        assert_eq!(restored.preferences.log_level, TranscriptLogLevel::Info);
     }
 
     #[test]

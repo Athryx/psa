@@ -13,8 +13,8 @@
 !lib/actors_macros/**
 !lib/llm_api/
 !lib/llm_api/**
-!psa_api/
-!psa_api/**
+!lib/psa/
+!lib/psa/**
 !runtime/
 !runtime/psa_shared/
 !runtime/psa_shared/**
@@ -24,6 +24,8 @@
 !runtime/psa_server/**
 !scripts/
 !scripts/package-probe.sh
+!trace/
+!trace/**
 
 **/target
 **/.git

@@ -350,18 +350,27 @@ impl Installer {
 }
 
 /// Rejects a command at submission unless the definition selects the bundle
-/// that installs its handler, instead of queueing work nobody would execute.
+/// that installs its handler for this agent, instead of queueing work nobody
+/// would execute.
 pub fn require_command_support(
     definition: &AgentDefinition,
+    interactive: bool,
     command: &psa::api::AgentCommand,
 ) -> Result<(), String> {
     let (name, bundle) = match command {
         psa::api::AgentCommand::Compact { .. } => ("Compact", psa::api::BundleId::Compaction),
+        psa::api::AgentCommand::Goal(_) => ("Goal", psa::api::BundleId::Goal),
+    };
+    let installs_handler = |config: &BundleConfig| match config {
+        // Interactive-only Goal installs only its stopping policy on
+        // noninteractive agents, without the command handler.
+        BundleConfig::Goal { interactive_only } => !interactive_only || interactive,
+        _ => true,
     };
     if definition
         .bundles
         .iter()
-        .any(|config| config.id() == bundle)
+        .any(|config| config.id() == bundle && installs_handler(config))
     {
         return Ok(());
     }

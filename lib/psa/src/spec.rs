@@ -171,6 +171,8 @@ pub struct AgentLayout {
     pub name: String,
     /// Human-readable description.
     pub description: String,
+    /// Offer this config in clients' agent pickers.
+    pub selectable: bool,
     /// Allowed models, in order; the first is the default.
     pub models: Vec<ModelSelection>,
     /// Bundles to install; `None` uses the server's defaults.
@@ -188,6 +190,7 @@ impl AgentLayout {
         Self {
             name: name.into(),
             description: String::new(),
+            selectable: false,
             models: vec![ModelSelection::Global],
             bundles: None,
             subagents: Inclusions::default(),
@@ -198,6 +201,12 @@ impl AgentLayout {
     /// Set the description.
     pub fn description(mut self, description: impl Into<String>) -> Self {
         self.description = description.into();
+        self
+    }
+
+    /// Offer this config in clients' agent pickers.
+    pub fn selectable(mut self) -> Self {
+        self.selectable = true;
         self
     }
 
@@ -238,6 +247,7 @@ impl AgentLayout {
         };
         let mut input = AgentConfigInput::new(config_id, self.models.clone());
         input.description = self.description.clone();
+        input.selectable = self.selectable;
         input.bundles = self.bundles.clone();
         input.subagents = self.subagents.build_included_items(
             group,
@@ -446,6 +456,7 @@ mod tests {
         };
         let layout = AgentLayout::new("coder")
             .description("Writes code")
+            .selectable()
             .bundles(vec![])
             .subagents(Inclusions::default().include_group().include("reviewer"))
             .skills(Inclusions::default().include_global().include("rust"));
@@ -454,6 +465,7 @@ mod tests {
 
         assert_eq!(input.config_id, id(own(), "coder"));
         assert_eq!(input.description, "Writes code");
+        assert!(input.selectable);
         assert_eq!(input.models, vec![ModelSelection::Global]);
         assert_eq!(input.bundles, Some(vec![]));
         assert_eq!(

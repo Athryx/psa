@@ -274,6 +274,9 @@ fn build_command(command: Command, bin: &Path) -> Result<tokio::process::Command
     if command.env_clear {
         process.env_clear();
     }
+    for name in crate::image_hooks::HOOK_VARS {
+        process.env_remove(name);
+    }
     let mut path = if command.env_clear {
         None
     } else {
