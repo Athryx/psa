@@ -28,4 +28,5 @@ pub use usage::*;
 pub use workspace::*;
 
 #[cfg(test)]
+#[path = "tests/tests.rs"]
 mod tests;

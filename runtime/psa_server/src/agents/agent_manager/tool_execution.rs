@@ -277,4 +277,5 @@ async fn invoke(
 }
 
 #[cfg(test)]
+#[path = "../../tests/agents/agent_manager/tool_execution/tests/mod.rs"]
 pub(crate) mod tests;

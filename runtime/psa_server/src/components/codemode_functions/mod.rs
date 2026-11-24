@@ -308,10 +308,13 @@ pub(crate) fn listed_entries(
 }
 
 #[cfg(test)]
+#[path = "../../tests/components/codemode_functions/decision_tests.rs"]
 mod decision_tests;
 #[cfg(test)]
+#[path = "../../tests/components/codemode_functions/registration_tests.rs"]
 mod registration_tests;
 #[cfg(test)]
+#[path = "../../tests/components/codemode_functions/typed_tests.rs"]
 mod typed_tests;
 
 #[cfg(test)]

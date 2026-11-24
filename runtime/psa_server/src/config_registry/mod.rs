@@ -1,6 +1,7 @@
 //! Async file discovery adapters for the shared configuration registry.
 //! A failed scan never publishes a partial batch or deletes previous records.
 #[cfg(test)]
+#[path = "../tests/config_registry/tests.rs"]
 mod tests;
 mod transfer;
 mod upload;

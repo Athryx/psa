@@ -14,6 +14,7 @@ pub mod subagent_identity;
 pub mod tool_definitions;
 
 #[cfg(test)]
+#[path = "../../tests/components/hooks/tests.rs"]
 mod tests;
 
 pub use codemode_functions::CodeModeFunctionsHook;

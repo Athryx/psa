@@ -32,7 +32,7 @@ async fn unversioned_definitions_migration_keeps_rows_and_references() {
     .unwrap();
 
     sqlx::raw_sql(include_str!(
-        "../../migrations/0041_unversioned_definitions.sql"
+        "../../../migrations/0041_unversioned_definitions.sql"
     ))
     .execute(&mut connection)
     .await

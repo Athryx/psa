@@ -138,6 +138,8 @@ impl DerefMut for WriteCursor {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+#[path = "tests/test_support.rs"]
 pub mod test_support;
 #[cfg(test)]
+#[path = "tests/tests/mod.rs"]
 mod tests;

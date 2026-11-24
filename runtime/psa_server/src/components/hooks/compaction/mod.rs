@@ -2,6 +2,7 @@
 mod prepare;
 mod prompts;
 #[cfg(test)]
+#[path = "../../../tests/components/hooks/compaction/tests.rs"]
 mod tests;
 
 use super::{CommandHook, Hook, HookError};

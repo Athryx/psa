@@ -972,7 +972,7 @@ async fn create_legacy_database(path: &std::path::Path) -> sqlx::SqlitePool {
         1,
         "events".into(),
         sqlx::migrate::MigrationType::Simple,
-        include_str!("../migrations/0001_events.sql").into_sql_str(),
+        include_str!("../../../migrations/0001_events.sql").into_sql_str(),
         false,
     );
     sqlx::migrate::Migrator::with_migrations(vec![initial])

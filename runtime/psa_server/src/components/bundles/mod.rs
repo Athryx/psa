@@ -19,8 +19,10 @@ mod startup;
 mod stop_without_tools;
 pub mod subagents;
 #[cfg(test)]
+#[path = "../../tests/components/bundles/testing.rs"]
 pub(crate) mod testing;
 #[cfg(test)]
+#[path = "../../tests/components/bundles/tests.rs"]
 mod tests;
 mod traces;
 pub(crate) mod typed_result;

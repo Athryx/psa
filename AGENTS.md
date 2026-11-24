@@ -77,7 +77,32 @@ or adding dependencies between workspace crates, and follow it.
   - Avoid extracting helpers that require many arguments merely to pass local context around. Reconsider the extraction boundary; keep the operation inline when that is clearer. Don’t introduce a state struct solely to reduce argument count.
 - Prefer early returns for invalid inputs and exceptional cases. Aim for no more than about three nested control-flow levels.
 - Keep straightforward sequences, builders, dispatch matches, and linear tests together when splitting them would obscure their flow.
+- A module with submodules lives in `module_name/mod.rs`, not `module_name.rs`
+  next to a `module_name/` folder.
 - Run `cargo fmt --all` and relevant tests after changes. Workspace builds require prepared static probe tools; see `runtime/psa_probe/README.md`.
+
+## Unit test layout
+
+Unit tests that live in their own file go in a tree under the crate's `src/tests/`
+that mirrors the module path, not next to the code. Declare the test module in the
+module it tests with a `#[path]` relative to that file:
+
+```rust
+// src/agents/supervisor.rs
+#[cfg(test)]
+#[path = "../tests/agents/supervisor/tests.rs"]
+mod tests;
+```
+
+- The test module `name` declared in module `a::b` lives at `src/tests/a/b/name.rs`.
+  For the crate root that is `src/tests/name.rs`. For a binary root such as
+  `main.rs`, the tree starts at `src/tests/main/`.
+- A test module with file submodules uses `src/tests/a/b/name/mod.rs`, with its
+  submodules next to it in that folder.
+- Name test modules `tests` or `<topic>_tests`. Test-only helper modules
+  (`test_support`, `testing`) follow the same layout.
+- Tests that only need the public API go in the crate's top-level `tests/`
+  folder as integration tests.
 
 ## Naming
 

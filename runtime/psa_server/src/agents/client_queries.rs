@@ -382,4 +382,5 @@ fn remove_projection(state: &mut PublicationState, request: &ClientQueryRequest)
 }
 
 #[cfg(test)]
+#[path = "../tests/agents/client_queries/tests.rs"]
 mod tests;

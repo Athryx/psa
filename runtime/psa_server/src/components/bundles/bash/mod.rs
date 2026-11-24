@@ -140,4 +140,5 @@ impl Bundle for BashBundle {
 use self::session::Collect;
 
 #[cfg(test)]
+#[path = "../../../tests/components/bundles/bash/tests.rs"]
 mod tests;

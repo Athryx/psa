@@ -9,7 +9,7 @@ use psa::api::*;
 use std::rc::Rc;
 
 #[cfg(test)]
-#[path = "agent_info_tests.rs"]
+#[path = "tests/agent_info/agent_info_tests.rs"]
 mod agent_info_tests;
 
 /// Minute-precision timestamp in the server's offset, normally UTC.

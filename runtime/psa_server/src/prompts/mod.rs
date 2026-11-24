@@ -7,6 +7,7 @@ pub mod skills;
 pub mod tools;
 
 #[cfg(test)]
+#[path = "../tests/prompts/tests.rs"]
 mod tests;
 
 /// Bounds model-facing text by bytes, retaining its beginning and end.

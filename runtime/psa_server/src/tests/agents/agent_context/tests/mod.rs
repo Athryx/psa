@@ -1,7 +1,6 @@
 use super::*;
 use psa_store::{EventRange, NewEvent};
 
-#[path = "client_query_tests.rs"]
 mod client_query_tests;
 use crate::{
     agents::{
@@ -32,7 +31,7 @@ use std::{
 };
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};
 
-#[path = "../../../tests/support/fake_probe.rs"]
+#[path = "../../../../../tests/support/fake_probe.rs"]
 mod fake_probe;
 
 struct Fixture {

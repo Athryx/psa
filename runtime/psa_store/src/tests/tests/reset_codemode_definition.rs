@@ -71,10 +71,12 @@ async fn reset_codemode_migration_preserves_all_definitions_snapshots_and_constr
     .execute(&mut connection)
     .await
     .unwrap();
-    sqlx::raw_sql(include_str!("../../migrations/0020_codemode_snapshots.sql"))
-        .execute(&mut connection)
-        .await
-        .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../../migrations/0020_codemode_snapshots.sql"
+    ))
+    .execute(&mut connection)
+    .await
+    .unwrap();
 
     let previous_ids = [
         "noop",
@@ -135,7 +137,7 @@ async fn reset_codemode_migration_preserves_all_definitions_snapshots_and_constr
             .fetch_all(&mut connection)
             .await
             .unwrap();
-    sqlx::raw_sql(include_str!("../../migrations/0021_reset_codemode.sql"))
+    sqlx::raw_sql(include_str!("../../../migrations/0021_reset_codemode.sql"))
         .execute(&mut connection)
         .await
         .unwrap();

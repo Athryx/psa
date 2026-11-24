@@ -25,7 +25,7 @@ async fn file_tool_migration_preserves_legacy_noop_and_checks_new_discriminators
     .await
     .unwrap();
 
-    sqlx::raw_sql(include_str!("../../migrations/0008_file_tools.sql"))
+    sqlx::raw_sql(include_str!("../../../migrations/0008_file_tools.sql"))
         .execute(&mut connection)
         .await
         .unwrap();

@@ -25,6 +25,7 @@ mod sessions;
 mod skills;
 
 #[cfg(test)]
+#[path = "../tests/api/tests.rs"]
 mod tests;
 
 pub use agents::*;

@@ -825,4 +825,5 @@ pub struct AgentConfigGraph {
 }
 
 #[cfg(test)]
+#[path = "tests/configurations/tests.rs"]
 mod tests;

@@ -508,5 +508,5 @@ fn parse_file_list(summary: &str, tag: &str) -> Vec<String> {
 }
 
 #[cfg(test)]
-#[path = "prepare_tests.rs"]
+#[path = "../../../tests/components/hooks/compaction/prepare/tests.rs"]
 mod tests;

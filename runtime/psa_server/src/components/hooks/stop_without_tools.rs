@@ -12,6 +12,7 @@ use psa_store::NewEvent;
 use std::time::Duration;
 
 #[cfg(test)]
+#[path = "../../tests/components/hooks/stop_without_tools/tests.rs"]
 mod tests;
 
 pub(super) fn build_text_completion_events(items: &[Event]) -> [NewEvent; 2] {

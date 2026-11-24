@@ -26,6 +26,7 @@ type ResultValue = Result<Value, String>;
 const STARTING_GRACE: Duration = Duration::from_secs(2);
 
 #[cfg(test)]
+#[path = "../../../tests/components/bundles/subagents/coordinator/tests.rs"]
 mod tests;
 
 #[derive(Clone)]

@@ -341,4 +341,5 @@ fn parse_reply_type(ty: &Type) -> Result<Type> {
 }
 
 #[cfg(test)]
+#[path = "tests/tests.rs"]
 mod tests;

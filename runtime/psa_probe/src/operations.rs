@@ -26,11 +26,11 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::io::SyncIoBridge;
 
 #[cfg(test)]
-#[path = "sync_dir_tests.rs"]
+#[path = "tests/operations/sync_dir_tests.rs"]
 mod sync_dir_tests;
 
 #[cfg(test)]
-#[path = "seed_transfer_tests.rs"]
+#[path = "tests/operations/seed_transfer_tests.rs"]
 mod seed_transfer_tests;
 
 static ARCHIVE_WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);

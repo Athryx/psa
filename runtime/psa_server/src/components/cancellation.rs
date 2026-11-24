@@ -35,4 +35,5 @@ pub(crate) async fn run_cancellable<F: std::future::Future>(
 }
 
 #[cfg(test)]
+#[path = "../tests/components/cancellation/tests.rs"]
 mod tests;

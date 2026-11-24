@@ -26,6 +26,7 @@ mod session_filter;
 mod style;
 mod syntax_highlight;
 #[cfg(test)]
+#[path = "tests/tests.rs"]
 mod tests;
 mod tool_format;
 mod transcript_nav;

@@ -34,12 +34,16 @@ use tokio::{
 };
 
 #[cfg(test)]
+#[path = "../tests/agents/supervisor/bundle_tests.rs"]
 mod bundle_tests;
 #[cfg(test)]
+#[path = "../tests/agents/supervisor/lifecycle_tests.rs"]
 pub(crate) mod lifecycle_tests;
 #[cfg(test)]
+#[path = "../tests/agents/supervisor/signals_tests.rs"]
 mod signals_tests;
 #[cfg(test)]
+#[path = "../tests/agents/supervisor/tests.rs"]
 mod tests;
 
 const MAX_PENDING: usize = 128;

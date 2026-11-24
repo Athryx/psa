@@ -40,7 +40,7 @@ async fn noop_migration_drops_the_bundle_and_keeps_tool_definition_events_as_log
     .await
     .unwrap();
 
-    sqlx::raw_sql(include_str!("../../migrations/0040_remove_noop.sql"))
+    sqlx::raw_sql(include_str!("../../../migrations/0040_remove_noop.sql"))
         .execute(&mut connection)
         .await
         .unwrap();

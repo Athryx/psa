@@ -275,4 +275,5 @@ fn normalize_reasoning(
 }
 
 #[cfg(test)]
+#[path = "../tests/catalog/source/tests.rs"]
 mod tests;

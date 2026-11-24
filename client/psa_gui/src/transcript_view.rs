@@ -1897,17 +1897,17 @@ fn EventContent(
 #[cfg(test)]
 use crate::views::Layout;
 #[cfg(test)]
-#[path = "appearance_event_tests.rs"]
+#[path = "tests/transcript_view/appearance_event_tests.rs"]
 mod appearance_event_tests;
 #[cfg(test)]
-#[path = "follow_tests.rs"]
+#[path = "tests/transcript_view/follow_tests.rs"]
 mod follow_tests;
 #[cfg(test)]
-#[path = "inference_result_tests.rs"]
+#[path = "tests/transcript_view/inference_result_tests.rs"]
 mod inference_result_tests;
 #[cfg(test)]
-#[path = "transcript_view_tests.rs"]
+#[path = "tests/transcript_view/tests.rs"]
 mod tests;
 #[cfg(test)]
-#[path = "transcript_visual_tests.rs"]
+#[path = "tests/transcript_view/transcript_visual_tests.rs"]
 mod transcript_visual_tests;

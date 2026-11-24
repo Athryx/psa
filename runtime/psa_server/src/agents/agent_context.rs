@@ -11,6 +11,7 @@ use psa_store::{Database, DbError, EventBatchItem, InferenceResultEvents, Sessio
 use psa_store::{EventRange, NewEvent};
 
 #[cfg(test)]
+#[path = "../tests/agents/agent_context/tests/mod.rs"]
 mod tests;
 
 /// Invocation capabilities with either borrowed hook state or owned tool snapshots.

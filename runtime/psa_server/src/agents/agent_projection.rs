@@ -465,6 +465,8 @@ fn build_message_content(message: &psa::api::events::Message) -> Vec<api::Conten
 }
 
 #[cfg(test)]
+#[path = "../tests/agents/agent_projection/store_replay_tests.rs"]
 mod store_replay_tests;
 #[cfg(test)]
+#[path = "../tests/agents/agent_projection/tests.rs"]
 mod tests;

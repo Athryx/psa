@@ -130,11 +130,11 @@ fn refresh_draft_configs(mut ui: Signal<Ui>, session_id: SessionId, target: Tran
 }
 
 #[cfg(test)]
-#[path = "draft_composer_tests.rs"]
+#[path = "tests/composer/draft_composer_tests.rs"]
 mod draft_composer_tests;
 
 #[cfg(test)]
-#[path = "status_tests.rs"]
+#[path = "tests/composer/status_tests.rs"]
 mod status_tests;
 
 #[component]
@@ -1479,5 +1479,5 @@ pub(crate) fn Question(query: ClientQueryRequest) -> Element {
 }
 
 #[cfg(test)]
-#[path = "composer_tests.rs"]
+#[path = "tests/composer/composer_tests.rs"]
 mod composer_tests;

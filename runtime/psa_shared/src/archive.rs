@@ -371,4 +371,5 @@ fn remove_created(root: &Path, created: &[(PathBuf, bool)]) {
 }
 
 #[cfg(test)]
+#[path = "tests/archive/tests.rs"]
 mod tests;

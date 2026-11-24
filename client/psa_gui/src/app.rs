@@ -13,8 +13,10 @@ use std::{
 };
 
 #[cfg(test)]
+#[path = "tests/app/focus_tests.rs"]
 mod focus_tests;
 #[cfg(test)]
+#[path = "tests/app/shortcuts_tests.rs"]
 mod shortcuts_tests;
 
 pub const DRAFT_ROOT: AgentId = AgentId(0);

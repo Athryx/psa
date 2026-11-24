@@ -2086,7 +2086,7 @@ async fn submit_captured_root(
 }
 
 #[cfg(test)]
-#[path = "network/performance_tests.rs"]
+#[path = "tests/network/performance_tests/mod.rs"]
 mod performance_tests;
 
 #[cfg(test)]

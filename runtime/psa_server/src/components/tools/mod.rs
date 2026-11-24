@@ -42,8 +42,10 @@ pub use subagents::{CreateAgent, ListAgents, SendMessage, WaitMessage};
 pub use write::Write;
 
 #[cfg(test)]
+#[path = "../../tests/components/tools/definition_persistence_tests.rs"]
 mod definition_persistence_tests;
 #[cfg(test)]
+#[path = "../../tests/components/tools/tests.rs"]
 mod tests;
 
 /// Implements the untyped tool boundary for an inherent typed execution method.

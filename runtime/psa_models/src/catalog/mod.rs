@@ -393,4 +393,5 @@ async fn sync_provider(
 }
 
 #[cfg(test)]
+#[path = "../tests/catalog/tests.rs"]
 mod tests;

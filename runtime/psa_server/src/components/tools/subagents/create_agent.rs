@@ -218,7 +218,7 @@ impl Tool for CreateAgent {
 }
 
 #[cfg(test)]
-#[path = "create_agent_tests.rs"]
+#[path = "../../../tests/components/tools/subagents/create_agent/cancellation_tests.rs"]
 mod cancellation_tests;
 
 #[cfg(test)]

@@ -76,4 +76,5 @@ fn build_tool_events(
 }
 
 #[cfg(test)]
+#[path = "../../tests/components/hooks/tool_definitions/tests.rs"]
 mod tests;

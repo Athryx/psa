@@ -49,6 +49,7 @@ mod transport;
 pub mod types;
 
 #[cfg(test)]
+#[path = "../tests/api/tests.rs"]
 mod tests;
 
 use serde::{Deserialize, Serialize};

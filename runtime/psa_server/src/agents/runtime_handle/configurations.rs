@@ -7,7 +7,7 @@ use psa::api::{
 use std::{collections::HashMap, path::Path};
 
 #[cfg(test)]
-#[path = "configurations_tests.rs"]
+#[path = "../../tests/agents/runtime_handle/configurations/tests.rs"]
 mod tests;
 
 fn invalid(error: impl std::fmt::Display) -> RuntimeError {

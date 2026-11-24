@@ -2,6 +2,7 @@
 //! See `docs/AGENT_DEF_SCHEMA.md`.
 
 #[cfg(test)]
+#[path = "tests/agent_definition/tests.rs"]
 mod tests;
 
 use crate::server::AgentDefaults;

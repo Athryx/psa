@@ -833,8 +833,11 @@ pub(crate) async fn run_worker(
 }
 
 #[cfg(test)]
+#[path = "../../tests/agents/agent_manager/bundle_tests.rs"]
 mod bundle_tests;
 #[cfg(test)]
+#[path = "../../tests/agents/agent_manager/result_recovery_tests.rs"]
 mod result_recovery_tests;
 #[cfg(test)]
+#[path = "../../tests/agents/agent_manager/tests.rs"]
 mod tests;

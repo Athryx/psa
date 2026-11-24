@@ -774,6 +774,7 @@ fn append_error_output(
 }
 
 #[cfg(test)]
+#[path = "tests/engine/tests.rs"]
 mod tests;
 
 /// Middle-truncate already captured output to `max` characters.

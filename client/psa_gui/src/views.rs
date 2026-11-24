@@ -9,7 +9,7 @@ use crate::transcript_view::TranscriptView;
 use psa::api::*;
 
 #[cfg(test)]
-#[path = "tab_spinner_tests.rs"]
+#[path = "tests/views/tab_spinner_tests.rs"]
 mod tab_spinner_tests;
 
 /// DOM id the sidebar's edge resizer sizes in the browser during a drag.

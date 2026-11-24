@@ -8,7 +8,7 @@ use tokio::{runtime::Handle, sync::watch};
 const ASYNC_PARSE_BYTES: usize = 16 * 1024;
 
 #[cfg(test)]
-#[path = "markdown_tests.rs"]
+#[path = "tests/markdown/tests.rs"]
 mod tests;
 
 #[derive(Debug)]

@@ -157,4 +157,5 @@ impl RuntimeHandle {
 }
 
 #[cfg(test)]
+#[path = "../../tests/agents/runtime_handle/results/tests.rs"]
 mod tests;

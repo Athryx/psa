@@ -1177,8 +1177,10 @@ fn encode_sse(message: api::StreamMessage, id: Option<String>) -> Result<SseEven
 }
 
 #[cfg(test)]
+#[path = "tests/http/desktop_stream_tests.rs"]
 mod desktop_stream_tests;
 #[cfg(test)]
+#[path = "tests/http/desktop_tests.rs"]
 mod desktop_tests;
 
 #[cfg(test)]

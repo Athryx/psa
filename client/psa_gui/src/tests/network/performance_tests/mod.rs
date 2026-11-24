@@ -1,6 +1,5 @@
 use super::*;
 
-#[path = "submission_tests.rs"]
 mod submission_tests;
 use std::{
     cell::Cell,
