@@ -2,12 +2,10 @@ use crate::agents::{
     publication::Publication,
     supervisor::{Runtime, RuntimeError},
 };
-use crate::{
-    config::ResolvedConfig,
-    db::{Database, DbError},
-    providers::{AuthError, ProviderRegistry},
-};
+use crate::config::ResolvedConfig;
 use llm_api::providers::ModelConfig;
+use psa_models::{AuthError, ProviderRegistry};
+use psa_store::{Database, DbError};
 use std::{
     future::{Future, IntoFuture},
     sync::{
@@ -28,7 +26,7 @@ pub enum ServerError {
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
     #[error(transparent)]
-    Catalog(#[from] crate::models::CatalogError),
+    Catalog(#[from] psa_models::CatalogError),
     #[error(transparent)]
     ProbeConfig(#[from] psa_probe::config::ConfigError),
 }
@@ -49,13 +47,17 @@ pub async fn start_with_shutdown(
     #[cfg(unix)]
     let local_lock = crate::local_control::LocalControl::acquire(&config.data_dir)?;
 
-    let auth_path = config.config_path.with_file_name("auth.toml");
+    let auth_path = config
+        .config_path
+        .with_file_name(psa_config::paths::AUTH_FILE);
     // Validate existing provider credentials before changing the shared file.
     let providers = ProviderRegistry::load(&auth_path)
         .await?
         .with_auth_path(auth_path.clone())
         .with_max_concurrent_decisions(config.max_concurrent_decision_calls);
-    let keys = crate::auth::ensure_keys(&auth_path).await?;
+    let keys = psa_config::auth::ensure_keys(&auth_path)
+        .await
+        .map_err(AuthError::from)?;
     let database = Database::open(&config.database_path).await?;
     let listener = TcpListener::bind(config.listen).await?;
     tracing::info!(
@@ -199,10 +201,8 @@ pub async fn serve_with_probe_registry(
     client_key: String,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
-    let data_dir = directories::ProjectDirs::from("", "", "psa")
-        .ok_or_else(|| std::io::Error::other("cannot determine PSA data directory"))?
-        .data_local_dir()
-        .to_path_buf();
+    let data_dir = psa_config::paths::default_data_dir()
+        .ok_or_else(|| std::io::Error::other("cannot determine PSA data directory"))?;
     serve_with_configuration(
         listener,
         database,
@@ -259,7 +259,7 @@ async fn serve_with_client_config(
     client_key: String,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
-    let mut catalog = crate::models::ModelCatalogRuntime::start(
+    let mut catalog = psa_models::ModelCatalogRuntime::start(
         database.clone(),
         &providers,
         providers.catalog_source(),

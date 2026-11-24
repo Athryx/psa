@@ -465,4 +465,6 @@ fn build_message_content(message: &psa::api::events::Message) -> Vec<api::Conten
 }
 
 #[cfg(test)]
+mod store_replay_tests;
+#[cfg(test)]
 mod tests;

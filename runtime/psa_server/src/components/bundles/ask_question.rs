@@ -5,8 +5,8 @@ use crate::{
         codemode_functions::CodeModeFunctionKind,
         tools::{AskQuestion, ToolKind},
     },
-    sessions::Session,
 };
+use psa_store::Session;
 
 /// Installation policy only; querying clients does not require interactivity.
 pub struct AskQuestionBundle {

@@ -7,7 +7,7 @@ use crate::{
     path_picker::ProbePathInput,
 };
 use dioxus::prelude::*;
-use psa::api::{CreateSandbox, Mount, ProbeId};
+use psa::api::{CreateSandbox, HostPolicy, Mount, ProbeId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Field {
@@ -202,6 +202,8 @@ fn build_request(fields: &DraftStore<Field>, rows: &[MountRow]) -> Result<Create
             host_path: host.into(),
             container_path: container.into(),
             writable: row.writable,
+            host: HostPolicy::Existing,
+            seed: None,
         });
     }
 

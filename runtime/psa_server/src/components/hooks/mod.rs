@@ -30,16 +30,14 @@ pub use subagent_identity::SubagentIdentity;
 pub use tool_definitions::ToolDefinitionsHook;
 
 use super::cancellation::{Cancellation, run_cancellable};
-use crate::{
-    agents::{
-        AgentError, agent_context::AgentContext, agent_manager::AgentManagerMessage,
-        supervisor::RuntimeError,
-    },
-    db::DbError,
+use crate::agents::{
+    AgentError, agent_context::AgentContext, agent_manager::AgentManagerMessage,
+    supervisor::RuntimeError,
 };
 use actors::UnboundedMailbox;
 pub use psa::api::{AgentCommand, CommandResult};
 use psa_shared::probe_transport::ProbeError;
+use psa_store::DbError;
 use std::time::Duration;
 
 /// Hooks are part of the core loop and propagate failures from their capabilities.
@@ -76,6 +74,16 @@ pub trait CommandHook: Send {
 pub enum CommandHookKind {
     Compaction(compaction::CompactionHook),
     Goal(goal::GoalHook),
+}
+
+impl CommandHookKind {
+    /// Implementation name shown to clients.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Compaction(_) => "Compaction",
+            Self::Goal(_) => "Goal",
+        }
+    }
 }
 
 impl CommandHook for CommandHookKind {
@@ -126,6 +134,31 @@ pub enum HookKind {
     RecordLifecycle(crate::agents::supervisor::lifecycle_tests::RecordLifecycle),
     #[cfg(test)]
     BundleProbe(crate::components::bundles::testing::SharedHook),
+}
+
+impl HookKind {
+    /// Implementation name shown to clients.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::StopWithoutTools(_) => "StopWithoutTools",
+            Self::DefaultStartup(_) => "DefaultStartup",
+            Self::ExtraSystemPrompt(_) => "ExtraSystemPrompt",
+            Self::ProjectContext(_) => "ProjectContext",
+            Self::ToolDefinitions(_) => "ToolDefinitions",
+            Self::Cwd(_) => "Cwd",
+            Self::Skills(_) => "Skills",
+            Self::SessionModelUpdate(_) => "SessionModelUpdate",
+            Self::Goal(_) => "Goal",
+            Self::Compaction(_) => "Compaction",
+            Self::RequireResult(_) => "RequireResult",
+            Self::SubagentIdentity(_) => "SubagentIdentity",
+            Self::CodeModeFunctions(_) => "CodeModeFunctions",
+            #[cfg(test)]
+            Self::RecordLifecycle(_) => "RecordLifecycle",
+            #[cfg(test)]
+            Self::BundleProbe(_) => "BundleProbe",
+        }
+    }
 }
 
 impl Hook for HookKind {

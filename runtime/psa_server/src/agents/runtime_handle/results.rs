@@ -2,11 +2,11 @@
 //! remains authoritative, including when the broadcast receiver has lagged.
 
 use super::{RuntimeError, RuntimeHandle};
-use crate::db::EventRange;
 use crate::{
     agents::supervisor::EXECUTION_FAILURE_MESSAGE, components::cancellation::Cancellation,
 };
 use psa::api::{AgentId, AgentState, ResultRecord, SessionId, StreamMessage, events::*};
+use psa_store::EventRange;
 use tokio::sync::broadcast;
 
 impl RuntimeHandle {

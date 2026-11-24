@@ -2,13 +2,11 @@ use psa::api::{
     Client, ProbeId,
     probes::{Command, Event, ExitStatus, Uuid},
 };
+use psa_models::ProviderRegistry;
 use psa_probe::config::StartOptions;
-use psa_server::{
-    db::Database,
-    probes::{ProbeHandle, ProbeRegistry},
-    providers::ProviderRegistry,
-};
+use psa_server::probes::{ProbeHandle, ProbeRegistry};
 use psa_shared::probe_transport::{Call, ProbeError};
+use psa_store::Database;
 use std::time::Duration;
 use tokio::{net::TcpListener, sync::oneshot};
 use tokio_tungstenite::{
@@ -54,7 +52,7 @@ impl Harness {
             listener,
             database,
             ProviderRegistry::default()
-                .with_catalog_source(psa_server::models::CatalogSource::new(&base).unwrap()),
+                .with_catalog_source(psa_models::CatalogSource::new(&base).unwrap()),
             registry.clone(),
             psa_server::config_registry::ConfigRegistry::new(dir.path().join("global")),
             psa_server::config::default_model_config(),

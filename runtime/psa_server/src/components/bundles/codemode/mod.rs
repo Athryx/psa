@@ -1,7 +1,5 @@
 //! Per-agent owner for the isolated code execution tool.
 
-pub(crate) mod engine;
-
 use std::sync::Arc;
 
 use super::{Bundle, CleanupError, HookStage, InstallError, Installer};
@@ -12,9 +10,9 @@ use crate::{
         hooks::{CodeModeFunctionsHook, HookKind},
         tools::{CodeMode, ResetCodeMode, ToolKind},
     },
-    sessions::Session,
 };
-pub(crate) use engine::MontyEngine;
+use psa_codemode::MontyEngine;
+use psa_store::Session;
 
 pub struct CodeModeBundle {
     engine: Arc<MontyEngine>,

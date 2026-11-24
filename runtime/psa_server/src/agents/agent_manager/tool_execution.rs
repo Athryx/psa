@@ -6,9 +6,9 @@ use crate::components::{
     cancellation::Cancellation,
     tools::{ExecutionMode, Tool, ToolOutput},
 };
-use crate::db::DbError;
-use crate::db::NewEvent;
 use futures_util::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
+use psa_store::DbError;
+use psa_store::NewEvent;
 use std::collections::VecDeque;
 use tokio::sync::watch;
 

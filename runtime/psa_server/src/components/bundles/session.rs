@@ -34,7 +34,7 @@ impl SessionBundleResources {
     pub fn start(
         session: SessionId,
         sessions: RuntimeHandle,
-        providers: Option<crate::providers::ProviderRegistry>,
+        providers: Option<psa_models::ProviderRegistry>,
     ) -> Self {
         let decisions = DecisionHandle::new(providers, sessions.model_catalog().cloned());
         let subagents = CoordinatorRuntime::start(session, sessions);

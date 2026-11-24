@@ -1,11 +1,10 @@
 //! Skills packaged from directories, uploaded into a context's config group.
-use crate::{Error, Result, api::parse_skill_metadata};
-use sha2::{Digest, Sha256};
-use std::{
-    fs::Metadata,
-    path::{Path, PathBuf},
-    sync::Arc,
+use crate::{
+    Error, Result,
+    api::{Archive, archive::build_directory_tar, parse_skill_metadata},
 };
+use sha2::{Digest, Sha256};
+use std::{path::Path, sync::Arc};
 
 /// A skill packaged from a directory holding a `SKILL.md` and its support
 /// files. Registering it uploads it into the context's group under its name,
@@ -39,12 +38,11 @@ impl Skill {
             .map_err(|error| invalid(format!("SKILL.md: {error}")))?;
         let metadata = parse_skill_metadata(&manifest, &bytes).map_err(invalid)?;
 
-        let archive = build_archive(&root).await.map_err(invalid)?;
+        let tar = build_directory_tar(&root).await.map_err(invalid)?;
         // Hashing and compressing a large archive is CPU-bound.
         let (archive, archive_sha256) = tokio::task::spawn_blocking(move || {
-            let archive_sha256 = format!("{:x}", Sha256::digest(&archive));
-            let compressed = zstd::bulk::compress(&archive, ZSTD_LEVEL)?;
-            Ok::<_, std::io::Error>((compressed, archive_sha256))
+            let archive_sha256 = format!("{:x}", Sha256::digest(&tar));
+            Ok::<_, std::io::Error>((Archive::compress_tar(&tar)?.tar_data, archive_sha256))
         })
         .await
         .map_err(|error| invalid(error.to_string()))?
@@ -116,114 +114,10 @@ impl From<String> for SkillRef {
     }
 }
 
-/// Zstd level for skill archives: zstd's default, fast with a good ratio.
-const ZSTD_LEVEL: i32 = 3;
-
-/// A file or directory in a skill archive; directories have no contents.
-struct ArchiveEntry {
-    path: PathBuf,
-    mode: u32,
-    contents: Option<Vec<u8>>,
-}
-
-/// Build a reproducible tar archive of `root`: entries are sorted and carry no
-/// timestamps or owners, so unchanged content hashes the same.
-async fn build_archive(root: &Path) -> Result<Vec<u8>, String> {
-    let entries = collect_entries(root).await?;
-
-    let mut builder = tar::Builder::new(Vec::new());
-    for entry in entries {
-        let mut header = tar::Header::new_gnu();
-        header.set_mode(entry.mode);
-        header.set_mtime(0);
-        header.set_uid(0);
-        header.set_gid(0);
-        let contents = entry.contents.unwrap_or_else(|| {
-            header.set_entry_type(tar::EntryType::Directory);
-            Vec::new()
-        });
-        header.set_size(contents.len() as u64);
-        builder
-            .append_data(&mut header, &entry.path, contents.as_slice())
-            .map_err(|error| format!("{}: {error}", entry.path.display()))?;
-    }
-    builder.into_inner().map_err(|error| error.to_string())
-}
-
-/// Every file and directory under `root`, following symlinks, sorted by path.
-async fn collect_entries(root: &Path) -> Result<Vec<ArchiveEntry>, String> {
-    let io_error = |path: &Path, error: std::io::Error| format!("{}: {error}", path.display());
-
-    let mut entries = Vec::new();
-    // Each pending directory carries the canonical directories above it, so a
-    // symlink back to one of them is reported instead of walked forever.
-    let mut pending = vec![(root.to_owned(), PathBuf::new(), vec![root.to_owned()])];
-    while let Some((directory, relative, ancestors)) = pending.pop() {
-        let mut children = tokio::fs::read_dir(&directory)
-            .await
-            .map_err(|error| io_error(&relative, error))?;
-        while let Some(child) = children
-            .next_entry()
-            .await
-            .map_err(|error| io_error(&relative, error))?
-        {
-            let source = child.path();
-            let path = relative.join(child.file_name());
-            let metadata = tokio::fs::metadata(&source)
-                .await
-                .map_err(|error| io_error(&path, error))?;
-
-            if metadata.is_file() {
-                let contents = tokio::fs::read(&source)
-                    .await
-                    .map_err(|error| io_error(&path, error))?;
-                entries.push(ArchiveEntry {
-                    path,
-                    mode: entry_mode(&metadata, 0o644),
-                    contents: Some(contents),
-                });
-                continue;
-            }
-            if !metadata.is_dir() {
-                return Err(format!("{}: not a file or directory", path.display()));
-            }
-
-            let canonical = tokio::fs::canonicalize(&source)
-                .await
-                .map_err(|error| io_error(&path, error))?;
-            if ancestors.contains(&canonical) {
-                return Err(format!("{}: symlink cycle", path.display()));
-            }
-            entries.push(ArchiveEntry {
-                path: path.clone(),
-                mode: entry_mode(&metadata, 0o755),
-                contents: None,
-            });
-            let mut ancestors = ancestors.clone();
-            ancestors.push(canonical.clone());
-            pending.push((canonical, path, ancestors));
-        }
-    }
-
-    entries.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(entries)
-}
-
-#[cfg(unix)]
-fn entry_mode(metadata: &Metadata, _default: u32) -> u32 {
-    use std::os::unix::fs::PermissionsExt;
-    metadata.permissions().mode() & 0o777
-}
-
-#[cfg(not(unix))]
-fn entry_mode(_metadata: &Metadata, default: u32) -> u32 {
-    default
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
+    use std::{io::Read, path::PathBuf};
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("psa-skill-{name}-{}", uuid::Uuid::new_v4()));

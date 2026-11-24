@@ -2,12 +2,17 @@
 //!
 //! A sandbox is a container on a manager probe's machine running a nested probe.
 //! It is identified by the nested probe's [`ProbeId`].
-use crate::api::ProbeId;
+use crate::api::{Archive, ProbeId};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use time::OffsetDateTime;
 
 /// Host directory bound into a sandbox container.
+///
+/// The manager probe prepares mounts before creating the container: it checks
+/// or creates the host directory as `host` says, then extracts `seed` into it.
+/// If any mount fails, the directories and seed files created for the sandbox
+/// are removed again and the sandbox is not created.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mount {
@@ -18,6 +23,43 @@ pub struct Mount {
     /// Allow the container to modify the mounted directory.
     #[serde(default)]
     pub writable: bool,
+    /// Whether the host directory must exist or is created.
+    #[serde(default)]
+    pub host: HostPolicy,
+    /// Files and directories extracted into the host directory when the
+    /// sandbox is created, never on later starts. Existing directories are
+    /// merged; a seed file whose path already exists fails the creation. Not
+    /// kept in the sandbox record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<Archive>,
+}
+
+/// How a mount's host directory is obtained.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostPolicy {
+    /// The directory must already exist.
+    #[default]
+    Existing,
+    /// Nothing may exist at the path; the directory is created with its parents.
+    Create,
+    /// The directory is created with its parents if missing, else reused.
+    CreateOrReuse,
+}
+
+/// Largest total size of the seed archives of one sandbox, as sent.
+pub const MAX_SANDBOX_SEED_BYTES: usize = 256 * 1024 * 1024;
+
+/// Largest uncompressed size of one mount's seed archive.
+pub const MAX_SANDBOX_SEED_UNPACKED_BYTES: usize = 256 * 1024 * 1024;
+
+/// Total compressed size of the seed archives in `mounts`.
+pub fn sandbox_seed_bytes(mounts: &[Mount]) -> usize {
+    mounts
+        .iter()
+        .filter_map(|mount| mount.seed.as_ref())
+        .map(|seed| seed.tar_data.len())
+        .sum()
 }
 
 /// Request to create a sandbox on a manager probe.
@@ -121,6 +163,28 @@ mod tests {
         assert!(request.start);
         assert!(request.image.is_none());
         assert!(request.mounts.is_empty());
+    }
+
+    #[test]
+    fn mounts_default_to_existing_directories_without_seed() {
+        let mount: Mount =
+            serde_json::from_str(r#"{"host_path":"/h","container_path":"/c"}"#).unwrap();
+        assert_eq!(mount.host, HostPolicy::Existing);
+        assert!(mount.seed.is_none());
+        assert!(
+            !serde_json::to_value(&mount)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("seed")
+        );
+
+        let mount: Mount = serde_json::from_str(
+            r#"{"host_path":"/h","container_path":"/c","host":"create_or_reuse","seed":{"tar_data":""}}"#,
+        )
+        .unwrap();
+        assert_eq!(mount.host, HostPolicy::CreateOrReuse);
+        assert!(mount.seed.is_some());
     }
 
     #[test]

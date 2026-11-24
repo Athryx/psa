@@ -6,7 +6,11 @@ edition = "2024"
 [dependencies]
 actors = { path = "../../lib/actors" }
 psa = { path = "../../lib/psa" }
+psa_config = { path = "../psa_config" }
 psa_shared = { path = "../psa_shared" }
+psa_store = { path = "../psa_store" }
+psa_models = { path = "../psa_models" }
+psa_codemode = { path = "../psa_codemode" }
 psa_probe = { path = "../psa_probe" }
 llm_api = { path = "../../lib/llm_api" }
 agent_trace = { path = "../../trace/agent_trace" }
@@ -21,27 +25,23 @@ sha2 = "0.10"
 subtle = "2.6.1"
 tar = "0.4"
 serde = { version = "1", features = ["derive"] }
-sqlx = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "net", "signal", "io-util", "sync", "time"] }
-directories = "6"
 clap = { version = "4", features = ["derive"] }
 toml = "0.9"
 axum = { version = "0.8", features = ["ws"] }
-toml_edit = "0.23"
 rand = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 jsonschema = { version = "0.56", default-features = false }
 futures-util = "0.3"
-monty-pool = "=1.4.0"
-monty-types = "=1.4.0"
 async-stream = "0.3"
 reqwest = { version = "0.13.5", features = ["json"] }
-zstd = "0.13"
 
 [dev-dependencies]
 client_shared = { path = "../../client/client_shared" }
+psa_store = { path = "../psa_store", features = ["test-support"] }
 tokio = { version = "1", features = ["test-util"] }
 tempfile = "3"
+sqlx = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio"] }
 tokio-tungstenite = "0.29"

@@ -6,6 +6,7 @@ build = "build.rs"
 
 [dependencies]
 psa = { path = "../../lib/psa" }
+psa_config = { path = "../psa_config" }
 psa_shared = { path = "../psa_shared" }
 actors = { path = "../../lib/actors" }
 tokio = { version = "1", features = ["full"] }
@@ -15,7 +16,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
 toml_edit = "0.23"
-directories = "6"
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 sha2 = "0.10"
@@ -29,5 +29,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
+futures-channel = { version = "0.3", features = ["sink"] }
 psa_server = { path = "../psa_server" }
+psa_store = { path = "../psa_store" }
+psa_models = { path = "../psa_models" }
 reqwest = { version = "0.13", features = ["json"] }

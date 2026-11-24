@@ -2,10 +2,10 @@ use super::*;
 use crate::{
     agents::{Agent, AgentDefinition, AgentState},
     components::bundles::{BundleConfig, InstalledComponents},
-    sessions::Session,
 };
 use llm_api::api::Usage;
 use psa::api::{AgentDefinitionId, AgentId, SessionId, events::EventId};
+use psa_store::Session;
 use time::OffsetDateTime;
 
 pub(super) fn snapshots() -> (AgentDefinition, Agent, Session) {

@@ -11,8 +11,6 @@ use crate::{
         cancellation::Cancellation,
     },
     probes::ProbeRegistry,
-    providers::ProviderRegistry,
-    sessions::NewSession,
     test_support as support,
 };
 use llm_api::{
@@ -20,6 +18,8 @@ use llm_api::{
     providers::{Model, ProviderType},
 };
 use psa::api::{DecisionModelSelection, events::EventType};
+use psa_models::ProviderRegistry;
+use psa_store::NewSession;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use tokio::{
@@ -106,7 +106,7 @@ fn access(
 /// A session whose decision model is `vendor/session`, and an agent in it.
 async fn with_context<T>(test: impl AsyncFnOnce(&mut AgentContext<'_>) -> T) -> T {
     let directory = tempfile::tempdir().unwrap();
-    let database = crate::db::Database::open(directory.path().join("decisions.sqlite3"))
+    let database = psa_store::Database::open(directory.path().join("decisions.sqlite3"))
         .await
         .unwrap();
     support::register_probe(&database).await;
@@ -570,7 +570,7 @@ async fn bundle_installs_help_only_functions_and_validates_its_configuration() {
         BundleKind, InstalledComponents, session::SessionBundleResources,
     };
     let directory = tempfile::tempdir().unwrap();
-    let database = crate::db::Database::open(directory.path().join("bundle.sqlite3"))
+    let database = psa_store::Database::open(directory.path().join("bundle.sqlite3"))
         .await
         .unwrap();
     let runtime = Runtime::start(

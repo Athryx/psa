@@ -18,8 +18,8 @@ use crate::{
         tools::{self, ToolKind},
     },
     probes::ProbeHandle,
-    sessions::Session,
 };
+use psa_store::Session;
 
 pub use state::BashHandle;
 

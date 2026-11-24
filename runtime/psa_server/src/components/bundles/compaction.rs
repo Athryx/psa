@@ -3,8 +3,8 @@ use super::{Bundle, CleanupError, HookStage, InstallError, Installer};
 use crate::{
     agents::Agent,
     components::hooks::{CommandHookKind, HookKind, compaction::CompactionHook},
-    sessions::Session,
 };
+use psa_store::Session;
 
 /// Owns one compaction hook, shared by both installations so they reuse the
 /// same summarizer bookkeeping.

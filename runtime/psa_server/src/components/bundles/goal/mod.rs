@@ -14,8 +14,8 @@ use crate::{
             goal::{SetGoal, SetGoalStatus},
         },
     },
-    sessions::Session,
 };
+use psa_store::Session;
 
 /// A retained owner, not cloned when workers retire or agents fork.
 pub struct GoalBundle {

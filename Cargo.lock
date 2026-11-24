@@ -4513,6 +4513,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "psa_codemode"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "monty-pool",
+ "monty-types",
+ "psa_shared",
+ "psa_store",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "psa_config"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "llm_api",
+ "psa",
+ "psa_shared",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "toml_edit 0.23.10+spec-1.0.0",
+]
+
+[[package]]
 name = "psa_desktop"
 version = "0.1.0"
 dependencies = [
@@ -4550,17 +4582,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "psa_models"
+version = "0.1.0"
+dependencies = [
+ "actors",
+ "axum",
+ "futures-util",
+ "llm_api",
+ "psa",
+ "psa_config",
+ "psa_shared",
+ "psa_store",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "toml_edit 0.23.10+spec-1.0.0",
+ "tracing",
+]
+
+[[package]]
 name = "psa_probe"
 version = "0.1.0"
 dependencies = [
  "actors",
  "clap",
- "directories",
+ "futures-channel",
  "futures-util",
  "nix",
  "psa",
+ "psa_config",
+ "psa_models",
  "psa_server",
  "psa_shared",
+ "psa_store",
  "reqwest",
  "rustix",
  "serde",
@@ -4589,16 +4647,17 @@ dependencies = [
  "axum",
  "clap",
  "client_shared",
- "directories",
  "futures-util",
  "image",
  "jsonschema",
  "llm_api",
- "monty-pool",
- "monty-types",
  "psa",
+ "psa_codemode",
+ "psa_config",
+ "psa_models",
  "psa_probe",
  "psa_shared",
+ "psa_store",
  "rand 0.9.5",
  "reqwest",
  "schemars",
@@ -4615,12 +4674,10 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.29.0",
  "toml 0.9.12+spec-1.1.0",
- "toml_edit 0.23.10+spec-1.0.0",
  "tracing",
  "tracing-subscriber",
  "unicode-normalization",
  "url",
- "zstd",
 ]
 
 [[package]]
@@ -4631,10 +4688,30 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "psa",
+ "rustix",
  "serde_json",
+ "tar",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "zstd",
+]
+
+[[package]]
+name = "psa_store"
+version = "0.1.0"
+dependencies = [
+ "llm_api",
+ "psa",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "zstd",
 ]
 
 [[package]]

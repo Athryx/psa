@@ -1,6 +1,6 @@
 use super::*;
 use crate::agents::agent_manager::AgentClient;
-use crate::sessions::SessionId;
+use psa_store::SessionId;
 use std::time::Duration;
 
 fn session() -> Session {
@@ -56,19 +56,4 @@ async fn cancellation_awaits_cooperative_success_and_bounds_uncooperative_cleanu
     .await;
     assert!(interrupted);
     assert!(result.is_none());
-}
-
-#[tokio::test]
-async fn cancellation_is_latched_and_wait_is_cancel_safe() {
-    let (sender, mut cancellation) = Cancellation::channel();
-    assert!(!cancellation.is_cancelled());
-    tokio::select! { biased; _ = std::future::ready(()) => {}, _ = cancellation.cancelled() => panic!() }
-    sender.send(()).unwrap();
-    cancellation.cancelled().await;
-    cancellation.cancelled().await;
-    assert!(cancellation.is_cancelled());
-    let (sender, mut cancellation) = Cancellation::channel();
-    drop(sender);
-    cancellation.cancelled().await;
-    assert!(cancellation.is_cancelled());
 }

@@ -1,8 +1,8 @@
 use super::*;
-use crate::components::bundles::codemode::MontyEngine;
 use crate::components::{codemode_functions::CodeModeFunctionKind, tools::CodeMode};
-use crate::db::NewEvent;
-use crate::db::PrivateEvent;
+use psa_codemode::MontyEngine;
+use psa_store::NewEvent;
+use psa_store::PrivateEvent;
 use serde_json::json;
 
 #[tokio::test]
@@ -64,7 +64,7 @@ async fn nested_contexts_have_independent_snapshots_and_shared_registry() {
     assert_eq!(second.projection().last_event_id, old_id);
     assert_eq!(
         first
-            .load_latest_private_event(crate::db::PrivateEventKind::CodeModeSnapshot)
+            .load_latest_private_event(psa_store::PrivateEventKind::CodeModeSnapshot)
             .await
             .unwrap(),
         Some(PrivateEvent::CodeModeSnapshot(vec![1]))
@@ -83,7 +83,7 @@ async fn nested_contexts_have_independent_snapshots_and_shared_registry() {
     assert_eq!(borrowed.projection().last_event_id, saved[0].id);
     assert_eq!(
         borrowed
-            .load_latest_private_event(crate::db::PrivateEventKind::CodeModeSnapshot)
+            .load_latest_private_event(psa_store::PrivateEventKind::CodeModeSnapshot)
             .await
             .unwrap(),
         Some(PrivateEvent::CodeModeSnapshot(vec![2]))
@@ -132,7 +132,7 @@ async fn mixed_batch_commits_public_and_private_events() {
             .load_latest_private_event(
                 state.agent.id,
                 None,
-                crate::db::PrivateEventKind::CodeModeSnapshot
+                psa_store::PrivateEventKind::CodeModeSnapshot
             )
             .await
             .unwrap(),
@@ -187,7 +187,7 @@ async fn dropped_worker_does_not_cancel_inflight_batch() {
     let mut cursor = fixture.database.read().await.unwrap();
     assert_eq!(
         cursor
-            .load_latest_private_event(agent, None, crate::db::PrivateEventKind::CodeModeSnapshot)
+            .load_latest_private_event(agent, None, psa_store::PrivateEventKind::CodeModeSnapshot)
             .await
             .unwrap(),
         Some(PrivateEvent::CodeModeSnapshot(vec![9]))
@@ -212,7 +212,7 @@ async fn invalid_private_event_rolls_back_public_result() {
             EventBatchItem::Public(result_event("invalid")),
             EventBatchItem::Private(PrivateEvent::CodeModeSnapshot(vec![
                 0;
-                crate::db::MAX_CODEMODE_SNAPSHOT_BYTES
+                psa_store::MAX_CODEMODE_SNAPSHOT_BYTES
                     + 1
             ])),
         ],
@@ -233,7 +233,7 @@ async fn invalid_private_event_rolls_back_public_result() {
             .load_latest_private_event(
                 state.agent.id,
                 None,
-                crate::db::PrivateEventKind::CodeModeSnapshot
+                psa_store::PrivateEventKind::CodeModeSnapshot
             )
             .await
             .unwrap(),
@@ -307,7 +307,7 @@ async fn leading_private_event_is_rejected_without_publication() {
             .load_latest_private_event(
                 state.agent.id,
                 None,
-                crate::db::PrivateEventKind::CodeModeSnapshot
+                psa_store::PrivateEventKind::CodeModeSnapshot
             )
             .await
             .unwrap(),
@@ -349,7 +349,7 @@ async fn draining_saves_replies_to_invalid_batch_and_persists_next_request() {
     );
     assert_eq!(
         cursor
-            .load_latest_private_event(agent, None, crate::db::PrivateEventKind::CodeModeSnapshot)
+            .load_latest_private_event(agent, None, psa_store::PrivateEventKind::CodeModeSnapshot)
             .await
             .unwrap(),
         None

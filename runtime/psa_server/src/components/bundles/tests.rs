@@ -296,7 +296,7 @@ fn removed_tools_fields_are_rejected_even_when_empty() {
         serde_json::json!(["AskQuestion"]),
     ] {
         assert!(
-            serde_json::from_value::<crate::db::CreateAgentDefinition>(
+            serde_json::from_value::<psa_store::CreateAgentDefinition>(
                 serde_json::json!({"name":"legacy", "tools":tools})
             )
             .is_err()
@@ -596,4 +596,87 @@ async fn dropping_components_without_async_cleanup_still_drops_concrete_owners()
     .unwrap();
     drop(components);
     assert_eq!(state.events(), ["drop:fallback"]);
+}
+
+#[tokio::test]
+async fn describe_attributes_components_to_their_bundles_in_order() {
+    use psa::api::HookStage;
+
+    let (agent, session) = snapshots();
+    let mut definition = definition();
+    definition.bundles = vec![
+        BundleConfig::Startup {
+            base_prompt: true,
+            project_context: true,
+            cwd: false,
+            skills: false,
+        },
+        BundleConfig::FileTools { read_only: true },
+        BundleConfig::Compaction {
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: None,
+        },
+        BundleConfig::Goal {
+            interactive_only: true,
+        },
+    ];
+    let mut components = InstalledComponents::install(&definition, &agent, &session)
+        .await
+        .unwrap();
+    let described = components.describe();
+
+    let configs: Vec<_> = described.bundles.iter().map(|b| b.config.clone()).collect();
+    assert_eq!(configs, definition.bundles);
+
+    let [startup, files, compaction, goal] = &described.bundles[..] else {
+        panic!("one entry per bundle");
+    };
+    assert!(startup.tools.is_empty());
+    assert!(
+        startup
+            .hooks
+            .iter()
+            .all(|hook| hook.stage != HookStage::Command)
+    );
+    assert!(
+        startup
+            .hooks
+            .iter()
+            .any(|hook| hook.name == "ProjectContext")
+    );
+    assert!(!startup.hooks.iter().any(|hook| hook.name == "Cwd"));
+
+    let tools: Vec<_> = files.tools.iter().map(|tool| tool.id).collect();
+    assert_eq!(tools, [ToolId::Read]);
+    assert!(!files.tools[0].description.is_empty());
+    assert!(files.hooks.is_empty());
+
+    assert!(
+        compaction
+            .hooks
+            .iter()
+            .any(|hook| hook.stage == HookStage::Command && hook.name == "Compaction")
+    );
+    assert!(
+        compaction
+            .hooks
+            .iter()
+            .any(|hook| hook.stage == HookStage::BeforeRequest)
+    );
+
+    // Interactive-only goal mode installs only its stopping policy for a
+    // noninteractive agent, never its tools or command handler.
+    assert!(goal.tools.is_empty());
+    assert_eq!(goal.hooks.len(), 1);
+    assert_eq!(goal.hooks[0].name, "StopWithoutTools");
+    assert!(
+        goal.hooks
+            .iter()
+            .all(|hook| hook.stage != HookStage::Command)
+    );
+
+    let total: usize = described.bundles.iter().map(|b| b.tools.len()).sum();
+    assert_eq!(total, components.tools.len());
+    components.cleanup().await.unwrap();
 }

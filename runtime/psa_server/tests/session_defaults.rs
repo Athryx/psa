@@ -2,10 +2,9 @@ mod support;
 
 use llm_api::providers::{Effort, Model, ModelConfig, ProviderType};
 use psa::api::{Client, CreateSession, ForkPoint, ForkSession, Session, UpdateSession};
-use psa_server::{
-    config_registry::ConfigRegistry, db::Database, models::CatalogSource, probes::ProbeRegistry,
-    providers::ProviderRegistry,
-};
+use psa_models::{CatalogSource, ProviderRegistry};
+use psa_server::{config_registry::ConfigRegistry, probes::ProbeRegistry};
+use psa_store::Database;
 use serde_json::json;
 use std::time::Duration;
 use tokio::{net::TcpListener, sync::oneshot};

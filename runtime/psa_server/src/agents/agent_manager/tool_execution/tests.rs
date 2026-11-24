@@ -1,12 +1,12 @@
 use super::*;
-use crate::db::NewEvent;
 use crate::{
     agents::{NewAgent, supervisor::Runtime},
     components::tools::{ToolId, ToolSystemPrompt, typed_tool_execute},
     http::AppState,
-    sessions::NewSession,
     test_support as support,
 };
+use psa_store::NewEvent;
+use psa_store::NewSession;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::{
@@ -85,7 +85,7 @@ impl ExecutionProbe {
         ));
         if arguments.invalid_save {
             let batch = [
-                EventBatchItem::Private(crate::db::PrivateEvent::CodeModeSnapshot(vec![7])),
+                EventBatchItem::Private(psa_store::PrivateEvent::CodeModeSnapshot(vec![7])),
                 EventBatchItem::Public(NewEvent::new(EventType::Log(Log {
                     error: false,
                     message: "invalid-save-must-not-publish".into(),

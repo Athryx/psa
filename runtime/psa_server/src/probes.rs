@@ -1,5 +1,5 @@
 //! Probe registration, discovery, and live connection ownership.
-use crate::{db::Database, http::AppState};
+use crate::http::AppState;
 use actors::{Mailbox, mailbox};
 use axum::{
     Json, Router,
@@ -16,9 +16,11 @@ use psa::api::{
     ProbeId,
     probes::{
         Command, ConnectProbe, ContainerStatus, Event, Operation, PROTOCOL_VERSION, SandboxRequest,
+        SandboxSpec,
     },
 };
 use psa_shared::probe_transport::{Call, Connection, Frame, ProbeError, spawn_connection};
+use psa_store::Database;
 use std::collections::HashMap;
 use tokio::sync::oneshot;
 
@@ -245,6 +247,44 @@ impl ProbeHandle {
                 Event::Entries { entries } => result.extend(entries),
                 Event::Complete { .. } => return Ok(result),
                 _ => return Err(ProbeError::Protocol("unexpected directory response".into())),
+            }
+        }
+    }
+
+    /// Create a sandbox on a manager probe, streaming `seeds` (the `tar_data` of
+    /// each transfer in `spec.seeds`, in order) after the request.
+    pub async fn create_sandbox(
+        &self,
+        spec: SandboxSpec,
+        seeds: &[Vec<u8>],
+    ) -> Result<(), ProbeError> {
+        let mut call = self
+            .request(Operation::Sandbox {
+                request: SandboxRequest::Create { spec },
+            })
+            .await?;
+        let sender = call.sender.clone();
+        let send = async {
+            for seed in seeds {
+                sender.write(0, seed).await?;
+            }
+            sender.close_stdin().await
+        };
+        let receive = async {
+            match call.next_event().await? {
+                Event::Complete { .. } => Ok(()),
+                _ => Err(ProbeError::Protocol("unexpected sandbox response".into())),
+            }
+        };
+        tokio::pin!(send, receive);
+
+        // The probe may finish (usually with an error) before reading all input;
+        // its result then wins and the remaining input is dropped.
+        tokio::select! {
+            received = &mut receive => received,
+            sent = &mut send => {
+                let received = receive.await;
+                received.and(sent)
             }
         }
     }
@@ -517,7 +557,7 @@ fn decode_socket_message(message: WsMessage) -> Frame {
 async fn register_probe(
     database: &Database,
     metadata: &psa::api::ProbeMetadata,
-) -> Result<(), crate::db::DbError> {
+) -> Result<(), psa_store::DbError> {
     let mut cursor = database.write().await?;
     cursor.upsert_probe(metadata).await?;
     cursor.commit().await

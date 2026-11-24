@@ -4,6 +4,7 @@ use client_shared::{DesktopSettings, LocalServerStatus};
 use dioxus::prelude::*;
 use std::{future::Future, pin::Pin, rc::Rc};
 
+mod agent_info;
 mod app;
 mod command_prompt;
 mod composer;
@@ -19,6 +20,7 @@ mod persistence;
 mod probe_picker;
 mod probes_pane;
 mod reactive;
+mod row_actions;
 mod sandbox_modal;
 mod session_filter;
 mod style;

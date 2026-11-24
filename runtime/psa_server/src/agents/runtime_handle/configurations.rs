@@ -1,5 +1,6 @@
 //! Named configuration refresh, materialization, and creation-time snapshots.
 use super::*;
+use crate::components::bundles::validate_completion_config;
 use psa::api::{
     AgentConfig, AgentEffort, AgentModel, ConfigGroup, ConfigId, EffortSelection, ModelSelection,
 };
@@ -112,10 +113,15 @@ impl RuntimeHandle {
             .as_ref()
             .map(|configuration| configuration.agent_defaults().clone())
             .unwrap_or_default();
-        let configs = configs
+        let configs: Vec<api::AgentConfig> = configs
             .into_iter()
             .map(|config| defaults.resolve(config.into()))
             .collect();
+        for config in &configs {
+            validate_completion_config(&config.bundles)
+                .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
+        }
+
         let mut cursor = self.database.write().await?;
         let configs = cursor.upsert_agent_configs(configs).await?;
         cursor.commit().await?;
@@ -198,7 +204,7 @@ impl RuntimeHandle {
 
     async fn materialize_skills(
         &self,
-        session: &sessions::Session,
+        session: &psa_store::Session,
         skills: &[api::Skill],
     ) -> Result<HashMap<api::SkillId, std::path::PathBuf>, RuntimeError> {
         if skills.is_empty() {
@@ -229,7 +235,7 @@ impl RuntimeHandle {
     /// Root agents have no parent, so `Parent` choices resolve to the session policy.
     async fn creation_model(
         &self,
-        session: &sessions::Session,
+        session: &psa_store::Session,
         parent: Option<AgentId>,
         config: &AgentConfig,
         choice: Option<&ModelSelection>,

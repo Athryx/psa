@@ -8,16 +8,12 @@ use super::{
     publication::Publication,
     runtime_handle::RuntimeHandle,
 };
-use crate::db::{EventRange, NewEvent};
 use crate::{
     components::bundles::{
         InstalledComponents,
         session::{SessionBundleHandle, SessionBundleResources},
     },
-    db::{Database, DbError},
     probes::ProbeRegistry,
-    providers::ProviderRegistry,
-    sessions::{Session, SessionId},
 };
 use actors::Mailbox;
 use psa::api::{
@@ -25,6 +21,9 @@ use psa::api::{
     RequestId, StreamMessage,
     events::{AgentMessageLink, CommandRecord, EventId, EventType, Log, MessageType},
 };
+use psa_models::ProviderRegistry;
+use psa_store::{Database, DbError, Session, SessionId};
+use psa_store::{EventRange, NewEvent};
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
@@ -315,6 +314,13 @@ pub(crate) enum SupervisorCommand {
         agent: AgentId,
         generation: u64,
         request_id: RequestId,
+    },
+    /// Describe an agent's installed components, installing them if needed.
+    DescribeComponents {
+        session: SessionId,
+        agent: AgentId,
+        #[reply]
+        reply: oneshot::Sender<Result<psa::api::AgentComponents, RuntimeError>>,
     },
     /// Schedule the creation hook only for a newly committed agent.
     AgentsCreated { agents: Vec<AgentId> },
@@ -784,6 +790,14 @@ impl Supervisor {
                     worker.in_flight = None;
                 }
             }
+            SupervisorCommand::DescribeComponents {
+                session,
+                agent,
+                reply,
+            } => {
+                let result = self.describe_components(session, agent).await;
+                let _ = reply.send(result);
+            }
             SupervisorCommand::AgentsCreated { agents } => {
                 for agent in agents {
                     if let Err(error) = self.schedule_agent_create(agent).await {
@@ -1127,6 +1141,29 @@ impl Supervisor {
             self.publish_session_activity(session, true).await;
         }
         Ok(())
+    }
+
+    /// Installed components are cached per agent, so describing an agent that
+    /// has not run yet installs what its first worker would use.
+    async fn describe_components(
+        &mut self,
+        session: SessionId,
+        agent: AgentId,
+    ) -> Result<psa::api::AgentComponents, RuntimeError> {
+        self.sessions.get_agent(session, agent).await?;
+        let components = match self.components.get(&agent) {
+            Some(components) => Arc::clone(components),
+            None => {
+                let state = AgentManagerState::load_persisted(
+                    self.db.clone(),
+                    self.publication.clone(),
+                    agent,
+                )
+                .await?;
+                self.ensure_components(&state).await?
+            }
+        };
+        Ok(components.lock().await.describe())
     }
 
     async fn ensure_components(

@@ -1,5 +1,5 @@
 use super::*;
-use crate::db::NewEvent;
+use psa_store::NewEvent;
 use std::panic::AssertUnwindSafe;
 
 #[tokio::test]

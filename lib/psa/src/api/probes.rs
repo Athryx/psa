@@ -411,6 +411,9 @@ pub enum SandboxRequest {
 }
 
 /// Container specification for a new sandbox.
+///
+/// Mounts carry no seed in the request itself: each seed in `seeds` follows on
+/// input stream 0, in order, and the server then closes the stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxSpec {
     /// Identity assigned to the nested probe.
@@ -421,6 +424,20 @@ pub struct SandboxSpec {
     pub image: String,
     /// Host directories bound into the container.
     pub mounts: Vec<crate::api::sandboxes::Mount>,
+    /// Seed archives streamed on input stream 0 after the request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seeds: Vec<SeedTransfer>,
+}
+
+/// A mount seed archive streamed after a sandbox create request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeedTransfer {
+    /// Index of the mount in [`SandboxSpec::mounts`] the seed belongs to.
+    pub mount: usize,
+    /// Size of the archive's `tar_data` in bytes.
+    pub size: u64,
+    /// Compression of the streamed archive.
+    pub compression: crate::api::ArchiveCompression,
 }
 
 /// Docker state of one sandbox container.

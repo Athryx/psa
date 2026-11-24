@@ -1,7 +1,7 @@
 use super::{Hook, HookError};
-use crate::db::NewEvent;
 use crate::{agents::agent_context::AgentContext, components::cancellation::Cancellation};
 use psa::api::events::EventType;
+use psa_store::NewEvent;
 use std::time::Duration;
 
 /// Re-resolves the definition's model policy against the updated session, so

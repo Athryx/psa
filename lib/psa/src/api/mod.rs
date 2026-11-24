@@ -10,6 +10,7 @@ pub mod probes;
 pub mod routes;
 
 mod agents;
+pub(crate) mod archive;
 mod client;
 mod client_queries;
 mod components;
@@ -27,6 +28,7 @@ mod skills;
 mod tests;
 
 pub use agents::*;
+pub use archive::{Archive, ArchiveBuilder, ArchiveCompression};
 pub use client::*;
 pub use client_queries::*;
 pub use components::*;

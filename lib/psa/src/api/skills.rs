@@ -1,6 +1,6 @@
 //! Registered skills and skill uploads.
 
-use crate::api::{ConfigId, ProbeId};
+use crate::api::{Archive, ConfigId, ProbeId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -51,40 +51,8 @@ pub struct Skill {
 pub struct NewSkill {
     /// Destination identity; its name must match the skill metadata name.
     pub config_id: ConfigId,
-    /// Tar archive containing a root `SKILL.md` and support files, compressed as
-    /// `compression` says. Base64-encoded on the wire.
-    #[serde(with = "base64_bytes")]
-    pub tar_data: Vec<u8>,
-    /// Compression applied to `tar_data`; defaults to none.
-    #[serde(default)]
-    pub compression: ArchiveCompression,
-}
-
-/// Compression of an uploaded archive.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ArchiveCompression {
-    /// A plain tar archive.
-    #[default]
-    None,
-    /// A zstd-compressed tar archive.
-    Zstd,
-}
-
-/// Serde adapter encoding bytes as a standard base64 string.
-mod base64_bytes {
-    use base64::{Engine, engine::general_purpose::STANDARD};
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&STANDARD.encode(bytes))
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
-        let text = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        STANDARD
-            .decode(text.as_bytes())
-            .map_err(serde::de::Error::custom)
-    }
+    /// The skill directory: a root `SKILL.md` and support files.
+    pub archive: Archive,
 }
 
 /// Metadata read from a `SKILL.md` frontmatter block.
@@ -167,26 +135,22 @@ mod tests {
     }
 
     #[test]
-    fn uploads_encode_archives_as_base64() {
+    fn uploads_nest_the_archive() {
         let upload = NewSkill {
             config_id: ConfigId {
                 config_group: crate::api::ConfigGroup::Global,
                 name: "x".into(),
             },
-            tar_data: vec![0, 1, 255],
-            compression: ArchiveCompression::Zstd,
+            archive: Archive {
+                tar_data: vec![0, 1, 255],
+                compression: crate::api::ArchiveCompression::Zstd,
+            },
         };
 
         let value = serde_json::to_value(&upload).unwrap();
-        assert_eq!(value["tar_data"], "AAH/");
-        assert_eq!(value["compression"], "Zstd");
+        assert_eq!(value["archive"]["tar_data"], "AAH/");
         let decoded: NewSkill = serde_json::from_value(value).unwrap();
-        assert_eq!(decoded.tar_data, upload.tar_data);
-
-        let mut plain = serde_json::to_value(&upload).unwrap();
-        plain.as_object_mut().unwrap().remove("compression");
-        let decoded: NewSkill = serde_json::from_value(plain).unwrap();
-        assert_eq!(decoded.compression, ArchiveCompression::None);
+        assert_eq!(decoded.archive, upload.archive);
     }
 
     #[test]

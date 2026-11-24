@@ -6,10 +6,10 @@ use crate::{
     },
     components::cancellation::Cancellation,
     probes::ProbeRegistry,
-    providers::ProviderRegistry,
-    sessions::NewSession,
     test_support as support,
 };
+use psa_models::ProviderRegistry;
+use psa_store::NewSession;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -54,7 +54,7 @@ impl CodeModeFunction for TestFunction {
 #[tokio::test]
 async fn typed_bridge_validates_and_cancels_before_running() {
     let directory = tempfile::tempdir().unwrap();
-    let database = crate::db::Database::open(directory.path().join("typed.sqlite3"))
+    let database = psa_store::Database::open(directory.path().join("typed.sqlite3"))
         .await
         .unwrap();
     support::register_probe(&database).await;

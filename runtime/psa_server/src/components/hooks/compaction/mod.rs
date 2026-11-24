@@ -6,7 +6,6 @@ mod tests;
 
 use super::{CommandHook, Hook, HookError};
 use crate::agents::NewAgent;
-use crate::db::{CreateAgentDefinition, EventRange, NewEvent};
 use crate::{
     agents::{AgentState, agent_context::AgentContext, supervisor::RuntimeError},
     components::cancellation::Cancellation,
@@ -19,6 +18,7 @@ use psa::api::{
     AgentCommand, AgentDefinitionId, AgentResult, BundleConfig, CommandOutcome, CommandResult,
     events::{Compaction, CompactionSummary, Event, EventType, Log, MessageType},
 };
+use psa_store::{CreateAgentDefinition, EventRange, NewEvent};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 

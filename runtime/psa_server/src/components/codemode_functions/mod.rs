@@ -6,16 +6,21 @@
 
 pub(crate) mod decide;
 pub(crate) mod help;
+mod host;
 pub(crate) mod list_decision_models;
 pub(crate) mod prior_results;
-pub(crate) mod python_stub;
-pub(crate) mod result_classes;
 
 use decide::Decide;
 use help::Help;
+pub(crate) use host::AgentCodeModeHost;
 use list_decision_models::ListDecisionModels;
 use prior_results::PriorResults;
-use python_stub::PythonStub;
+pub use psa_codemode::CodeModeError;
+use psa_codemode::{
+    HostFunction,
+    python_stub::{self, PythonStub},
+    result_classes,
+};
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
@@ -35,21 +40,6 @@ pub struct CodeModeFunctionDefinition {
     pub name: String,
     pub description: String,
     pub parameters: ToolSchema,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodeModeError {
-    pub exception_type: String,
-    pub message: String,
-}
-
-impl CodeModeError {
-    pub fn runtime(message: impl Into<String>) -> Self {
-        Self {
-            exception_type: "RuntimeError".into(),
-            message: message.into(),
-        }
-    }
 }
 
 pub type CodeModeFunctionResult = Result<Value, CodeModeError>;
@@ -150,6 +140,27 @@ impl CodeModeFunctionKind {
     /// run them concurrently; built-in lookups return plain values.
     pub fn is_async(&self) -> bool {
         matches!(self, Self::Tool(_) | Self::Decide(_))
+    }
+
+    /// Built-in lookups also accept their single argument positionally.
+    fn positional_field(&self) -> Option<&'static str> {
+        match self {
+            Self::PriorResults(_) => Some("index"),
+            Self::Help(_) => Some("name"),
+            Self::Tool(_) | Self::ListDecisionModels(_) | Self::Decide(_) => None,
+        }
+    }
+
+    /// How the CodeMode engine sees and calls this function.
+    pub(crate) fn host_function(&self) -> HostFunction {
+        let definition = self.definition();
+        HostFunction {
+            name: definition.name,
+            description: definition.description,
+            is_async: self.is_async(),
+            positional_field: self.positional_field(),
+            cancellation_timeout: self.cancellation_timeout(),
+        }
     }
 
     /// The Python type shown for a function without a result class.
@@ -389,7 +400,7 @@ mod tests {
         let mut output = ToolOutput::success(prompts::text("visible"));
         output
             .private_events
-            .push(crate::db::PrivateEvent::CodeModeSnapshot(vec![1]));
+            .push(psa_store::PrivateEvent::CodeModeSnapshot(vec![1]));
         let error = adapt_tool_output(output).unwrap_err();
         assert_eq!(error.exception_type, "RuntimeError");
         assert!(error.message.contains("cannot persist"));

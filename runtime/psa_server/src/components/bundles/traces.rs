@@ -5,8 +5,8 @@ use crate::{
         codemode_functions::CodeModeFunctionKind,
         tools::{ExportTrace, ListSessions, ToolKind},
     },
-    sessions::Session,
 };
+use psa_store::Session;
 
 /// Installs session listing and trace export as CodeMode-only functions,
 /// documented through `help` rather than the system prompt. Owns no resources.

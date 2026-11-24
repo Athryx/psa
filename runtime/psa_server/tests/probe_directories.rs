@@ -1,5 +1,6 @@
 use psa::api::{self as api, ClientError};
-use psa_server::{db::Database, probes::ProbeRegistry};
+use psa_server::probes::ProbeRegistry;
+use psa_store::Database;
 use tokio::{net::TcpListener, sync::oneshot};
 
 #[path = "support/fake_probe.rs"]

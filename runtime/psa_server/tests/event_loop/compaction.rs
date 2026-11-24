@@ -1,5 +1,5 @@
 use super::*;
-use psa_server::db::EventRange;
+use psa_store::EventRange;
 
 /// A tiny `context_window` compacts before every request; a large one only on command.
 async fn create_compacting_agent(

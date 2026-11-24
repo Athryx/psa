@@ -1,11 +1,12 @@
 use super::{ExecutionMode, Tool, ToolOutput, ToolSystemPrompt, typed_tool_execute};
 use crate::{
     agents::agent_context::AgentContext,
-    components::{bundles::codemode::MontyEngine, cancellation::Cancellation},
-    db::PrivateEvent,
+    components::{cancellation::Cancellation, codemode_functions::AgentCodeModeHost},
     prompts,
 };
 use llm_api::api::ToolDefinition;
+use psa_codemode::MontyEngine;
+use psa_store::PrivateEvent;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::{sync::Arc, time::Duration};
@@ -42,7 +43,11 @@ impl CodeMode {
     ) -> ToolOutput {
         let result = self
             .engine
-            .execute(&arguments.code, context, &mut cancellation)
+            .execute(
+                &arguments.code,
+                &AgentCodeModeHost::new(context),
+                &mut cancellation,
+            )
             .await;
         let mut output = if result.error {
             ToolOutput::error(prompts::text(result.text))

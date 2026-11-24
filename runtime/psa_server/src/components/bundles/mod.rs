@@ -50,8 +50,10 @@ use crate::{
         hooks::{CommandHookKind, HookKind, Hooks},
         tools::ToolKind,
     },
-    sessions::Session,
 };
+
+use psa::api;
+use psa_store::Session;
 use std::{collections::HashSet, future::Future, sync::Arc, time::Duration};
 
 /// A single non-cloneable agent-runtime owner. Installation only registers already
@@ -255,6 +257,15 @@ pub enum HookStage {
     AfterRequest,
 }
 
+/// Lengths of an installer's lists before a bundle installs.
+#[derive(Debug, Clone, Copy)]
+struct InstallMark {
+    tools: usize,
+    codemode_functions: usize,
+    /// Agent create, session update, before request, after request, command.
+    hooks: [usize; 5],
+}
+
 /// Accepts concrete instances, preserving shared handles constructed by a bundle.
 #[derive(Default)]
 pub struct Installer {
@@ -333,6 +344,80 @@ impl Installer {
         Ok(())
     }
 
+    /// Where the next bundle's registrations will begin.
+    fn mark(&self) -> InstallMark {
+        InstallMark {
+            tools: self.tools.len(),
+            codemode_functions: self.codemode_functions.len(),
+            hooks: [
+                self.hooks.agent_create.len(),
+                self.hooks.session_update.len(),
+                self.hooks.before_request.len(),
+                self.hooks.after_request.len(),
+                self.hooks.command.len(),
+            ],
+        }
+    }
+
+    /// Describe everything registered since `mark`, attributed to `config`.
+    fn describe_since(&self, mark: InstallMark, config: &BundleConfig) -> api::InstalledBundle {
+        use api::HookStage as Stage;
+
+        let tools = self.tools[mark.tools..]
+            .iter()
+            .map(|tool| {
+                let definition = tool.tool_definition();
+                api::InstalledTool {
+                    id: tool.id(),
+                    name: definition.name,
+                    description: definition.description,
+                }
+            })
+            .collect();
+
+        let hook = |stage, name: &str| api::InstalledHook {
+            stage,
+            name: name.into(),
+        };
+        let staged = [
+            (Stage::AgentCreate, &self.hooks.agent_create),
+            (Stage::SessionUpdate, &self.hooks.session_update),
+            (Stage::BeforeRequest, &self.hooks.before_request),
+            (Stage::AfterRequest, &self.hooks.after_request),
+        ];
+        let mut hooks: Vec<_> = staged
+            .into_iter()
+            .zip(mark.hooks)
+            .flat_map(|((stage, list), start)| {
+                list[start..].iter().map(move |h| hook(stage, h.name()))
+            })
+            .collect();
+        hooks.extend(
+            self.hooks.command[mark.hooks[4]..]
+                .iter()
+                .map(|h| hook(Stage::Command, h.name())),
+        );
+
+        let codemode_functions = self.codemode_functions[mark.codemode_functions..]
+            .iter()
+            .map(|entry| {
+                let definition = entry.function.definition();
+                api::InstalledCodeModeFunction {
+                    name: definition.name,
+                    description: definition.description,
+                    help_only: matches!(entry.listing, CodeModeListing::HelpOnly),
+                }
+            })
+            .collect();
+
+        api::InstalledBundle {
+            config: config.clone(),
+            tools,
+            hooks,
+            codemode_functions,
+        }
+    }
+
     /// Hooks are intentionally not deduplicated, even within one stage.
     pub fn add_hook(&mut self, stage: HookStage, hook: HookKind) {
         let hooks = match stage {
@@ -385,6 +470,8 @@ pub struct InstalledComponents {
     pub(crate) codemode_functions: Arc<[CodeModeEntry]>,
     pub(crate) hooks: Hooks,
     bundles: Vec<BundleKind>,
+    /// What each bundle installed, for clients inspecting the agent.
+    summary: Vec<api::InstalledBundle>,
 }
 
 impl InstalledComponents {
@@ -407,6 +494,7 @@ impl InstalledComponents {
         let child_templates = Self::load_child_templates(definition, resources).await?;
         let mut installer = Installer::default();
         let mut bundles = Vec::new();
+        let mut summary = Vec::new();
         // A failed install still hands every owner created so far to rollback.
         let mut install_all = || -> Result<(), InstallError> {
             let mut ids = HashSet::new();
@@ -421,13 +509,22 @@ impl InstalledComponents {
                 if let BundleKind::Subagents(subagents) = &mut *bundle {
                     subagents.set_child_templates(child_templates.clone());
                 }
+                let mark = installer.mark();
                 bundle.install(agent, session, &mut installer)?;
+                summary.push(installer.describe_since(mark, config));
             }
             Ok(())
         };
         let result = install_all();
 
-        Self::finish_install(installer, bundles, result).await
+        Self::finish_install(installer, bundles, summary, result).await
+    }
+
+    /// Every installed component, grouped by its owning bundle.
+    pub fn describe(&self) -> api::AgentComponents {
+        api::AgentComponents {
+            bundles: self.summary.clone(),
+        }
     }
 
     /// Permitted child templates for the Subagents bundle, which installs synchronously.
@@ -455,6 +552,7 @@ impl InstalledComponents {
     async fn finish_install(
         installer: Installer,
         bundles: Vec<BundleKind>,
+        summary: Vec<api::InstalledBundle>,
         result: Result<(), InstallError>,
     ) -> Result<Self, InstallError> {
         let mut installed = Self {
@@ -462,6 +560,7 @@ impl InstalledComponents {
             codemode_functions: installer.codemode_functions.into(),
             hooks: installer.hooks,
             bundles,
+            summary,
         };
         if let Err(mut error) = result {
             if let Err(cleanup_errors) = installed.cleanup().await {

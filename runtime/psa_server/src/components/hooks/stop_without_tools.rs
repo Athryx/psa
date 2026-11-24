@@ -1,5 +1,4 @@
 use super::{Hook, HookError};
-use crate::db::NewEvent;
 use crate::{
     agents::{AgentState, agent_context::AgentContext, publication::status_event},
     components::cancellation::Cancellation,
@@ -9,6 +8,7 @@ use psa::api::{
     AgentResult,
     events::{Event, EventType, MessageType},
 };
+use psa_store::NewEvent;
 use std::time::Duration;
 
 #[cfg(test)]

@@ -12,7 +12,7 @@ async fn fixture() -> (
     State,
 ) {
     let directory = tempfile::tempdir().unwrap();
-    let database = crate::db::Database::open(directory.path().join("subagents.sqlite3"))
+    let database = psa_store::Database::open(directory.path().join("subagents.sqlite3"))
         .await
         .unwrap();
     let publication = Publication::default();

@@ -1,5 +1,5 @@
 use super::*;
-use crate::db::{EventRange, NewEvent};
+use psa_store::{EventRange, NewEvent};
 
 #[path = "client_query_tests.rs"]
 mod client_query_tests;
@@ -17,8 +17,6 @@ use crate::{
     },
     http::AppState,
     probes::ProbeRegistry,
-    providers::ProviderRegistry,
-    sessions::{ForkPoint, NewSession, SessionFork},
     test_support as support,
 };
 use llm_api::{
@@ -26,6 +24,8 @@ use llm_api::{
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
 use psa::api::StreamMessage;
+use psa_models::ProviderRegistry;
+use psa_store::{ForkPoint, NewSession, SessionFork};
 use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
@@ -37,7 +37,7 @@ mod fake_probe;
 
 struct Fixture {
     _directory: tempfile::TempDir,
-    database: crate::db::Database,
+    database: psa_store::Database,
     publication: Publication,
     client: psa::api::Client,
     base: String,
@@ -59,7 +59,7 @@ impl Fixture {
 
     async fn new_with_probe_files(files: Option<fake_probe::FakeFiles>) -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let database = crate::db::Database::open(directory.path().join("context.sqlite3"))
+        let database = psa_store::Database::open(directory.path().join("context.sqlite3"))
             .await
             .unwrap();
         support::register_probe(&database).await;
@@ -831,7 +831,7 @@ async fn extra_system_prompt_hook_persists_verbatim_system_message_and_skips_emp
     ] {
         let mut cursor = fixture.database.write().await.unwrap();
         let definition = cursor
-            .create_agent_definition(crate::db::CreateAgentDefinition {
+            .create_agent_definition(psa_store::CreateAgentDefinition {
                 name: "extra prompt".into(),
                 bundles: vec![psa::api::BundleConfig::ExtraSystemPrompt {
                     prompt: prompt.into(),
@@ -903,8 +903,8 @@ async fn extra_system_prompt_hook_skips_forks_which_inherit_it() {
     let fork = cursor
         .fork_session(
             seed.session_id,
-            crate::sessions::SessionFork {
-                point: crate::sessions::ForkPoint::Head,
+            psa_store::SessionFork {
+                point: psa_store::ForkPoint::Head,
                 metadata: Default::default(),
             },
         )

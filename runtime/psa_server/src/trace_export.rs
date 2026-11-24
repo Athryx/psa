@@ -6,7 +6,6 @@
 //! and retained conversation events are skipped, leaving a single compaction event.
 
 use crate::agents::{Agent, runtime_handle::RuntimeHandle, supervisor::RuntimeError};
-use crate::db::EventRange;
 use agent_trace::{
     AgentMeta, AgentTrace, Event as TraceEvent, EventKind, FinishOutcome, ImageRef, Inference,
     SessionTrace, Source, ToolDefinition, ToolResult as TraceToolResult, attach_tool_result,
@@ -19,6 +18,7 @@ use psa::api::{
     AgentState, SessionId,
     events::{CompactionSummary, Event, EventId, EventType, MessageType},
 };
+use psa_store::EventRange;
 use std::collections::HashMap;
 use time::OffsetDateTime;
 

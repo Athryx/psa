@@ -4,15 +4,11 @@ use super::{
     Agent, AgentError, agent_manager::AgentManagerState, agent_projection::AgentProjection,
     client_queries::ClientQueryError, runtime_handle::RuntimeHandle,
 };
-use crate::db::{EventRange, NewEvent};
-use crate::{
-    components::cancellation::Cancellation,
-    db::{Database, DbError, EventBatchItem, InferenceResultEvents},
-    probes::ProbeHandle,
-    sessions::Session,
-};
+use crate::{components::cancellation::Cancellation, probes::ProbeHandle};
 use psa::api::{EventEnvelope, events::*};
 use psa_shared::probe_transport::ProbeError;
+use psa_store::{Database, DbError, EventBatchItem, InferenceResultEvents, Session};
+use psa_store::{EventRange, NewEvent};
 
 #[cfg(test)]
 mod tests;
@@ -246,8 +242,8 @@ impl<'a> AgentContext<'a> {
     /// Load the latest private event of this kind visible to the current agent.
     pub async fn load_latest_private_event(
         &self,
-        kind: crate::db::PrivateEventKind,
-    ) -> Result<Option<crate::db::PrivateEvent>, DbError> {
+        kind: psa_store::PrivateEventKind,
+    ) -> Result<Option<psa_store::PrivateEvent>, DbError> {
         let mut cursor = self.database().read().await?;
         let event = cursor
             .load_latest_private_event(self.agent().id, None, kind)
@@ -259,8 +255,8 @@ impl<'a> AgentContext<'a> {
     pub async fn load_private_event_at(
         &self,
         event: EventId,
-        kind: crate::db::PrivateEventKind,
-    ) -> Result<Option<crate::db::PrivateEvent>, DbError> {
+        kind: psa_store::PrivateEventKind,
+    ) -> Result<Option<psa_store::PrivateEvent>, DbError> {
         let mut cursor = self.database().read().await?;
         let private = cursor
             .load_private_event_at(self.agent().id, event, kind)

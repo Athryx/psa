@@ -1,20 +1,17 @@
 //! Session-owned access to decision-model providers: availability and a
 //! concurrency cap shared by every agent in the session.
 
-use crate::{
-    components::cancellation::Cancellation, models::ModelCatalog, providers::ProviderRegistry,
-};
+use crate::components::cancellation::Cancellation;
+
 use llm_api::{
     api::decisions::{DecisionRequest, DecisionResponse},
     providers::Model,
 };
 use psa::api::{ListModels, ModelInfo, ModelKind};
-use std::{num::NonZeroUsize, sync::Arc};
+use psa_config::server::DEFAULT_MAX_CONCURRENT_DECISIONS;
+use psa_models::{ModelCatalog, ProviderRegistry};
+use std::sync::Arc;
 use tokio::sync::Semaphore;
-
-/// Calls in flight at once per session unless `[decisions]` in the server
-/// config sets `max_concurrent_calls`; further calls wait for a slot.
-pub(crate) const DEFAULT_MAX_CONCURRENT_CALLS: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
 /// Why a decision call did not produce a response.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +51,7 @@ impl DecisionHandle {
     /// Without providers every call fails with a configuration error.
     pub(crate) fn new(providers: Option<ProviderRegistry>, catalog: Option<ModelCatalog>) -> Self {
         let limit = providers.as_ref().map_or(
-            DEFAULT_MAX_CONCURRENT_CALLS,
+            DEFAULT_MAX_CONCURRENT_DECISIONS,
             ProviderRegistry::max_concurrent_decisions,
         );
         Self {

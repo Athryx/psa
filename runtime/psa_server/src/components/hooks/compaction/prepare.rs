@@ -2,12 +2,12 @@
 //! Adapted from earendil-works/pi (MIT); see docs/PI_LICENSE.txt.
 
 use super::prompts;
-use crate::db::NewEvent;
 use llm_api::{
     api::{ContentBlock, Outcome, Usage},
     providers::ModelConfig,
 };
 use psa::api::events::{CompactionSummary, Event, EventType, MessageType};
+use psa_store::NewEvent;
 use std::collections::{BTreeSet, HashSet};
 
 #[derive(Debug)]

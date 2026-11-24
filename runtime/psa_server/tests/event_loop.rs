@@ -27,18 +27,17 @@ use llm_api::{
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
 use psa::api::{self as wire, AgentRequest, AgentState, MessageDelivery, StreamMessage, events::*};
-use psa_server::db::NewEvent;
+use psa_models::ProviderRegistry;
 use psa_server::{
     agents::{
         NewAgent, ToolDefinitionExt, agent_manager::AgentManagerState, publication::Publication,
         supervisor::Runtime,
     },
     components::tools::ToolId,
-    db::{Database, DbError},
     probes::ProbeRegistry,
-    providers::ProviderRegistry,
-    sessions::{ForkPoint, NewSession, SessionFork, SessionUpdate},
 };
+use psa_store::NewEvent;
+use psa_store::{Database, DbError, ForkPoint, NewSession, SessionFork, SessionUpdate};
 use serde_json::{Value, json};
 use std::{collections::VecDeque, convert::Infallible, sync::Arc, time::Duration};
 use tokio::{
@@ -223,7 +222,7 @@ impl Harness {
         .unwrap();
         let providers = ProviderRegistry::new(vec![Provider::Completions(provider)])
             .with_catalog_source(
-                psa_server::models::CatalogSource::new(&format!("http://{fake_address}")).unwrap(),
+                psa_models::CatalogSource::new(&format!("http://{fake_address}")).unwrap(),
             );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();

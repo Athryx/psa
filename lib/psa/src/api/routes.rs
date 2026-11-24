@@ -46,6 +46,8 @@ pub const AGENTS: &str = "/sessions/{session_id}/agents";
 pub const AGENT: &str = "/sessions/{session_id}/agents/{agent_id}";
 /// Effective model and last inference usage at an agent event boundary.
 pub const AGENT_CONTEXT_STATE: &str = "/sessions/{session_id}/agents/{agent_id}/context-state";
+/// GET the tools, hooks, and CodeMode functions installed for an agent, by bundle.
+pub const AGENT_COMPONENTS: &str = "/sessions/{session_id}/agents/{agent_id}/components";
 /// GET cumulative usage per model, including inherited calls.
 pub const AGENT_USAGE: &str = "/sessions/{session_id}/agents/{agent_id}/usage";
 /// POST an interrupt, message, or command record request to an agent.

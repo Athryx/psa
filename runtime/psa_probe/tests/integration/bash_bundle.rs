@@ -8,8 +8,8 @@ use psa_server::{
         },
         cancellation::Cancellation,
     },
-    sessions::NewSession,
 };
+use psa_store::NewSession;
 
 pub(super) async fn install_bundle(harness: &Harness) -> (BashBundle, BashHandle) {
     let database = Database::open(harness.dir.path().join("server.sqlite3"))
@@ -17,7 +17,7 @@ pub(super) async fn install_bundle(harness: &Harness) -> (BashBundle, BashHandle
         .unwrap();
     let mut cursor = database.write().await.unwrap();
     let definition = cursor
-        .create_agent_definition(psa_server::db::CreateAgentDefinition {
+        .create_agent_definition(psa_store::CreateAgentDefinition {
             name: "bash integration".into(),
             ..Default::default()
         })

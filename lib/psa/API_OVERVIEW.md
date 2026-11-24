@@ -40,6 +40,11 @@ not guarantee a matching agent configuration exists.
 - create agent
 - list agents
 - get agents
+- list the components it has installed (`GET .../components`,
+  `Client::get_agent_components`): each bundle in definition order with the
+  tools, hooks (by `HookStage`), and CodeMode functions it installed for this
+  agent. The server installs an agent that has not yet run to describe it,
+  exactly as its first worker would.
 - submit requests to interrupt, send a message, or record a finished client-side
   slash command (`AgentRequest::RecordCommand`)
 - run a typed command (`POST .../commands`, `Client::send_command`); the response
@@ -457,6 +462,28 @@ trusted credentials.
 
 Session creation requires `probe_id`, referencing a registered probe. It is
 returned in session responses, remains fixed, and is inherited on fork.
+
+### Sandbox mounts and archives
+
+`CreateSandbox.mounts` lists host directories bound into the container. Each
+`Mount` has `host_path`, `container_path`, `writable`, `host` (`existing` by
+default, `create`, or `create_or_reuse`) and an optional `seed: Archive` whose
+files are extracted into the directory once, when the sandbox is created. A
+seed may not overwrite existing files; existing directories are merged. Seeds
+total at most `MAX_SANDBOX_SEED_BYTES` (256 MiB) per sandbox as sent, and the
+returned `Sandbox` record omits them. See the probe README for details.
+
+`Archive { tar_data, compression }` is the shared directory format of skill
+uploads (`NewSkill.archive`) and mount seeds: a tar of files and directories,
+base64 on the wire, `compression` `None` (default) or `Zstd`. Build one with
+`Archive::from_directory(path)` or in memory:
+
+```rust,ignore
+let seed = Archive::builder()
+    .file("TASK.md", "Fix the failing test")
+    .executable("run.sh", "#!/bin/sh\ncargo test")
+    .build()?;
+```
 
 ## Durable results
 

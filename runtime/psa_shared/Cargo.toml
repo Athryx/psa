@@ -7,11 +7,15 @@ edition = "2024"
 actors = { path = "../../lib/actors" }
 psa = { path = "../../lib/psa" }
 futures-util = { version = "0.3", features = ["sink"] }
+rustix = { version = "1", features = ["fs"] }
 serde_json = "1"
+tar = "0.4"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros", "fs"] }
 tracing = "0.1"
+zstd = "0.13"
 
 [dev-dependencies]
+tempfile = "3"
 futures-channel = { version = "0.3", features = ["sink"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }

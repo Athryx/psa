@@ -5,8 +5,8 @@ use crate::{
         codemode_functions::CodeModeFunctionKind,
         tools::{Edit, Read, ToolKind, Write},
     },
-    sessions::Session,
 };
+use psa_store::Session;
 
 /// File mutation synchronization remains in the existing shared file operations
 /// implementation; it must not become a per-worker lock.

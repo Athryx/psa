@@ -9,11 +9,10 @@ use crate::{
         supervisor::{RuntimeError, SupervisorClient, SupervisorCommand},
     },
     components::bundles::session::SessionBundleResources,
-    db::Database,
-    sessions::NewSession,
 };
 use llm_api::api::ContentBlock;
 use psa::api::{AgentRequest, RequestAccepted};
+use psa_store::{Database, NewSession};
 use std::{future::Future, pin::Pin};
 
 const WAIT: Duration = Duration::from_secs(2);
@@ -37,14 +36,14 @@ impl Fixture {
         crate::test_support::register_probe(&database).await;
         let mut cursor = database.write().await.unwrap();
         let worker = cursor
-            .create_agent_definition(crate::db::CreateAgentDefinition {
+            .create_agent_definition(psa_store::CreateAgentDefinition {
                 name: "worker-template".into(),
                 ..Default::default()
             })
             .await
             .unwrap();
         let definition = cursor
-            .create_agent_definition(crate::db::CreateAgentDefinition {
+            .create_agent_definition(psa_store::CreateAgentDefinition {
                 name: "caller".into(),
                 permitted_subagents: vec![worker.id],
                 ..Default::default()

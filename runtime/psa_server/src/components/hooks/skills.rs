@@ -1,5 +1,4 @@
 use super::{Hook, HookError};
-use crate::db::NewEvent;
 use crate::{
     agents::agent_context::AgentContext,
     components::cancellation::Cancellation,
@@ -11,6 +10,7 @@ use psa::api::{
     probes::Event,
 };
 use psa_shared::probe_transport::ProbeError;
+use psa_store::NewEvent;
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},

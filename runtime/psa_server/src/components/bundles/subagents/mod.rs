@@ -18,8 +18,8 @@ use crate::{
         ToolKind,
         subagents::{CreateAgent, ListAgents, SendMessage, WaitMessage},
     },
-    sessions::Session,
 };
+use psa_store::Session;
 use std::sync::Arc;
 
 pub struct SubagentsBundle {

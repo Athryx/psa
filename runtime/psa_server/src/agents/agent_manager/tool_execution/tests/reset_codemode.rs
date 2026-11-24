@@ -1,16 +1,15 @@
 //! Native CodeMode reset is a persisted state barrier, not history deletion.
 
 use super::*;
-use crate::db::NewEvent;
-use crate::{
-    components::{
-        bundles::codemode::MontyEngine,
-        codemode_functions::{CodeModeFunctionKind, prior_results::PriorResults},
-        tools::{CodeMode, ResetCodeMode},
-    },
-    db::{PrivateEvent, PrivateEventKind},
+use crate::components::codemode_functions::AgentCodeModeHost;
+use crate::components::{
+    codemode_functions::{CodeModeFunctionKind, prior_results::PriorResults},
+    tools::{CodeMode, ResetCodeMode},
 };
 use llm_api::api::ContentBlock;
+use psa_codemode::MontyEngine;
+use psa_store::NewEvent;
+use psa_store::{PrivateEvent, PrivateEventKind};
 use serde_json::{Value, json};
 
 const RESET_MESSAGE: &str =
@@ -436,8 +435,8 @@ async fn real_worker_reset_is_a_same_inference_barrier_and_forks_keep_their_stat
         let fork = cursor
             .fork_session(
                 state.session.id,
-                crate::sessions::SessionFork {
-                    point: crate::sessions::ForkPoint::ThroughEvent {
+                psa_store::SessionFork {
+                    point: psa_store::ForkPoint::ThroughEvent {
                         agent_id: state.agent.id,
                         event_id: cutoff,
                     },
@@ -480,7 +479,9 @@ async fn real_worker_reset_is_a_same_inference_barrier_and_forks_keep_their_stat
         // allowing those unrelated inherited calls to run again.
         let fork_engine = MontyEngine::new(binary.clone());
         let (_sender, mut cancellation) = Cancellation::channel();
-        let output = fork_engine.execute(code, &context, &mut cancellation).await;
+        let output = fork_engine
+            .execute(code, &AgentCodeModeHost::new(&context), &mut cancellation)
+            .await;
         assert!(!output.error, "{}", output.text);
         assert_eq!(output.text.trim(), expected_text);
         assert!(output.snapshot.is_some());

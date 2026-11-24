@@ -1,5 +1,6 @@
 use clap::Args;
 use psa::api::{ProbeId, ProbeMetadata, probes::Uuid};
+use psa_config::{auth::AuthFileError, paths, server::HostMarkerError};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
@@ -32,13 +33,6 @@ struct Config {
     sandbox_probe_path: Option<PathBuf>,
 }
 
-// Ignore unrelated server fields: only the root host marker affects the probe.
-#[derive(Deserialize)]
-struct HostConfig {
-    #[serde(default)]
-    host: bool,
-}
-
 pub struct ResolvedConfig {
     pub metadata: ProbeMetadata,
     pub server_url: String,
@@ -66,20 +60,19 @@ impl StartOptions {
         self,
         server_config: Option<&Path>,
     ) -> Result<ResolvedConfig, ConfigError> {
-        let data_dir = self
-            .data_dir
-            .or_else(|| {
-                directories::ProjectDirs::from("", "", "psa")
-                    .map(|dirs| dirs.data_local_dir().to_owned())
-            })
-            .ok_or(ConfigError::Invalid(
-                "cannot determine data directory; use --data-dir",
-            ))?;
+        let data_dir =
+            self.data_dir
+                .or_else(paths::default_data_dir)
+                .ok_or(ConfigError::Invalid(
+                    "cannot determine data directory; use --data-dir",
+                ))?;
         tokio::fs::create_dir_all(&data_dir).await?;
         let data_dir = tokio::fs::canonicalize(data_dir).await?;
 
         let explicit = self.config.is_some();
-        let path = self.config.unwrap_or_else(|| data_dir.join("probe.toml"));
+        let path = self
+            .config
+            .unwrap_or_else(|| data_dir.join(paths::PROBE_CONFIG_FILE));
         let _lock = psa_shared::local_config::lock(&path).await?;
         let text = match tokio::fs::read_to_string(&path).await {
             Ok(text) => text,
@@ -118,10 +111,12 @@ impl StartOptions {
                 "missing server_url in probe.toml; use --server",
             ))?;
         let url = parse_server_url(&server_url)?;
-        let key_path = server_config.unwrap_or(&path).with_file_name("auth.toml");
+        let key_path = server_config
+            .unwrap_or(&path)
+            .with_file_name(paths::AUTH_FILE);
         let host_path = server_config
             .map(Path::to_owned)
-            .unwrap_or_else(|| path.with_file_name("config.toml"));
+            .unwrap_or_else(|| path.with_file_name(paths::SERVER_CONFIG_FILE));
         let key = read_probe_key(&key_path).await?;
         let host = read_host_marker(&host_path).await?;
 
@@ -208,37 +203,28 @@ fn parse_server_url(value: &str) -> Result<String, ConfigError> {
 }
 
 async fn read_host_marker(path: &Path) -> Result<bool, ConfigError> {
-    let text = match tokio::fs::read_to_string(path).await {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error.into()),
-    };
-
-    let config: HostConfig =
-        toml::from_str(&text).map_err(|_| ConfigError::Invalid("invalid config.toml"))?;
-    Ok(config.host)
+    psa_config::server::read_host_marker(path)
+        .await
+        .map_err(|error| match error {
+            HostMarkerError::Io(error) => ConfigError::Io(error),
+            HostMarkerError::Invalid => ConfigError::Invalid("invalid config.toml"),
+        })
 }
 
 async fn read_probe_key(path: &Path) -> Result<String, ConfigError> {
-    let auth = tokio::fs::read_to_string(path).await.map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            ConfigError::Invalid("missing auth.toml; copy [psa].probe_key from the server")
-        } else {
-            ConfigError::Io(error)
-        }
-    })?;
-    let auth: toml::Value =
-        toml::from_str(&auth).map_err(|_| ConfigError::Invalid("invalid auth.toml"))?;
-    let key = auth
-        .get("psa")
-        .and_then(|psa| psa.get("probe_key"))
-        .and_then(toml::Value::as_str)
-        .filter(|key| !key.trim().is_empty() && !key.contains(['\r', '\n']))
-        .ok_or(ConfigError::Invalid(
+    match psa_config::auth::read_probe_key(path).await {
+        Ok(Some(key)) => Ok(key),
+        Ok(None) => Err(ConfigError::Invalid(
             "missing or invalid [psa].probe_key in auth.toml",
-        ))?
-        .to_owned();
-    Ok(key)
+        )),
+        Err(AuthFileError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Err(
+            ConfigError::Invalid("missing auth.toml; copy [psa].probe_key from the server"),
+        ),
+        Err(AuthFileError::Io(error)) => Err(ConfigError::Io(error)),
+        Err(AuthFileError::Invalid) => {
+            Err(ConfigError::Invalid("invalid auth.toml or [psa].probe_key"))
+        }
+    }
 }
 
 #[cfg(test)]

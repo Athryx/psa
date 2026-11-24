@@ -2,8 +2,8 @@ use super::{Bundle, CleanupError, HookStage, InstallError, Installer};
 use crate::{
     agents::Agent,
     components::hooks::{HookKind, StopWithoutTools},
-    sessions::Session,
 };
+use psa_store::Session;
 
 /// Installs the ordinary completion policy: stop after a response without tool
 /// calls. Owns no resources.

@@ -1,8 +1,8 @@
 use super::desktop_tests::fixture;
 use super::*;
 use crate::agents::agent_projection::AgentProjection;
-use crate::db::NewEvent;
 use futures_util::StreamExt;
+use psa_store::NewEvent;
 use std::time::Duration;
 
 async fn next(stream: &mut api::EventStream) -> api::StreamMessage {
@@ -47,7 +47,7 @@ async fn recent_to_sse_gap_replays_then_live_promotions_keep_identity() {
         .append(
             &state.database,
             agent.id,
-            &[crate::db::EventBatchItem::Public(event.clone())],
+            &[psa_store::EventBatchItem::Public(event.clone())],
             &[],
             &AgentProjection::default(),
         )
@@ -97,7 +97,7 @@ async fn recent_to_sse_gap_replays_then_live_promotions_keep_identity() {
         .append(
             &state.database,
             agent.id,
-            &[crate::db::EventBatchItem::Public(event)],
+            &[psa_store::EventBatchItem::Public(event)],
             &[(0, "draft".into())],
             &context,
         )

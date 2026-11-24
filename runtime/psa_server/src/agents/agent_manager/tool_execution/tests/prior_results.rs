@@ -2,14 +2,14 @@
 
 use super::*;
 use crate::components::{
-    bundles::codemode::MontyEngine,
     codemode_functions::{
         CodeModeFunction, CodeModeFunctionKind, CodeModeFunctionResult, prior_results::PriorResults,
     },
     tools::CodeMode,
 };
-use crate::db::NewEvent;
 use llm_api::api::ContentBlock;
+use psa_codemode::MontyEngine;
+use psa_store::NewEvent;
 use serde_json::{Value, json};
 
 fn call_events(inference_id: u64, id: &str, name: &str, arguments: Value) -> Vec<NewEvent> {
@@ -363,8 +363,8 @@ async fn prior_results_respects_fork_cutoffs_and_reads_before_compaction() {
     let fork = cursor
         .fork_session(
             parent.session.id,
-            crate::sessions::SessionFork {
-                point: crate::sessions::ForkPoint::ThroughEvent {
+            psa_store::SessionFork {
+                point: psa_store::ForkPoint::ThroughEvent {
                     agent_id: parent.agent.id,
                     event_id: cutoff,
                 },
@@ -511,12 +511,12 @@ async fn real_worker_prior_results_is_synchronous_archived_and_restart_safe() {
         .load_latest_private_event(
             state.agent.id,
             None,
-            crate::db::PrivateEventKind::CodeModeSnapshot,
+            psa_store::PrivateEventKind::CodeModeSnapshot,
         )
         .await
         .unwrap()
         .unwrap();
-    let crate::db::PrivateEvent::CodeModeSnapshot(bytes) = snapshot else {
+    let psa_store::PrivateEvent::CodeModeSnapshot(bytes) = snapshot else {
         panic!("expected a codemode snapshot");
     };
     assert!(
@@ -617,7 +617,7 @@ async fn prior_results_returns_saved_full_output_of_truncated_results() {
                 error: false,
                 metadata: Default::default(),
             }))),
-            EventBatchItem::Private(crate::db::PrivateEvent::CodeModeOutput(full.clone())),
+            EventBatchItem::Private(psa_store::PrivateEvent::CodeModeOutput(full.clone())),
         ])
         .await
         .unwrap();

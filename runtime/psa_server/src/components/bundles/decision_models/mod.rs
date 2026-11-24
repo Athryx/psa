@@ -8,7 +8,7 @@
 
 mod handle;
 
-pub(crate) use handle::{DEFAULT_MAX_CONCURRENT_CALLS, DecisionHandle};
+pub(crate) use handle::DecisionHandle;
 
 use super::{Bundle, CleanupError, InstallError, Installer, session::SessionBundleHandle};
 use crate::{
@@ -16,10 +16,10 @@ use crate::{
     components::codemode_functions::{
         CodeModeFunctionKind, decide::Decide, list_decision_models::ListDecisionModels,
     },
-    sessions::Session,
 };
 use llm_api::providers::Model;
 use psa::api::DecisionModelSelection;
+use psa_store::Session;
 use std::sync::Arc;
 
 /// Which models an agent may call, resolved against its session and the

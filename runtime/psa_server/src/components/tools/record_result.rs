@@ -1,5 +1,4 @@
 use super::{ExecutionMode, Tool, ToolOutput, ToolSystemPrompt, typed_tool_execute};
-use crate::db::NewEvent;
 use crate::{
     agents::{AgentState, agent_context::AgentContext, publication::status_event},
     components::{bundles::typed_result::TypedResultState, cancellation::Cancellation},
@@ -7,6 +6,7 @@ use crate::{
 };
 use llm_api::api::ToolDefinition;
 use psa::api::{AgentResult, events::EventType};
+use psa_store::NewEvent;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};

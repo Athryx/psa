@@ -5,19 +5,15 @@ mod tests;
 mod transfer;
 mod upload;
 
-use crate::config::AgentDefaults;
-use crate::db::SkillRegistration;
-use crate::{
-    db::{Database, DbError},
-    probes::ProbeHandle,
-};
+use crate::components::bundles::validate_completion_config;
+use crate::probes::ProbeHandle;
 use psa::api::probes::{DirectoryEntry, Event};
-use psa::api::{
-    AgentConfig, AgentConfigInput, BundleConfig, ConfigGroup, ConfigId, IncludedItems,
-    ModelSelection, ProbeId, ProbeMetadata, Skill, SkillId, SkillLocation,
-};
+use psa::api::{ConfigGroup, ConfigId, ProbeId, ProbeMetadata, Skill, SkillId, SkillLocation};
+pub use psa_config::agent_definition::AgentDefinitionConfig;
+use psa_config::server::AgentDefaults;
 use psa_shared::probe_transport::ProbeError;
-use serde::Deserialize;
+use psa_store::SkillRegistration;
+use psa_store::{Database, DbError};
 use std::{
     collections::{HashMap, HashSet},
     path::{Component, Path, PathBuf},
@@ -211,7 +207,7 @@ impl ConfigRegistry {
                 .agents
                 .into_iter()
                 .map(|(_, config, additional)| {
-                    config.lower(
+                    config.into_agent_config(
                         &batch.group,
                         additional,
                         &agent_ids,
@@ -219,7 +215,11 @@ impl ConfigRegistry {
                         &self.agent_defaults,
                     )
                 })
-                .collect::<Result<Vec<_>, _>>()?;
+                .collect::<Vec<_>>();
+            for config in &agents {
+                validate_completion_config(&config.bundles)
+                    .map_err(|error| DiscoveryError::Invalid(error.to_string()))?;
+            }
             cursor
                 .replace_discovered_group(&batch.group, agents, batch.skills)
                 .await?;
@@ -484,15 +484,9 @@ async fn scan_group(
                 let text = std::str::from_utf8(&bytes).map_err(|error| {
                     DiscoveryError::Invalid(format!("{}: {error}", path.display()))
                 })?;
-                let config: AgentDefinitionConfig = toml::from_str(text).map_err(|error| {
+                let config = AgentDefinitionConfig::parse(text).map_err(|error| {
                     DiscoveryError::Invalid(format!("{}: {error}", path.display()))
                 })?;
-                if config.name.trim().is_empty() || config.models.is_empty() {
-                    return Err(DiscoveryError::Invalid(format!(
-                        "{}: name and models must not be empty",
-                        path.display()
-                    )));
-                }
                 if batch
                     .agents
                     .iter()
@@ -587,151 +581,6 @@ async fn add_skill(
         archive_sha256: None,
     });
     Ok(config_id)
-}
-
-/// TOML input defaults differ deliberately from the API's required model list.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentDefinitionConfig {
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub selectable: bool,
-    #[serde(default)]
-    pub bundles: Option<Vec<BundleConfig>>,
-    #[serde(default = "default_models")]
-    pub models: Vec<ModelSelection>,
-    #[serde(default = "yes", alias = "default")]
-    pub first_model_default: bool,
-    #[serde(default)]
-    pub subagents: SubagentInclusionsConfig,
-    #[serde(default)]
-    pub skills: SkillInclusionsConfig,
-}
-fn yes() -> bool {
-    true
-}
-fn default_models() -> Vec<ModelSelection> {
-    vec![ModelSelection::Global]
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct SubagentInclusionsConfig {
-    pub global_defaults: bool,
-    /// Include every item of this config's own group.
-    pub group_defaults: bool,
-    pub subagents: Vec<String>,
-}
-impl Default for SubagentInclusionsConfig {
-    fn default() -> Self {
-        Self {
-            global_defaults: true,
-            group_defaults: true,
-            subagents: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct SkillInclusionsConfig {
-    pub global_defaults: bool,
-    /// Include every item of this config's own group.
-    pub group_defaults: bool,
-    pub skills: Vec<String>,
-    pub additional_paths: Vec<PathBuf>,
-}
-impl Default for SkillInclusionsConfig {
-    fn default() -> Self {
-        Self {
-            global_defaults: true,
-            group_defaults: true,
-            skills: Vec::new(),
-            additional_paths: Vec::new(),
-        }
-    }
-}
-
-impl AgentDefinitionConfig {
-    fn lower(
-        self,
-        group: &ConfigGroup,
-        additional: Vec<ConfigId>,
-        agents: &HashSet<ConfigId>,
-        skills: &HashSet<ConfigId>,
-        defaults: &AgentDefaults,
-    ) -> Result<AgentConfig, DiscoveryError> {
-        let subagents = expand_inclusions(
-            self.subagents.global_defaults,
-            self.subagents.group_defaults,
-            &self.subagents.subagents,
-            group,
-            agents,
-        );
-        let mut included_skills = expand_inclusions(
-            self.skills.global_defaults,
-            self.skills.group_defaults,
-            &self.skills.skills,
-            group,
-            skills,
-        );
-        included_skills.items.extend(additional);
-        Ok(defaults.resolve(AgentConfigInput {
-            config_id: ConfigId {
-                config_group: group.clone(),
-                name: self.name,
-            },
-            description: self.description,
-            selectable: self.selectable,
-            bundles: self.bundles,
-            models: self.models,
-            first_model_default: self.first_model_default,
-            subagents,
-            skills: included_skills,
-        }))
-    }
-}
-
-/// Default groups are Global and/or the config's own group; named items
-/// resolve in the own group first, then in Global. A Global config's own-group
-/// defaults also select the creating session's `.agents` group.
-fn expand_inclusions(
-    global: bool,
-    own_group: bool,
-    names: &[String],
-    current: &ConfigGroup,
-    available: &HashSet<ConfigId>,
-) -> IncludedItems {
-    let mut groups = Vec::new();
-    if global {
-        groups.push(ConfigGroup::Global);
-    }
-    if own_group && !groups.contains(current) {
-        groups.push(current.clone());
-    }
-    if own_group && *current == ConfigGroup::Global {
-        groups.push(ConfigGroup::Session);
-    }
-    let items = names
-        .iter()
-        .map(|name| {
-            let local = ConfigId {
-                config_group: current.clone(),
-                name: name.clone(),
-            };
-            if available.contains(&local) {
-                local
-            } else {
-                ConfigId {
-                    config_group: ConfigGroup::Global,
-                    name: name.clone(),
-                }
-            }
-        })
-        .collect();
-    IncludedItems { groups, items }
 }
 
 fn normalize_absolute(path: &Path) -> Result<PathBuf, DiscoveryError> {

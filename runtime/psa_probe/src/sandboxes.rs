@@ -1,9 +1,14 @@
 //! Docker sandbox containers running nested probes, managed through the `docker` CLI.
+mod mounts;
+
 use crate::image_hooks;
+use mounts::PreparedMounts;
 use psa::api::{
-    Mount, ProbeId, SandboxState,
+    MAX_SANDBOX_SEED_BYTES, Mount, ProbeId, SandboxState,
     probes::{ContainerStatus, SandboxRequest, SandboxSpec},
+    sandbox_seed_bytes,
 };
+use psa_config::paths;
 use std::{
     io,
     path::{Path, PathBuf},
@@ -74,14 +79,17 @@ impl SandboxManager {
 
         let state_dir = self.state_dir(spec.probe_id);
         tokio::fs::create_dir_all(&state_dir).await?;
+        let mut prepared = PreparedMounts::default();
         let result = async {
             self.write_nested_config(&state_dir, &spec).await?;
+            mounts::prepare_mounts(&spec.mounts, &mut prepared).await?;
             let args = build_create_args(self, &spec, &state_dir, stop_timeout);
             run_docker(&args).await
         }
         .await;
 
         if let Err(error) = result {
+            prepared.remove().await;
             let _ = tokio::fs::remove_dir_all(&state_dir).await;
             return Err(error);
         }
@@ -93,11 +101,14 @@ impl SandboxManager {
         config["id"] = toml_edit::value(spec.probe_id.to_string());
         config["server_url"] = toml_edit::value(self.server_url.as_str());
         config["label"] = toml_edit::value(spec.name.as_str());
-        write_private_file(&state_dir.join("probe.toml"), &config.to_string()).await?;
+        write_private_file(
+            &state_dir.join(paths::PROBE_CONFIG_FILE),
+            &config.to_string(),
+        )
+        .await?;
 
-        let mut auth = toml_edit::DocumentMut::new();
-        auth["psa"]["probe_key"] = toml_edit::value(self.key.as_str());
-        write_private_file(&state_dir.join("auth.toml"), &auth.to_string()).await
+        let auth = psa_config::auth::build_probe_document(&self.key);
+        write_private_file(&state_dir.join(paths::AUTH_FILE), &auth.to_string()).await
     }
 
     async fn remove(&self, probe_id: ProbeId) -> Result<()> {
@@ -183,13 +194,13 @@ fn build_create_args(
         build_bind(&manager.probe_binary, Path::new(CONTAINER_PROBE), false),
         "--mount".to_owned(),
         build_bind(
-            &state_dir.join("probe.toml"),
+            &state_dir.join(paths::PROBE_CONFIG_FILE),
             Path::new(CONTAINER_CONFIG),
             false,
         ),
         "--mount".to_owned(),
         build_bind(
-            &state_dir.join("auth.toml"),
+            &state_dir.join(paths::AUTH_FILE),
             Path::new(CONTAINER_AUTH),
             false,
         ),
@@ -256,6 +267,11 @@ fn validate_spec(spec: &SandboxSpec) -> Result<()> {
     for mount in &spec.mounts {
         validate_mount(mount)?;
     }
+    if sandbox_seed_bytes(&spec.mounts) > MAX_SANDBOX_SEED_BYTES {
+        return Err(invalid(&format!(
+            "mount seeds exceed {MAX_SANDBOX_SEED_BYTES} bytes in total"
+        )));
+    }
     Ok(())
 }
 
@@ -318,7 +334,7 @@ fn invalid(message: &str) -> Box<dyn std::error::Error + Send + Sync> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use psa::api::probes::Uuid;
+    use psa::api::{HostPolicy, probes::Uuid};
 
     fn manager() -> SandboxManager {
         SandboxManager {
@@ -336,6 +352,7 @@ mod tests {
             name: "work".into(),
             image: "ubuntu:24.04".into(),
             mounts,
+            seeds: Vec::new(),
         }
     }
 
@@ -346,11 +363,15 @@ mod tests {
                 host_path: "/src".into(),
                 container_path: "/work".into(),
                 writable: true,
+                host: HostPolicy::Existing,
+                seed: None,
             },
             Mount {
                 host_path: "/ref".into(),
                 container_path: "/ref".into(),
                 writable: false,
+                host: HostPolicy::Existing,
+                seed: None,
             },
         ];
         let spec = spec(mounts);
@@ -424,6 +445,8 @@ mod tests {
                 host_path: host.into(),
                 container_path: container.into(),
                 writable: false,
+                host: HostPolicy::Existing,
+                seed: None,
             }]);
             assert!(validate_spec(&bad).is_err(), "{host} -> {container}");
         }

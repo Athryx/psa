@@ -3,8 +3,12 @@ use nix::{
     sys::signal::{Signal, killpg},
     unistd::Pid,
 };
-use psa::api::probes::{
-    CHUNK_SIZE, Command, DirectoryEntry, Event, ExitStatus, Operation, SandboxRequest, Stdio,
+use psa::api::{
+    Archive, MAX_SANDBOX_SEED_BYTES,
+    probes::{
+        CHUNK_SIZE, Command, DirectoryEntry, Event, ExitStatus, Operation, SandboxRequest,
+        SandboxSpec, Stdio,
+    },
 };
 use psa_shared::probe_transport::{Call, CallSender};
 use std::{
@@ -24,6 +28,10 @@ use tokio_util::io::SyncIoBridge;
 #[cfg(test)]
 #[path = "sync_dir_tests.rs"]
 mod sync_dir_tests;
+
+#[cfg(test)]
+#[path = "seed_transfer_tests.rs"]
+mod seed_transfer_tests;
 
 static ARCHIVE_WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 type PublicationLocks = HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>;
@@ -55,7 +63,7 @@ pub async fn execute(operation: Operation, mut call: Call, context: Arc<Context>
                 let _ = sender.finish(event).await;
                 return;
             };
-            execute_sandbox_request(manager, request, &call).await
+            execute_sandbox_request(manager, request, &mut call).await
         }
         Operation::UploadDir { path } => upload_directory(path, &mut call, false)
             .await
@@ -82,12 +90,75 @@ pub async fn execute(operation: Operation, mut call: Call, context: Arc<Context>
 async fn execute_sandbox_request(
     manager: &SandboxManager,
     request: SandboxRequest,
-    call: &Call,
+    call: &mut Call,
 ) -> Result<Option<ExitStatus>> {
+    let request = match request {
+        SandboxRequest::Create { mut spec } => {
+            receive_seeds(&mut spec, call).await?;
+            SandboxRequest::Create { spec }
+        }
+        request => request,
+    };
     if let Some(containers) = manager.execute(request).await? {
         call.sender.event(Event::Containers { containers }).await?;
     }
     Ok(None)
+}
+
+/// Read the seed archives streamed after a create request into their mounts.
+async fn receive_seeds(spec: &mut SandboxSpec, call: &mut Call) -> Result<()> {
+    let invalid = |message: &str| io::Error::new(io::ErrorKind::InvalidInput, message.to_owned());
+    if spec.seeds.is_empty() {
+        return Ok(());
+    }
+
+    let mut total = 0u64;
+    let mut targets = std::collections::HashSet::new();
+    for transfer in &spec.seeds {
+        let mount = spec
+            .mounts
+            .get(transfer.mount)
+            .ok_or_else(|| invalid("seed for a mount that does not exist"))?;
+        if mount.seed.is_some() || !targets.insert(transfer.mount) {
+            return Err(invalid("mount has more than one seed").into());
+        }
+        total = total.saturating_add(transfer.size);
+    }
+    if total > MAX_SANDBOX_SEED_BYTES as u64 {
+        return Err(invalid("mount seeds exceed the size limit").into());
+    }
+
+    let mut data = Vec::with_capacity(total as usize);
+    loop {
+        match call.next_event().await? {
+            Event::Data { stream: 0, bytes } => {
+                if (data.len() + bytes.len()) as u64 > total {
+                    return Err(invalid("more seed data than announced").into());
+                }
+                data.extend_from_slice(&bytes);
+            }
+            Event::Eof { stream: 0 } => break,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "seed input cancelled or invalid",
+                )
+                .into());
+            }
+        }
+    }
+    if data.len() as u64 != total {
+        return Err(invalid("less seed data than announced").into());
+    }
+
+    for transfer in std::mem::take(&mut spec.seeds) {
+        let tar_data = data.drain(..transfer.size as usize).collect();
+        spec.mounts[transfer.mount].seed = Some(Archive {
+            tar_data,
+            compression: transfer.compression,
+        });
+    }
+    Ok(())
 }
 
 fn require_absolute(path: &Path) -> Result<()> {

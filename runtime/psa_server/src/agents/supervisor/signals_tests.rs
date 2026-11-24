@@ -1,6 +1,7 @@
 use super::*;
-use crate::{agents::NewAgent, components::cancellation::Cancellation, sessions::NewSession};
+use crate::{agents::NewAgent, components::cancellation::Cancellation};
 use psa::api::events::Message;
+use psa_store::NewSession;
 use std::time::Duration;
 
 struct Fixture {
@@ -23,7 +24,7 @@ impl Fixture {
         crate::test_support::register_probe(&db).await;
         let mut cursor = db.write().await.unwrap();
         let definition = cursor
-            .create_agent_definition(crate::db::CreateAgentDefinition {
+            .create_agent_definition(psa_store::CreateAgentDefinition {
                 name: "signals".into(),
                 bundles,
                 ..Default::default()
@@ -659,8 +660,8 @@ async fn subagent_steering_rejects_missing_and_cross_session_senders() {
     let fork = cursor
         .fork_session(
             fixture.session,
-            crate::sessions::SessionFork {
-                point: crate::sessions::ForkPoint::Head,
+            psa_store::SessionFork {
+                point: psa_store::ForkPoint::Head,
                 metadata: Default::default(),
             },
         )
@@ -750,7 +751,7 @@ async fn completion_hook_reports_children_without_bundle_and_preserves_outcomes(
     let mut fixture = Fixture::with_bundles(vec![psa::api::BundleConfig::Subagents]).await;
     let mut cursor = fixture.manager.db.write().await.unwrap();
     let definition = cursor
-        .create_agent_definition(crate::db::CreateAgentDefinition {
+        .create_agent_definition(psa_store::CreateAgentDefinition {
             name: "plain child".into(),
             ..Default::default()
         })
@@ -835,7 +836,7 @@ async fn starting_plain_child_restores_parent_bundle_lifecycle_callbacks() {
     let mut fixture = Fixture::with_bundles(vec![psa::api::BundleConfig::Subagents]).await;
     let mut cursor = fixture.manager.db.write().await.unwrap();
     let definition = cursor
-        .create_agent_definition(crate::db::CreateAgentDefinition {
+        .create_agent_definition(psa_store::CreateAgentDefinition {
             name: "plain child after restart".into(),
             ..Default::default()
         })

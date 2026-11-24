@@ -32,6 +32,8 @@ pub fn Rail() -> Element {
 pub fn Sidebar() -> Element {
     let mut ui = use_context::<Signal<Ui>>();
     let mut frozen_order = use_signal(|| None::<Vec<SessionId>>);
+    let mut session_menu = use_signal(|| None::<(SessionId, f64, f64)>);
+    let mut renaming = use_signal(|| None::<SessionId>);
     use_ui_subscription(|state| {
         (
             state.sidebar.clone(),
@@ -132,12 +134,25 @@ pub fn Sidebar() -> Element {
                         if group.busy{span{class:"tab-spinner inline-spinner",role:"img","aria-label":"Session running"}}
                     }
                     for session in group.sessions{
-                        button{key:"{session.id.0}",class:"session",title:"{session.name}",
-                            onclick:move |_|{spawn(network::open_session(ui,session.id,false));},
-                            ondoubleclick:move |_|{spawn(network::double_click_session(ui,session.id));},
-                            if session.forked_from.is_some(){"⑂ "}
-                            "{session.name}"
-                            if session.busy{span{class:"tab-spinner inline-spinner",role:"img","aria-label":"Session running"}}else if state.connection!="Connected"{span{class:"muted"," ?"}}
+                        if renaming() == Some(session.id) {
+                            crate::row_actions::InlineRename { key:"{session.id.0}", class:"session-rename", initial:session.name.clone(), aria_label:"Session name",
+                                onsubmit:move |name: String| { renaming.set(None); spawn(network::rename_session(ui, session.id, name)); },
+                                oncancel:move |_| renaming.set(None),
+                            }
+                        } else {
+                            button{key:"{session.id.0}",class:"session",title:"{session.name}",
+                                onclick:move |_|{spawn(network::open_session(ui,session.id,false));},
+                                ondoubleclick:move |_|{spawn(network::double_click_session(ui,session.id));},
+                                oncontextmenu:move |event: MouseEvent| {
+                                    event.prevent_default();
+                                    event.stop_propagation();
+                                    let point = event.client_coordinates();
+                                    session_menu.set(Some((session.id, point.x, point.y)));
+                                },
+                                if session.forked_from.is_some(){"⑂ "}
+                                "{session.name}"
+                                if session.busy{span{class:"tab-spinner inline-spinner",role:"img","aria-label":"Session running"}}else if state.connection!="Connected"{span{class:"muted"," ?"}}
+                            }
                         }
                     }
                     if let Some(target) = creation_target.as_ref().filter(|target| target.probe == group.probe_id && group.working_directory.as_os_str() == std::ffi::OsStr::new(&target.directory)) {
@@ -153,7 +168,28 @@ pub fn Sidebar() -> Element {
             div { class: "folder transient-folder", div { class: "transient-folder-title", FolderProbe { id: target.probe } "{target.directory}" } crate::creation::InlineSessionName { target } }
         }
         if state.next_sessions.is_some(){button{onclick:move |_|{spawn(network::more_sessions(ui));},"Load more sessions"}p{class:"muted","Folder groups may be incomplete until all pages are loaded."}}
+        if let Some((id, x, y)) = session_menu() {
+            crate::row_actions::RowMenu { x, y,
+                items: vec![
+                    crate::row_actions::RowMenuItem { label: "Rename", disabled: state.connection != "Connected" },
+                    crate::row_actions::RowMenuItem::new("Show details"),
+                ],
+                onselect: move |index: usize| {
+                    session_menu.set(None);
+                    if index == 0 { renaming.set(Some(id)); } else { spawn(show_session_details(ui, id)); }
+                },
+                onclose: move |_| session_menu.set(None),
+            }
+        }
     }}
+}
+
+/// Open a session and switch the sidebar to its details and agents.
+async fn show_session_details(mut ui: Signal<Ui>, id: SessionId) {
+    network::open_session(ui, id, false).await;
+    let mut state = ui.write();
+    state.sidebar.expanded_mode = SidebarMode::Details;
+    state.sidebar.collapsed = false;
 }
 
 pub(crate) fn probe_label(probe: &Probe) -> String {
@@ -427,6 +463,8 @@ pub(crate) fn ProbeName(id: ProbeId) -> Element {
 #[component]
 fn Details() -> Element {
     let mut ui = use_context::<Signal<Ui>>();
+    let mut agent_menu = use_signal(|| None::<(TranscriptTarget, f64, f64)>);
+    let mut info = use_signal(|| None::<TranscriptTarget>);
     use_ui_subscription(|state| {
         (
             state.workspace.active_tab().map(|tab| tab.target),
@@ -493,12 +531,36 @@ fn Details() -> Element {
                 }
             }
             for row in tree{
-                button{class:"agent",style:"padding-left:{8+row.depth*14}px",disabled:row.context_only,
-                    onclick:move |_|ui.write().open(TranscriptTarget{session_id:target.session_id,agent_id:row.agent.id},false),
-                    span{class:"agent-name","{row.agent.name}" if row.context_only{" (hidden ancestor)"}}
-                    if row.agent.state == AgentState::Running { span{class:"tab-spinner",role:"img","aria-label":"Agent running"} }
+                {
+                    let agent = TranscriptTarget{session_id:target.session_id,agent_id:row.agent.id};
+                        rsx! {
+                            button{key:"{agent.agent_id.0}",class:"agent",style:"padding-left:{8+row.depth*14}px",disabled:row.context_only,
+                                onclick:move |_|ui.write().open(agent,false),
+                                oncontextmenu:move |event: MouseEvent| {
+                                    event.prevent_default();
+                                    event.stop_propagation();
+                                    let point = event.client_coordinates();
+                                    agent_menu.set(Some((agent, point.x, point.y)));
+                                },
+                                span{class:"agent-name","{row.agent.name}" if row.context_only{" (hidden ancestor)"}}
+                                if row.agent.state == AgentState::Running { span{class:"tab-spinner",role:"img","aria-label":"Agent running"} }
+                            }
+                        }
                 }
             }
+        }
+        if let Some((agent, x, y)) = agent_menu() {
+            crate::row_actions::RowMenu { x, y,
+                items: vec![crate::row_actions::RowMenuItem::new("Info")],
+                onselect: move |_| {
+                    agent_menu.set(None);
+                    info.set(Some(agent));
+                },
+                onclose: move |_| agent_menu.set(None),
+            }
+        }
+        if let Some(agent) = info() {
+            crate::agent_info::AgentInfo { key:"{agent.session_id.0}:{agent.agent_id.0}", target: agent, onclose: move |_| info.set(None) }
         }
     }
 }

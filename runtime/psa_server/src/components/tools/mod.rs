@@ -42,6 +42,8 @@ pub use subagents::{CreateAgent, ListAgents, SendMessage, WaitMessage};
 pub use write::Write;
 
 #[cfg(test)]
+mod definition_persistence_tests;
+#[cfg(test)]
 mod tests;
 
 /// Implements the untyped tool boundary for an inherent typed execution method.
@@ -119,7 +121,7 @@ pub struct ToolOutput {
     /// CodeMode returns the object even if `error` is set.
     pub(crate) codemode_fields: Option<serde_json::Map<String, serde_json::Value>>,
     /// Private events committed atomically with this tool result.
-    pub(crate) private_events: Vec<crate::db::PrivateEvent>,
+    pub(crate) private_events: Vec<psa_store::PrivateEvent>,
     /// Agent message this call delivered; client-facing only.
     pub(crate) delivery: Option<psa::api::events::AgentMessageLink>,
 }

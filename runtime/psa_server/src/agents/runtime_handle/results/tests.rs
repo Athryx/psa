@@ -4,8 +4,8 @@ use crate::agents::{
     publication::status_event,
     runtime_handle::tests::{Fixture, create_agent_request},
 };
-use crate::db::NewEvent;
 use psa::api::{AgentResult, ForkPoint, ForkSession};
+use psa_store::NewEvent;
 use std::{
     future::Future,
     pin::Pin,
@@ -443,7 +443,7 @@ async fn dropping_a_wait_has_no_side_effects_and_scope_is_validated() {
     let other_session = fixture.create_session().await;
     assert!(matches!(
         finish(sessions.await_result(other_session.id, agent, None, &mut cancellation)).await,
-        Err(RuntimeError::Database(crate::db::DbError::NotFound { .. }))
+        Err(RuntimeError::Database(psa_store::DbError::NotFound { .. }))
     ));
     append(sessions, agent, &[result("not consumed")]).await;
     assert!(
@@ -495,7 +495,7 @@ async fn standalone_runtime_shutdown_releases_result_waits() {
     let runtime = crate::agents::supervisor::Runtime::start(
         fixture.sessions.database.clone(),
         fixture.sessions.publication.clone(),
-        crate::providers::ProviderRegistry::default(),
+        psa_models::ProviderRegistry::default(),
         crate::probes::ProbeRegistry::start("test-key".into()),
     )
     .await

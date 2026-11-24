@@ -198,9 +198,8 @@ async fn ordinary_runs_record_one_text_result_including_token_limited_answers() 
         .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let providers = ProviderRegistry::default().with_catalog_source(
-        psa_server::models::CatalogSource::new(&format!("http://{address}")).unwrap(),
-    );
+    let providers = ProviderRegistry::default()
+        .with_catalog_source(psa_models::CatalogSource::new(&format!("http://{address}")).unwrap());
     let (stop, stopped) = oneshot::channel();
     let server = tokio::spawn(psa_server::server::serve_with_configuration(
         listener,

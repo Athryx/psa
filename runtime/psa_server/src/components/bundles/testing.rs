@@ -140,7 +140,7 @@ pub(crate) async fn install_owned(
         Ok(())
     };
     let result = install_all();
-    InstalledComponents::finish_install(installer, bundles, result).await
+    InstalledComponents::finish_install(installer, bundles, Vec::new(), result).await
 }
 
 pub struct SharedTool {

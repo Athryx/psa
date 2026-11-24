@@ -1,0 +1,21 @@
+[package]
+name = "psa_config"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+llm_api = { path = "../../lib/llm_api" }
+psa = { path = "../../lib/psa" }
+psa_shared = { path = "../psa_shared" }
+directories = "6"
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-util"] }
+toml = "0.9"
+toml_edit = "0.23"
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

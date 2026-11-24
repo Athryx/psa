@@ -4,7 +4,7 @@
 //! text, which makes them cheap enough to run over large amounts of data. Every
 //! call is recorded as a public `DecisionCall` event.
 
-use crate::db::NewEvent;
+use psa_store::NewEvent;
 use std::{
     collections::BTreeMap,
     time::{Duration, Instant},

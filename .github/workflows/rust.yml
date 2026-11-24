@@ -41,5 +41,5 @@ jobs:
           export DATABASE_URL="sqlite://$(mktemp -d)/psa-schema.sqlite3"
           export SQLX_OFFLINE=false
           sqlx database create
-          sqlx migrate run --source runtime/psa_server/migrations
+          sqlx migrate run --source runtime/psa_store/migrations
           cargo sqlx prepare --check --workspace -- --all-targets

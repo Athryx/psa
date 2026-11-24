@@ -13,8 +13,9 @@ use super::{
     publication::Publication,
     supervisor::{RuntimeError, SupervisorClient, SupervisorCommand},
 };
-use crate::{components::cancellation::Cancellation, db::Database, sessions};
+use crate::components::cancellation::Cancellation;
 use psa::api::{self as api, AgentId, SessionId};
+use psa_store::Database;
 
 mod configurations;
 mod results;
@@ -25,7 +26,7 @@ pub struct RuntimeHandle {
     publication: Publication,
     pub(crate) commands: SupervisorClient,
     queries: ClientQueriesHandle,
-    catalog: Option<crate::models::ModelCatalog>,
+    catalog: Option<psa_models::ModelCatalog>,
     configuration: Option<crate::config_registry::ConfigRegistry>,
     probes: Option<crate::probes::ProbeRegistry>,
     /// Rescans and config writes take it exclusively; agent creation downgrades
@@ -62,7 +63,7 @@ impl RuntimeHandle {
         self
     }
 
-    pub(crate) fn with_catalog(mut self, catalog: Option<crate::models::ModelCatalog>) -> Self {
+    pub(crate) fn with_catalog(mut self, catalog: Option<psa_models::ModelCatalog>) -> Self {
         self.catalog = catalog;
         self
     }
@@ -77,7 +78,7 @@ impl RuntimeHandle {
         self
     }
 
-    pub fn model_catalog(&self) -> Option<&crate::models::ModelCatalog> {
+    pub fn model_catalog(&self) -> Option<&psa_models::ModelCatalog> {
         self.catalog.as_ref()
     }
 
@@ -124,7 +125,7 @@ impl RuntimeHandle {
 
     pub async fn create_agent_definition(
         &self,
-        request: crate::db::CreateAgentDefinition,
+        request: psa_store::CreateAgentDefinition,
     ) -> Result<api::AgentDefinition, RuntimeError> {
         let mut cursor = self.database.write().await?;
         let definition = cursor.create_agent_definition(request).await?;
@@ -145,7 +146,7 @@ impl RuntimeHandle {
     pub async fn create_session(
         &self,
         request: api::CreateSession,
-    ) -> Result<sessions::Session, RuntimeError> {
+    ) -> Result<psa_store::Session, RuntimeError> {
         let model_config = request
             .model_config
             .unwrap_or_else(|| self.default_model_config.clone());
@@ -157,7 +158,7 @@ impl RuntimeHandle {
         let publication = self.publication.lock().await;
         let mut cursor = self.database.write().await?;
         let session = cursor
-            .create_session(sessions::NewSession {
+            .create_session(psa_store::NewSession {
                 name: request.name,
                 working_directory: request.working_directory,
                 probe_id: request.probe_id,
@@ -179,7 +180,7 @@ impl RuntimeHandle {
         Ok(session)
     }
 
-    pub async fn get_session(&self, id: SessionId) -> Result<sessions::Session, RuntimeError> {
+    pub async fn get_session(&self, id: SessionId) -> Result<psa_store::Session, RuntimeError> {
         let mut cursor = self.database.read().await?;
         let session = cursor.get_session(id).await?;
         cursor.close().await?;
@@ -191,7 +192,7 @@ impl RuntimeHandle {
     pub async fn list_sessions(
         &self,
         parent: Option<SessionId>,
-    ) -> Result<Vec<sessions::Session>, RuntimeError> {
+    ) -> Result<Vec<psa_store::Session>, RuntimeError> {
         let mut cursor = self.database.read().await?;
         let sessions = cursor.list_sessions(parent).await?;
         cursor.close().await?;
@@ -203,7 +204,7 @@ impl RuntimeHandle {
         &self,
         id: SessionId,
         request: api::UpdateSession,
-    ) -> Result<sessions::Session, RuntimeError> {
+    ) -> Result<psa_store::Session, RuntimeError> {
         let _guard = self.configuration_gate.write().await;
         self.validate_decision_model(request.decision_model.as_ref())
             .await?;
@@ -223,7 +224,7 @@ impl RuntimeHandle {
         let session = cursor
             .update_session(
                 id,
-                sessions::SessionUpdate {
+                psa_store::SessionUpdate {
                     name: request.name,
                     working_directory: request.working_directory,
                     model_config: request.model_config,
@@ -252,7 +253,7 @@ impl RuntimeHandle {
         &self,
         id: SessionId,
         request: api::ForkSession,
-    ) -> Result<sessions::ForkedSession, RuntimeError> {
+    ) -> Result<psa_store::ForkedSession, RuntimeError> {
         let _guard = self.configuration_gate.write().await;
         self.validate_decision_model(request.metadata.decision_model.as_ref())
             .await?;
@@ -273,14 +274,14 @@ impl RuntimeHandle {
         let fork = cursor
             .fork_session(
                 id,
-                sessions::SessionFork {
+                psa_store::SessionFork {
                     point: match request.point {
-                        api::ForkPoint::Head => sessions::ForkPoint::Head,
+                        api::ForkPoint::Head => psa_store::ForkPoint::Head,
                         api::ForkPoint::ThroughEvent { agent_id, event_id } => {
-                            sessions::ForkPoint::ThroughEvent { agent_id, event_id }
+                            psa_store::ForkPoint::ThroughEvent { agent_id, event_id }
                         }
                     },
-                    metadata: sessions::SessionUpdate {
+                    metadata: psa_store::SessionUpdate {
                         name: request.metadata.name,
                         working_directory: request.metadata.working_directory,
                         model_config: request.metadata.model_config,
@@ -330,7 +331,7 @@ impl RuntimeHandle {
         publication.publish(api::StreamMessage::SessionUpdated {
             session: session.clone().into_api(false),
         });
-        Ok(sessions::ForkedSession { session, agents })
+        Ok(psa_store::ForkedSession { session, agents })
     }
 
     async fn commit_agent(
@@ -398,7 +399,7 @@ impl RuntimeHandle {
         &self,
         session: SessionId,
         agent: AgentId,
-        range: crate::db::EventRange,
+        range: psa_store::EventRange,
     ) -> Result<Vec<api::events::Event>, RuntimeError> {
         let mut cursor = self.database.read().await?;
         cursor.require_agent_session(session, agent).await?;
@@ -464,6 +465,17 @@ impl RuntimeHandle {
                 }
             }
         }
+    }
+
+    pub async fn describe_components(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+    ) -> Result<api::AgentComponents, RuntimeError> {
+        self.commands
+            .describe_components(session, agent)
+            .await
+            .map_err(|_| RuntimeError::Unavailable)?
     }
 
     pub async fn is_busy(&self, session: SessionId) -> Result<bool, RuntimeError> {
@@ -598,8 +610,9 @@ impl RuntimeHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{agents::supervisor::SupervisorCommand, db::DbError};
+    use crate::agents::supervisor::SupervisorCommand;
     use psa::api::events::{EventId, EventType, StatusChange};
+    use psa_store::DbError;
     use std::time::Duration;
 
     pub(super) struct Fixture {
@@ -632,7 +645,7 @@ mod tests {
             }
         }
 
-        pub(super) async fn create_session(&self) -> sessions::Session {
+        pub(super) async fn create_session(&self) -> psa_store::Session {
             self.sessions
                 .create_session(api::CreateSession {
                     decision_model: None,
@@ -712,9 +725,9 @@ mod tests {
             .add_events(
                 agent.id,
                 &[
-                    crate::db::NewEvent::new(EventType::Model(crate::test_support::model_config())),
-                    crate::db::NewEvent::new(EventType::NewContext),
-                    crate::db::NewEvent::new(EventType::StatusChange(StatusChange {
+                    psa_store::NewEvent::new(EventType::Model(crate::test_support::model_config())),
+                    psa_store::NewEvent::new(EventType::NewContext),
+                    psa_store::NewEvent::new(EventType::StatusChange(StatusChange {
                         new_status: api::AgentState::Running,
                         reason: None,
                     })),

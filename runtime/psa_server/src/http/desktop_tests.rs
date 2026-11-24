@@ -1,18 +1,15 @@
 use super::*;
-use crate::db::NewEvent;
-use crate::{
-    agents::{NewAgent, supervisor::Runtime},
-    providers::ProviderRegistry,
-    sessions,
-};
+use crate::agents::{NewAgent, supervisor::Runtime};
 use futures_util::StreamExt;
 use psa::api::events::Log;
+use psa_models::ProviderRegistry;
+use psa_store::NewEvent;
 
 pub(super) async fn fixture() -> (
     tempfile::TempDir,
     AppState,
     Runtime,
-    sessions::Session,
+    psa_store::Session,
     crate::agents::Agent,
 ) {
     let dir = tempfile::tempdir().unwrap();
@@ -22,7 +19,7 @@ pub(super) async fn fixture() -> (
     crate::test_support::register_probe(&db).await;
     let mut cursor = db.write().await.unwrap();
     let session = cursor
-        .create_session(sessions::NewSession {
+        .create_session(psa_store::NewSession {
             decision_model: None,
             probe_id: api::ProbeId(api::probes::Uuid::nil()),
             project_id: None,
@@ -319,8 +316,8 @@ async fn summary_keysets_preserve_roots_include_forks_and_reject_cross_scope_cur
     let fork = cursor
         .fork_session(
             session.id,
-            sessions::SessionFork {
-                point: sessions::ForkPoint::Head,
+            psa_store::SessionFork {
+                point: psa_store::ForkPoint::Head,
                 metadata: Default::default(),
             },
         )

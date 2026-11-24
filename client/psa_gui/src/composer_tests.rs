@@ -215,17 +215,16 @@ fn key(dom: &mut VirtualDom, id: ElementId, key: Key) {
 }
 
 fn info_fixture() -> Element {
-    let open = use_signal(|| true);
-    rsx! { if open() { AgentInfo { name:"worker".to_string(), template:None, definition_id:None, path:None, probe:None, model:None, effort:None, usage:None, open } } }
+    let mut open = use_signal(|| true);
+    rsx! { if open() { crate::agent_info::DraftAgentInfo { name:"worker".to_string(), template:None, path:None, probe:None, model:None, effort:None, onclose:move |_| open.set(false) } } }
 }
 
 fn info_cache_write_fixture() -> Element {
-    let open = use_signal(|| true);
-    let usage = Usage {
+    let usage = llm_api::api::Usage {
         cache_write_tokens: Some(42),
-        ..Usage::zero()
+        ..llm_api::api::Usage::zero()
     };
-    rsx! { AgentInfo { name:"worker".to_string(), template:None, definition_id:None, path:None, probe:None, model:None, effort:None, usage:Some(usage), open } }
+    rsx! { crate::agent_info::UsageGrid { usage:Some(usage) } }
 }
 
 #[test]
@@ -299,6 +298,7 @@ fn info_command_shows_agent_usage_without_sending() {
 
 #[test]
 fn info_token_breakdown_preserves_unknown_and_rejects_inconsistent_counts() {
+    use crate::agent_info::token_difference;
     assert_eq!(token_difference(Some(100), Some(25)), Some(75));
     assert_eq!(token_difference(None, Some(25)), None);
     assert_eq!(token_difference(Some(100), None), None);

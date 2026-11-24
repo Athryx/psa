@@ -74,7 +74,8 @@ fn rules_and_tool_directions_are_independent() {
 
 #[test]
 fn codemode_history_guidance_is_published_in_the_rules_system_message() {
-    use crate::components::{bundles::codemode::MontyEngine, tools::CodeMode};
+    use crate::components::tools::CodeMode;
+    use psa_codemode::MontyEngine;
     use std::sync::Arc;
 
     let tool = CodeMode::new(Arc::new(MontyEngine::new("monty")));

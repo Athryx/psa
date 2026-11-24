@@ -260,6 +260,71 @@ pub enum ToolId {
     ListSessions,
 }
 
+/// When an installed hook runs in an agent's lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum HookStage {
+    /// Once, when a new agent is created.
+    AgentCreate,
+    /// After each session metadata update, including for idle agents.
+    SessionUpdate,
+    /// Before each inference request.
+    BeforeRequest,
+    /// After each inference request.
+    AfterRequest,
+    /// When a submitted agent command, such as `Compact`, is dispatched.
+    Command,
+}
+
+/// A model-facing tool as installed for one agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledTool {
+    /// Native tool implementation identifier.
+    pub id: ToolId,
+    /// Model-facing tool name.
+    pub name: String,
+    /// Model-facing description.
+    pub description: String,
+}
+
+/// A lifecycle or command hook as installed for one agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledHook {
+    /// When the hook runs.
+    pub stage: HookStage,
+    /// Implementation name, such as `ProjectContext`.
+    pub name: String,
+}
+
+/// A function callable from CodeMode as installed for one agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledCodeModeFunction {
+    /// Python-facing function name.
+    pub name: String,
+    /// Function description.
+    pub description: String,
+    /// Listed only by `help`, not in the system prompt.
+    pub help_only: bool,
+}
+
+/// The components one bundle installed for an agent, in installation order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledBundle {
+    /// Construction configuration from the agent's definition.
+    pub config: BundleConfig,
+    pub tools: Vec<InstalledTool>,
+    pub hooks: Vec<InstalledHook>,
+    pub codemode_functions: Vec<InstalledCodeModeFunction>,
+}
+
+/// Every component installed for an agent, grouped by the bundle that owns it.
+/// Bundles may install nothing for some agents, such as interactive-only bundles
+/// on noninteractive agents.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentComponents {
+    /// Bundles in definition order.
+    pub bundles: Vec<InstalledBundle>,
+}
+
 /// A configuration cannot safely establish its selected completion policy.
 #[derive(Debug, thiserror::Error)]
 pub enum CompletionConfigurationError {

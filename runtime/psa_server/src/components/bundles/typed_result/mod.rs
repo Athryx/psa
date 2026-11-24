@@ -5,9 +5,9 @@ use crate::{
         hooks::{HookKind, RequireResult},
         tools::{RecordResult, ToolKind},
     },
-    sessions::Session,
 };
 use llm_api::api::ToolSchema;
+use psa_store::Session;
 use std::sync::Arc;
 
 mod schema;

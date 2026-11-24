@@ -1,6 +1,6 @@
 use super::*;
-use crate::db::NewEvent;
-use crate::sessions::NewSession;
+use psa_store::NewEvent;
+use psa_store::NewSession;
 use std::time::Duration;
 
 #[tokio::test]

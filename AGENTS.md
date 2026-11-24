@@ -10,15 +10,19 @@ The codebase uses async code, not blocking sync.
 # Crates
 
 The following crates are present in the workspace. Runtime crates live under
-`runtime/` (`psa_server`, `psa_shared`, `psa_probe`), reusable libraries under `lib/`
+`runtime/` (`psa_server`, `psa_store`, `psa_config`, `psa_models`, `psa_codemode`, `psa_shared`, `psa_probe`), reusable libraries under `lib/`
 (`psa`, `llm_api`, `actors`, `actors_macros`), and clients under `client/`:
 - `client_shared`: UI-independent client projections, workspace state, and settings.
 - `psa_gui`: shared Dioxus UI and a small platform-services interface; no native renderer.
 - `psa_desktop`: desktop executable and settings persistence; enable `native` for the WebView renderer.
 - `llm_api`: a generic wrapper over different llm api types, like OpenAI responses and completions, low level close to the api.
 - `psa_server`: main server managing sessions and calling into `llm_api` to make inference requests.
+- `psa_store`: SQLite persistence for the server (cursors, sessions, agents, events, configurations, migrations); independent of the agent runtime.
+- `psa_config`: formats of data-directory files (layout, `auth.toml`, server `config.toml` schema and defaults, agent definition files); no runtime behaviour.
+- `psa_models`: LLM provider clients from credentials (`ProviderRegistry`) and the persistent model catalog.
+- `psa_codemode`: the Monty-based CodeMode engine and Python stub/result-class rendering; the server supplies checkpoints and host functions through `CodeModeHost`.
 - `psa`: client library for the psa server. `psa::api` defines the wire types and routes clients and probes use, plus a thin HTTP/SSE `Client`; the crate root adds a higher-level layer (`Context`, session and agent handles, agent specs, event ranges) for programs driving agents.
-- `psa_shared`: shared implementation utilities for the server and probe, including probe transport and local configuration locking.
+- `psa_shared`: shared implementation utilities for the server and probe, including probe transport, local configuration locking, invocation `Cancellation`, and extraction of wire `Archive`s.
 - `psa_probe`: standalone Linux probe providing remote file, directory, and process operations over an authenticated WebSocket.
 - `actors`: provides async mailboxes and handles for actor-style message passing, with the `#[mailbox]` macro supplied by `actors_macros`.
 
@@ -45,6 +49,19 @@ instead of expanding the harness to support the tool.
 - Before using or extending the high-level API, read
   `.agent/skills/psa-client/SKILL.md`, and keep that skill in sync with any
   approved change.
+
+# Crate boundaries
+
+`docs/CRATE_LAYOUT.md` defines what each crate owns, which way dependencies
+point, and where new code belongs. Read it before adding modules, moving code,
+or adding dependencies between workspace crates, and follow it.
+
+- If a task seems to need a different boundary, stop and ask the user first.
+  Describe the change and why. Examples of such changes are a new crate, a new
+  dependency edge between workspace crates (for example `psa_probe` depending
+  on server-side crates), or moving a responsibility to another crate.
+- When the user approves a boundary change, update `docs/CRATE_LAYOUT.md` and
+  the crate list above in the same change.
 
 # Architecture
 

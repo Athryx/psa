@@ -1,5 +1,6 @@
-use psa::api::{self as api, ClientError, CreateSandbox, Mount, SandboxState};
-use psa_server::{db::Database, probes::ProbeRegistry};
+use psa::api::{self as api, ClientError, CreateSandbox, HostPolicy, Mount, SandboxState};
+use psa_server::probes::ProbeRegistry;
+use psa_store::Database;
 use tokio::{net::TcpListener, sync::oneshot};
 
 #[path = "support/fake_probe.rs"]
@@ -26,6 +27,8 @@ fn request(image: Option<&str>, name: &str) -> CreateSandbox {
             host_path: "/src".into(),
             container_path: "/work".into(),
             writable: true,
+            host: HostPolicy::Existing,
+            seed: None,
         }],
         start: true,
     }
@@ -145,6 +148,26 @@ async fn sandboxes_follow_manager_lifecycle_and_report_errors() {
     ] {
         assert_api_error(result.unwrap_err(), 409, "sandbox_deleted");
     }
+
+    // Seeds larger than one probe message stream after the request, and the
+    // stored record leaves them out.
+    let large = (0..3 * 1024 * 1024u32)
+        .map(|index| (index.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect::<Vec<_>>();
+    let mut seeded = request(Some("img"), "seeded");
+    seeded.mounts[0].host = HostPolicy::Create;
+    seeded.mounts[0].seed = Some(api::Archive {
+        tar_data: large,
+        compression: api::ArchiveCompression::None,
+    });
+    seeded.mounts.push(Mount {
+        container_path: "/other".into(),
+        seed: Some(api::Archive::builder().file("a", "b").build().unwrap()),
+        ..seeded.mounts[0].clone()
+    });
+    let seeded = client.create_sandbox(manager, &seeded).await.unwrap();
+    assert!(seeded.mounts.iter().all(|mount| mount.seed.is_none()));
+    assert_eq!(seeded.mounts[0].host, HostPolicy::Create);
 
     probe.disconnect(&probes).await;
     let _ = stop.send(());

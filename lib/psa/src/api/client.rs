@@ -458,6 +458,20 @@ impl Client {
             .await
     }
 
+    /// Fetch the components each of the agent's bundles installed. The server
+    /// installs them if the agent has not run since it started.
+    pub async fn get_agent_components(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+    ) -> Result<crate::api::AgentComponents, ClientError> {
+        self.get(
+            &routes::agent_path(routes::AGENT_COMPONENTS, session, agent),
+            &(),
+        )
+        .await
+    }
+
     /// Fetch the effective model and last inference usage for one agent.
     pub async fn get_agent_context_state(
         &self,

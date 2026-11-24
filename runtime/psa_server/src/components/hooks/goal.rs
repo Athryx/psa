@@ -4,7 +4,6 @@ use super::{
     AgentCommand, CommandHook, CommandResult, Hook, HookError,
     stop_without_tools::build_text_completion_events,
 };
-use crate::db::NewEvent;
 use crate::{
     agents::{AgentState, agent_context::AgentContext, publication::status_event},
     components::{
@@ -17,6 +16,7 @@ use psa::api::{
     CommandOutcome, GoalCommand,
     events::{EventType, Message},
 };
+use psa_store::NewEvent;
 use std::time::Duration;
 
 #[derive(Clone)]
@@ -299,13 +299,12 @@ mod tests {
                 bundles::{InstalledComponents, goal::load_goal_state},
                 tools::Tool,
             },
-            db::Database,
             probes::ProbeRegistry,
-            providers::ProviderRegistry,
-            sessions::NewSession,
             test_support as support,
         };
         use psa::api::events::{InferenceResultEnd, InferenceResultStart};
+        use psa_models::ProviderRegistry;
+        use psa_store::{Database, NewSession};
         let directory = tempfile::tempdir().unwrap();
         let database = Database::open(directory.path().join("goal-hook.sqlite3"))
             .await
@@ -397,7 +396,7 @@ mod tests {
                     "goal-{interactive}-{interactive_only}-{reason:?}-{active}-{completed}-{interrupted}-{cancelled}"
                 );
                 let definition = cursor
-                    .create_agent_definition(crate::db::CreateAgentDefinition {
+                    .create_agent_definition(psa_store::CreateAgentDefinition {
                         name,
                         bundles: vec![psa::api::BundleConfig::Goal { interactive_only }],
                         ..Default::default()

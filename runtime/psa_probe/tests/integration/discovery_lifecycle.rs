@@ -23,8 +23,10 @@ fn upload(version: &str) -> NewSkill {
             config_group: ConfigGroup::Global,
             name: "uploaded".into(),
         },
-        tar_data: archive.into_inner().unwrap(),
-        compression: Default::default(),
+        archive: psa::api::Archive {
+            tar_data: archive.into_inner().unwrap(),
+            compression: Default::default(),
+        },
     }
 }
 

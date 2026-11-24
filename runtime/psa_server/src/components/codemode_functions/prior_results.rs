@@ -1,4 +1,4 @@
-use crate::db::EventRange;
+use psa_store::EventRange;
 use std::{collections::HashSet, time::Duration};
 
 use llm_api::api::{ContentBlock, ToolSchema};
@@ -11,11 +11,8 @@ use super::{
     CodeModeError, CodeModeFunction, CodeModeFunctionDefinition, CodeModeFunctionResult,
     typed_codemode_execute,
 };
-use crate::{
-    agents::agent_context::AgentContext,
-    components::cancellation::Cancellation,
-    db::{PrivateEvent, PrivateEventKind},
-};
+use crate::{agents::agent_context::AgentContext, components::cancellation::Cancellation};
+use psa_store::{PrivateEvent, PrivateEventKind};
 
 const EVENT_PAGE_SIZE: u32 = 128;
 

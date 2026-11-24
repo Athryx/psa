@@ -8,7 +8,6 @@ use super::{
     runtime_handle::RuntimeHandle,
     supervisor::{BoundaryReply, CommandWork, LifecycleHook, SupervisorClient},
 };
-use crate::db::NewEvent;
 use crate::{
     components::{
         bundles::InstalledComponents,
@@ -17,11 +16,8 @@ use crate::{
         hooks::{run_command_hooks, run_hooks},
         tools::{self, ToolKind, failed_tool_result},
     },
-    db::{AddEventResult, Database, EventBatchItem},
     probes::{ProbeHandle, ProbeRegistry},
     prompts,
-    providers::ProviderRegistry,
-    sessions::Session,
 };
 use actors::UnboundedMailbox;
 use futures_util::FutureExt;
@@ -30,6 +26,9 @@ use llm_api::api::{
     RequestConfig,
 };
 use psa::api::events::*;
+use psa_models::ProviderRegistry;
+use psa_store::NewEvent;
+use psa_store::{AddEventResult, Database, EventBatchItem, Session};
 use std::{sync::Arc, time::Instant};
 use tokio::{sync::Mutex, task::JoinHandle};
 
@@ -835,5 +834,7 @@ pub(crate) async fn run_worker(
 
 #[cfg(test)]
 mod bundle_tests;
+#[cfg(test)]
+mod result_recovery_tests;
 #[cfg(test)]
 mod tests;

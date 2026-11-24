@@ -269,7 +269,7 @@ async fn startup_inherits_session_model_and_updates_leave_explicit_definition_mo
     .unwrap();
     let definition = runtime
         .handle
-        .create_agent_definition(crate::db::CreateAgentDefinition {
+        .create_agent_definition(psa_store::CreateAgentDefinition {
             name: "explicit".into(),
             model: explicit_model.clone().into(),
             bundles: vec![
@@ -458,7 +458,7 @@ async fn subagent_identity_is_created_once_and_preserved_on_reload_restart_and_f
     let runtime = fixture.start().await;
     let definition = runtime
         .handle
-        .create_agent_definition(crate::db::CreateAgentDefinition {
+        .create_agent_definition(psa_store::CreateAgentDefinition {
             name: "subagents".into(),
             bundles: vec![
                 psa::api::BundleConfig::Startup {

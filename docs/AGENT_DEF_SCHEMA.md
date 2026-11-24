@@ -3,9 +3,10 @@
 ## Implemented API and identity
 
 The configuration API is implemented in `lib/psa/src/api/configs.rs` and `lib/psa/src/api/definitions.rs`, with HTTP
-routes in `runtime/psa_server/src/http.rs` and a thin `psa::api::Client`. Discovery is in
+routes in `runtime/psa_server/src/http.rs` and a thin `psa::api::Client`. The agent file format is
+in `runtime/psa_config/src/agent_definition.rs` and discovery is in
 `runtime/psa_server/src/config_registry`; registration and immutable graph resolution are
-in `runtime/psa_server/src/db/configurations.rs`.
+in `runtime/psa_store/src/configurations.rs`.
 
 - External identity is `ConfigId { config_group, name }`, separately namespaced
   for agents and skills. Upsert replaces the current configuration for that ID.
@@ -105,7 +106,8 @@ enum SkillLocation {
     Global(PathBuf),
     Probe { id: ProbeId, path: PathBuf },
 }
-struct NewSkill { config_id: ConfigId, tar_data: Vec<u8> }
+struct NewSkill { config_id: ConfigId, archive: Archive }
+struct Archive { tar_data: Vec<u8>, compression: ArchiveCompression }
 ```
 
 `SkillLocation::Global` means server-owned storage, independent of the skill's
@@ -115,8 +117,9 @@ they are never copied to another probe. Cross-probe use fails explicitly.
 parsed metadata and location; HTTP upload callers cannot assert server paths.
 
 Uploads contain a tar of the complete skill directory, including supporting
-files, with `SKILL.md` at its root. `tar_data` serializes as a standard base64
-string; `compression` is `None` (default) or `Zstd`. Archives are limited to
+files, with `SKILL.md` at its root, as an `Archive` (the format sandbox mount
+seeds share). `tar_data` serializes as a standard base64 string; `compression`
+is `None` (default) or `Zstd`. Archives are limited to
 256 MiB uncompressed and 10,000 entries. `archive_sha256` on the registered
 skill is the SHA-256 of the uncompressed tar.
 Links, special files, escaping and
@@ -287,7 +290,7 @@ file refresh resolves omitted fields again. Existing snapshots never change.
 
 ## TOML input and inclusions
 
-`AgentDefinitionConfig` is the loader type, lowered to `AgentConfig`. Its group
+`psa_config::agent_definition::AgentDefinitionConfig` is the loader type, lowered to `AgentConfig`. Its group
 comes from discovery and is not repeated in the file. Ordinary agent fields
 match API input, including the omission-aware bundle list; both
 loaders normalize against the same server defaults. The file-specific inclusion
@@ -328,7 +331,7 @@ struct SkillInclusionsConfig {
 - Skill metadata is `SKILL.md` frontmatter, not separate skill TOML.
 
 This fixed-model TOML representation is accepted by
-`toml::from_str::<AgentDefinitionConfig>` (the same parser used by discovery):
+`AgentDefinitionConfig::parse` (the same parser used by discovery):
 
 ```toml
 name = "worker"

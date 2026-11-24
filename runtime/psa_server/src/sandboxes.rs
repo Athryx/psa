@@ -5,7 +5,6 @@
 //! Deleting a sandbox removes its container but keeps the record, marked
 //! deleted, so its probe and sessions stay listed under the manager.
 use crate::{
-    db::{DbError, SandboxRecord},
     http::{ApiJson, ApiPath, ApiQuery, AppState, HttpError},
     probes::ProbeHandle,
 };
@@ -16,11 +15,13 @@ use axum::{
     routing::{get, post},
 };
 use psa::api::{
-    CreateSandbox, ListSandboxes, Probe, ProbeId, Sandbox, SandboxState, is_valid_sandbox_name,
-    probes::{ContainerStatus, SandboxRequest, SandboxSpec, Uuid},
-    routes,
+    CreateSandbox, ListSandboxes, MAX_SANDBOX_SEED_BYTES, Mount, Probe, ProbeId, Sandbox,
+    SandboxState, is_valid_sandbox_name,
+    probes::{ContainerStatus, SandboxRequest, SandboxSpec, SeedTransfer, Uuid},
+    routes, sandbox_seed_bytes,
 };
 use psa_shared::probe_transport::ProbeError;
+use psa_store::{DbError, SandboxRecord};
 use std::{collections::HashMap, time::Duration};
 use time::OffsetDateTime;
 
@@ -29,7 +30,13 @@ const INSPECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub fn client_router() -> Router<AppState> {
     Router::new()
         .route(routes::SANDBOXES, get(list_sandboxes))
-        .route(routes::PROBE_SANDBOXES, post(create_sandbox))
+        .route(
+            routes::PROBE_SANDBOXES,
+            // Seeds are base64 in JSON: 4/3 their size, plus the rest of the request.
+            post(create_sandbox).layer(axum::extract::DefaultBodyLimit::max(
+                MAX_SANDBOX_SEED_BYTES / 3 * 4 + 1024 * 1024,
+            )),
+        )
         .route(routes::SANDBOX, get(get_sandbox).delete(delete_sandbox))
         .route(routes::SANDBOX_START, post(start_sandbox))
         .route(routes::SANDBOX_STOP, post(stop_sandbox))
@@ -156,12 +163,22 @@ async fn create_sandbox(
         )));
     }
 
+    if sandbox_seed_bytes(&request.mounts) > MAX_SANDBOX_SEED_BYTES {
+        return Err(SandboxError::Invalid(format!(
+            "mount seeds exceed {MAX_SANDBOX_SEED_BYTES} bytes in total"
+        )));
+    }
+
+    // Seeds are streamed to the manager after the request and applied once;
+    // the record keeps only the mount layout.
+    let mut mounts = request.mounts;
+    let (transfers, seeds) = take_seeds(&mut mounts);
     let record = SandboxRecord {
         probe_id,
         manager_id,
         name,
         image,
-        mounts: request.mounts,
+        mounts,
         created_at: OffsetDateTime::now_utc(),
         deleted_at: None,
     };
@@ -170,8 +187,9 @@ async fn create_sandbox(
         name: record.name.clone(),
         image: record.image.clone(),
         mounts: record.mounts.clone(),
+        seeds: transfers,
     };
-    handle.sandbox(SandboxRequest::Create { spec }).await?;
+    handle.create_sandbox(spec, &seeds).await?;
 
     // Remove the container again if the record cannot be stored, so no orphan remains.
     if let Err(error) = insert_sandbox(&state, &record).await {
@@ -186,6 +204,24 @@ async fn create_sandbox(
         StatusCode::CREATED,
         Json(refresh_sandbox(&state, record).await),
     ))
+}
+
+/// Remove the seeds from `mounts`, returning their transfer descriptions and data.
+fn take_seeds(mounts: &mut [Mount]) -> (Vec<SeedTransfer>, Vec<Vec<u8>>) {
+    let mut transfers = Vec::new();
+    let mut seeds = Vec::new();
+    for (index, mount) in mounts.iter_mut().enumerate() {
+        let Some(seed) = mount.seed.take() else {
+            continue;
+        };
+        transfers.push(SeedTransfer {
+            mount: index,
+            size: seed.tar_data.len() as u64,
+            compression: seed.compression,
+        });
+        seeds.push(seed.tar_data);
+    }
+    (transfers, seeds)
 }
 
 async fn start_sandbox(

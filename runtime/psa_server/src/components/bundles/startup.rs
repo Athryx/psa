@@ -5,8 +5,8 @@ use crate::{
         CwdHook, DefaultStartupHook, HookKind, ProjectContextHook, SessionModelUpdateHook,
         SkillsHook, ToolDefinitionsHook,
     },
-    sessions::Session,
 };
+use psa_store::Session;
 
 /// Initializes a new root agent's context and keeps its model following the
 /// session. Owns no resources.

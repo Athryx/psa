@@ -1,12 +1,8 @@
 //! Trusted-client HTTP/SSE API. Transcript mutations share the publication gate.
 
-use crate::db::{EventRange, ReadCursor};
-use crate::{
-    agents::{
-        client_queries::ClientQueryError, publication::Publication, runtime_handle::RuntimeHandle,
-        supervisor::RuntimeError,
-    },
-    db::{Database, DbError},
+use crate::agents::{
+    client_queries::ClientQueryError, publication::Publication, runtime_handle::RuntimeHandle,
+    supervisor::RuntimeError,
 };
 use axum::{
     Json, Router,
@@ -19,6 +15,8 @@ use axum::{
     routing::{get, post},
 };
 use psa::api::{self as api, AgentId, SessionId, events::*, routes};
+use psa_store::{Database, DbError};
+use psa_store::{EventRange, ReadCursor};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -106,34 +104,34 @@ pub enum HttpError {
     #[error("{0}")]
     Invalid(String),
     #[error(transparent)]
-    Catalog(#[from] crate::models::CatalogError),
+    Catalog(#[from] psa_models::CatalogError),
     #[error(transparent)]
-    ProviderAuth(#[from] crate::providers::AuthError),
+    ProviderAuth(#[from] psa_models::AuthError),
 }
 
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
-            Self::ProviderAuth(crate::providers::AuthError::InvalidCredential) => {
+            Self::ProviderAuth(psa_models::AuthError::InvalidCredential) => {
                 (StatusCode::BAD_REQUEST, "invalid_input", self.to_string())
             }
-            Self::ProviderAuth(crate::providers::AuthError::Unavailable) => (
+            Self::ProviderAuth(psa_models::AuthError::Unavailable) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "unavailable",
                 self.to_string(),
             ),
-            Self::Catalog(crate::models::CatalogError::NotFound) => {
+            Self::Catalog(psa_models::CatalogError::NotFound) => {
                 (StatusCode::NOT_FOUND, "not_found", self.to_string())
             }
-            Self::Catalog(crate::models::CatalogError::Invalid(_)) => {
+            Self::Catalog(psa_models::CatalogError::Invalid(_)) => {
                 (StatusCode::BAD_REQUEST, "invalid_input", self.to_string())
             }
-            Self::Catalog(crate::models::CatalogError::SyncFailed(_)) => (
+            Self::Catalog(psa_models::CatalogError::SyncFailed(_)) => (
                 StatusCode::BAD_GATEWAY,
                 "catalog_sync_failed",
                 self.to_string(),
             ),
-            Self::Catalog(crate::models::CatalogError::Unavailable) => (
+            Self::Catalog(psa_models::CatalogError::Unavailable) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "unavailable",
                 self.to_string(),
@@ -232,6 +230,7 @@ pub fn router(state: AppState) -> Router {
         .route(routes::FORK, post(fork_session))
         .route(routes::AGENTS, post(create_agent).get(list_agents))
         .route(routes::AGENT, get(get_agent))
+        .route(routes::AGENT_COMPONENTS, get(get_agent_components))
         .route(routes::AGENT_CONTEXT_STATE, get(get_agent_context_state))
         .route(routes::AGENT_USAGE, get(get_agent_model_usage))
         .route(routes::AGENT_RESULTS, get(get_agent_results))
@@ -284,11 +283,11 @@ async fn get_config(State(state): State<AppState>) -> Json<api::ClientConfig> {
     Json(state.client_config)
 }
 
-fn require_catalog(state: &AppState) -> Result<&crate::models::ModelCatalog, HttpError> {
+fn require_catalog(state: &AppState) -> Result<&psa_models::ModelCatalog, HttpError> {
     state
         .runtime
         .model_catalog()
-        .ok_or_else(|| crate::models::CatalogError::Unavailable.into())
+        .ok_or_else(|| psa_models::CatalogError::Unavailable.into())
 }
 
 async fn list_providers(
@@ -329,7 +328,7 @@ async fn lookup_model(
         require_catalog(&state)?
             .model_info(&model)
             .await?
-            .ok_or(crate::models::CatalogError::NotFound)?,
+            .ok_or(psa_models::CatalogError::NotFound)?,
     ))
 }
 
@@ -618,6 +617,17 @@ async fn get_agent(
         .get_agent(SessionId(session), AgentId(agent))
         .await?;
     Ok(Json(agent.into()))
+}
+
+async fn get_agent_components(
+    State(state): State<AppState>,
+    ApiPath((session, agent)): ApiPath<(u64, u64)>,
+) -> Result<Json<api::AgentComponents>, HttpError> {
+    let components = state
+        .runtime
+        .describe_components(SessionId(session), AgentId(agent))
+        .await?;
+    Ok(Json(components))
 }
 
 async fn get_agent_context_state(
@@ -1175,7 +1185,7 @@ mod desktop_tests;
 mod tests {
     use super::*;
     use crate::agents::{NewAgent, supervisor::Runtime};
-    use crate::{providers::ProviderRegistry, sessions};
+    use psa_models::ProviderRegistry;
 
     #[test]
     fn old_probe_connection_query_accepts_new_metadata() {
@@ -1276,6 +1286,7 @@ mod tests {
             ("GET", routes::AGENTS),
             ("POST", routes::AGENTS),
             ("GET", routes::AGENT),
+            ("GET", routes::AGENT_COMPONENTS),
             ("GET", routes::AGENT_CONTEXT_STATE),
             ("GET", routes::AGENT_USAGE),
             ("POST", routes::REQUESTS),
@@ -1523,7 +1534,7 @@ mod tests {
         crate::test_support::register_probe(&db).await;
         let mut cursor = db.write().await.unwrap();
         let session = cursor
-            .create_session(sessions::NewSession {
+            .create_session(psa_store::NewSession {
                 decision_model: None,
                 probe_id: psa::api::ProbeId(psa::api::probes::Uuid::nil()),
                 project_id: None,

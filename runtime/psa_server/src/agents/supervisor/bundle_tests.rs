@@ -5,8 +5,8 @@ use crate::{
         BundleKind,
         testing::{CleanupBehavior, ProbeBundle, ProbeState, install_owned},
     },
-    sessions::NewSession,
 };
+use psa_store::NewSession;
 
 #[tokio::test]
 async fn runtime_shutdown_cleans_retained_owners_and_reports_failures() {
@@ -22,7 +22,7 @@ async fn runtime_shutdown_cleans_retained_owners_and_reports_failures() {
         crate::test_support::register_probe(&db).await;
         let mut cursor = db.write().await.unwrap();
         let definition = cursor
-            .create_agent_definition(crate::db::CreateAgentDefinition {
+            .create_agent_definition(psa_store::CreateAgentDefinition {
                 name: "owner".into(),
                 ..Default::default()
             })

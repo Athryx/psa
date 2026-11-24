@@ -1,12 +1,9 @@
 use super::{ConfigRegistry, DiscoveryError};
-use crate::db::SkillRegistration;
-use psa::api::{ArchiveCompression, NewSkill, SkillLocation, parse_skill_metadata};
+use psa::api::{NewSkill, SkillLocation, parse_skill_metadata};
+use psa_shared::archive::{self, ArchiveError};
+use psa_store::SkillRegistration;
 use sha2::{Digest, Sha256};
-use std::{
-    borrow::Cow,
-    io::Cursor,
-    path::{Component, Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 struct UploadStaging(Option<PathBuf>);
 
@@ -22,94 +19,19 @@ impl Drop for UploadStaging {
     }
 }
 
-struct UploadEntry {
-    path: PathBuf,
-    directory: bool,
-    start: usize,
-    size: usize,
-    mode: u32,
-}
+const SKILL_ARCHIVE_LIMITS: archive::Limits = archive::Limits {
+    max_unpacked_bytes: super::MAX_SKILL_ARCHIVE_BYTES,
+    max_entries: 10_000,
+};
 
-/// The plain tar archive of an upload, decompressed if needed. Decompression is
-/// bounded, so an archive expanding past the limit is rejected, not buffered.
-async fn decode_archive(upload: &NewSkill) -> Result<Cow<'_, [u8]>, DiscoveryError> {
-    let too_large = || DiscoveryError::Invalid("skill archive exceeds 256 MiB uncompressed".into());
-    if upload.tar_data.len() > super::MAX_SKILL_ARCHIVE_BYTES {
-        return Err(too_large());
+fn map_archive_error(error: ArchiveError) -> DiscoveryError {
+    match error {
+        ArchiveError::Invalid(message) => DiscoveryError::Invalid(format!("skill {message}")),
+        ArchiveError::TooLarge(_) => {
+            DiscoveryError::Invalid("skill archive exceeds 256 MiB uncompressed".into())
+        }
+        ArchiveError::Io(error) => DiscoveryError::Io(error),
     }
-    match upload.compression {
-        ArchiveCompression::None => Ok(Cow::Borrowed(&upload.tar_data)),
-        ArchiveCompression::Zstd => {
-            let compressed = upload.tar_data.clone();
-            tokio::task::spawn_blocking(move || {
-                zstd::bulk::decompress(&compressed, super::MAX_SKILL_ARCHIVE_BYTES)
-            })
-            .await
-            .map_err(|error| DiscoveryError::Invalid(error.to_string()))?
-            .map(Cow::Owned)
-            .map_err(|_| too_large())
-        }
-    }
-}
-
-fn validate_archive(data: &[u8]) -> Result<Vec<UploadEntry>, DiscoveryError> {
-    let mut archive = tar::Archive::new(Cursor::new(data));
-    let mut result = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for entry in archive.entries()? {
-        let entry = entry?;
-        let path = entry.path()?.into_owned();
-        if path.is_absolute()
-            || path
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
-        {
-            return Err(DiscoveryError::Invalid("unsafe skill archive path".into()));
-        }
-        let path: PathBuf = path
-            .components()
-            .filter(|component| matches!(component, Component::Normal(_)))
-            .collect();
-        let kind = entry.header().entry_type();
-        if !kind.is_file() && !kind.is_dir() {
-            return Err(DiscoveryError::Invalid(
-                "skill archive only supports files and directories".into(),
-            ));
-        }
-        if path.as_os_str().is_empty() {
-            if kind.is_dir() {
-                continue;
-            }
-            return Err(DiscoveryError::Invalid(
-                "empty skill archive filename".into(),
-            ));
-        }
-        if !seen.insert(path.clone()) {
-            return Err(DiscoveryError::Invalid(
-                "duplicate skill archive path".into(),
-            ));
-        }
-        let start = usize::try_from(entry.raw_file_position())
-            .map_err(|_| DiscoveryError::Invalid("archive offset overflow".into()))?;
-        let size = usize::try_from(entry.size())
-            .map_err(|_| DiscoveryError::Invalid("archive size overflow".into()))?;
-        if start.checked_add(size).is_none_or(|end| end > data.len()) {
-            return Err(DiscoveryError::Invalid("truncated skill archive".into()));
-        }
-        result.push(UploadEntry {
-            path,
-            directory: kind.is_dir(),
-            start,
-            size,
-            mode: entry.header().mode()? & 0o777,
-        });
-        if result.len() > 10_000 {
-            return Err(DiscoveryError::Invalid(
-                "too many skill archive entries".into(),
-            ));
-        }
-    }
-    Ok(result)
 }
 
 impl ConfigRegistry {
@@ -167,24 +89,23 @@ impl ConfigRegistry {
         &self,
         upload: &NewSkill,
     ) -> Result<SkillRegistration, DiscoveryError> {
-        let data = decode_archive(upload).await?;
+        let entries = archive::read_entries(&upload.archive, SKILL_ARCHIVE_LIMITS)
+            .await
+            .map_err(map_archive_error)?;
         let _guard = self.gate.write().await;
-        let entries = validate_archive(&data)?;
         let metadata = entries
+            .entries()
             .iter()
             .find(|entry| entry.path == Path::new("SKILL.md") && !entry.directory)
             .ok_or_else(|| {
                 DiscoveryError::Invalid("skill archive must contain root SKILL.md".into())
             })?;
-        if metadata.size > super::MAX_CONFIG_BYTES {
+        let metadata = entries.contents(metadata);
+        if metadata.len() > super::MAX_CONFIG_BYTES {
             return Err(DiscoveryError::Invalid("SKILL.md exceeds 1 MiB".into()));
         }
         let fallback = PathBuf::from(&upload.config_id.name).join("SKILL.md");
-        let parsed = parse_skill_metadata(
-            &fallback,
-            &data[metadata.start..metadata.start + metadata.size],
-        )
-        .map_err(DiscoveryError::Invalid)?;
+        let parsed = parse_skill_metadata(&fallback, metadata).map_err(DiscoveryError::Invalid)?;
         if parsed.name != upload.config_id.name {
             return Err(DiscoveryError::Invalid(
                 "skill metadata name must match config_id.name".into(),
@@ -202,11 +123,14 @@ impl ConfigRegistry {
         builder.mode(0o700);
         builder.create(&destination).await?;
         let mut staging = UploadStaging(Some(destination.clone()));
-        let result = write_entries(&destination, &entries, &data).await;
+        // The destination is fresh, so extraction cannot merge with or escape into
+        // anything else. A failed extraction removes what it created; the
+        // staging directory itself is removed here.
+        let result = archive::extract_into(&entries, &destination).await;
         if let Err(error) = result {
             cleanup_upload(&destination).await;
             staging.0 = None;
-            return Err(error);
+            return Err(map_archive_error(error));
         }
         staging.0 = None;
         Ok(SkillRegistration {
@@ -215,55 +139,9 @@ impl ConfigRegistry {
             description: parsed.description,
             disable_model_invocation: parsed.disable_model_invocation,
             skill_location: SkillLocation::Global(destination),
-            archive_sha256: Some(format!("{:x}", Sha256::digest(&data))),
+            archive_sha256: Some(format!("{:x}", Sha256::digest(entries.tar()))),
         })
     }
-}
-
-async fn write_entries(
-    root: &Path,
-    entries: &[UploadEntry],
-    data: &[u8],
-) -> Result<(), DiscoveryError> {
-    // No archive links are accepted, and every file is create-only. Conflicting
-    // file/ancestor paths fail without ever escaping this fresh directory.
-    for entry in entries {
-        let path = root.join(&entry.path);
-        if entry.directory {
-            tokio::fs::create_dir_all(&path).await?;
-        } else {
-            tokio::fs::create_dir_all(path.parent().unwrap()).await?;
-            use tokio::io::AsyncWriteExt;
-            let mut file = tokio::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&path)
-                .await?;
-            file.write_all(&data[entry.start..entry.start + entry.size])
-                .await?;
-            file.flush().await?;
-        }
-    }
-    // Apply directory modes last so read-only directories do not block extraction.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut ordered: Vec<_> = entries.iter().collect();
-        ordered.sort_by_key(|entry| {
-            (
-                entry.directory,
-                std::cmp::Reverse(entry.path.components().count()),
-            )
-        });
-        for entry in ordered {
-            tokio::fs::set_permissions(
-                root.join(&entry.path),
-                std::fs::Permissions::from_mode(entry.mode),
-            )
-            .await?;
-        }
-    }
-    Ok(())
 }
 
 async fn cleanup_upload(root: &Path) {
@@ -295,6 +173,7 @@ async fn cleanup_upload(root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use psa::api::{Archive, ArchiveCompression};
 
     #[tokio::test]
     async fn upload_reuses_metadata_parser_and_rejects_links() {
@@ -314,8 +193,10 @@ mod tests {
                 config_group: psa::api::ConfigGroup::Custom("api".into()),
                 name: "example".into(),
             },
-            tar_data: archive.into_inner().unwrap(),
-            compression: ArchiveCompression::None,
+            archive: Archive {
+                tar_data: archive.into_inner().unwrap(),
+                compression: ArchiveCompression::None,
+            },
         };
         let skill = registry.upload_skill(&upload).await.unwrap();
         let SkillLocation::Global(path) = skill.skill_location else {
@@ -332,7 +213,15 @@ mod tests {
         archive
             .append_data(&mut header, "SKILL.md", &[][..])
             .unwrap();
-        assert!(validate_archive(&archive.into_inner().unwrap()).is_err());
+        let linked = NewSkill {
+            archive: Archive {
+                tar_data: archive.into_inner().unwrap(),
+                compression: ArchiveCompression::None,
+            },
+            ..upload.clone()
+        };
+        assert!(matches!(registry.upload_skill(&linked).await,
+            Err(DiscoveryError::Invalid(message)) if message.contains("files and directories")));
 
         let oversized = vec![b'x'; super::super::MAX_CONFIG_BYTES + 1];
         let mut archive = tar::Builder::new(Vec::new());
@@ -344,7 +233,10 @@ mod tests {
             .append_data(&mut header, "SKILL.md", &oversized[..])
             .unwrap();
         let oversized_upload = NewSkill {
-            tar_data: archive.into_inner().unwrap(),
+            archive: Archive {
+                tar_data: archive.into_inner().unwrap(),
+                compression: ArchiveCompression::None,
+            },
             ..upload
         };
         assert!(matches!(registry.upload_skill(&oversized_upload).await,

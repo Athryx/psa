@@ -5,17 +5,13 @@ use crate::{
     input::{BrowserInput, DraftStore, InputKeyEvent, InputSnapshot},
     network,
     reactive::{use_ui_selector, use_ui_subscription},
-    views::ProbeName,
 };
 use client_shared::*;
 use dioxus::{
     core::{AttributeValue, spawn_forever},
     prelude::*,
 };
-use llm_api::{
-    api::Usage,
-    providers::{Effort, Model, ModelConfig},
-};
+use llm_api::providers::{Effort, Model, ModelConfig};
 use psa::api::*;
 
 #[cfg(test)]
@@ -236,99 +232,6 @@ fn info_location(state: &Ui, session_id: SessionId) -> (Option<String>, Option<P
     let path = Some(session.working_directory.to_string_lossy().into_owned());
     let probe = Some(session.probe_id);
     (path, probe)
-}
-
-fn token_difference(total: Option<u64>, part: Option<u64>) -> Option<u64> {
-    total?.checked_sub(part?)
-}
-
-#[component]
-fn ResolvedTemplate(id: AgentDefinitionId) -> Element {
-    let ui = use_context::<Signal<Ui>>();
-    let mut name = use_signal(|| None::<String>);
-    use_effect(move || {
-        name.set(None);
-        spawn(async move {
-            if let Ok(client) = network::client(ui) {
-                if let Ok(snapshot) = client.get_resolved_agent_config(id).await {
-                    name.set(Some(snapshot.config.config_id.name));
-                }
-            }
-        });
-    });
-    rsx! { "{name.read().as_deref().unwrap_or(\"Unknown\")}" }
-}
-
-#[component]
-fn AgentInfo(
-    name: String,
-    template: Option<String>,
-    definition_id: Option<AgentDefinitionId>,
-    path: Option<String>,
-    probe: Option<ProbeId>,
-    model: Option<String>,
-    effort: Option<Effort>,
-    usage: Option<Usage>,
-    /// Input a cache could have served; the hit rate's denominator.
-    #[props(default)]
-    cacheable_input: Option<u64>,
-    mut open: Signal<bool>,
-) -> Element {
-    crate::app::register_modal(open);
-    let count = |value: Option<u64>| value.map(group_digits).unwrap_or_else(|| "Unknown".into());
-    let input = usage.as_ref().and_then(|u| u.input_tokens);
-    let cached = usage.as_ref().and_then(|u| u.cached_input_tokens);
-    let cache_write = usage.as_ref().and_then(|u| u.cache_write_tokens);
-    let hit = usage
-        .as_ref()
-        .and_then(|usage| cache_hit_rate(usage, cacheable_input))
-        .map(|rate| format!("{:.1}%", rate * 100.0))
-        .unwrap_or_else(|| "Unknown".into());
-    let output = usage.as_ref().and_then(|u| u.output_tokens);
-    let thinking = usage.as_ref().and_then(|u| u.reasoning_output_tokens);
-    let effort_class = effort
-        .map(|e| format!("effort-{}", e.as_str()))
-        .unwrap_or_default();
-    rsx! {
-        div { class:"modal-backdrop", onclick:move |event| { event.stop_propagation(); open.set(false); },
-            section { class:"settings agent-info", role:"dialog", "aria-modal":"true", "aria-label":"Agent information", tabindex:"-1",
-                onclick:move |event| event.stop_propagation(),
-                onmounted:move |event| { spawn(async move { let _ = event.data().set_focus(true).await; }); },
-                onkeydown:move |event| { if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); open.set(false); } },
-                crate::modal::ModalHeader { title:"Agent information", close_label:"Close agent information", onclose:move |_| open.set(false) }
-                dl { class:"info-grid",
-                    dt { "Name" } dd { "{name}" }
-                    dt { "Template" } dd { if let Some(id) = definition_id { ResolvedTemplate { id } } else { "{template.as_deref().unwrap_or(\"Unknown\")}" } }
-                    dt { "Path" } dd { "{path.as_deref().unwrap_or(\"Unknown\")}" }
-                    dt { "Probe" } dd { if let Some(id) = probe { ProbeName { id } } else { "Unknown" } }
-                    dt { "Model" } dd { "{model.as_deref().unwrap_or(\"Unknown\")}" " · " span { class:"{effort_class}", "{effort.map(|e| e.as_str()).unwrap_or(\"Unknown\")}" } }
-                    dt { "Input tokens" } dd { "{count(input)}" }
-                    dt { class:"info-detail", "Cached" } dd { "{count(cached)}" }
-                    dt { class:"info-detail", "Cacheable" } dd { "{count(cacheable_input)}" }
-                    dt { class:"info-detail", "Cache hit rate" } dd { "{hit}" }
-                    dt { class:"info-detail", "Uncached" } dd { "{count(token_difference(input, cached))}" }
-                    if let Some(cache_write) = cache_write { dt { class:"info-detail", "Cache write" } dd { "{group_digits(cache_write)}" } }
-                    dt { "Output tokens" } dd { "{count(output)}" }
-                    dt { class:"info-detail", "Thinking" } dd { "{count(thinking)}" }
-                    dt { class:"info-detail", "Non-thinking" } dd { "{count(token_difference(output, thinking))}" }
-                    dt { "Total tokens" } dd { "{count(usage.as_ref().and_then(|u| u.total_tokens))}" }
-                }
-            }
-        }
-    }
-}
-
-/// Formats a count with comma thousands separators, such as `1,234,567`.
-fn group_digits(value: u64) -> String {
-    let digits = value.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    grouped
 }
 
 type MenuNodes = Signal<Vec<Option<std::rc::Rc<MountedData>>>>;
@@ -1109,23 +1012,6 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
             .map(|model| model_display_name(&sources.1, model));
         (name, effort, tokens, window)
     });
-    let info = use_ui_selector(move |state| {
-        if !info_open() || root {
-            return None;
-        }
-        state
-            .agents
-            .get(&session_id)
-            .and_then(|agents| agents.iter().find(|agent| agent.id == target.agent_id))
-            .map(|agent| {
-                (
-                    agent.name.clone(),
-                    agent.definition_id,
-                    agent.usage.clone(),
-                    agent.cacheable_input_tokens,
-                )
-            })
-    });
     // Reading the selected source is also needed when loading/pending changes
     // without changing the resolved status.
     let source = root_draft.read();
@@ -1388,21 +1274,15 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
         div { class:"composer", style:"--conversation-max-width:var(--psa-conversation-width,{width}rch)",
             if info_open() {
                 if root {
-                    AgentInfo {
+                    crate::agent_info::DraftAgentInfo {
                         name:source.as_ref().and_then(|draft| draft.selected.as_ref()).map(|id| id.name.clone()).unwrap_or_else(|| "Unselected root agent".into()),
                         template:source.as_ref().and_then(|draft| draft.selected.as_ref()).map(|id| id.name.clone()),
-                        definition_id:None, path:session.read().0.clone(), probe:session.read().1,
-                        model:status_name.clone(), effort:status_effort, usage:None, open:info_open,
-                    }
-                } else {
-                    AgentInfo {
-                        name:info.read().as_ref().map(|info| info.0.clone()).unwrap_or_else(|| "Unknown agent".into()),
-                        template:None, definition_id:info.read().as_ref().map(|info| info.1),
                         path:session.read().0.clone(), probe:session.read().1,
                         model:status_name.clone(), effort:status_effort,
-                        usage:info.read().as_ref().map(|info| info.2.clone()),
-                        cacheable_input:info.read().as_ref().and_then(|info| info.3), open:info_open,
+                        onclose:move |_| info_open.set(false),
                     }
+                } else {
+                    crate::agent_info::AgentInfo { target, onclose:move |_| info_open.set(false) }
                 }
             }
             if let Some(menu) = &menu {

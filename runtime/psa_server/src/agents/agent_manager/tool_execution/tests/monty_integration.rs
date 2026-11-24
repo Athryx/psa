@@ -1,12 +1,14 @@
 //! Full worker/tool/checkpoint integration using an explicitly configured worker.
 
 use super::*;
+use crate::components::codemode_functions::AgentCodeModeHost;
 use crate::components::{
-    bundles::codemode::MontyEngine, codemode_functions::CodeModeFunctionKind,
-    codemode_functions::prior_results::PriorResults, tools::CodeMode,
+    codemode_functions::CodeModeFunctionKind, codemode_functions::prior_results::PriorResults,
+    tools::CodeMode,
 };
-use crate::db::NewEvent;
 use llm_api::api::ContentBlock;
+use psa_codemode::MontyEngine;
+use psa_store::NewEvent;
 use serde_json::json;
 
 async fn append_tool_call(
@@ -113,7 +115,7 @@ async fn real_worker_persists_snapshots_errors_output_and_registered_functions()
             .load_latest_private_event(
                 state.agent.id,
                 None,
-                crate::db::PrivateEventKind::CodeModeSnapshot,
+                psa_store::PrivateEventKind::CodeModeSnapshot,
             )
             .await
             .unwrap()
@@ -432,7 +434,8 @@ async fn real_worker_sleep_cancellation_and_close_are_prompt_without_host_effect
         for close_engine in [false, true] {
             let engine = MontyEngine::new(binary.clone());
             let (sender, mut cancellation) = Cancellation::channel();
-            let mut execution = Box::pin(engine.execute(script, &context, &mut cancellation));
+            let host = AgentCodeModeHost::new(&context);
+            let mut execution = Box::pin(engine.execute(script, &host, &mut cancellation));
             assert!(
                 tokio::time::timeout(Duration::from_secs(1), &mut execution)
                     .await
@@ -503,7 +506,7 @@ async fn real_worker_does_not_shorten_sleeps_at_ten_seconds() {
         Duration::from_secs(15),
         engine.execute(
             "import asyncio\nasync def wait():\n    print(repr(await asyncio.sleep(11)))\nasyncio.run(wait())",
-            &context,
+            &AgentCodeModeHost::new(&context),
             &mut cancellation,
         ),
     )
@@ -542,7 +545,7 @@ async fn real_worker_checkpoint_budget_failure_preserves_output_and_previous_sta
         .load_latest_private_event(
             state.agent.id,
             None,
-            crate::db::PrivateEventKind::CodeModeSnapshot,
+            psa_store::PrivateEventKind::CodeModeSnapshot,
         )
         .await
         .unwrap();
@@ -571,7 +574,7 @@ async fn real_worker_checkpoint_budget_failure_preserves_output_and_previous_sta
             text.split_whitespace().any(|part| {
                 part.trim_matches(|character: char| !character.is_ascii_digit())
                     .parse::<usize>()
-                    .is_ok_and(|size| size > crate::db::MAX_CODEMODE_SNAPSHOT_BYTES)
+                    .is_ok_and(|size| size > psa_store::MAX_CODEMODE_SNAPSHOT_BYTES)
             }),
             "serialized byte count must exceed the checkpoint budget: {text}"
         );
@@ -594,7 +597,7 @@ async fn real_worker_checkpoint_budget_failure_preserves_output_and_previous_sta
             .load_latest_private_event(
                 state.agent.id,
                 None,
-                crate::db::PrivateEventKind::CodeModeSnapshot
+                psa_store::PrivateEventKind::CodeModeSnapshot
             )
             .await
             .unwrap(),
@@ -668,7 +671,7 @@ async fn preflight_missing_worker_and_oversized_source_do_not_claim_host_effects
             .load_latest_private_event(
                 state.agent.id,
                 None,
-                crate::db::PrivateEventKind::CodeModeSnapshot
+                psa_store::PrivateEventKind::CodeModeSnapshot
             )
             .await
             .unwrap()

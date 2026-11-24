@@ -179,6 +179,30 @@ ENV PSA_TEARDOWN_TIMEOUT=30
 Hook output is appended to `/opt/psa/data/image-hooks.log` in the container. The
 `PSA_*` hook variables are removed from the environment of commands agents run.
 
+## Sandbox mounts
+
+Each `Mount` binds a host directory into the container. Before `docker create`,
+the manager probe prepares every mount, in order:
+
+- `host` decides whether the directory must exist: `existing` (the default)
+  requires an existing directory; `create` requires that nothing exists at the
+  path and creates the directory with its parents; `create_or_reuse` creates it
+  if missing and otherwise reuses it. A path that exists but is not a directory
+  is always an error.
+- `seed`, an optional `Archive` (the same tar format as skill uploads), is then
+  extracted into the directory. Existing directories are merged and keep their
+  modes; a seed file whose path already exists is an error. Extraction never
+  follows symlinks below the mount directory. Seeds are capped at 256 MiB as
+  sent per sandbox and 256 MiB unpacked per mount. The server streams them on
+  the create call's input stream after the request (`SandboxSpec.seeds`), so
+  they are not limited by the WebSocket message size.
+
+If any mount, or `docker create` itself, fails, the seed files and the
+directories created for the sandbox are removed. Seeds are applied only at
+creation, never on later starts, and are not kept in the sandbox record.
+Deleting a sandbox leaves its host directories in place. Files are created as
+the manager probe's user.
+
 ## Server-side operations
 
 Retain a `psa_server::probes::ProbeRegistry` and pass it to

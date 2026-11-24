@@ -421,6 +421,31 @@ pub async fn create_sandbox(
 }
 
 /// Start, stop, or delete a sandbox, reporting failures in the status bar.
+/// Rename a session from the sidebar, applying the server's copy at once
+/// rather than waiting for the session feed.
+pub async fn rename_session(mut ui: Signal<Ui>, id: SessionId, name: String) {
+    let generation = ui.peek().generation;
+    let api = match client(ui) {
+        Ok(api) => api,
+        Err(error) => {
+            ui.write().error = Some(error.to_string());
+            return;
+        }
+    };
+    let request = UpdateSession {
+        name: Some(name),
+        ..Default::default()
+    };
+    let result = api.update_session(id, &request).await;
+    if ui.peek().generation != generation {
+        return;
+    }
+    match result {
+        Ok(session) => ui.write().upsert_session(session),
+        Err(error) => ui.write().error = Some(format!("Unable to rename the session: {error}")),
+    }
+}
+
 pub async fn change_sandbox(ui: Signal<Ui>, id: ProbeId, action: client_shared::SandboxChange) {
     apply_sandbox_change(ui, id, action).await;
 }

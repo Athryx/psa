@@ -2,8 +2,8 @@ use super::{Bundle, CleanupError, HookStage, InstallError, Installer};
 use crate::{
     agents::Agent,
     components::hooks::{ExtraSystemPromptHook, HookKind},
-    sessions::Session,
 };
+use psa_store::Session;
 
 /// Adds a configured system message when an agent is created. Owns no resources.
 pub struct ExtraSystemPromptBundle {

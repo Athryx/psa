@@ -1,9 +1,7 @@
 mod support;
 use clap::Parser;
-use psa_server::{
-    config::{Cli, Command, ConfigError, StartOptions},
-    db::Database,
-};
+use psa_server::config::{Cli, Command, ConfigError, StartOptions};
+use psa_store::Database;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -407,8 +405,8 @@ async fn migrated_server_serves_health_and_shuts_down_cleanly() {
         let server = tokio::spawn(psa_server::server::serve_with_providers(
             listener,
             database,
-            psa_server::providers::ProviderRegistry::default().with_catalog_source(
-                psa_server::models::CatalogSource::new(&format!("http://{address}")).unwrap(),
+            psa_models::ProviderRegistry::default().with_catalog_source(
+                psa_models::CatalogSource::new(&format!("http://{address}")).unwrap(),
             ),
             "test-client-key".into(),
             async {

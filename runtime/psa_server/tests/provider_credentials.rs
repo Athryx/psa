@@ -1,6 +1,7 @@
 use llm_api::providers::ProviderType;
 use psa::api::{Client, SetProviderCredential};
-use psa_server::{db::Database, providers::ProviderRegistry};
+use psa_models::ProviderRegistry;
+use psa_store::Database;
 use tokio::{net::TcpListener, sync::oneshot};
 
 #[tokio::test]

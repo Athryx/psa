@@ -4,7 +4,7 @@ use crate::{
     AgentLayout, Error, ProbeHandle, ProbeSelector, Result, SessionHandle, SessionProbe,
     SessionSpec, Skill,
     api::{
-        self, ArchiveCompression, ConfigGroup, ConfigId, NewSkill, ProbeId, ProjectId,
+        self, Archive, ArchiveCompression, ConfigGroup, ConfigId, NewSkill, ProbeId, ProjectId,
         SandboxState, SessionId,
     },
     spec::{InlineDefinitions, RegisteredNames},
@@ -347,8 +347,10 @@ impl Context {
 
         let request = NewSkill {
             config_id: config_id.clone(),
-            tar_data: skill.archive().to_vec(),
-            compression: ArchiveCompression::Zstd,
+            archive: Archive {
+                tar_data: skill.archive().to_vec(),
+                compression: ArchiveCompression::Zstd,
+            },
         };
         self.client().upload_skill(&request).await?;
         Ok(config_id)

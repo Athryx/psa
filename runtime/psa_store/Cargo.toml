@@ -1,0 +1,24 @@
+[package]
+name = "psa_store"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# Exposes `test_support` fixtures to other crates' tests.
+test-support = ["dep:tempfile"]
+
+[dependencies]
+psa = { path = "../../lib/psa" }
+llm_api = { path = "../../lib/llm_api" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
+thiserror = "2"
+time = "0.3.55"
+tokio = { version = "1", features = ["rt"] }
+zstd = "0.13"
+tempfile = { version = "3", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }

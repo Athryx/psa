@@ -375,7 +375,7 @@ mod tests {
         assert!(serde_json::from_value::<ModelSelection>(json!({"Fixed": {"model": "openrouter/example/model", "effort": "Global", "typo": true}})).is_err());
         assert!(
             serde_json::from_value::<NewSkill>(
-                json!({"config_id": id, "tar_data": "", "path": "/server/path"})
+                json!({"config_id": id, "archive": {"tar_data": ""}, "path": "/server/path"})
             )
             .is_err()
         );

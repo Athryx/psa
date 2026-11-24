@@ -72,7 +72,11 @@ impl FakeFiles {
         self
     }
 
-    async fn execute_sandbox(&self, request: SandboxRequest, call: &Call) -> Result<(), String> {
+    async fn execute_sandbox(
+        &self,
+        request: SandboxRequest,
+        call: &mut Call,
+    ) -> Result<(), String> {
         let containers = self.sandboxes.as_ref().ok_or("sandboxes disabled")?;
         let mut containers = containers.lock().await;
         let mut set_state = |probe_id: ProbeId, state| {
@@ -83,6 +87,20 @@ impl FakeFiles {
         };
         match request {
             SandboxRequest::Create { spec } => {
+                // Seeds stream after the request; they must arrive whole and in order.
+                if !spec.seeds.is_empty() {
+                    let received = receive_input(call).await?;
+                    let announced: u64 = spec.seeds.iter().map(|seed| seed.size).sum();
+                    if received.len() as u64 != announced {
+                        return Err(format!(
+                            "received {} seed bytes, announced {announced}",
+                            received.len()
+                        ));
+                    }
+                }
+                if spec.mounts.iter().any(|mount| mount.seed.is_some()) {
+                    return Err("seeds must not be inlined in the request".into());
+                }
                 let container = ContainerStatus {
                     probe_id: spec.probe_id,
                     container_name: format!("psa-sandbox-{}", spec.name),
@@ -281,7 +299,7 @@ impl FakeFiles {
                 return;
             }
             Operation::CreateDir { path } => self.create_directories(path).await,
-            Operation::Sandbox { request } => self.execute_sandbox(request, &call).await,
+            Operation::Sandbox { request } => self.execute_sandbox(request, &mut call).await,
             Operation::WriteFile { path, append } => self.write_file(path, append, &mut call).await,
             _ => Err("unsupported operation".into()),
         };
@@ -293,6 +311,21 @@ impl FakeFiles {
             },
         };
         let _ = call.sender.finish(event).await;
+    }
+}
+
+/// Read input stream 0 until its end.
+async fn receive_input(call: &mut Call) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    loop {
+        match call.next_event().await.map_err(|error| error.to_string())? {
+            Event::Data {
+                stream: 0,
+                bytes: chunk,
+            } => bytes.extend(chunk),
+            Event::Eof { stream: 0 } => return Ok(bytes),
+            _ => return Err("unexpected input event".into()),
+        }
     }
 }
 

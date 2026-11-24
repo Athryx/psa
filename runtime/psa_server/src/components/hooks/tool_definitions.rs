@@ -1,5 +1,4 @@
 use super::{Hook, HookError};
-use crate::db::NewEvent;
 use crate::{
     agents::agent_context::AgentContext,
     components::{
@@ -13,6 +12,7 @@ use psa::api::{
     ToolId,
     events::{EventType, Message, ToolDefinition},
 };
+use psa_store::NewEvent;
 use std::time::Duration;
 
 /// Snapshots tool schemas and their optional tools/rules system-prompt sections.
