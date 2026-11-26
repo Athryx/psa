@@ -27,15 +27,13 @@ use llm_api::{
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
 use psa::api::{self as wire, AgentRequest, AgentState, MessageDelivery, StreamMessage, events::*};
-use psa_models::ProviderRegistry;
-use psa_server::{
-    agents::{
-        NewAgent, ToolDefinitionExt, agent_manager::AgentManagerState, publication::Publication,
-        supervisor::Runtime,
-    },
-    components::tools::ToolId,
-    probes::ProbeRegistry,
+use psa_agents::{
+    NewAgent, agent_manager::AgentManagerState, publication::Publication, supervisor::Runtime,
 };
+use psa_components::ToolDefinitionExt;
+use psa_components::tools::ToolId;
+use psa_models::ProviderRegistry;
+use psa_server::probes::ProbeRegistry;
 use psa_store::NewEvent;
 use psa_store::{Database, DbError, ForkPoint, NewSession, SessionFork, SessionUpdate};
 use serde_json::{Value, json};
@@ -242,7 +240,7 @@ impl Harness {
         ));
 
         let probe = if connect_probe {
-            Some(fake_probe::FakeProbe::connect_with_files(address, &probes, files).await)
+            Some(fake_probe::connect_with_files(address, &probes, files).await)
         } else {
             None
         };
@@ -348,7 +346,7 @@ fn message(delivery: MessageDelivery) -> AgentRequest {
     AgentRequest::Message {
         source: None,
         delivery,
-        content: psa_server::prompts::text("test input"),
+        content: psa_agents::prompts::text("test input"),
     }
 }
 
@@ -1005,7 +1003,7 @@ async fn startup_bundle_orders_offline_context_hooks() {
         assert_eq!(base.message_type, MessageType::System);
         assert_eq!(
             serde_json::to_value(&base.content).unwrap(),
-            serde_json::to_value(psa_server::prompts::text(
+            serde_json::to_value(psa_agents::prompts::text(
                 "You are an expert coding assistant operating inside psa, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files."
             ))
             .unwrap()
@@ -1020,7 +1018,7 @@ async fn startup_bundle_orders_offline_context_hooks() {
             assert_eq!(cwd.message_type, MessageType::System);
             assert_eq!(
                 serde_json::to_value(&cwd.content).unwrap(),
-                serde_json::to_value(psa_server::prompts::text(
+                serde_json::to_value(psa_agents::prompts::text(
                     "<cwd>\n/work/&lt;project&gt;&amp;\n</cwd>"
                 ))
                 .unwrap()
@@ -1068,7 +1066,7 @@ async fn startup_bundle_orders_offline_context_hooks() {
     };
     assert_eq!(
         serde_json::to_value(&cwd.content).unwrap(),
-        serde_json::to_value(psa_server::prompts::text("<cwd>\n/fork\n</cwd>")).unwrap()
+        serde_json::to_value(psa_agents::prompts::text("<cwd>\n/fork\n</cwd>")).unwrap()
     );
     cursor.close().await.unwrap();
     harness.close().await;
@@ -1778,6 +1776,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
         publication,
         ProviderRegistry::default(),
         probes.clone(),
+        std::sync::Arc::new(psa_components::bundles::BuiltinComponents),
     )
     .await
     .unwrap();
@@ -1806,6 +1805,7 @@ async fn cursor_windows_fork_usage_and_idempotent_orphan_repair() {
         Publication::default(),
         ProviderRegistry::default(),
         probes.clone(),
+        std::sync::Arc::new(psa_components::bundles::BuiltinComponents),
     )
     .await
     .unwrap();
@@ -1853,9 +1853,14 @@ async fn persistence_failure_does_not_mutate_worker_memory() {
         .await
         .unwrap();
     cursor.commit().await.unwrap();
-    let mut state = AgentManagerState::load(db.clone(), Publication::default(), agent.id)
-        .await
-        .unwrap();
+    let mut state = AgentManagerState::load(
+        db.clone(),
+        Publication::default(),
+        agent.id,
+        &psa_components::bundles::BuiltinComponents,
+    )
+    .await
+    .unwrap();
     let mut connection = sqlx::SqliteConnection::connect(&format!("sqlite://{}", path.display()))
         .await
         .unwrap();
@@ -1920,7 +1925,7 @@ async fn core_ancestry_and_typed_steering_work_without_subagent_bundle_over_http
             child.id,
             &wire::AgentRequest::Message {
                 delivery: wire::MessageDelivery::Steer,
-                content: psa_server::prompts::text("inspect this"),
+                content: psa_agents::prompts::text("inspect this"),
                 source: Some(parent.id),
             },
         )

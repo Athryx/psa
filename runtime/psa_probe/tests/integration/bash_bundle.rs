@@ -1,13 +1,8 @@
 use super::*;
-use psa_server::{
-    agents::NewAgent,
-    components::{
-        bundles::{
-            BashBundle, Bundle, Installer,
-            bash::{BashError, BashHandle},
-        },
-        cancellation::Cancellation,
-    },
+use psa_agents::{NewAgent, cancellation::Cancellation};
+use psa_components::bundles::{
+    BashBundle, Bundle, Installer,
+    bash::{BashError, BashHandle},
 };
 use psa_store::NewSession;
 

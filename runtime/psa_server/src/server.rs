@@ -1,9 +1,9 @@
-use crate::agents::{
+use crate::config::ResolvedConfig;
+use llm_api::providers::ModelConfig;
+use psa_agents::{
     publication::Publication,
     supervisor::{Runtime, RuntimeError},
 };
-use crate::config::ResolvedConfig;
-use llm_api::providers::ModelConfig;
 use psa_models::{AuthError, ProviderRegistry};
 use psa_store::{Database, DbError};
 use std::{
@@ -272,7 +272,8 @@ async fn serve_with_client_config(
         publication.clone(),
         providers,
         probes.clone(),
-        Some(configuration),
+        Arc::new(psa_components::bundles::BuiltinComponents),
+        Some(Arc::new(configuration)),
         default_model_config,
     )
     .await?;

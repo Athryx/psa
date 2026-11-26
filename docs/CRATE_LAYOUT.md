@@ -13,10 +13,12 @@ layers, and only on the listed same-layer crates.
 
 ```text
 1. binaries      psa_server, psa_probe, psa_desktop, trace_cli
-2. services      psa_models, psa_codemode                 psa_gui
-3. foundations   psa_store, psa_config                    client_shared
-4. utilities     psa_shared
-5. libraries     psa, llm_api, actors, actors_macros, agent_trace
+2. components    psa_components
+3. runtime       psa_agents
+4. services      psa_models, psa_codemode                 psa_gui
+5. foundations   psa_store, psa_config                    client_shared
+6. utilities     psa_shared
+7. libraries     psa, llm_api, actors, actors_macros, agent_trace
 ```
 
 `psa_probe` is a binary, but `psa_server` also embeds it as a library to run
@@ -33,13 +35,19 @@ Current edges between runtime crates:
 | `psa_models` | `psa`, `llm_api`, `actors`, `psa_shared`, `psa_config`, `psa_store` |
 | `psa_codemode` | `psa_shared`, `psa_store` (snapshot size limit only) |
 | `psa_probe` | `psa`, `actors`, `psa_shared`, `psa_config` |
-| `psa_server` | all of the above, plus `agent_trace` |
+| `psa_agents` | `psa`, `llm_api`, `actors`, `psa_shared`, `psa_config`, `psa_store`, `psa_models`, `psa_codemode` |
+| `psa_components` | `psa_agents` and everything it depends on, plus `agent_trace` |
+| `psa_server` | all of the above |
 
-Two rules matter most:
+These rules matter most:
 
 - `psa_probe` runs in remote environments and sandboxes, and it is also built
-  as a static binary. It must never depend on `psa_server`, `psa_store`,
-  `psa_models`, or `psa_codemode`. Its tests may use them as dev-dependencies.
+  as a static binary. It must never depend on `psa_server`, `psa_agents`,
+  `psa_components`, `psa_store`, `psa_models`, or `psa_codemode`. Its tests
+  may use them as dev-dependencies.
+- `psa_agents` never depends on `psa_components`, and never names a concrete
+  component. It installs components only through the `ComponentFactory` the
+  server hands it (see "Component seam" below).
 - Crates below `psa_server` must not depend on it. When one needs something
   from the server, define a small trait or data type in the lower crate and
   implement it in the server. `CodeModeHost` in `psa_codemode` is an example.
@@ -57,7 +65,9 @@ Two rules matter most:
 | `psa_models` | `ProviderRegistry` (provider clients from credentials) and the model catalog (sync, refresh, pins) | The `auth.toml` format (uses `psa_config::auth`) |
 | `psa_codemode` | The Monty CodeMode engine, Python stubs, result-class preludes, the `CodeModeHost` seam | Which host functions exist and what they do (server) |
 | `psa_probe` | The standalone probe: remote file, directory, process, and sandbox operations; `probe.toml` | Server-side probe bookkeeping |
-| `psa_server` | HTTP/SSE API, agent runtime and supervisor, agent manager, bundles/tools/hooks, probe registry, config discovery (`ConfigRegistry`), CLI and startup | Persistence details, file formats, provider plumbing, the CodeMode engine |
+| `psa_agents` | The agent runtime: supervisor, per-agent workers and the agent loop, `AgentContext`, `RuntimeHandle`, projection and publication, client queries, the live probe connection registry; the component interfaces (`Tool`, `Hook`, `CommandHook`, `Bundle`, `CodeModeFunction`, `Installer`, `InstalledComponents`), the `ComponentFactory` and `ConfigDiscovery` seams, shared harness prompts; test fixtures behind the `testing` feature | Concrete components, HTTP, probe transport, configuration discovery |
+| `psa_components` | Built-in bundles, tools, hooks, and codemode functions; session-shared resources (subagent coordinator, decision models); bundle validation; trace export; the `BuiltinComponents` factory | When and how components run, persistence ownership |
+| `psa_server` | HTTP/SSE API, the probe WebSocket route, sandboxes, config discovery (`ConfigRegistry`, which implements `ConfigDiscovery`), CLI and startup | The agent runtime, concrete components, persistence details, file formats, provider plumbing, the CodeMode engine |
 | `client_shared`, `psa_gui`, `psa_desktop` | Client projections, UI, desktop shell | Anything the server or probe needs |
 | `agent_trace`, `trace_cli` | Harness-neutral trace format and tools | PSA runtime types |
 
@@ -80,17 +90,37 @@ Ask these questions in order:
    `psa_codemode`, and reach server state through `CodeModeHost`.
 6. **Does it run on the probe side?** Put it in `psa_probe`. If the server
    and probe share it and it is small, put it in `psa_shared`.
-7. **Otherwise** it is agent runtime, tool, hook, bundle, or HTTP behaviour,
-   and it belongs in `psa_server`. Native tools follow
-   `.agent/skills/making-tools/SKILL.md`.
+7. **Is it a concrete tool, hook, bundle, or codemode function?** Put it in
+   `psa_components`, following `.agent/skills/making-tools/SKILL.md`.
+8. **Is it agent runtime behaviour**, such as scheduling, the worker loop, an
+   `AgentContext` capability, or a component interface? Put it in
+   `psa_agents`. Changes to what components can do are proposals, as the
+   making-tools skill describes.
+9. **Otherwise** it is HTTP, transport, or startup behaviour, and it belongs in
+   `psa_server`.
 
 Within a crate, keep one concern per module and keep the module tree
-matching the ownership above, for example `components/{bundles,tools,hooks}`
-in the server.
+matching the ownership above, for example `{bundles,tools,hooks}` in
+`psa_components`.
 
-## Not split yet
+## Component seam
 
-Agent core and concrete components (tools, hooks, bundles) are still both in
-`psa_server`, because components are dispatched through the `ToolKind` and
-`HookKind` enums. Splitting them would need dynamic dispatch or a registry,
-and it needs the user's approval before work starts.
+The runtime stores installed components as trait objects (`Box<dyn DynTool>`,
+`Box<dyn DynHook>`, `Box<dyn DynBundle>`, `Box<dyn CodeModeFunction>`).
+Component authors implement the async traits (`Tool`, `Hook`, `CommandHook`,
+`Bundle`); blanket impls provide the object-safe forms. There are no enums of
+components in either crate.
+
+`ComponentFactory` (in `psa_agents::factory`) is the only way the runtime
+obtains components. It validates bundle selections, decides which commands a
+definition supports, starts session-shared components, and installs an
+agent's bundles. `psa_components::bundles::BuiltinComponents` implements it;
+`psa_agents::bundles::testing::TestComponents` is a fake for runtime tests.
+
+`ConfigDiscovery` (in `psa_agents::config_discovery`) is how the runtime reads
+`.agents` directories and skill sources; the server's `ConfigRegistry`
+implements it.
+
+Tests of the runtime use `psa_agents` fakes. Tests of concrete components live
+in `psa_components` and use the `psa_agents` `testing` feature's fixtures.
+Tests needing the HTTP API or the probe WebSocket route live in `psa_server`.

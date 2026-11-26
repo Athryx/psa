@@ -10,13 +10,15 @@ The codebase uses async code, not blocking sync.
 # Crates
 
 The following crates are present in the workspace. Runtime crates live under
-`runtime/` (`psa_server`, `psa_store`, `psa_config`, `psa_models`, `psa_codemode`, `psa_shared`, `psa_probe`), reusable libraries under `lib/`
+`runtime/` (`psa_server`, `psa_agents`, `psa_components`, `psa_store`, `psa_config`, `psa_models`, `psa_codemode`, `psa_shared`, `psa_probe`), reusable libraries under `lib/`
 (`psa`, `llm_api`, `actors`, `actors_macros`), and clients under `client/`:
 - `client_shared`: UI-independent client projections, workspace state, and settings.
 - `psa_gui`: shared Dioxus UI and a small platform-services interface; no native renderer.
 - `psa_desktop`: desktop executable and settings persistence; enable `native` for the WebView renderer.
 - `llm_api`: a generic wrapper over different llm api types, like OpenAI responses and completions, low level close to the api.
-- `psa_server`: main server managing sessions and calling into `llm_api` to make inference requests.
+- `psa_server`: the HTTP/SSE API, probe WebSocket route, sandboxes, configuration discovery, and startup; hands the runtime its components.
+- `psa_agents`: the agent runtime (supervisor, workers, agent loop, `AgentContext`) and the interfaces components implement; installs components only through a `ComponentFactory`.
+- `psa_components`: the built-in bundles, tools, hooks, and codemode functions, and the `BuiltinComponents` factory.
 - `psa_store`: SQLite persistence for the server (cursors, sessions, agents, events, configurations, migrations); independent of the agent runtime.
 - `psa_config`: formats of data-directory files (layout, `auth.toml`, server `config.toml` schema and defaults, agent definition files); no runtime behaviour.
 - `psa_models`: LLM provider clients from credentials (`ProviderRegistry`) and the persistent model catalog.

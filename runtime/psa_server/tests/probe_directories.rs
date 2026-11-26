@@ -43,7 +43,7 @@ async fn directory_listing_is_authenticated_read_only_and_uses_connected_probe()
             let _ = stopped.await;
         },
     ));
-    let probe = fake_probe::FakeProbe::connect_with_files(
+    let probe = fake_probe::connect_with_files(
         address,
         &probes,
         fake_probe::FakeFiles::default()

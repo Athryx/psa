@@ -28,12 +28,19 @@ to introduce new general-purpose capabilities.
 ## Files and required structure
 
 - Each concrete tool goes in its OWN snake_case file under
-  `runtime/psa_server/src/components/tools/`, e.g. `read_file.rs`. Keep its argument struct,
+  `runtime/psa_components/src/tools/`, e.g. `read_file.rs`. Keep its argument struct,
   concrete tool struct, inherent implementation, and `impl Tool` together.
-- Agent components live under `runtime/psa_server/src/components/`: `bundles/`, `tools/`,
-  and `hooks/` hold their respective implementations. Shared invocation
-  cancellation lives in `components/cancellation.rs`.
-- `tools/mod.rs` owns common infrastructure and dispatch, not concrete tool logic.
+- Concrete components live in the `psa_components` crate: `bundles/`, `tools/`,
+  `hooks/`, and `codemode_functions/` hold their implementations. The interfaces
+  they implement (`Tool`, `Hook`, `CommandHook`, `Bundle`, `CodeModeFunction`,
+  `Installer`, `ToolOutput`, `typed_tool_execute!`) and shared invocation
+  cancellation live in the `psa_agents` crate, which never names a concrete
+  component. Each `psa_components` module re-exports its `psa_agents`
+  counterpart, so `super::{Tool, ToolOutput, ...}` works inside it.
+- `psa_components/src/tools/mod.rs` only declares and re-exports concrete tools
+  and the static `tool_definition(ToolId)` inventory; it owns no dispatch.
+  The runtime stores installed tools as `Box<dyn DynTool>`, provided for every
+  `Tool` by a blanket impl. Do not add an enum of tools.
 - Use `tools/list_sessions.rs` and the Traces bundle as working references. `ToolId`
   identifies tools; every tool is installed by a bundle. There is no standalone
   tool configuration type, agent/defaults `tools` field, or tool config factory.
@@ -48,8 +55,9 @@ to introduce new general-purpose capabilities.
   depend on declaration-order results or on another parallel invocation's side effects.
 - Ordinary production concrete tools MUST use a typed argument struct and
   `typed_tool_execute!`. The schema-configured `record_result` tool is the
-  deliberate dynamic-schema exception, using the server's `ResultSchema`
-  validation rather than a fixed Rust argument schema. Do not handwrite JSON field extraction or a separate
+  deliberate dynamic-schema exception, using `ResultSchema` in `psa_components`
+  validation rather than a fixed Rust argument schema.
+- `Tool::id()` is required and returns the tool's stable `ToolId`. Do not handwrite JSON field extraction or a separate
   JSON-valued implementation of `Tool::execute`.
 
 The pattern is:
@@ -114,13 +122,16 @@ an owner through their bundle. Tools cannot be configured individually. Keep
 each concrete tool in its own file; typed invocation arguments and the execution
 macro are unchanged.
 
-- Put the bundle owner/assembly logic in `runtime/psa_server/src/components/bundles/<feature>.rs`.
-  Register its `BundleConfig` in `psa` and dispatch construction through
-  `BundleKind::from_config(&BundleConfig, Option<&SessionBundleHandle>)` in the
-  server, returning `Result<Self, InstallError>`. The runtime supplies session
+- Put the bundle owner/assembly logic in `runtime/psa_components/src/bundles/<feature>.rs`.
+  Register its `BundleConfig` in `psa` and construct it in
+  `build_bundle(&BundleConfig, Option<&SessionBundleHandle>, child_templates)` in
+  `psa_components/src/bundles/builtin.rs`, returning
+  `Result<Box<dyn DynBundle>, InstallError>`. `BuiltinComponents` there is the
+  `ComponentFactory` the server hands the runtime; the runtime installs bundles
+  only through that factory. The runtime supplies session
   resources, not serialized configuration arguments. `Subagents` requires those
   resources to construct its owner; do not add an unbound fallback.
-  `components/bundles/file_tools.rs` is the basic working example; bundle lifecycle tests
+  `psa_components/src/bundles/file_tools.rs` is the basic working example; bundle lifecycle tests
   demonstrate state shared by two constructed tools and a hook.
 - Agent definitions select ordered bundle configurations, e.g.
   `"bundles": [{"FileTools":{"read_only":false}}, "Bash"]`.
@@ -159,7 +170,7 @@ macro are unchanged.
   `TypedResult { schema: ToolSchema, max_retries }` installs sequential
   `record_result` and a require-result completion hook. Its schema is a raw,
   explicit object-root Draft 2020-12 schema with local references, validated
-  offline by the server's `ResultSchema`. The whole argument object is the
+  offline by `ResultSchema` in `psa_components`. The whole argument object is the
   result, without a wrapper. Do not generate a separate fixed schema for it.
   Valid data atomically saves Result and Idle; acknowledgment is only
   `Result recorded.`. Invalid data yields an error, never a Result.
@@ -183,8 +194,9 @@ macro are unchanged.
 - Implement `Bundle::install(&mut self, agent, session, &mut Installer)` without
   filesystem/network IO. Construct shared handles once and pass clones into
   concrete tool/hook instances. Register them with
-  `installer.add_tool(ToolKind::YourTool(instance))?` and
-  `installer.add_hook(HookStage::SessionUpdate, HookKind::YourHook(instance))`.
+  `installer.add_tool(instance)?` and
+  `installer.add_hook(HookStage::SessionUpdate, instance)`. Hooks implement
+  `Hook::name()` (shown to clients) and bundles implement `Bundle::label()`.
   All four hook stages are supported. Do not merely expand a bundle into ID
   lists: that would construct its state independently for each component.
 - Keep mutable long-lived shared state in an actor using the workspace `actors`
@@ -212,9 +224,10 @@ macro are unchanged.
   gets independent owners. Runtime shutdown stops workers first, then cleans up
   retained agents concurrently, with each agent's bundle callbacks in reverse
   installation order. Probes remain connected during resource cleanup.
-- Session-shared resource owners live separately in `components/bundles/session.rs`.
-  The manager lazily creates them and passes a `SessionBundleHandle` to each
-  agent's independent component installation. Share actor handles, NOT an entire
+- Session-shared resource owners live separately in `psa_components/src/bundles/session.rs`.
+  The supervisor lazily starts them through `ComponentFactory::start_session`
+  and passes their type-erased handle to each agent's independent component
+  installation, where the factory recovers its `SessionBundleHandle`. Share actor handles, NOT an entire
   `InstalledComponents` or mutable hook set across agents. The Subagents bundle is
   the working example. Typed logical run lifecycle callbacks feed its progress actor
   and completion hook; core agent metadata owns parentage, and ordinary typed
@@ -231,7 +244,7 @@ macro are unchanged.
 ## Schemas and prompts
 
 - Derive `Deserialize` and `schemars::JsonSchema` on arguments and nested
-  types. Use the direct `schemars` dependency in `psa_server`; no crate-path
+  types. Use the direct `schemars` dependency in `psa_components`; no crate-path
   override attribute or `llm_api` reexport is needed.
 - Prefer closed argument objects (`#[serde(deny_unknown_fields)]`). Describe fields
   clearly with doc comments; descriptions become schema annotations. Keep schema
@@ -254,7 +267,7 @@ macro are unchanged.
   validation belong to `llm_api`, not individual tools.
 - Keep tool-specific descriptions, directions, rules, errors, and response-formatting
   strings directly in the tool's own file. They do NOT have to go in
-  `runtime/psa_server/src/prompts/`. Inline strings in trait methods are fine; use local
+  `runtime/psa_agents/src/prompts.rs`. Inline strings in trait methods are fine; use local
   helpers only when they clarify formatting or avoid meaningful duplication.
   Field doc comments are the schema's local field documentation. Reserve the
   shared `prompts` module for genuinely shared harness text and utilities such as
@@ -270,7 +283,7 @@ macro are unchanged.
 Inspect the actual definitions before use; these are capabilities, not permission
 to reach around their ownership or lifecycle rules.
 
-### `AgentContext` (`runtime/psa_server/src/agents/agent_context.rs`)
+### `AgentContext` (`runtime/psa_agents/src/agent_context.rs`)
 
 - `agent()`, `session()`, `definition()`: the invocation's snapshots. Session
   metadata includes the working directory, model, and probe identity. Definitions
@@ -286,7 +299,7 @@ to reach around their ownership or lifecycle rules.
   probe, or `interactive` flag is required. Requests wait until answered,
   cancelled, or runtime shutdown; wrap/drop the future for a caller-defined
   timeout. Dropping the future removes its pending request, including during
-  registration. Errors use `agents::client_queries::ClientQueryError`; map them
+  registration. Errors use `psa_agents::client_queries::ClientQueryError`; map them
   intentionally to tool/hook results. Query plumbing does not write transcript
   events or automatically change agent status. See `docs/CLIENT_QUERIES.md`.
 - Parallel invocations have stable agent/session/definition/projection snapshots.
@@ -313,7 +326,7 @@ to reach around their ownership or lifecycle rules.
   `load_last_inference_result()`, and `load_agent_envelopes(range)`. These are
   scoped to the agent, including inherited fork history. Use them rather than SQL.
 
-### `RuntimeHandle` (`runtime/psa_server/src/agents/runtime_handle/mod.rs`)
+### `RuntimeHandle` (`runtime/psa_agents/src/runtime_handle/mod.rs`)
 
 Existing async operations cover agent-definition create/get/list/update;
 session create/get/list/update/fork; agent create/get/list (including immutable
@@ -329,7 +342,7 @@ Agent creation accepts `hidden` visibility metadata; the server does not filter 
 before scoped cross-agent trace reads. Use these facade methods for persistence,
 publication, and runtime coordination rather than manipulating their internals.
 
-### `ProbeHandle` (`runtime/psa_server/src/probes.rs`)
+### `ProbeHandle` (`runtime/psa_agents/src/probes.rs`)
 
 Existing remote operations are `read_file`, `write_file`, `list_dir`, `create_dir`,
 `upload_dir`, `download_dir`, and `spawn`. `list_dir` returns collected directory
@@ -390,6 +403,10 @@ Test the generated schema AND execution behavior: valid typed delegation;
 missing, extra, wrong-type, and nested/array arguments; no side effects on invalid
 input; cancellation; probe failures; and byte-bounded Unicode output following
 its specified truncation policy (retaining both ends for middle truncation).
-Use the existing probe/context fixtures rather than new harness features. Add regression tests for provider serialization when changing
+Use the existing probe/context fixtures rather than new harness features:
+`psa_agents`' `testing` feature provides fake tools, hooks, and bundles
+(`bundles::testing`), a fake probe (`probes::fake_probe`), a tool-execution
+fixture (`agent_manager::testing`), and lifecycle and supervisor fixtures
+(`supervisor::testing`). Add regression tests for provider serialization when changing
 schema behavior. Run `cargo fmt --all` and relevant tests. Workspace builds need
 prepared probe assets as documented in `runtime/psa_probe/README.md`.

@@ -1,9 +1,5 @@
 //! Trusted-client HTTP/SSE API. Transcript mutations share the publication gate.
 
-use crate::agents::{
-    client_queries::ClientQueryError, publication::Publication, runtime_handle::RuntimeHandle,
-    supervisor::RuntimeError,
-};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -15,6 +11,10 @@ use axum::{
     routing::{get, post},
 };
 use psa::api::{self as api, AgentId, SessionId, events::*, routes};
+use psa_agents::{
+    client_queries::ClientQueryError, publication::Publication, runtime_handle::RuntimeHandle,
+    supervisor::RuntimeError,
+};
 use psa_store::{Database, DbError};
 use psa_store::{EventRange, ReadCursor};
 use std::sync::{
@@ -98,7 +98,7 @@ pub enum HttpError {
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
     #[error(transparent)]
-    Agent(#[from] crate::agents::AgentError),
+    Agent(#[from] psa_agents::AgentError),
     #[error(transparent)]
     ClientQuery(#[from] ClientQueryError),
     #[error("{0}")]
@@ -1186,7 +1186,7 @@ mod desktop_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::{NewAgent, supervisor::Runtime};
+    use psa_agents::{NewAgent, supervisor::Runtime};
     use psa_models::ProviderRegistry;
 
     #[test]
@@ -1373,10 +1373,11 @@ mod tests {
             publication.clone(),
             ProviderRegistry::default(),
             probes.clone(),
-            Some(
+            std::sync::Arc::new(psa_components::bundles::BuiltinComponents),
+            Some(std::sync::Arc::new(
                 crate::config_registry::ConfigRegistry::new(dir.path().join("config"))
                     .with_agent_defaults(defaults.clone()),
-            ),
+            )),
             crate::config::default_model_config(),
         )
         .await
@@ -1566,6 +1567,7 @@ mod tests {
             publication.clone(),
             ProviderRegistry::default(),
             crate::probes::ProbeRegistry::start("test".into()),
+            std::sync::Arc::new(psa_components::bundles::BuiltinComponents),
         )
         .await
         .unwrap();

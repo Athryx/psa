@@ -413,7 +413,7 @@ async fn startup_reads_remote_skill_metadata_from_configured_references() {
         let escaped_cwd = cwd.to_str().unwrap().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
         assert_eq!(
             serde_json::to_value(&cwd_message.content).unwrap(),
-            serde_json::to_value(psa_server::prompts::text(format!("<cwd>\n{escaped_cwd}\n</cwd>"))).unwrap()
+            serde_json::to_value(psa_agents::prompts::text(format!("<cwd>\n{escaped_cwd}\n</cwd>"))).unwrap()
         );
         let catalogue = events[7..].iter().find_map(|event| match event {
             EventType::Message(message) if message.message_type == MessageType::System => Some(message),

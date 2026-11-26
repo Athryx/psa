@@ -1,7 +1,7 @@
 use super::desktop_tests::fixture;
 use super::*;
-use crate::agents::agent_projection::AgentProjection;
 use futures_util::StreamExt;
+use psa_agents::agent_projection::AgentProjection;
 use psa_store::NewEvent;
 use std::time::Duration;
 
@@ -133,7 +133,7 @@ async fn global_feed_carries_every_session_and_agent_creation_updates_summary() 
         .runtime
         .create_agent(
             session.id,
-            crate::agents::NewAgent {
+            psa_agents::NewAgent {
                 subagent_parent_id: None,
                 definition_id: api::AgentDefinitionId(1),
                 name: "new".into(),

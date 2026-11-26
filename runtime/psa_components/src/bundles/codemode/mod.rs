@@ -1,0 +1,64 @@
+//! Per-agent owner for the isolated code execution tool.
+
+use std::sync::Arc;
+
+use super::{Bundle, CleanupError, HookStage, InstallError, Installer};
+use crate::{
+    codemode_functions::{help::Help, prior_results::PriorResults},
+    hooks::CodeModeFunctionsHook,
+    tools::{CodeMode, ResetCodeMode},
+};
+use psa_agents::Agent;
+use psa_codemode::MontyEngine;
+use psa_store::Session;
+
+pub struct CodeModeBundle {
+    engine: Arc<MontyEngine>,
+}
+
+impl Default for CodeModeBundle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CodeModeBundle {
+    pub fn new() -> Self {
+        let binary = std::env::var_os("PSA_MONTY_WORKER").unwrap_or_else(|| "monty".into());
+        Self {
+            engine: Arc::new(MontyEngine::new(binary)),
+        }
+    }
+}
+
+impl Drop for CodeModeBundle {
+    fn drop(&mut self) {
+        self.engine.shutdown();
+    }
+}
+
+impl Bundle for CodeModeBundle {
+    fn label(&self) -> String {
+        "CodeMode".into()
+    }
+
+    fn install(
+        &mut self,
+        _agent: &Agent,
+        _session: &Session,
+        installer: &mut Installer,
+    ) -> Result<(), InstallError> {
+        installer.add_codemode_function(PriorResults)?;
+        installer.add_codemode_function(Help)?;
+        installer.add_tool(CodeMode::new(self.engine.clone()))?;
+        installer.add_tool(ResetCodeMode::new(self.engine.clone()))?;
+        // Runs after every bundle has registered its functions.
+        installer.add_hook(HookStage::AgentCreate, CodeModeFunctionsHook);
+        Ok(())
+    }
+
+    async fn cleanup(&mut self) -> Result<(), CleanupError> {
+        self.engine.close().await;
+        Ok(())
+    }
+}

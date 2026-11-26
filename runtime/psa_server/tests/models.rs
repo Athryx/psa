@@ -119,12 +119,8 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
         },
     ));
     // The worker requires a connected probe even when no probe tools are used.
-    let probe = fake_probe::FakeProbe::connect_with_files(
-        address,
-        &probes,
-        fake_probe::FakeFiles::default(),
-    )
-    .await;
+    let probe =
+        fake_probe::connect_with_files(address, &probes, fake_probe::FakeFiles::default()).await;
     let () = client
         .resync_models(&api::ResyncModels::default())
         .await
@@ -295,7 +291,7 @@ async fn catalog_endpoints_pins_and_reasoning_execution_work_through_the_client(
                 session.id,
                 agent.id,
                 api::MessageDelivery::Steer,
-                psa_server::prompts::text("hello"),
+                psa_agents::prompts::text("hello"),
             )
             .await
             .unwrap();
