@@ -10,6 +10,8 @@ members = [
     "lib/psa",
     "runtime/psa_shared",
     "runtime/psa_config",
+    "runtime/psa_agents",
+    "runtime/psa_components",
     "runtime/psa_server",
     "runtime/psa_store",
     "runtime/psa_models",

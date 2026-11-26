@@ -2,10 +2,8 @@ use super::{
     bash_bundle::{cancellation, install_bundle, remove_logs},
     *,
 };
-use psa_server::components::{
-    bundles::{Bundle, bash::BashError},
-    cancellation::Cancellation,
-};
+use psa_agents::cancellation::Cancellation;
+use psa_components::bundles::{Bundle, bash::BashError};
 
 #[tokio::test]
 async fn bash_poll_cancellation_preserves_unread_output_and_close_rejects_busy_session() {

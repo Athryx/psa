@@ -31,6 +31,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [dev-dependencies]
 futures-channel = { version = "0.3", features = ["sink"] }
 psa_server = { path = "../psa_server" }
+psa_agents = { path = "../psa_agents" }
+psa_components = { path = "../psa_components" }
 psa_store = { path = "../psa_store" }
 psa_models = { path = "../psa_models" }
 reqwest = { version = "0.13", features = ["json"] }

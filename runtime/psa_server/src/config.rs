@@ -66,7 +66,7 @@ pub enum ConfigError {
     #[error("database path must not be empty")]
     EmptyDatabasePath,
     #[error("invalid agent defaults: {0}")]
-    AgentDefaults(#[from] crate::components::bundles::CompletionConfigError),
+    AgentDefaults(#[from] psa_components::bundles::CompletionConfigError),
 }
 
 impl From<PathIoError> for ConfigError {
@@ -114,7 +114,7 @@ impl StartOptions {
             return Err(ConfigError::EmptyDatabasePath);
         }
 
-        crate::components::bundles::validate_completion_config(&config.agent_defaults.bundles)?;
+        psa_components::bundles::validate_completion_config(&config.agent_defaults.bundles)?;
 
         let database_path = data_dir.join(config.database.path);
         Ok(ResolvedConfig {

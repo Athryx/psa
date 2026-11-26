@@ -47,7 +47,7 @@ async fn create_compacting_agent(
             &AgentRequest::Message {
                 source: None,
                 delivery: MessageDelivery::Steer,
-                content: psa_server::prompts::text("old work ".repeat(100)),
+                content: psa_agents::prompts::text("old work ".repeat(100)),
             },
         )
         .await
@@ -65,7 +65,7 @@ async fn submit_recent(harness: &Harness, session: wire::SessionId, agent: wire:
             &AgentRequest::Message {
                 source: None,
                 delivery: MessageDelivery::Steer,
-                content: psa_server::prompts::text("next task"),
+                content: psa_agents::prompts::text("next task"),
             },
         )
         .await

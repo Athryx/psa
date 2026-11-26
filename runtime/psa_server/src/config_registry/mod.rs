@@ -6,10 +6,11 @@ mod tests;
 mod transfer;
 mod upload;
 
-use crate::components::bundles::validate_completion_config;
 use crate::probes::ProbeHandle;
+use futures_util::future::BoxFuture;
 use psa::api::probes::{DirectoryEntry, Event};
 use psa::api::{ConfigGroup, ConfigId, ProbeId, ProbeMetadata, Skill, SkillId, SkillLocation};
+use psa_components::bundles::validate_completion_config;
 pub use psa_config::agent_definition::AgentDefinitionConfig;
 use psa_config::server::AgentDefaults;
 use psa_shared::probe_transport::ProbeError;
@@ -602,4 +603,70 @@ fn normalize_absolute(path: &Path) -> Result<PathBuf, DiscoveryError> {
         }
     }
     Ok(output)
+}
+
+impl psa_agents::config_discovery::ConfigDiscovery for ConfigRegistry {
+    fn agent_defaults(&self) -> &AgentDefaults {
+        ConfigRegistry::agent_defaults(self)
+    }
+
+    fn discover_agents_dir<'a>(
+        &'a self,
+        probe: &'a ProbeHandle,
+        probe_id: ProbeId,
+        cwd: &'a Path,
+    ) -> BoxFuture<'a, Result<Option<ConfigGroup>, String>> {
+        Box::pin(async move {
+            ConfigRegistry::discover_agents_dir(self, probe, probe_id, cwd)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn refresh<'a>(
+        &'a self,
+        database: &'a Database,
+        agents_dirs: &'a [(ProbeHandle, ConfigGroup)],
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            ConfigRegistry::refresh(self, database, agents_dirs)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn upload_skill<'a>(
+        &'a self,
+        upload: &'a psa::api::NewSkill,
+    ) -> BoxFuture<'a, Result<SkillRegistration, String>> {
+        Box::pin(async move {
+            ConfigRegistry::upload_skill(self, upload)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn remove_uploaded_source<'a>(
+        &'a self,
+        location: &'a SkillLocation,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            ConfigRegistry::remove_uploaded_source(self, location)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn materialize_skills<'a>(
+        &'a self,
+        probe: &'a ProbeHandle,
+        metadata: &'a ProbeMetadata,
+        selected: &'a [Skill],
+    ) -> BoxFuture<'a, Result<HashMap<SkillId, PathBuf>, String>> {
+        Box::pin(async move {
+            ConfigRegistry::materialize_skills(self, probe, metadata, selected)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
 }

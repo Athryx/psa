@@ -60,8 +60,7 @@ async fn sandboxes_follow_manager_lifecycle_and_report_errors() {
     let manager = support::probe_metadata().id;
 
     // A probe without sandbox support rejects creation.
-    let probe =
-        fake_probe::FakeProbe::connect_with_files(address, &probes, Default::default()).await;
+    let probe = fake_probe::connect_with_files(address, &probes, Default::default()).await;
     assert_api_error(
         client
             .create_sandbox(manager, &request(Some("img"), "a"))
@@ -73,7 +72,7 @@ async fn sandboxes_follow_manager_lifecycle_and_report_errors() {
     probe.disconnect(&probes).await;
 
     let files = fake_probe::FakeFiles::default().with_sandboxes();
-    let probe = fake_probe::FakeProbe::connect_with_files(address, &probes, files).await;
+    let probe = fake_probe::connect_with_files(address, &probes, files).await;
     assert!(client.get_probe(manager).await.unwrap().metadata.sandboxes);
 
     // This server has no default image.
@@ -132,7 +131,7 @@ async fn sandboxes_follow_manager_lifecycle_and_report_errors() {
 
     // A reconnected manager with no container reports it missing; delete keeps the record.
     let files = fake_probe::FakeFiles::default().with_sandboxes();
-    let probe = fake_probe::FakeProbe::connect_with_files(address, &probes, files).await;
+    let probe = fake_probe::connect_with_files(address, &probes, files).await;
     let missing = client.get_sandbox(sandbox.probe_id).await.unwrap();
     assert_eq!(missing.state, SandboxState::Missing);
     client.delete_sandbox(sandbox.probe_id).await.unwrap();
@@ -198,7 +197,7 @@ async fn contexts_restricted_to_a_manager_list_and_manage_its_sandboxes() {
         },
     ));
     let files = fake_probe::FakeFiles::default().with_sandboxes();
-    let probe = fake_probe::FakeProbe::connect_with_files(address, &probes, files).await;
+    let probe = fake_probe::connect_with_files(address, &probes, files).await;
     let manager = support::probe_metadata().id;
 
     let context = psa::Context::builder(client.clone(), "sandboxed")

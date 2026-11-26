@@ -1,7 +1,7 @@
 use super::*;
-use crate::agents::{NewAgent, supervisor::Runtime};
 use futures_util::StreamExt;
 use psa::api::events::Log;
+use psa_agents::{NewAgent, supervisor::Runtime};
 use psa_models::ProviderRegistry;
 use psa_store::NewEvent;
 
@@ -10,7 +10,7 @@ pub(super) async fn fixture() -> (
     AppState,
     Runtime,
     psa_store::Session,
-    crate::agents::Agent,
+    psa_agents::Agent,
 ) {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::open(dir.path().join("desktop.sqlite3"))
@@ -50,6 +50,7 @@ pub(super) async fn fixture() -> (
         publication.clone(),
         ProviderRegistry::default(),
         probes.clone(),
+        std::sync::Arc::new(psa_components::bundles::BuiltinComponents),
     )
     .await
     .unwrap();

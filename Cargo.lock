@@ -4513,6 +4513,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "psa_agents"
+version = "0.1.0"
+dependencies = [
+ "actors",
+ "futures-util",
+ "llm_api",
+ "psa",
+ "psa_codemode",
+ "psa_config",
+ "psa_models",
+ "psa_shared",
+ "psa_store",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "psa_codemode"
 version = "0.1.0"
 dependencies = [
@@ -4524,6 +4547,36 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "psa_components"
+version = "0.1.0"
+dependencies = [
+ "actors",
+ "agent_trace",
+ "futures-util",
+ "image",
+ "jsonschema",
+ "llm_api",
+ "psa",
+ "psa_agents",
+ "psa_codemode",
+ "psa_config",
+ "psa_models",
+ "psa_shared",
+ "psa_store",
+ "rand 0.9.5",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tracing",
+ "unicode-normalization",
+ "url",
 ]
 
 [[package]]
@@ -4614,6 +4667,8 @@ dependencies = [
  "futures-util",
  "nix",
  "psa",
+ "psa_agents",
+ "psa_components",
  "psa_config",
  "psa_models",
  "psa_server",
@@ -4642,17 +4697,16 @@ name = "psa_server"
 version = "0.1.0"
 dependencies = [
  "actors",
- "agent_trace",
  "async-stream",
  "axum",
  "clap",
  "client_shared",
  "futures-util",
- "image",
- "jsonschema",
  "llm_api",
  "psa",
+ "psa_agents",
  "psa_codemode",
+ "psa_components",
  "psa_config",
  "psa_models",
  "psa_probe",
@@ -4676,7 +4730,6 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
- "unicode-normalization",
  "url",
 ]
 

@@ -10,7 +10,7 @@ use llm_api::{
     providers::{Effort, Model, ModelConfig, ProviderType},
 };
 use psa::api::events::*;
-use psa_server::{agents::NewAgent, agents::agent_projection::AgentProjection};
+use psa_agents::{NewAgent, agent_projection::AgentProjection};
 use psa_store::{Database, NewSession};
 use psa_store::{EventRange, NewEvent};
 use serde_json::Value;

@@ -1,9 +1,10 @@
 # PSA server
 
-Agent components live under `src/components/`: `bundles/` owns shared resources
-and assembly, `tools/` implements model-facing tools, and `hooks/` implements
-lifecycle callbacks. Invocation cancellation (`psa_shared::cancellation`) is
-re-exported from `src/components/cancellation.rs`. The CodeMode engine lives in
+The server hosts the HTTP/SSE API, the probe WebSocket route, sandboxes, and
+configuration discovery. The agent runtime (supervisor, workers, the agent loop,
+and the component interfaces) lives in `psa_agents`; the built-in bundles, tools,
+hooks, and codemode functions live in `psa_components`, whose
+`BuiltinComponents` factory the server hands the runtime at startup. The CodeMode engine lives in
 `psa_codemode`, provider clients and the model catalog in `psa_models`, and the
 formats of `config.toml`, `auth.toml`, and agent files in `psa_config`. See
 `../../docs/CRATE_LAYOUT.md` for crate boundaries.
