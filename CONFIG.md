@@ -78,8 +78,15 @@ client_key = "..."
 probe_key = "..."
 
 # Provider credentials, each section optional.
+# Signing in with ChatGPT (GUI provider settings, or POST /providers/logins)
+# writes the whole table; the server refreshes the token before it expires
+# and saves the new one here. A hand-entered access_token alone also works,
+# but cannot be refreshed.
 [openai_codex]
 access_token = "..."
+refresh_token = "..."      # optional
+account_id = "..."         # optional, sent as chatgpt-account-id
+expires_at = 1800000000    # optional, Unix seconds
 
 [openrouter]
 api_key = "..."

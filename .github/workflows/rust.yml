@@ -26,14 +26,14 @@ jobs:
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: Offline query compilation and tests
-        run: cargo test --locked --workspace
+        run: cargo test --locked --workspace --no-default-features
       - name: Lints
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --no-default-features -- -D warnings
       - name: Check native desktop renderer
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libwebkit2gtk-4.1-dev libxdo-dev libssl-dev
-          cargo check --locked -p psa_desktop --features native
+          cargo check --locked -p psa_desktop
       - name: Install matching SQLx CLI
         run: cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features sqlite
       - name: Check prepared queries against fresh migrations

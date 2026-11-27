@@ -4,8 +4,9 @@ Status: initial desktop client and API implementation added. This document recor
 its design and agreed scope; see `client/psa_desktop/README.md` for running it and
 `lib/psa/API_OVERVIEW.md` for the concrete endpoint contracts.
 
-The desktop WebView renderer is enabled with `--features native`, keeping ordinary
-workspace tests independent of native GUI development libraries. Web/mobile/TUI
+The desktop WebView renderer is the default `native` feature; building with
+`--no-default-features` keeps workspace tests independent of native GUI
+development libraries. Web/mobile/TUI
 shells remain future work. Duplicate-agent views are supported by workspace state
 but deliberately have no creation action in the initial GUI.
 

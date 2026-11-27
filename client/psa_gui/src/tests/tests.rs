@@ -841,14 +841,18 @@ fn provider_cards_test_root() -> Element {
             psa::api::ProviderInfo {
                 id: ProviderType::Openrouter,
                 authed: true,
+                signed_in: false,
+                supports_login: false,
             },
             psa::api::ProviderInfo {
                 id: ProviderType::OpenAiCodex,
                 authed: false,
+                signed_in: false,
+                supports_login: true,
             },
         ]
     });
-    rsx! { for provider in providers() { crate::views::ProviderCard { key: "{provider.id.as_str()}", id:provider.id, authed:provider.authed, providers } } }
+    rsx! { for provider in providers() { crate::views::ProviderCard { key: "{provider.id.as_str()}", id:provider.id, authed:provider.authed, signed_in:provider.signed_in, supports_login:provider.supports_login, providers } } }
 }
 
 #[test]

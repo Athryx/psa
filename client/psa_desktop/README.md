@@ -9,17 +9,17 @@ server and probe remain separate processes. Never supply a provider API key here
 From the workspace root:
 
 ```sh
-cargo run --locked -p psa_desktop --features native
+cargo run --locked --bin psa_desktop
 # Use a different PSA data directory:
-cargo run --locked -p psa_desktop --features native -- --data-dir /custom/psa
+cargo run --locked --bin psa_desktop -- --data-dir /custom/psa
 # Select the server executable for managed local startup:
-cargo run --locked -p psa_desktop --features native -- --server-binary /path/to/psa_server
+cargo run --locked --bin psa_desktop -- --server-binary /path/to/psa_server
 ```
 
-The `native` feature enables the desktop WebView renderer. It is optional so
-workspace tests, configuration services, and GUI/state tests can run without a
-windowing system or WebView development packages. There is no web/mobile/TUI
-executable yet.
+The default `native` feature enables the desktop WebView renderer. Pass
+`--no-default-features` (also accepted with `--workspace`) to run workspace tests,
+configuration services, and GUI/state tests without a windowing system or WebView
+development packages. There is no web/mobile/TUI executable yet.
 
 On Debian/Ubuntu, native builds need a C toolchain, pkg-config, and WebKitGTK 4.1
 development packages (including GTK 3):
@@ -32,9 +32,9 @@ On NixOS, enter the workspace's development shell before building **or running**
 
 ```sh
 nix-shell
-cargo run --locked -p psa_desktop --features native
+cargo run --locked --bin psa_desktop
 # Or, from outside the shell:
-nix-shell --run 'cargo run --locked -p psa_desktop --features native'
+nix-shell --run 'cargo run --locked --bin psa_desktop'
 ```
 
 `shell.nix` supplies native build dependencies, runtime `LD_LIBRARY_PATH`
@@ -80,9 +80,9 @@ override agents whose definitions pin their own model.
 ## Checks
 
 ```sh
-cargo test --locked -p client_shared -p psa_gui -p psa_desktop
+cargo test --locked -p client_shared -p psa_gui -p psa_desktop --no-default-features
 node --test client/psa_gui/src/*.test.cjs
-cargo check --locked -p psa_desktop --features native
+cargo check --locked -p psa_desktop
 ```
 
-The second command needs the platform dependencies above; the first does not.
+The last command needs the platform dependencies above; the first does not.

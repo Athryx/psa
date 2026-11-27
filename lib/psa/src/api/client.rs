@@ -179,6 +179,34 @@ impl Client {
             .await
     }
 
+    /// Begin signing in to a provider. Show the returned code and URL to the
+    /// user, then poll [`Self::get_provider_login`] until it finishes.
+    pub async fn start_provider_login(
+        &self,
+        request: &crate::api::StartProviderLogin,
+    ) -> Result<crate::api::ProviderLogin, ClientError> {
+        self.send(Method::POST, routes::PROVIDER_LOGINS, request)
+            .await
+    }
+
+    /// Fetch a sign-in's current status.
+    pub async fn get_provider_login(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<crate::api::ProviderLogin, ClientError> {
+        self.get(&routes::provider_login_path(id), &()).await
+    }
+
+    /// Cancel a pending sign-in.
+    pub async fn cancel_provider_login(&self, id: uuid::Uuid) -> Result<(), ClientError> {
+        let response = self
+            .request(Method::DELETE, &routes::provider_login_path(id))
+            .send()
+            .await?;
+        require_success(response).await?;
+        Ok(())
+    }
+
     /// List catalog models matching the AND-combined filters in `query`.
     /// Reads cached metadata; does not trigger a catalog refresh.
     pub async fn list_models(

@@ -39,6 +39,7 @@
 //! Never execute a partial tool call during replay.
 
 pub mod agent_history;
+mod auth;
 pub mod decisions;
 pub mod openai_completions;
 pub mod openai_responses;
@@ -58,6 +59,7 @@ use crate::Error;
 use crate::providers::ProviderType;
 
 pub use agent_history::{AgentHistory, validate_request};
+pub use auth::Auth;
 pub use openai_completions::{OpenAiCompletions, OpenAiCompletionsConfig, OpenAiCompletionsStream};
 pub use openai_responses::{OpenAiResponses, OpenAiResponsesStream};
 pub use provider::{Provider, ProviderStream};

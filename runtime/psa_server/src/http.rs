@@ -115,6 +115,12 @@ impl IntoResponse for HttpError {
             Self::ProviderAuth(psa_models::AuthError::InvalidCredential) => {
                 (StatusCode::BAD_REQUEST, "invalid_input", self.to_string())
             }
+            Self::ProviderAuth(psa_models::AuthError::LoginUnsupported) => {
+                (StatusCode::BAD_REQUEST, "invalid_input", self.to_string())
+            }
+            Self::ProviderAuth(psa_models::AuthError::OAuth(_)) => {
+                (StatusCode::BAD_GATEWAY, "sign_in_failed", self.to_string())
+            }
             Self::ProviderAuth(psa_models::AuthError::Unavailable) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "unavailable",
@@ -245,6 +251,11 @@ pub fn router(state: AppState) -> Router {
             axum::routing::put(set_provider_credential)
                 .layer(axum::extract::DefaultBodyLimit::max(16 * 1024)),
         )
+        .route(routes::PROVIDER_LOGINS, post(start_provider_login))
+        .route(
+            routes::PROVIDER_LOGIN,
+            get(get_provider_login).delete(cancel_provider_login),
+        )
         .route(routes::MODELS, get(list_models))
         .route(routes::MODEL_LOOKUP, get(lookup_model))
         .route(routes::MODEL_PIN, axum::routing::put(pin_model))
@@ -309,6 +320,38 @@ async fn set_provider_credential(
             .set_provider_credential(request)
             .await?,
     ))
+}
+
+async fn start_provider_login(
+    State(state): State<AppState>,
+    Json(request): Json<api::StartProviderLogin>,
+) -> Result<Json<api::ProviderLogin>, HttpError> {
+    state.require_accepting()?;
+    Ok(Json(
+        require_catalog(&state)?
+            .start_provider_login(request.provider)
+            .await?,
+    ))
+}
+
+async fn get_provider_login(
+    State(state): State<AppState>,
+    ApiPath(login_id): ApiPath<api::probes::Uuid>,
+) -> Result<Json<api::ProviderLogin>, HttpError> {
+    require_catalog(&state)?
+        .provider_login(login_id)
+        .map(Json)
+        .ok_or_else(|| psa_models::CatalogError::NotFound.into())
+}
+
+async fn cancel_provider_login(
+    State(state): State<AppState>,
+    ApiPath(login_id): ApiPath<api::probes::Uuid>,
+) -> Result<StatusCode, HttpError> {
+    require_catalog(&state)?
+        .cancel_provider_login(login_id)
+        .map(|_| StatusCode::NO_CONTENT)
+        .ok_or_else(|| psa_models::CatalogError::NotFound.into())
 }
 
 async fn list_models(
@@ -1263,6 +1306,9 @@ mod tests {
         let endpoints = [
             ("GET", "/health"),
             ("GET", routes::PROVIDERS),
+            ("POST", routes::PROVIDER_LOGINS),
+            ("GET", routes::PROVIDER_LOGIN),
+            ("DELETE", routes::PROVIDER_LOGIN),
             ("GET", routes::MODELS),
             ("GET", routes::MODEL_LOOKUP),
             ("PUT", routes::MODEL_PIN),
@@ -1304,7 +1350,8 @@ mod tests {
                 .replace("{agent_id}", "1")
                 .replace("{definition_id}", "1")
                 .replace("{probe_id}", "00000000-0000-0000-0000-000000000000")
-                .replace("{query_id}", "00000000-0000-0000-0000-000000000000");
+                .replace("{query_id}", "00000000-0000-0000-0000-000000000000")
+                .replace("{login_id}", "00000000-0000-0000-0000-000000000000");
             for credentials in [None, Some("Bearer wrong-key"), Some("Bearer test")] {
                 let mut request = http.request(method.parse().unwrap(), format!("{base}{path}"));
                 if let Some(credentials) = credentials {

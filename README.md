@@ -20,6 +20,8 @@ PSA_PREPARE_ONLY=1 scripts/package-probe.sh x86_64-unknown-linux-musl
 SQLX_OFFLINE=true cargo build --locked --workspace
 ```
 
+This includes the desktop client, which needs its [native dependencies](client/psa_desktop/README.md). Without them, add `--no-default-features` to build only the headless crates.
+
 The first build needs network access. For a standalone probe, run `scripts/package-probe-docker.sh` (or pass `arm64` or `all`); see the [probe README](runtime/psa_probe/README.md).
 
 ## Run locally
@@ -42,7 +44,7 @@ For a separate machine, create a probe data directory with an `auth.toml` contai
 To run the desktop client, install its [native dependencies](client/psa_desktop/README.md), then:
 
 ```sh
-cargo run --locked -p psa_desktop --features native -- --server-binary ./target/debug/psa_server
+cargo run --locked --bin psa_desktop -- --server-binary ./target/debug/psa_server
 ```
 
 ## Configuration
@@ -79,4 +81,6 @@ After preparing probe assets as above:
 ```sh
 cargo fmt --all -- --check
 SQLX_OFFLINE=true cargo test --locked --workspace
+# Without the desktop's native dependencies:
+SQLX_OFFLINE=true cargo test --locked --workspace --no-default-features
 ```

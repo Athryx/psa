@@ -28,11 +28,11 @@ impl OpenAiResponses {
     /// Select the provider identity independently of the Responses wire format.
     pub fn new(
         api_url: impl Into<String>,
-        api_key: impl Into<String>,
+        api_key: impl Into<Auth>,
         provider: ProviderType,
     ) -> Result<Self, Error> {
         Ok(Self {
-            client: ApiClient::new(api_url.into(), api_key.into())?,
+            client: ApiClient::new(api_url.into(), api_key)?,
             provider,
         })
     }

@@ -10,8 +10,9 @@ psa = { path = "../../lib/psa" }
 psa_config = { path = "../psa_config" }
 psa_shared = { path = "../psa_shared" }
 psa_store = { path = "../psa_store" }
+base64 = "0.22"
 futures-util = "0.3"
-reqwest = { version = "0.13.5", features = ["json"] }
+reqwest = { version = "0.13.5", features = ["form", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -19,6 +20,7 @@ time = "0.3.55"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "rt", "sync", "time"] }
 toml_edit = "0.23"
 tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 axum = "0.8"

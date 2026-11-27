@@ -1206,7 +1206,102 @@ fn ProviderSettings() -> Element {
         }
         div { class:"profile-list",
             for provider in providers() {
-                ProviderCard { key:"{provider.id.as_str()}", id:provider.id, authed:provider.authed, providers }
+                ProviderCard { key:"{provider.id.as_str()}", id:provider.id, authed:provider.authed, signed_in:provider.signed_in, supports_login:provider.supports_login, providers }
+            }
+        }
+    }
+}
+
+/// Device-code sign-in: shows the code and link, then waits for the server
+/// to report that the user approved it.
+#[component]
+fn ProviderSignIn(
+    id: ProviderType,
+    signed_in: bool,
+    mut providers: Signal<Vec<ProviderInfo>>,
+) -> Element {
+    let ui = use_context::<Signal<Ui>>();
+    let mut login = use_signal(|| None::<psa::api::ProviderLogin>);
+    let mut error = use_signal(|| None::<String>);
+    let start = move |_| {
+        let generation = ui.read().generation;
+        let Ok(api) = network::client(ui) else {
+            error.set(Some("Unable to connect to the server.".into()));
+            return;
+        };
+        error.set(None);
+        spawn(async move {
+            let request = psa::api::StartProviderLogin { provider: id };
+            let mut current = match api.start_provider_login(&request).await {
+                Ok(current) => current,
+                Err(_) => {
+                    error.set(Some("Unable to start signing in. Please try again.".into()));
+                    return;
+                }
+            };
+            let login_id = current.id;
+            loop {
+                if ui.read().generation != generation {
+                    return;
+                }
+                login.set(Some(current.clone()));
+                match current.status {
+                    psa::api::ProviderLoginStatus::Pending => {}
+                    psa::api::ProviderLoginStatus::Complete => break,
+                    psa::api::ProviderLoginStatus::Failed { message } => {
+                        login.set(None);
+                        error.set(Some(message));
+                        return;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                // A login that is no longer pending here was cancelled.
+                if login
+                    .peek()
+                    .as_ref()
+                    .is_none_or(|shown| shown.id != login_id)
+                {
+                    return;
+                }
+                current = match api.get_provider_login(login_id).await {
+                    Ok(current) => current,
+                    Err(_) => {
+                        login.set(None);
+                        error.set(Some("Lost track of the sign-in. Please try again.".into()));
+                        return;
+                    }
+                };
+            }
+
+            login.set(None);
+            if let Ok(items) = api.list_providers().await {
+                providers.set(items);
+            }
+            spawn(network::refresh_metadata(ui));
+        });
+    };
+    let cancel = move |_| {
+        let Some(current) = login.take() else {
+            return;
+        };
+        if let Ok(api) = network::client(ui) {
+            spawn(async move {
+                let _ = api.cancel_provider_login(current.id).await;
+            });
+        }
+    };
+    rsx! {
+        if let Some(message) = error() { p { class:"error", role:"alert", "{message}" } }
+        if let Some(current) = login() {
+            div { class:"provider-sign-in", role:"status",
+                p { "Open " a { href:"{current.verification_url}", target:"_blank", "{current.verification_url}" } " and enter this code:" }
+                p { strong { class:"provider-user-code", "{current.user_code}" } }
+                p { class:"muted", "Waiting for approval…" }
+                button { r#type:"button", onclick:cancel, "Cancel sign-in" }
+            }
+        } else {
+            button { r#type:"button", "aria-label":format!("Sign in to {}", id.name()), onclick:start,
+                if signed_in { "Sign in again with ChatGPT" } else { "Sign in with ChatGPT" }
             }
         }
     }
@@ -1216,6 +1311,8 @@ fn ProviderSettings() -> Element {
 pub(crate) fn ProviderCard(
     id: ProviderType,
     authed: bool,
+    signed_in: bool,
+    supports_login: bool,
     mut providers: Signal<Vec<ProviderInfo>>,
 ) -> Element {
     let ui = use_context::<Signal<Ui>>();
@@ -1271,7 +1368,7 @@ pub(crate) fn ProviderCard(
     rsx! {
         article { class:"profile-card provider-card",
             div { class:"profile-card-heading",
-                div { strong { "{name}" } div { class:"muted", if authed { "Configured" } else { "Not configured" } } }
+                div { strong { "{name}" } div { class:"muted", if signed_in { "Signed in" } else if authed { "Configured" } else { "Not configured" } } }
                 if !editing() {
                     button { disabled:pending(), "aria-label":format!("{} credentials for {}", if authed { "Edit" } else { "Add" }, name), onclick:move |_| { confirming.set(false); error.set(None); editing.set(true); }, if authed { "Edit" } else { "Add" } }
                 }
@@ -1293,6 +1390,9 @@ pub(crate) fn ProviderCard(
                     button { r#type:"button", disabled:pending(), onclick:move |_| { credential.set(String::new()); editing.set(false); error.set(None); }, "Cancel" }
                 }
                 }
+            }
+            if supports_login && !editing() && !confirming() {
+                ProviderSignIn { id, signed_in, providers }
             }
             if authed && !editing() && !confirming() {
                 button { class:"profile-delete", disabled:pending(), "aria-label":format!("Delete credentials for {}", name), onclick:move |_| { error.set(None); confirming.set(true); }, "Delete credentials" }

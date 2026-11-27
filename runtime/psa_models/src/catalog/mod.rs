@@ -51,10 +51,7 @@ impl ModelCatalog {
     pub fn providers(&self) -> Vec<ProviderInfo> {
         ProviderType::ALL
             .into_iter()
-            .map(|id| ProviderInfo {
-                id,
-                authed: self.providers.provider(id).is_some(),
-            })
+            .map(|id| self.providers.info(id))
             .collect()
     }
 
@@ -68,6 +65,21 @@ impl ModelCatalog {
         tokio::spawn(async move { providers.set_credential(request).await })
             .await
             .map_err(|_| crate::providers::AuthError::Unavailable)?
+    }
+
+    pub async fn start_provider_login(
+        &self,
+        provider: ProviderType,
+    ) -> Result<psa::api::ProviderLogin, crate::providers::AuthError> {
+        self.providers.start_login(provider).await
+    }
+
+    pub fn provider_login(&self, id: uuid::Uuid) -> Option<psa::api::ProviderLogin> {
+        self.providers.login(id)
+    }
+
+    pub fn cancel_provider_login(&self, id: uuid::Uuid) -> Option<psa::api::ProviderLogin> {
+        self.providers.cancel_login(id)
     }
 
     pub async fn list_models(&self, query: ListModels) -> Result<Vec<ModelInfo>, CatalogError> {

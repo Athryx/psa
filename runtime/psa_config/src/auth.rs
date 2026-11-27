@@ -77,29 +77,89 @@ pub fn build_probe_document(probe_key: &str) -> toml_edit::DocumentMut {
     document
 }
 
-/// The table and field that hold a provider's credential.
-pub fn provider_credential_field(provider: ProviderType) -> (&'static str, &'static str) {
-    match provider {
-        ProviderType::Openrouter => ("openrouter", "api_key"),
-        ProviderType::OpenAiCodex => ("openai_codex", "access_token"),
+/// One provider's credential. API-key providers only use `token`; Codex
+/// stores its ChatGPT OAuth token set so the server can refresh it.
+///
+/// Intentionally does not implement Debug: it holds secrets.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProviderCredential {
+    /// API key or OAuth access token, sent as a bearer token.
+    pub token: String,
+    /// OAuth refresh token. Without one an expired token must be replaced by hand.
+    pub refresh_token: Option<String>,
+    /// ChatGPT account (workspace) the token acts for.
+    pub account_id: Option<String>,
+    /// Access-token expiry, in Unix seconds.
+    pub expires_at: Option<i64>,
+}
+
+impl ProviderCredential {
+    /// A credential with only a token, as entered by hand.
+    pub fn token(token: impl Into<String>) -> Self {
+        Self {
+            token: token.into(),
+            refresh_token: None,
+            account_id: None,
+            expires_at: None,
+        }
     }
+}
+
+/// Replace a provider's table with `credential`, or remove it for `None`.
+/// Fields the provider's table does not support are not written.
+pub fn apply_provider_credential(
+    document: &mut toml_edit::DocumentMut,
+    provider: ProviderType,
+    credential: Option<&ProviderCredential>,
+) {
+    let section = provider.as_str();
+    let Some(credential) = credential else {
+        document.remove(section);
+        return;
+    };
+
+    let mut table = toml_edit::Table::new();
+    match provider {
+        ProviderType::Openrouter => {
+            table["api_key"] = toml_edit::value(&credential.token);
+        }
+        ProviderType::OpenAiCodex => {
+            table["access_token"] = toml_edit::value(&credential.token);
+            if let Some(refresh_token) = &credential.refresh_token {
+                table["refresh_token"] = toml_edit::value(refresh_token);
+            }
+            if let Some(account_id) = &credential.account_id {
+                table["account_id"] = toml_edit::value(account_id);
+            }
+            if let Some(expires_at) = credential.expires_at {
+                table["expires_at"] = toml_edit::value(expires_at);
+            }
+        }
+    }
+    document[section] = toml_edit::Item::Table(table);
 }
 
 /// Provider credentials present in an auth document. Unknown tables and empty
 /// credentials are rejected; `[psa]` keys are not checked here.
 pub fn parse_provider_credentials(
     text: &str,
-) -> Result<Vec<(ProviderType, String)>, AuthFileError> {
+) -> Result<Vec<(ProviderType, ProviderCredential)>, AuthFileError> {
     let auth: ProviderAuth = toml::from_str(text).map_err(|_| AuthFileError::Invalid)?;
     let _ = &auth.psa;
     let credentials = [
         (
             ProviderType::Openrouter,
-            auth.openrouter.map(|auth| auth.api_key),
+            auth.openrouter
+                .map(|auth| ProviderCredential::token(auth.api_key)),
         ),
         (
             ProviderType::OpenAiCodex,
-            auth.openai_codex.map(|auth| auth.access_token),
+            auth.openai_codex.map(|auth| ProviderCredential {
+                token: auth.access_token,
+                refresh_token: auth.refresh_token,
+                account_id: auth.account_id,
+                expires_at: auth.expires_at,
+            }),
         ),
     ];
 
@@ -108,7 +168,11 @@ pub fn parse_provider_credentials(
         let Some(credential) = credential else {
             continue;
         };
-        if credential.trim().is_empty() {
+        let blank = |value: &Option<String>| value.as_ref().is_some_and(|v| v.trim().is_empty());
+        if credential.token.trim().is_empty()
+            || blank(&credential.refresh_token)
+            || blank(&credential.account_id)
+        {
             return Err(AuthFileError::Invalid);
         }
         present.push((provider, credential));
@@ -212,6 +276,9 @@ struct OpenrouterAuth {
 #[serde(deny_unknown_fields)]
 struct CodexAuth {
     access_token: String,
+    refresh_token: Option<String>,
+    account_id: Option<String>,
+    expires_at: Option<i64>,
 }
 
 #[cfg(test)]
@@ -436,6 +503,43 @@ mod tests {
         let error = ensure_keys(&path).await.err().expect("directory accepted");
         assert!(matches!(error, AuthFileError::Io(_)));
         assert!(tokio::fs::metadata(&path).await.unwrap().is_dir());
+    }
+
+    #[test]
+    fn codex_token_sets_round_trip_and_old_tables_still_parse() {
+        let credential = ProviderCredential {
+            token: "access".into(),
+            refresh_token: Some("refresh".into()),
+            account_id: Some("account".into()),
+            expires_at: Some(1_800_000_000),
+        };
+        let mut document = parse_document("[psa]\nclient_key = 'c'\n").unwrap();
+        apply_provider_credential(&mut document, ProviderType::OpenAiCodex, Some(&credential));
+        apply_provider_credential(
+            &mut document,
+            ProviderType::Openrouter,
+            Some(&ProviderCredential::token("key")),
+        );
+        let parsed = parse_provider_credentials(&document.to_string()).unwrap();
+        assert!(parsed.contains(&(ProviderType::OpenAiCodex, credential)));
+        assert!(parsed.contains(&(ProviderType::Openrouter, ProviderCredential::token("key"))));
+
+        apply_provider_credential(&mut document, ProviderType::OpenAiCodex, None);
+        assert_eq!(
+            parse_provider_credentials(&document.to_string())
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let old = parse_provider_credentials("[openai_codex]\naccess_token = 'a'\n").unwrap();
+        assert!(old[0].1 == ProviderCredential::token("a"));
+        for invalid in [
+            "[openai_codex]\naccess_token = 'a'\nrefresh_token = ' '\n",
+            "[openrouter]\napi_key = 'a'\nrefresh_token = 'r'\n",
+        ] {
+            assert!(parse_provider_credentials(invalid).is_err());
+        }
     }
 
     #[tokio::test]

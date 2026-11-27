@@ -8,6 +8,10 @@ pub const CONFIG: &str = "/config";
 pub const PROVIDERS: &str = "/providers";
 /// PUT a provider credential or remove it without returning the secret.
 pub const PROVIDER_CREDENTIAL: &str = "/providers/credential";
+/// POST a `StartProviderLogin` to begin signing in to a provider.
+pub const PROVIDER_LOGINS: &str = "/providers/logins";
+/// GET a sign-in's progress or DELETE to cancel it.
+pub const PROVIDER_LOGIN: &str = "/providers/logins/{login_id}";
 /// GET model catalog entries with optional filters.
 pub const MODELS: &str = "/models";
 /// GET one model using flat provider/model query parameters.
@@ -104,6 +108,11 @@ pub fn client_query_response_path(
     query: ClientQueryId,
 ) -> String {
     agent_path(CLIENT_QUERY_RESPONSE, session, agent).replace("{query_id}", &query.to_string())
+}
+
+/// Substitute the login ID in the provider login route.
+pub fn provider_login_path(id: uuid::Uuid) -> String {
+    PROVIDER_LOGIN.replace("{login_id}", &id.to_string())
 }
 
 /// Substitute the probe ID in a probe or sandbox route template.

@@ -9,6 +9,44 @@ pub struct ProviderInfo {
     pub id: ProviderType,
     /// Credentials are configured; this does not verify validity or entitlement.
     pub authed: bool,
+    /// The credential came from a sign-in and the server refreshes it.
+    #[serde(default)]
+    pub signed_in: bool,
+    /// The provider supports signing in through [`StartProviderLogin`].
+    #[serde(default)]
+    pub supports_login: bool,
+}
+
+/// Start signing in to a provider that supports it (currently `OpenAiCodex`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartProviderLogin {
+    pub provider: ProviderType,
+}
+
+/// A pending or finished provider sign-in. The user opens `verification_url`
+/// and enters `user_code`; the server finishes the sign-in by itself and
+/// saves the credential. Poll it to follow progress.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderLogin {
+    pub id: uuid::Uuid,
+    pub provider: ProviderType,
+    pub verification_url: String,
+    pub user_code: String,
+    /// The code stops working after this time.
+    #[serde(with = "time::serde::rfc3339")]
+    pub expires_at: OffsetDateTime,
+    pub status: ProviderLoginStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProviderLoginStatus {
+    /// Waiting for the user to approve the code.
+    Pending,
+    /// Signed in; the credential is saved.
+    Complete,
+    /// The sign-in failed or was cancelled.
+    Failed { message: String },
 }
 
 /// Set or remove one provider credential. This request contains a secret and

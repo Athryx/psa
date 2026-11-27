@@ -5,7 +5,9 @@
 //! stores them through `psa_store`, and refreshes them in the background.
 
 mod catalog;
+mod codex_auth;
 mod providers;
 
 pub use catalog::{CatalogError, CatalogSource, ModelCatalog, ModelCatalogRuntime};
+pub use codex_auth::OAuthError;
 pub use providers::{AuthError, ProviderRegistry};

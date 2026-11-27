@@ -4640,6 +4640,7 @@ version = "0.1.0"
 dependencies = [
  "actors",
  "axum",
+ "base64 0.22.1",
  "futures-util",
  "llm_api",
  "psa",
@@ -4655,6 +4656,7 @@ dependencies = [
  "tokio",
  "toml_edit 0.23.10+spec-1.0.0",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

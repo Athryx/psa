@@ -99,12 +99,22 @@ fn configured_agent_requests_carry_typed_model_and_effort_selections() {
 
 #[test]
 fn provider_info_only_transmits_identity_and_authentication() {
-    let wire = serde_json::json!({"id": "Openrouter", "authed": true});
+    let wire = serde_json::json!({
+        "id": "OpenAiCodex",
+        "authed": true,
+        "signed_in": true,
+        "supports_login": true,
+    });
     let provider: ProviderInfo = serde_json::from_value(wire.clone()).unwrap();
-    assert_eq!(provider.id, ProviderType::Openrouter);
-    assert!(provider.authed);
-    assert_eq!(provider.id.name(), "OpenRouter");
+    assert_eq!(provider.id, ProviderType::OpenAiCodex);
+    assert!(provider.authed && provider.signed_in && provider.supports_login);
     assert_eq!(serde_json::to_value(provider).unwrap(), wire);
+
+    // Older servers omit the sign-in fields.
+    let older = serde_json::json!({"id": "Openrouter", "authed": true});
+    let provider: ProviderInfo = serde_json::from_value(older).unwrap();
+    assert_eq!(provider.id.name(), "OpenRouter");
+    assert!(provider.authed && !provider.signed_in && !provider.supports_login);
 }
 
 #[test]

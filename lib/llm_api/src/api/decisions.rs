@@ -248,7 +248,7 @@ pub struct Decisions {
 
 impl Decisions {
     /// Use the provider's standard decision endpoint, or fail when it has none.
-    pub fn new(provider: ProviderType, api_key: impl Into<String>) -> Result<Self, Error> {
+    pub fn new(provider: ProviderType, api_key: impl Into<super::Auth>) -> Result<Self, Error> {
         let url = provider.decisions_url().ok_or_else(|| Error::Unsupported {
             feature: format!("decision models on {}", provider.name()),
         })?;
@@ -259,7 +259,7 @@ impl Decisions {
     pub fn with_url(
         provider: ProviderType,
         url: &str,
-        api_key: impl Into<String>,
+        api_key: impl Into<super::Auth>,
     ) -> Result<Self, Error> {
         let url = parse_endpoint_url(url)?;
         let mut headers = build_authenticated_headers(&api_key.into())?;

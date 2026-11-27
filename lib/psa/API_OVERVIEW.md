@@ -556,7 +556,8 @@ For OpenRouter, use a slug such as `openrouter/vendor/model`. If the whole
 server configuration exposes this as `ResolvedConfig.session_defaults: ModelConfig`.
 
 `GET /providers` returns all providers PSA supports (`Openrouter` and
-`OpenAiCodex`), with `id` and `authed`. Display names are available locally through
+`OpenAiCodex`), with `id`, `authed`, `signed_in` (the credential came from a
+sign-in and is refreshed by the server), and `supports_login`. Display names are available locally through
 `ProviderType::name()`. Authentication means a
 credential is configured in the running server; it does not verify token validity,
 model entitlement, or account balance. Credentials never appear in responses.
@@ -568,9 +569,19 @@ method is `set_provider_credential(&SetProviderCredential)`. Changes are applied
 to future inference and catalog status immediately; in-flight inference keeps its
 existing provider. External file edits are not automatically reloaded; restart or
 another successful credential update loads them. Credentials are not
-validated against the provider and token refresh is not implemented. The existing
+validated against the provider. A hand-entered credential is never refreshed. The existing
 client key is full-trust: any client with it can change provider credentials and
 incur spending. Protect traffic with a trusted encrypted tunnel.
+
+`POST /providers/logins` with `{"provider":"OpenAiCodex"}` starts a ChatGPT
+device-code sign-in and returns a `ProviderLogin`: `id`, `verification_url`,
+`user_code`, `expires_at`, and `status` (`Pending`, `Complete`, or
+`Failed { message }`). Show the code and URL to the user; the server waits for
+approval in the background and saves the token set to `auth.toml`. Poll
+`GET /providers/logins/{login_id}` for progress and `DELETE` it to cancel.
+Finished sign-ins stay visible for ten minutes. Typed client methods:
+`start_provider_login`, `get_provider_login`, `cancel_provider_login`. Signed-in
+Codex tokens are refreshed shortly before they expire, before inference.
 
 `GET /models` returns a `ModelInfo[]`. Optional `provider`, `authed`, and `pinned`
 query parameters combine with AND. Omitted filters include both values; for

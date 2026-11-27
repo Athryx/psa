@@ -4,7 +4,7 @@ use crate::Error;
 use crate::providers::ProviderType;
 
 use super::{
-    AgentHistory, ApiProvider, ModelResponse, ModelTurnStream, OpenAiCompletions,
+    AgentHistory, ApiProvider, Auth, ModelResponse, ModelTurnStream, OpenAiCompletions,
     OpenAiCompletionsConfig, OpenAiCompletionsStream, OpenAiResponses, OpenAiResponsesStream,
     RequestConfig, TurnEvent,
 };
@@ -19,23 +19,23 @@ pub enum Provider {
 
 impl Provider {
     /// Select the protocol, endpoint, and wire settings for a provider.
-    /// Credentials are forwarded as bearer tokens; OAuth login/token refresh
-    /// are not performed here. Codex needs a ChatGPT access token, not a platform
-    /// API key. Its subscription-specific request/header compatibility is not
-    /// implemented by the generic Responses client yet.
-    pub fn new(provider: ProviderType, api_key: impl Into<String>) -> Result<Self, Error> {
-        let api_key = api_key.into();
+    /// `auth` supplies the request headers; a plain string is a bearer token.
+    /// OAuth login and token refresh are not performed here. Codex needs a
+    /// ChatGPT access token (not a platform API key) and, for workspace
+    /// accounts, a `chatgpt-account-id` header.
+    pub fn new(provider: ProviderType, auth: impl Into<Auth>) -> Result<Self, Error> {
+        let auth = auth.into();
         let base_url = provider.api_base_url();
 
         match provider {
             ProviderType::OpenAiCodex => Ok(Self::Responses(OpenAiResponses::new(
                 format!("{base_url}/responses"),
-                api_key,
+                auth,
                 provider,
             )?)),
             ProviderType::Openrouter => Ok(Self::Completions(OpenAiCompletions::new(
                 format!("{base_url}/chat/completions"),
-                api_key,
+                auth,
                 provider,
                 OpenAiCompletionsConfig {
                     openrouter_reasoning_fields: true,

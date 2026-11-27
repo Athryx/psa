@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, RETRY_AFTER};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue, RETRY_AFTER};
 use serde_json::Value;
 
 use super::{ModelResponse, Outcome, TurnEvent, Usage};
@@ -20,9 +20,9 @@ pub(super) struct ApiClient {
 
 impl ApiClient {
     /// The URL is the complete endpoint, not a base URL; no path is appended.
-    pub(super) fn new(url: impl Into<String>, key: impl Into<String>) -> Result<Self, Error> {
+    pub(super) fn new(url: impl Into<String>, auth: impl Into<super::Auth>) -> Result<Self, Error> {
         let url = parse_endpoint_url(&url.into())?;
-        let headers = build_authenticated_headers(&key.into())?;
+        let headers = build_authenticated_headers(&auth.into())?;
         let client = reqwest::Client::builder()
             .default_headers(headers)
             // Do not forward secrets or silently change request semantics on redirects.
@@ -74,25 +74,9 @@ pub(super) fn parse_endpoint_url(value: &str) -> Result<reqwest::Url, Error> {
     Ok(url)
 }
 
-pub(super) fn build_authenticated_headers(key: &str) -> Result<HeaderMap, Error> {
-    if key.is_empty() || key.trim() != key {
-        return Err(Error::InvalidConfig {
-            field: "api_key".into(),
-            message: "key must be nonempty without surrounding whitespace".into(),
-        });
-    }
-
-    let mut authorization =
-        HeaderValue::from_str(&format!("Bearer {key}")).map_err(|_| Error::InvalidConfig {
-            field: "api_key".into(),
-            message: "key contains invalid header characters".into(),
-        })?;
-    authorization.set_sensitive(true);
-
-    let mut headers = HeaderMap::new();
-    headers.insert(AUTHORIZATION, authorization);
+pub(super) fn build_authenticated_headers(auth: &super::Auth) -> Result<HeaderMap, Error> {
+    let mut headers = auth.build_headers()?;
     headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
-
     Ok(headers)
 }
 

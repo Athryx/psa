@@ -48,7 +48,7 @@ impl OpenAiCompletions {
     /// Construct a client using the supplied full endpoint URL verbatim.
     pub fn new(
         api_url: impl Into<String>,
-        api_key: impl Into<String>,
+        api_key: impl Into<super::Auth>,
         provider: ProviderType,
         config: OpenAiCompletionsConfig,
     ) -> Result<Self, Error> {
