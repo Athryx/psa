@@ -1,4 +1,5 @@
 use clap::Parser;
+use client_shared::executables::{Executable, resolve_executable};
 use dioxus::prelude::*;
 use psa_desktop::{DesktopPlatform, load_settings, resolve_settings_path};
 use psa_gui::{GuiBootstrap, GuiConfig};
@@ -10,9 +11,10 @@ struct Options {
     /// PSA data directory; desktop settings live in desktop.toml here.
     #[arg(long)]
     data_dir: Option<PathBuf>,
-    /// Server executable used when starting a managed local server.
-    #[arg(long, default_value = "psa_server")]
-    server_binary: PathBuf,
+    /// Server executable used when starting a managed local server. Defaults to
+    /// `$PSA_SERVER_BIN`, then `psa_server` beside this executable or on PATH.
+    #[arg(long)]
+    server_binary: Option<PathBuf>,
 }
 
 fn main() {
@@ -28,12 +30,16 @@ fn launch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
     let settings = runtime.block_on(load_settings(&path))?;
+    // An unresolved server is reported when the GUI tries to start it.
+    let server_binary = runtime
+        .block_on(resolve_executable(
+            Executable::Server,
+            options.server_binary,
+        ))
+        .unwrap_or_else(|_| PathBuf::from(Executable::Server.name()));
     drop(runtime);
 
-    let platform = Rc::new(DesktopPlatform::with_server_binary(
-        path,
-        options.server_binary,
-    ));
+    let platform = Rc::new(DesktopPlatform::with_server_binary(path, server_binary));
     let bootstrap = GuiBootstrap {
         config: GuiConfig { settings },
         platform: platform.clone(),
@@ -66,33 +72,46 @@ fn DesktopRoot() -> Element {
     let platform = use_context::<Rc<DesktopPlatform>>();
     let window = dioxus_desktop::use_window();
     let closing = use_hook(|| Rc::new(Cell::new(false)));
+    // Save settings before the window really closes. A failed save keeps the
+    // window open so the user can retry instead of losing settings.
+    let close = use_hook(|| {
+        let platform = platform.clone();
+        let window = window.clone();
+        let closing = closing.clone();
+        Rc::new(move || {
+            if closing.replace(true) {
+                return;
+            }
+            let platform = platform.clone();
+            let window = window.clone();
+            let closing = closing.clone();
+            // `/quit` calls this from a composer, which may unmount meanwhile.
+            dioxus::core::spawn_forever(async move {
+                if platform.flush_pending_settings().await.is_err() {
+                    window.set_visible(true);
+                    window.set_focus();
+                    closing.set(false);
+                    return;
+                }
+                window.set_close_behavior(WindowCloseBehaviour::WindowCloses);
+                window.close();
+            });
+        }) as Rc<dyn Fn()>
+    });
+    use_hook(|| platform.set_quit_handler(Some(close.clone())));
+    let window_id = window.id();
     dioxus_desktop::use_wry_event_handler(move |event, _| {
         let Event::WindowEvent {
-            window_id,
+            window_id: id,
             event: WindowEvent::CloseRequested,
             ..
         } = event
         else {
             return;
         };
-        if *window_id != window.id() || closing.replace(true) {
-            return;
+        if *id == window_id {
+            close();
         }
-        let platform = platform.clone();
-        let window = window.clone();
-        let closing = closing.clone();
-        spawn(async move {
-            if platform.flush_pending_settings().await.is_err() {
-                // The GUI callback reports the error. Keep the window usable so
-                // the user can retry instead of silently discarding settings.
-                window.set_visible(true);
-                window.set_focus();
-                closing.set(false);
-                return;
-            }
-            window.set_close_behavior(WindowCloseBehaviour::WindowCloses);
-            window.close();
-        });
     });
     rsx! { psa_gui::App {} }
 }

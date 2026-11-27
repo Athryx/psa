@@ -207,82 +207,7 @@ fn use_open_composer_focus(ui: Signal<Ui>) {
     });
 }
 
-#[derive(Clone, Default)]
-pub struct DraftRoot {
-    pub configs: Vec<AgentConfigStatus>,
-    pub selected: Option<ConfigId>,
-    pub model: Option<ModelSelection>,
-    pub loading: bool,
-    pub ready: bool,
-    pub pending: bool,
-    pub uncertain: bool,
-}
-
-impl DraftRoot {
-    /// Return one permitted wire selector for each distinct root model policy.
-    pub fn model_choices(&self) -> Vec<ModelSelection> {
-        let Some(config) = self
-            .configs
-            .iter()
-            .find(|c| Some(&c.config.config_id) == self.selected.as_ref())
-        else {
-            return Vec::new();
-        };
-        let mut choices = Vec::new();
-        for selection in &config.config.models {
-            if !choices
-                .iter()
-                .any(|other| root_models_match(selection, other))
-            {
-                choices.push(selection.clone());
-            }
-        }
-        choices
-    }
-
-    pub fn select_config(&mut self, id: ConfigId) {
-        self.selected = Some(id);
-        let choices = self.model_choices();
-        let has_default = self.configs.iter().any(|c| {
-            Some(&c.config.config_id) == self.selected.as_ref() && c.config.first_model_default
-        });
-        self.model = if has_default || choices.len() == 1 {
-            choices.into_iter().next()
-        } else {
-            None
-        };
-    }
-}
-
-fn root_models_match(left: &ModelSelection, right: &ModelSelection) -> bool {
-    match (left, right) {
-        (
-            ModelSelection::Global | ModelSelection::Parent,
-            ModelSelection::Global | ModelSelection::Parent,
-        ) => true,
-        (
-            ModelSelection::Fixed {
-                model: left_model,
-                effort: left_effort,
-            },
-            ModelSelection::Fixed {
-                model: right_model,
-                effort: right_effort,
-            },
-        ) => {
-            left_model == right_model
-                && (left_effort == right_effort
-                    || matches!(
-                        (left_effort, right_effort),
-                        (
-                            EffortSelection::Global | EffortSelection::Parent,
-                            EffortSelection::Global | EffortSelection::Parent
-                        )
-                    ))
-        }
-        _ => false,
-    }
-}
+pub use client_shared::DraftRoot;
 
 pub struct Ui {
     pub settings: Shared<DesktopSettings>,
@@ -324,6 +249,8 @@ pub struct Ui {
     pub generation: u64,
     pub connection: String,
     pub settings_open: bool,
+    /// The settings dialog's open tab, such as `commands` for `/help`.
+    pub settings_tab: String,
     pub error: Option<String>,
     pub notice: Option<String>,
     pub follow_request: (u64, Option<ViewId>),
@@ -376,6 +303,7 @@ impl Ui {
             generation: 0,
             connection: "Not connected".into(),
             settings_open: false,
+            settings_tab: SETTINGS_FIRST_TAB.into(),
             error: None,
             notice: None,
             follow_request: (0, None),
@@ -499,9 +427,11 @@ impl Ui {
         profile.connection.client_key = key;
         let generation = self.generation + 1;
         let settings_open = self.settings_open;
+        let settings_tab = std::mem::take(&mut self.settings_tab);
         *self = Self::new(settings);
         self.generation = generation;
         self.settings_open = settings_open;
+        self.settings_tab = settings_tab;
     }
 
     pub fn select_profile(&mut self, id: String) {
@@ -515,6 +445,16 @@ impl Ui {
         let generation = self.generation + 1;
         *self = Self::new(settings);
         self.generation = generation;
+        self.settings_open = true;
+    }
+}
+
+/// The settings tab `/settings` opens.
+pub const SETTINGS_FIRST_TAB: &str = "profiles";
+
+impl Ui {
+    pub fn open_settings(&mut self, tab: &str) {
+        self.settings_tab = tab.into();
         self.settings_open = true;
     }
 }

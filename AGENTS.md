@@ -15,6 +15,7 @@ The following crates are present in the workspace. Runtime crates live under
 - `client_shared`: UI-independent client projections, workspace state, and settings.
 - `psa_gui`: shared Dioxus UI and a small platform-services interface; no native renderer.
 - `psa_desktop`: desktop executable and settings persistence; the default `native` feature enables the WebView renderer (`--no-default-features` for headless builds).
+- `psa_cli`: the `psa` command. Without a subcommand it runs the ratatui terminal client; subcommands locate and launch the server, desktop, and probe executables and manage the local server (`psa server start|stop|restart|status|run`, `psa gui`, `psa probe run`).
 - `llm_api`: a generic wrapper over different llm api types, like OpenAI responses and completions, low level close to the api.
 - `psa_server`: the HTTP/SSE API, probe WebSocket route, sandboxes, configuration discovery, and startup; hands the runtime its components.
 - `psa_agents`: the agent runtime (supervisor, workers, agent loop, `AgentContext`) and the interfaces components implement; installs components only through a `ComponentFactory`.

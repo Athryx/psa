@@ -12,7 +12,7 @@ Dependencies point downward only. A crate may depend on crates in lower
 layers, and only on the listed same-layer crates.
 
 ```text
-1. binaries      psa_server, psa_probe, psa_desktop, trace_cli
+1. binaries      psa_server, psa_probe, psa_desktop, psa_cli, trace_cli
 2. components    psa_components
 3. runtime       psa_agents
 4. services      psa_models, psa_codemode                 psa_gui
@@ -22,8 +22,11 @@ layers, and only on the listed same-layer crates.
 ```
 
 `psa_probe` is a binary, but `psa_server` also embeds it as a library to run
-its local probe. Clients (right-hand column) depend only on `psa` and
-`llm_api` from the lower layers.
+its local probe. Clients (right-hand column) depend only on `psa`,
+`llm_api`, and `psa_config` from the lower layers. They use `psa_config` only
+for the data-directory layout and file formats of a server or probe on the
+same machine, for example to find the local control socket. A client
+connected to a remote server uses only `psa::api`.
 
 Current edges between runtime crates:
 
@@ -38,6 +41,11 @@ Current edges between runtime crates:
 | `psa_agents` | `psa`, `llm_api`, `actors`, `psa_shared`, `psa_config`, `psa_store`, `psa_models`, `psa_codemode` |
 | `psa_components` | `psa_agents` and everything it depends on, plus `agent_trace` |
 | `psa_server` | all of the above |
+
+Client edges: `client_shared` and `psa_desktop` depend on `psa_config`
+(besides `psa` and `llm_api`), and `psa_cli` depends on `client_shared`,
+`psa_config`, `psa`, and `llm_api`. No client depends on any other runtime
+crate.
 
 These rules matter most:
 
@@ -68,7 +76,8 @@ These rules matter most:
 | `psa_agents` | The agent runtime: supervisor, per-agent workers and the agent loop, `AgentContext`, `RuntimeHandle`, projection and publication, client queries, the live probe connection registry; the component interfaces (`Tool`, `Hook`, `CommandHook`, `Bundle`, `CodeModeFunction`, `Installer`, `InstalledComponents`), the `ComponentFactory` and `ConfigDiscovery` seams, shared harness prompts; test fixtures behind the `testing` feature | Concrete components, HTTP, probe transport, configuration discovery |
 | `psa_components` | Built-in bundles, tools, hooks, and codemode functions; session-shared resources (subagent coordinator, decision models); bundle validation; trace export; the `BuiltinComponents` factory | When and how components run, persistence ownership |
 | `psa_server` | HTTP/SSE API, the probe WebSocket route, sandboxes, config discovery (`ConfigRegistry`, which implements `ConfigDiscovery`), CLI and startup | The agent runtime, concrete components, persistence details, file formats, provider plumbing, the CodeMode engine |
-| `client_shared`, `psa_gui`, `psa_desktop` | Client projections, UI, desktop shell | Anything the server or probe needs |
+| `client_shared`, `psa_gui`, `psa_desktop` | Client projections, UI, desktop shell; in `client_shared`, the slash command registry and completion menus for every front end, the root agent choice before a new session's first message (`root_draft`), local server control (`LocalServerManager`), and executable lookup (`executables`) | Anything the server or probe needs |
+| `psa_cli` | The `psa` command: the ratatui terminal client (`tui`), and subcommands that launch and manage local server, desktop, and probe processes | Server, probe, or GUI behaviour (it runs their executables); client projections shared with the GUI (those live in `client_shared`) |
 | `agent_trace`, `trace_cli` | Harness-neutral trace format and tools | PSA runtime types |
 
 ## Where new code goes

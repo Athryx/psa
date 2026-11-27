@@ -160,6 +160,11 @@ snapshot ID. The current routes and async client methods are:
 - `POST /configs/refresh` / `refresh_configs(&session_ids)` rescans the server's
   global configuration directory and each listed session's `.agents` directory
   (`ConfigGroup::AgentsDir`), discovering it on first use; HTTP 204 on success.
+- `POST /configs/discover` / `discover_configs(probe_id, &directory)` finds
+  the `.agents` directory a session in that directory would use, before the
+  session exists, and rescans it with the global directory. It returns
+  `DiscoveredConfigs { group, searched }`; `searched` is false when the probe
+  is offline. The TUI uses it to offer a new session's configurations.
 - `GET /agent-configs/lookup` / `get_agent_config(&config_id)` sends the
   `ConfigId` as `ConfigLookup` query parameters (`name`, `group`, and `custom`
   or `path` with `probe_id` as the group needs) and returns its current `AgentConfigStatus`, or HTTP 404 if unknown.

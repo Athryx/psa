@@ -127,14 +127,14 @@ fn composer_fixture() -> Element {
             "usage":{"input_tokens":100,"output_tokens":30,"total_tokens":130,"cached_input_tokens":25,"reasoning_output_tokens":10},"cacheable_input_tokens":50,
             "next_event_id":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"
         })).unwrap()].into());
-        for name in ["Alpha", "Beta"] {
+        for (name, pinned) in [("Alpha", true), ("Beta", true), ("Gamma", false)] {
             state.models.push(
                 serde_json::from_value(serde_json::json!({
                     "model": format!("openrouter/{}", name.to_lowercase()),
                     "name": name,
                     "input_modalities": [], "context_window": null, "max_output_tokens": null,
                     "cost": {"tiers": []}, "reasoning": true, "reasoning_options": [{"effort":"Low","wire_effort":"Low"},{"effort":"High","wire_effort":"High"}],
-                    "authed": true, "pinned": true, "refreshed_at": "2024-01-01T00:00:00Z"
+                    "authed": true, "pinned": pinned, "refreshed_at": "2024-01-01T00:00:00Z"
                 }))
                 .unwrap(),
             );
@@ -298,7 +298,7 @@ fn info_command_shows_agent_usage_without_sending() {
 
 #[test]
 fn info_token_breakdown_preserves_unknown_and_rejects_inconsistent_counts() {
-    use crate::agent_info::token_difference;
+    use client_shared::token_difference;
     assert_eq!(token_difference(Some(100), Some(25)), Some(75));
     assert_eq!(token_difference(None, Some(25)), None);
     assert_eq!(token_difference(Some(100), None), None);
@@ -373,6 +373,105 @@ async fn model_picker_navigates_and_enter_selects() {
     let html = dioxus_ssr::render(&dom);
     assert!(!html.contains("aria-label=\"Slash commands\""), "{html}");
     assert!(composer_draft(&dom).is_empty(), "{html}");
+}
+
+#[tokio::test]
+async fn model_menu_toggles_unpinned_models_from_its_last_item() {
+    let (mut dom, textarea) = mount();
+    input(&mut dom, textarea, "/model ");
+    let html = dioxus_ssr::render(&dom);
+    assert!(
+        !html.contains(">Gamma<"),
+        "unpinned models start hidden: {html}"
+    );
+    assert!(html.contains("Show all models (1 more)"), "{html}");
+
+    key(&mut dom, textarea, Key::ArrowUp);
+    key(&mut dom, textarea, Key::Enter);
+    let html = dioxus_ssr::render(&dom);
+    assert!(
+        html.contains(">Gamma<") && html.contains("Show pinned only"),
+        "{html}"
+    );
+    assert!(
+        html.contains("command-toggle selected"),
+        "the toggle stays highlighted: {html}"
+    );
+    assert_eq!(composer_draft(&dom), "/model ", "the menu stays open");
+
+    key(&mut dom, textarea, Key::Tab);
+    assert!(
+        !dioxus_ssr::render(&dom).contains(">Gamma<"),
+        "Tab toggles back"
+    );
+}
+
+#[tokio::test]
+async fn showing_all_models_lasts_only_until_model_is_left() {
+    let (mut dom, textarea) = mount();
+    input(&mut dom, textarea, "/model ");
+    key(&mut dom, textarea, Key::ArrowUp);
+    key(&mut dom, textarea, Key::Enter);
+    assert!(dioxus_ssr::render(&dom).contains(">Gamma<"));
+
+    input(&mut dom, textarea, "/mode");
+    input(&mut dom, textarea, "/model ");
+    assert!(
+        !dioxus_ssr::render(&dom).contains(">Gamma<"),
+        "retyping /model starts from pinned models"
+    );
+
+    key(&mut dom, textarea, Key::ArrowUp);
+    key(&mut dom, textarea, Key::Enter);
+    key(&mut dom, textarea, Key::Escape);
+    input(&mut dom, textarea, "");
+    input(&mut dom, textarea, "/model ");
+    assert!(
+        !dioxus_ssr::render(&dom).contains(">Gamma<"),
+        "after Esc too"
+    );
+}
+
+#[test]
+fn view_commands_open_gui_views_without_sending() {
+    let (mut dom, textarea) = mount();
+    let mut ui = composer_ui(&dom);
+
+    for (command, tab) in [
+        ("/help", "commands"),
+        ("/pinned-models", "models"),
+        ("/pinned-decision-models", "decision-models"),
+    ] {
+        ui.write().settings_open = false;
+        input(&mut dom, textarea, command);
+        key(&mut dom, textarea, Key::Enter);
+        assert!(ui.peek().settings_open, "{command}");
+        assert_eq!(ui.peek().settings_tab, tab);
+        assert!(composer_draft(&dom).is_empty());
+    }
+
+    for (command, mode) in [
+        ("/probes", SidebarMode::Probes),
+        ("/agents", SidebarMode::Details),
+        ("/sessions", SidebarMode::Browser),
+    ] {
+        ui.write().sidebar.collapsed = true;
+        input(&mut dom, textarea, command);
+        key(&mut dom, textarea, Key::Enter);
+        let sidebar = &ui.peek().sidebar;
+        assert!(
+            !sidebar.collapsed && sidebar.expanded_mode == mode,
+            "{command}"
+        );
+    }
+
+    ui.write().sidebar.show_mode(SidebarMode::Probes);
+    input(&mut dom, textarea, "/new");
+    key(&mut dom, textarea, Key::Enter);
+    let state = ui.peek();
+    let folder = state.creation_target.as_ref().expect("naming a session");
+    assert_eq!(folder.directory, "/tmp");
+    assert_eq!(state.sidebar.expanded_mode, SidebarMode::Browser);
 }
 
 #[test]
@@ -730,46 +829,32 @@ fn escape_closes_the_rename_prompt_without_renaming() {
 
 #[test]
 fn picker_options_tab_complete_to_their_typed_command_form() {
-    let option = |action| MenuOption {
-        title: "stop".into(),
-        description: String::new(),
-        action,
-        completion: None,
+    let ui = Ui::new(DesktopSettings::default());
+    let target = TranscriptTarget {
+        session_id: SessionId(1),
+        agent_id: AgentId(1),
     };
-    let sandbox = option(MenuAction::Sandbox(SandboxAction::Stop));
+    let completions = |text: &str| -> Vec<Option<String>> {
+        build_command_menu(&ui, target, text, false, false, false, false)
+            .map(|menu| {
+                menu.menu
+                    .candidates
+                    .into_iter()
+                    .map(|o| o.completion)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     assert_eq!(
-        menu_completion(DraftCommandStage::SandboxActions, &sandbox).as_deref(),
-        Some("/sandbox stop")
+        completions("/sandbox "),
+        [Some("/sandbox start".into()), Some("/sandbox stop".into())]
     );
-    let effort = option(MenuAction::SessionEffort(Effort::High));
+    assert_eq!(completions("/refr"), [Some("/refresh".into())]);
+    assert_eq!(completions("/sand"), [Some("/sandbox ".into())]);
     assert_eq!(
-        menu_completion(DraftCommandStage::SessionEfforts, &effort).as_deref(),
-        Some("/effort stop")
+        completions("/goal re"),
+        [Some("/goal resume".into())],
+        "goal subcommands complete in the GUI too"
     );
-    let refresh = COMMANDS
-        .iter()
-        .find(|c| c.id == CommandId::Refresh)
-        .unwrap();
-    let sandbox_command = COMMANDS
-        .iter()
-        .find(|c| c.id == CommandId::Sandbox)
-        .unwrap();
-    assert!(sandbox_command.picker && !refresh.picker);
-    assert_eq!(
-        menu_completion(
-            DraftCommandStage::Completion,
-            &option(MenuAction::Command(*refresh))
-        )
-        .as_deref(),
-        Some("/refresh")
-    );
-    assert_eq!(
-        menu_completion(
-            DraftCommandStage::Completion,
-            &option(MenuAction::Command(*sandbox_command))
-        )
-        .as_deref(),
-        Some("/sandbox ")
-    );
-    assert_eq!(menu_completion(DraftCommandStage::Models, &effort), None);
+    assert!(completions("/goal fix it").is_empty());
 }

@@ -469,23 +469,6 @@ fn model_policy_label(model: &AgentModel) -> String {
     }
 }
 
-pub(crate) fn token_difference(total: Option<u64>, part: Option<u64>) -> Option<u64> {
-    total?.checked_sub(part?)
-}
-
-/// Formats a count with comma thousands separators, such as `1,234,567`.
-pub(crate) fn group_digits(value: u64) -> String {
-    let digits = value.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    grouped
-}
-
 /// Cumulative token counts with their cache and reasoning breakdowns.
 #[component]
 pub(crate) fn UsageGrid(

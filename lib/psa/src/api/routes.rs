@@ -31,6 +31,9 @@ pub const AGENT_SNAPSHOT: &str = "/agent-snapshots/{definition_id}";
 pub const SKILLS: &str = "/skills";
 /// POST a rescan of filesystem-discovered agent configurations and skills.
 pub const CONFIGS_REFRESH: &str = "/configs/refresh";
+/// POST a directory to find and rescan its `.agents` configurations before a
+/// session exists there.
+pub const CONFIGS_DISCOVER: &str = "/configs/discover";
 
 /// POST a new session.
 pub const SESSIONS: &str = "/sessions";

@@ -73,6 +73,12 @@ impl SidebarState {
         }
     }
 
+    /// Expand the sidebar on `mode`, even if it is already showing.
+    pub fn show_mode(&mut self, mode: SidebarMode) {
+        self.expanded_mode = mode;
+        self.collapsed = false;
+    }
+
     pub fn toggle_mode(&mut self, mode: SidebarMode) {
         if !self.collapsed && self.expanded_mode == mode {
             self.collapsed = true;

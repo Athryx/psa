@@ -4,6 +4,7 @@ members = [
     "client/client_shared",
     "client/psa_gui",
     "client/psa_desktop",
+    "client/psa_cli",
     "lib/actors",
     "lib/actors_macros",
     "lib/llm_api",

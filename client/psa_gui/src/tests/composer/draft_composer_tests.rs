@@ -1,38 +1,21 @@
 use super::*;
 
 #[test]
-fn root_command_stages_distinguish_completion_and_selection() {
-    use DraftCommandStage::*;
-    for input in ["/", "/ag", "/agent"] {
-        assert_eq!(draft_command_stage(input, false, false), Some(Completion));
-    }
+fn argument_menus_are_found_by_the_typed_command() {
     for input in ["/agent ", "/agent worker", "/agent\tworker"] {
-        assert_eq!(
-            draft_command_stage(input, false, false),
-            Some(Configurations)
-        );
-    }
-    for input in ["/m", "/model"] {
-        assert_eq!(draft_command_stage(input, false, false), Some(Completion));
+        assert_eq!(argument_command(input), Some(CommandId::Agent), "{input}");
     }
     assert_eq!(
-        draft_command_stage("/model search", false, false),
-        Some(SessionModels)
+        argument_command("/model search"),
+        Some(CommandId::SessionModel)
     );
     assert_eq!(
-        draft_command_stage("/effort", false, false),
-        Some(Completion)
+        argument_command("/effort high"),
+        Some(CommandId::SessionEffort)
     );
-    assert_eq!(
-        draft_command_stage("/effort high", false, false),
-        Some(SessionEfforts)
-    );
-    for input in ["//agent", "/agents", "hello"] {
-        assert_eq!(draft_command_stage(input, false, false), None);
+    for input in ["/", "/agent", "/model", "//agent ", "/unknown x", "hello"] {
+        assert_eq!(argument_command(input), None, "{input}");
     }
-    assert_eq!(draft_command_stage("", false, true), Some(Models));
-    assert_eq!(draft_command_stage("/agent ", true, false), None);
-    assert_eq!(draft_command_stage("", true, true), None);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -73,16 +56,16 @@ fn effort_options_require_known_model_and_valid_catalog_entry() {
         "reasoning_options":[{"effort":"Low","wire_effort":"Low"},{"effort":"High","wire_effort":"High"}],
         "authed":true, "pinned":false, "refreshed_at":"2026-01-01T00:00:00Z"
     })).unwrap();
-    assert!(session_efforts(&[], Some(&config), "").is_empty());
-    assert!(effort_model_config(&[], Some(&config), Effort::Low).is_none());
-    assert!(effort_model_config(&[model.clone()], None, Effort::High).is_none());
-    assert!(effort_model_config(&[model.clone()], Some(&config), Effort::Medium).is_none());
-    let updated = effort_model_config(&[model.clone()], Some(&config), Effort::High).unwrap();
+    assert!(session_efforts(&[], Some(&config)).is_empty());
+    assert!(build_effort_config(&[], Some(&config), Effort::Low).is_none());
+    assert!(build_effort_config(&[model.clone()], None, Effort::High).is_none());
+    assert!(build_effort_config(&[model.clone()], Some(&config), Effort::Medium).is_none());
+    let updated = build_effort_config(&[model.clone()], Some(&config), Effort::High).unwrap();
     assert_eq!(updated.model, config.model);
     assert_eq!(updated.effort, Effort::High);
     model.reasoning_options.clear();
-    assert!(session_efforts(&[model.clone()], Some(&config), "").is_empty());
-    assert!(effort_model_config(&[model], Some(&config), Effort::Low).is_none());
+    assert!(session_efforts(&[model.clone()], Some(&config)).is_empty());
+    assert!(build_effort_config(&[model], Some(&config), Effort::Low).is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]

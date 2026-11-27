@@ -102,6 +102,52 @@ impl RuntimeHandle {
         self.refresh_configuration(sessions).await
     }
 
+    /// Rescan globals and the `.agents` directory found from `cwd` on
+    /// `probe_id`, for a session that does not exist yet.
+    pub async fn discover_location_configs(
+        &self,
+        probe_id: api::ProbeId,
+        cwd: &Path,
+    ) -> Result<api::DiscoveredConfigs, RuntimeError> {
+        let _guard = self.configuration_gate.write().await;
+        let Some(configuration) = &self.configuration else {
+            return Ok(api::DiscoveredConfigs {
+                group: None,
+                searched: true,
+            });
+        };
+        let Some(group) = self.discover_session_agents_dir(probe_id, cwd).await? else {
+            configuration
+                .refresh(&self.database, &[])
+                .await
+                .map_err(invalid)?;
+            return Ok(api::DiscoveredConfigs {
+                group: None,
+                searched: false,
+            });
+        };
+
+        let mut agents_dirs = Vec::new();
+        if let Some(group) = &group {
+            let probe = self
+                .probes
+                .as_ref()
+                .ok_or(RuntimeError::Unavailable)?
+                .handle(probe_id)
+                .await
+                .map_err(invalid)?;
+            agents_dirs.push((probe, group.clone()));
+        }
+        configuration
+            .refresh(&self.database, &agents_dirs)
+            .await
+            .map_err(invalid)?;
+        Ok(api::DiscoveredConfigs {
+            group,
+            searched: true,
+        })
+    }
+
     pub async fn upsert_agent_configs<I: Into<api::AgentConfigInput>>(
         &self,
         configs: Vec<I>,

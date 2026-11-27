@@ -18,6 +18,10 @@ pub struct StartOptions {
     /// Run the image's `PSA_SETUP` and `PSA_TEARDOWN` hooks; set by sandbox managers.
     #[arg(long, hide = true)]
     pub image_hooks: bool,
+    /// Static probe executable mounted into sandboxes when probe.toml sets no
+    /// `sandbox_probe_path`; supplied by executables that embed the probe.
+    #[arg(skip)]
+    pub default_sandbox_probe_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -125,7 +129,10 @@ impl StartOptions {
             .trim()
             .to_owned();
         let sandbox_probe_path = if config.supports_sandboxes {
-            Some(resolve_sandbox_probe_path(config.sandbox_probe_path).await?)
+            let configured = config
+                .sandbox_probe_path
+                .or(self.default_sandbox_probe_path);
+            Some(resolve_sandbox_probe_path(configured).await?)
         } else {
             None
         };

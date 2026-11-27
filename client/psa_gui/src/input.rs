@@ -267,10 +267,26 @@ pub(crate) fn BrowserInput(
 
     let mount_initial = initial.clone();
     let mounted = move |event: MountedEvent| {
+        let context = if root_commands {
+            client_shared::CommandContext::DraftRoot
+        } else {
+            client_shared::CommandContext::Agent
+        };
         let commands: Vec<_> = client_shared::COMMANDS
             .iter()
-            .filter(|command| command.id.is_available(root_commands))
-            .map(|command| serde_json::json!({ "name": command.name, "picker": command.picker }))
+            .filter(|command| {
+                command.supports(client_shared::Frontend::Gui) && command.id.is_available(context)
+            })
+            .map(|command| {
+                // A subcommand menu closes once the subcommand is followed by text.
+                let one_word =
+                    matches!(command.arguments, client_shared::Arguments::Subcommands(_));
+                serde_json::json!({
+                    "name": command.name,
+                    "picker": command.has_argument_menu(),
+                    "one_word": one_word,
+                })
+            })
             .collect();
         let config = serde_json::json!({
             "commands": commands,

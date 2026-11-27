@@ -24,7 +24,7 @@ pub fn Rail() -> Element {
         button{title:"Current session and agents","aria-label":"Current session and agents","aria-pressed":!ui.peek().sidebar.collapsed && ui.peek().sidebar.expanded_mode == SidebarMode::Details,onclick:move |_|ui.write().sidebar.toggle_mode(SidebarMode::Details),"♧"}
         button{title:"Probes and sandboxes","aria-label":"Probes and sandboxes","aria-pressed":!ui.peek().sidebar.collapsed && ui.peek().sidebar.expanded_mode == SidebarMode::Probes,onclick:move |_|ui.write().sidebar.toggle_mode(SidebarMode::Probes),"⧉"}
         div{class:"spacer"}
-        button{title:"Settings",onclick:move |_|ui.write().settings_open=true,"⚙"}
+        button{title:"Settings",onclick:move |_|ui.write().open_settings(crate::app::SETTINGS_FIRST_TAB),"⚙"}
     }}
 }
 
@@ -784,16 +784,17 @@ fn tab_title(state: &Ui, target: TranscriptTarget) -> String {
 #[component]
 pub fn Settings() -> Element {
     let mut ui = use_context::<Signal<Ui>>();
-    let mut tab = use_signal(|| "profiles".to_string());
     use_ui_subscription(|state| {
         (
             state.settings.clone(),
             state.error.clone(),
             state.generation,
+            state.settings_tab.clone(),
         )
     });
     let state = ui.peek();
     let profile_id = state.settings.active_profile_id.clone();
+    let tab = state.settings_tab.clone();
     rsx! {div{class:"modal-backdrop",onclick:move |event|{event.stop_propagation();ui.write().settings_open=false;},section{class:"settings settings-dialog",role:"dialog","aria-modal":"true","aria-label":"Settings",tabindex:"-1",onclick:move |event|event.stop_propagation(),
         onmounted:move |event| { spawn(async move { let _ = event.data().set_focus(true).await; }); },
         onkeydown:move |event| { if event.key() == Key::Escape { event.prevent_default(); event.stop_propagation(); ui.write().settings_open=false; } },
@@ -803,22 +804,24 @@ pub fn Settings() -> Element {
         }
         div { class:"settings-layout",
         nav { class:"settings-nav", "aria-label":"Settings sections",
-            button { class:if tab() == "profiles" { "active" } else { "" }, "aria-current":if tab() == "profiles" { "page" } else { "false" }, onclick:move |_|tab.set("profiles".into()), "Profiles" }
-            button { class:if tab() == "providers" { "active" } else { "" }, "aria-current":if tab() == "providers" { "page" } else { "false" }, onclick:move |_|tab.set("providers".into()), "Providers" }
-            button { class:if tab() == "models" { "active" } else { "" }, "aria-current":if tab() == "models" { "page" } else { "false" }, onclick:move |_|tab.set("models".into()), "Model favorites" }
-            button { class:if tab() == "decision-models" { "active" } else { "" }, "aria-current":if tab() == "decision-models" { "page" } else { "false" }, onclick:move |_|tab.set("decision-models".into()), "Decision model favorites" }
-            button { class:if tab() == "appearance" { "active" } else { "" }, "aria-current":if tab() == "appearance" { "page" } else { "false" }, onclick:move |_|tab.set("appearance".into()), "Appearance" }
-            button { class:if tab() == "keybinds" { "active" } else { "" }, "aria-current":if tab() == "keybinds" { "page" } else { "false" }, onclick:move |_|tab.set("keybinds".into()), "Keybinds" }
+            button { class:if tab == "profiles" { "active" } else { "" }, "aria-current":if tab == "profiles" { "page" } else { "false" }, onclick:move |_|ui.write().settings_tab="profiles".into(), "Profiles" }
+            button { class:if tab == "providers" { "active" } else { "" }, "aria-current":if tab == "providers" { "page" } else { "false" }, onclick:move |_|ui.write().settings_tab="providers".into(), "Providers" }
+            button { class:if tab == "models" { "active" } else { "" }, "aria-current":if tab == "models" { "page" } else { "false" }, onclick:move |_|ui.write().settings_tab="models".into(), "Model favorites" }
+            button { class:if tab == "decision-models" { "active" } else { "" }, "aria-current":if tab == "decision-models" { "page" } else { "false" }, onclick:move |_|ui.write().settings_tab="decision-models".into(), "Decision model favorites" }
+            button { class:if tab == "appearance" { "active" } else { "" }, "aria-current":if tab == "appearance" { "page" } else { "false" }, onclick:move |_|ui.write().settings_tab="appearance".into(), "Appearance" }
+            button { class:if tab == "keybinds" { "active" } else { "" }, "aria-current":if tab == "keybinds" { "page" } else { "false" }, onclick:move |_|ui.write().settings_tab="keybinds".into(), "Keybinds" }
+            button { class:if tab == "commands" { "active" } else { "" }, "aria-current":if tab == "commands" { "page" } else { "false" }, onclick:move |_|ui.write().settings_tab="commands".into(), "Commands" }
         }
         // A keyed list makes Dioxus replace the scrolling element when the tab changes.
-        for active_tab in [tab()] {
+        for active_tab in [tab.clone()] {
         div { key:"{active_tab}", class:if active_tab == "models" || active_tab == "decision-models" { "settings-content models-settings" } else { "settings-content" },
-        if tab() == "profiles" { ProfileSettings { key:"{profile_id}" } }
-        if tab() == "providers" { ProviderSettings { key:"{profile_id}" } }
-        if tab() == "models" { ModelFavorites { kind:ModelKind::Chat } }
-        if tab() == "decision-models" { ModelFavorites { kind:ModelKind::Decision } }
-        if tab() == "keybinds" { KeybindSettings {} }
-        if tab() == "appearance" {
+        if tab == "profiles" { ProfileSettings { key:"{profile_id}" } }
+        if tab == "providers" { ProviderSettings { key:"{profile_id}" } }
+        if tab == "models" { ModelFavorites { kind:ModelKind::Chat } }
+        if tab == "decision-models" { ModelFavorites { kind:ModelKind::Decision } }
+        if tab == "keybinds" { KeybindSettings {} }
+        if tab == "commands" { CommandSettings {} }
+        if tab == "appearance" {
             h3{"Appearance"}
             label{r#for:"reasoning-display","Reasoning"}
             select{id:"reasoning-display",value:format!("{:?}",state.settings.preferences.reasoning_display),onchange:move |e|{
@@ -931,6 +934,25 @@ fn ModelFavorites(kind: ModelKind) -> Element {
     }
 }
 
+/// Every slash command the GUI offers, with its arguments; `/help` opens this.
+#[component]
+fn CommandSettings() -> Element {
+    let commands = client_shared::COMMANDS
+        .iter()
+        .filter(|command| command.supports(client_shared::Frontend::Gui));
+    rsx! {
+        div { class:"keybinds",
+            h3 { "Commands" }
+            p { class:"muted", "Type these in the composer. Tab completes a command or option; start with // to send a slash as text." }
+            dl { class:"keybind-list",
+                for command in commands {
+                    div { class:"keybind-row", dt { kbd { "{command.usage()}" } } dd { "{command.description}" } }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 fn KeybindSettings() -> Element {
     let sections: &[(&str, &[(&str, &str)])] = &[
@@ -961,7 +983,7 @@ fn KeybindSettings() -> Element {
                 ),
                 ("Arrow Up / Down", "Navigate the open command menu"),
                 ("Enter", "Select the highlighted command or option"),
-                ("Tab", "Complete the highlighted slash command"),
+                ("Tab", "Complete the highlighted command or option"),
                 ("Escape", "Dismiss the command menu"),
             ],
         ),

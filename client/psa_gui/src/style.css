@@ -1314,6 +1314,13 @@ textarea {
   background:#354573;
   border-color:#51669e
 }
+/* Changes what the menu lists rather than choosing, like "Show all models". */
+.command-popup .command-option.command-toggle {
+  border-top:1px solid #485777;
+  border-radius:0 0 6px 6px;
+  color:var(--muted)
+}
+.command-popup .command-option.command-toggle .command-title { font-weight:400 }
 .command-title { font-weight:600 }
 .command-description,.command-hint,.command-empty {
   color:var(--muted);

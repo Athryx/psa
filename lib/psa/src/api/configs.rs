@@ -231,6 +231,26 @@ pub struct RefreshConfigs {
     pub session_ids: Vec<SessionId>,
 }
 
+/// Find and rescan the `.agents` directory a session in this directory would
+/// use, before any session exists there; the global directory is rescanned too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoverConfigs {
+    pub probe_id: ProbeId,
+    /// Absolute directory on the probe; `.agents` is searched from here upward.
+    pub working_directory: std::path::PathBuf,
+}
+
+/// What [`DiscoverConfigs`] found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveredConfigs {
+    /// The directory's `.agents` group, or `None` when there is none or the
+    /// probe could not be searched.
+    pub group: Option<ConfigGroup>,
+    /// False when the probe was offline and nothing was searched.
+    pub searched: bool,
+}
+
 /// A [`ConfigId`] flattened into query parameters for `GET` lookups. `custom`
 /// names a `Custom` group; `path` and `probe_id` locate an `AgentsDir` group.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

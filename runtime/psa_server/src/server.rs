@@ -79,6 +79,7 @@ pub async fn start_with_shutdown(
         let probe_config = psa_probe::config::StartOptions {
             data_dir: Some(config.data_dir.clone()),
             server: Some(format!("http://{address}")),
+            default_sandbox_probe_path: config.probe_binary.clone(),
             ..Default::default()
         }
         .resolve_with_server_config(Some(&config.config_path))

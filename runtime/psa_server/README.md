@@ -27,8 +27,10 @@ Start the server from the workspace root:
 cargo run -p psa_server -- start
 ```
 
-The Clap CLI supports `--data-dir PATH`, `--config PATH`, and `--listen IP:PORT`
-after `start`. Use an isolated directory for development:
+The Clap CLI supports `--data-dir PATH`, `--config PATH`, `--listen IP:PORT`, and
+`--probe-binary PATH` (the static probe the local probe mounts into sandboxes
+when `probe.toml` sets no `sandbox_probe_path`) after `start`. The
+[`psa` command](../../client/psa_cli/README.md) starts and stops it in the background. Use an isolated directory for development:
 
 ```sh
 cargo run -p psa_server -- start --data-dir ./target/psa-dev --listen 127.0.0.1:8080
@@ -453,7 +455,9 @@ at creation.
 base64-encoded in JSON and optionally zstd-compressed. `GET /skills`
 and `GET /agent-configs` list what is already registered without rescanning.
 `POST /configs/refresh` with `RefreshConfigs { session_ids }` rescans the global
-sources and the listed sessions' `.agents` directories; agent creation refreshes
+sources and the listed sessions' `.agents` directories. `POST /configs/discover`
+with `DiscoverConfigs { probe_id, working_directory }` does the same for a
+directory no session uses yet and returns the `.agents` group it found; agent creation refreshes
 the global sources and its own session first. Global files live in `<data_dir>/{agents,skills}`;
 projects use the nearest probe-local `.agents/{agents,skills}`. Server-owned
 skills are synchronized to managed remote-probe caches before agent creation.

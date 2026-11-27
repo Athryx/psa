@@ -17,67 +17,11 @@ use psa::api::*;
 #[cfg(test)]
 use crate::transcript_view::TranscriptView;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DraftCommandStage {
-    Completion,
-    Configurations,
-    Models,
-    SessionModels,
-    SessionEfforts,
-    SandboxActions,
-}
-
-fn draft_command_stage(
-    text: &str,
-    dismissed: bool,
-    choosing_model: bool,
-) -> Option<DraftCommandStage> {
-    if dismissed {
-        return None;
-    }
-    if choosing_model {
-        return Some(DraftCommandStage::Models);
-    }
-    if text
-        .strip_prefix("/agent")
-        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
-    {
-        return Some(DraftCommandStage::Configurations);
-    }
-    if text
-        .strip_prefix("/model")
-        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
-    {
-        return Some(DraftCommandStage::SessionModels);
-    }
-    if text
-        .strip_prefix("/effort")
-        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
-    {
-        return Some(DraftCommandStage::SessionEfforts);
-    }
-    if text
-        .strip_prefix("/sandbox")
-        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
-    {
-        return Some(DraftCommandStage::SandboxActions);
-    }
-    (!complete_commands(text).is_empty()).then_some(DraftCommandStage::Completion)
-}
-
-fn draft_model_label(model: &ModelSelection) -> String {
-    match model {
-        ModelSelection::Global | ModelSelection::Parent => {
-            "Session default model and effort".into()
-        }
-        ModelSelection::Fixed { model, effort } => {
-            let effort = match effort {
-                EffortSelection::Global | EffortSelection::Parent => "session effort".to_string(),
-                EffortSelection::Fixed(effort) => effort.as_str().to_string(),
-            };
-            format!("{model} · {effort}")
-        }
-    }
+/// The command whose arguments `text` is typing, such as `/model` for
+/// `/model gpt`.
+fn argument_command(text: &str) -> Option<CommandId> {
+    let (name, _) = text.strip_prefix('/')?.split_once(char::is_whitespace)?;
+    find_command(name, Frontend::Gui).map(|spec| spec.id)
 }
 
 fn select_draft_config(
@@ -108,7 +52,7 @@ fn refresh_configs(mut ui: Signal<Ui>, target: TranscriptTarget) {
     spawn(network::record_command(
         ui,
         target,
-        "refresh",
+        CommandId::Refresh,
         String::new(),
         network::refresh_configs(ui, target.session_id),
     ));
@@ -287,38 +231,6 @@ fn menu_scroll_delta(top: f64, height: f64, item_top: f64, item_height: f64) -> 
     }
 }
 
-fn session_efforts(
-    models: &[ModelInfo],
-    current: Option<&ModelConfig>,
-    filter: &str,
-) -> Vec<Effort> {
-    current
-        .and_then(|config| models.iter().find(|model| model.model == config.model))
-        .map(|model| {
-            model
-                .reasoning_options
-                .iter()
-                .map(|option| option.effort)
-                .filter(|effort| effort.as_str().contains(filter))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn effort_model_config(
-    models: &[ModelInfo],
-    current: Option<&ModelConfig>,
-    effort: Effort,
-) -> Option<ModelConfig> {
-    if !session_efforts(models, current, "").contains(&effort) {
-        return None;
-    }
-    current.cloned().map(|mut config| {
-        config.effort = effort;
-        config
-    })
-}
-
 fn select_session_effort(mut ui: Signal<Ui>, target: TranscriptTarget, effort: Effort) {
     let config = {
         let state = ui.peek();
@@ -327,7 +239,7 @@ fn select_session_effort(mut ui: Signal<Ui>, target: TranscriptTarget, effort: E
             .iter()
             .find(|session| session.id == target.session_id)
             .map(|session| &session.model_config);
-        effort_model_config(&state.models, current, effort)
+        build_effort_config(&state.models, current, effort)
     };
     if let Some(config) = config {
         let generation = ui.peek().generation;
@@ -340,7 +252,7 @@ fn select_session_effort(mut ui: Signal<Ui>, target: TranscriptTarget, effort: E
         spawn(network::record_command(
             ui,
             target,
-            "effort",
+            CommandId::SessionEffort,
             effort.as_str().into(),
             change,
         ));
@@ -348,27 +260,12 @@ fn select_session_effort(mut ui: Signal<Ui>, target: TranscriptTarget, effort: E
     }
 }
 
-fn choose_effort(model: &ModelInfo, preferred: Effort) -> Effort {
-    if model
-        .reasoning_options
-        .iter()
-        .any(|o| o.effort == preferred)
-    {
-        preferred
-    } else {
-        model
-            .reasoning_options
-            .first()
-            .map(|o| o.effort)
-            .unwrap_or(Effort::Off)
-    }
-}
 /// `/rename`, recorded in the transcript of the agent it was typed to.
 fn spawn_rename(ui: Signal<Ui>, target: TranscriptTarget, name: String) {
     spawn(network::record_command(
         ui,
         target,
-        "rename",
+        CommandId::Rename,
         name.clone(),
         rename_session(ui, target.session_id, name),
     ));
@@ -411,27 +308,6 @@ async fn rename_session(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SlashPrompt {
     RenameSession,
-}
-
-fn open_slash_prompt(
-    mut ui: Signal<Ui>,
-    target: TranscriptTarget,
-    mut prompt: Signal<Option<SlashPrompt>>,
-    kind: SlashPrompt,
-) {
-    ui.write().drafts.remove(&target);
-    prompt.set(Some(kind));
-}
-
-/// `/info` only opens a local view, so it is recorded as finished at once.
-fn record_info(ui: Signal<Ui>, target: TranscriptTarget) {
-    spawn(network::record_command(
-        ui,
-        target,
-        "info",
-        String::new(),
-        async { Some(Ok(())) },
-    ));
 }
 
 fn focus_node(node: Signal<Option<std::rc::Rc<MountedData>>>) {
@@ -478,49 +354,30 @@ async fn change_model(
     }
 }
 
-#[derive(Clone)]
-enum MenuAction {
-    Command(CommandSpec),
-    Configuration(ConfigId),
-    RootModel(ModelSelection),
-    SessionModel(ModelConfig),
-    SessionEffort(Effort),
-    Sandbox(SandboxAction),
+/// The shared menu, and whether it is `/agent`'s model policy step.
+struct ComposerMenu {
+    menu: CommandMenu,
+    root_model: bool,
 }
 
-struct MenuOption {
-    title: String,
-    description: String,
-    action: MenuAction,
-    /// Composer text Tab fills in for this option, if any.
-    completion: Option<String>,
+/// The composer's own menu state, kept per editor.
+#[derive(Clone, Copy)]
+struct ComposerState {
+    selected: Signal<usize>,
+    /// Menu state expires on a shared browser edit, not intentional replacements.
+    dismissed: Signal<Option<u64>>,
+    choosing_model: Signal<Option<u64>>,
+    all_models: Signal<bool>,
+    info_open: Signal<bool>,
+    prompt: Signal<Option<SlashPrompt>>,
 }
 
-struct CommandMenu {
-    stage: DraftCommandStage,
-    options: Vec<MenuOption>,
-    current: Option<ModelConfig>,
-    filtered: bool,
-}
-
-fn command_stage(
-    text: &str,
-    root: bool,
-    dismissed: bool,
-    choosing_model: bool,
-) -> Option<DraftCommandStage> {
-    let stage = draft_command_stage(text, dismissed, choosing_model && root)?;
-    if !root && stage == DraftCommandStage::Configurations {
-        return None;
+fn command_context(root: bool) -> CommandContext {
+    if root {
+        CommandContext::DraftRoot
+    } else {
+        CommandContext::Agent
     }
-    if stage == DraftCommandStage::Completion
-        && !complete_commands(text)
-            .iter()
-            .any(|command| command.id.is_available(root))
-    {
-        return None;
-    }
-    Some(stage)
 }
 
 /// Both rendering and key handling use this builder. In particular, key handling
@@ -533,344 +390,322 @@ fn build_command_menu(
     dismissed: bool,
     choosing_model: bool,
     all_models: bool,
-) -> Option<CommandMenu> {
-    let stage = command_stage(text, root, dismissed, choosing_model)?;
-    #[cfg(test)]
-    if stage == DraftCommandStage::SessionModels {
-        composer_tests::record_work(target, 2);
+) -> Option<ComposerMenu> {
+    if dismissed {
+        return None;
     }
+    let draft = state
+        .draft_roots
+        .get(&target.session_id)
+        .filter(|_| root)
+        .map(|draft| &**draft);
+    if let Some(draft) = draft.filter(|_| choosing_model) {
+        return Some(ComposerMenu {
+            menu: build_root_model_menu(draft),
+            root_model: true,
+        });
+    }
+
     let current = state
         .sessions
         .iter()
         .find(|session| session.id == target.session_id)
-        .map(|session| session.model_config.clone());
-    let mut options = Vec::new();
-    let mut filtered = false;
-
-    match stage {
-        DraftCommandStage::Completion => {
-            options = complete_commands(text)
-                .into_iter()
-                .filter(|command| command.id.is_available(root))
-                .map(|command| MenuOption {
-                    title: format!("/{}", command.name),
-                    description: command.description.into(),
-                    action: MenuAction::Command(command),
-                    completion: None,
-                })
-                .collect();
-        }
-        DraftCommandStage::Configurations => {
-            let filter = text
-                .strip_prefix("/agent")
-                .unwrap_or("")
-                .trim()
-                .to_lowercase();
-            if let Some(draft) = state.draft_roots.get(&target.session_id) {
-                options = draft
-                    .configs
-                    .iter()
-                    .filter(|config| {
-                        config
-                            .config
-                            .config_id
-                            .name
-                            .to_lowercase()
-                            .contains(&filter)
-                    })
-                    .map(|status| {
-                        let config = &status.config;
-                        let mut description = format!("{:?}", config.config_id.config_group);
-                        if !config.description.is_empty() {
-                            description.push_str(" · ");
-                            description.push_str(&config.description);
-                        }
-                        MenuOption {
-                            title: config.config_id.name.clone(),
-                            description,
-                            action: MenuAction::Configuration(config.config_id.clone()),
-                            completion: None,
-                        }
-                    })
-                    .collect();
-            }
-        }
-        DraftCommandStage::Models => {
-            if let Some(draft) = state.draft_roots.get(&target.session_id) {
-                options = draft
-                    .model_choices()
-                    .into_iter()
-                    .map(|selection| MenuOption {
-                        title: draft_model_label(&selection),
-                        description: String::new(),
-                        action: MenuAction::RootModel(selection),
-                        completion: None,
-                    })
-                    .collect();
-            }
-        }
-        DraftCommandStage::SessionModels => {
-            let filter = text
-                .strip_prefix("/model")
-                .unwrap_or("")
-                .trim()
-                .to_lowercase();
-            filtered = !filter.is_empty();
-            let preferred = current
-                .as_ref()
-                .map(|config| config.effort)
-                .unwrap_or(Effort::Medium);
-            options = state
-                .models
-                .iter()
-                .filter(|model| {
-                    (all_models
-                        || model.pinned
-                        || current
-                            .as_ref()
-                            .is_some_and(|config| config.model == model.model))
-                        && (filter.is_empty()
-                            || model.name.to_lowercase().contains(&filter)
-                            || model.model.api_name.to_lowercase().contains(&filter))
-                })
-                .map(|model| MenuOption {
-                    title: model.name.clone(),
-                    description: format!(
-                        "{}/{}",
-                        model.model.provider.as_str(),
-                        model.model.api_name
-                    ),
-                    action: MenuAction::SessionModel(ModelConfig {
-                        model: model.model.clone(),
-                        effort: choose_effort(model, preferred),
-                    }),
-                    completion: None,
-                })
-                .collect();
-        }
-        DraftCommandStage::SandboxActions => {
-            let filter = text
-                .strip_prefix("/sandbox")
-                .unwrap_or("")
-                .trim()
-                .to_lowercase();
-            options = SandboxAction::ALL
-                .into_iter()
-                .filter(|action| action.as_str().starts_with(&filter))
-                .map(|action| MenuOption {
-                    title: action.as_str().into(),
-                    description: action.description().into(),
-                    action: MenuAction::Sandbox(action),
-                    completion: None,
-                })
-                .collect();
-        }
-        DraftCommandStage::SessionEfforts => {
-            let filter = text
-                .strip_prefix("/effort")
-                .unwrap_or("")
-                .trim()
-                .to_lowercase();
-            options = session_efforts(&state.models, current.as_ref(), &filter)
-                .into_iter()
-                .map(|effort| MenuOption {
-                    title: effort.as_str().into(),
-                    description: String::new(),
-                    action: MenuAction::SessionEffort(effort),
-                    completion: None,
-                })
-                .collect();
-        }
+        .map(|session| &session.model_config);
+    let context = MenuContext {
+        frontend: Frontend::Gui,
+        context: command_context(root),
+        models: &state.models,
+        session_model: current,
+        show_all_models: all_models,
+        local_server: state.settings.active_profile_id == LOCAL_PROFILE_ID,
+        root: draft,
+        probes: &state.probes,
+    };
+    let menu = client_shared::build_command_menu(text, &context)?;
+    #[cfg(test)]
+    if menu.command == Some(CommandId::SessionModel) {
+        composer_tests::record_work(target, 2);
     }
-    for option in &mut options {
-        option.completion = menu_completion(stage, option);
-    }
-    Some(CommandMenu {
-        stage,
-        options,
-        current,
-        filtered,
+    Some(ComposerMenu {
+        menu,
+        root_model: false,
     })
 }
 
-/// The slash command a picker stage chooses arguments for.
-fn picker_command(stage: DraftCommandStage) -> Option<CommandId> {
-    match stage {
-        DraftCommandStage::Configurations => Some(CommandId::Agent),
-        DraftCommandStage::SessionModels => Some(CommandId::SessionModel),
-        DraftCommandStage::SessionEfforts => Some(CommandId::SessionEffort),
-        DraftCommandStage::SandboxActions => Some(CommandId::Sandbox),
-        // The root model policy follows `/agent` and has no typed form.
-        DraftCommandStage::Completion | DraftCommandStage::Models => None,
-    }
-}
-
-/// Tab completes a command name, or a picker option as `/command option`,
-/// which the picker's filter then narrows back to that option.
-fn menu_completion(stage: DraftCommandStage, option: &MenuOption) -> Option<String> {
-    if let MenuAction::Command(command) = &option.action {
-        // `/refresh` takes no arguments, so it completes without a trailing space.
-        return Some(if command.id == CommandId::Refresh {
-            format!("/{}", command.name)
-        } else {
-            format!("/{} ", command.name)
-        });
-    }
-    let id = picker_command(stage)?;
-    let command = COMMANDS.iter().find(|command| command.id == id)?;
-    Some(format!("/{} {}", command.name, option.title))
-}
-
-fn select_menu_action(
+/// Run a menu choice. The menu's highlight is reset, except that a toggle
+/// stays highlighted in the list it changed.
+fn apply_menu_choice(
     mut ui: Signal<Ui>,
     target: TranscriptTarget,
-    action: MenuAction,
-    mut choosing_model: Signal<Option<u64>>,
-    mut info_open: Signal<bool>,
-    prompt: Signal<Option<SlashPrompt>>,
+    root: bool,
+    choice: MenuAction,
+    mut composer: ComposerState,
 ) {
-    match action {
-        MenuAction::Command(command) => match command.id {
-            CommandId::Refresh => refresh_configs(ui, target),
-            CommandId::Info => {
-                ui.write().drafts.remove(&target);
-                info_open.set(true);
-                record_info(ui, target);
-            }
-            // Choosing from the menu compacts immediately; Tab completes
-            // `/compact ` so focus instructions can be typed first.
-            CommandId::Compact => {
-                spawn(network::submit_compact(ui, target, String::new()));
-            }
-            CommandId::Rename => open_slash_prompt(ui, target, prompt, SlashPrompt::RenameSession),
-            CommandId::Fork => {
-                ui.write().drafts.remove(&target);
-                spawn(network::record_command(
-                    ui,
-                    target,
-                    "fork",
-                    String::new(),
-                    network::fork_session(ui, target, String::new()),
-                ));
-            }
-            _ => {
-                ui.write()
-                    .drafts
-                    .insert(target, format!("/{} ", command.name));
-            }
-        },
-        MenuAction::Configuration(id) => {
+    composer.selected.set(0);
+    if !matches!(choice, MenuAction::ToggleAllModels) {
+        composer.all_models.set(false);
+    }
+    match choice {
+        MenuAction::ChooseConfig(id) => {
             let choose = select_draft_config(ui, target.session_id, target, id);
             let clock = ui
                 .peek()
                 .drafts
                 .snapshot(&target)
                 .map(|snapshot| snapshot.revision.clock);
-            choosing_model.set(if choose { clock } else { None });
+            composer
+                .choosing_model
+                .set(if choose { clock } else { None });
         }
-        MenuAction::RootModel(model) => {
+        MenuAction::ChooseRootModel(model) => {
             if let Some(draft) = ui.write().draft_roots.get_mut(&target.session_id) {
                 draft.model = Some(model);
             }
-            choosing_model.set(None);
+            composer.choosing_model.set(None);
         }
-        MenuAction::SessionModel(config) => {
+        MenuAction::Fill(text) => {
+            ui.write().drafts.insert(target, text);
+        }
+        MenuAction::ToggleAllModels => {
+            let all = !*composer.all_models.peek();
+            composer.all_models.set(all);
+            let text = ui.peek().drafts.get(&target).cloned().unwrap_or_default();
+            let menu = build_command_menu(&ui.peek(), target, &text, root, false, false, all);
+            let toggle = menu.and_then(|menu| {
+                menu.menu
+                    .candidates
+                    .iter()
+                    .position(|option| option.kind == CandidateKind::Toggle)
+            });
+            composer.selected.set(toggle.unwrap_or(0));
+        }
+        MenuAction::SetModel(config) => {
             let args = format!("{} {}", config.model, config.effort.as_str());
             spawn(network::record_command(
                 ui,
                 target,
-                "model",
+                CommandId::SessionModel,
                 args,
                 change_model(ui, target.session_id, config),
             ));
             ui.write().drafts.remove(&target);
         }
-        MenuAction::SessionEffort(effort) => select_session_effort(ui, target, effort),
-        MenuAction::Sandbox(action) => {
-            ui.write().drafts.remove(&target);
+        MenuAction::SetEffort(effort) => select_session_effort(ui, target, effort),
+        MenuAction::Run { id, arguments } => run_command(ui, target, root, id, arguments, composer),
+        // Desktop drafts are created sessions, so their probe is fixed.
+        MenuAction::ChooseProbe(_) => {}
+    }
+}
+
+/// Run a slash command typed to this composer, as the TUI does with the same
+/// command; commands that show something open the GUI's own view of it.
+fn run_command(
+    mut ui: Signal<Ui>,
+    target: TranscriptTarget,
+    root: bool,
+    id: CommandId,
+    arguments: String,
+    mut composer: ComposerState,
+) {
+    // The composer explains unavailable commands instead of running them.
+    if !id.is_available(command_context(root)) {
+        return;
+    }
+    match id {
+        // Reached only with the menu dismissed: reopen it on the typed text.
+        CommandId::SessionModel | CommandId::SessionEffort | CommandId::Agent => {
+            let text = format!("/{} {arguments}", id.spec().name);
+            ui.write().drafts.insert(target, text);
+            composer.dismissed.set(None);
+            return;
+        }
+        // The server records these and the network call clears the draft.
+        CommandId::Compact => {
+            spawn(network::submit_compact(ui, target, arguments));
+            return;
+        }
+        CommandId::Goal => {
+            spawn(network::submit_goal(ui, target, arguments));
+            return;
+        }
+        CommandId::Refresh => {
+            refresh_configs(ui, target);
+            return;
+        }
+        _ => {}
+    }
+
+    ui.write().drafts.remove(&target);
+    match id {
+        CommandId::Info => composer.info_open.set(true),
+        CommandId::Rename if arguments.is_empty() => {
+            composer.prompt.set(Some(SlashPrompt::RenameSession))
+        }
+        CommandId::Rename => spawn_rename(ui, target, arguments),
+        CommandId::Fork => {
             spawn(network::record_command(
                 ui,
                 target,
-                "sandbox",
-                action.as_str().into(),
-                network::change_session_sandbox(ui, target.session_id, action),
+                CommandId::Fork,
+                arguments.clone(),
+                network::fork_session(ui, target, arguments),
             ));
         }
+        CommandId::Sandbox => match SandboxAction::parse(&arguments) {
+            Some(action) => {
+                spawn(network::record_command(
+                    ui,
+                    target,
+                    CommandId::Sandbox,
+                    action.as_str().into(),
+                    network::change_session_sandbox(ui, target.session_id, action),
+                ));
+            }
+            None => ui.write().error = Some(format!("Usage: {}", id.spec().usage())),
+        },
+        CommandId::Sessions => ui.write().sidebar.show_mode(SidebarMode::Browser),
+        CommandId::NewSession => start_session_naming(ui, target),
+        CommandId::Agents => ui.write().sidebar.show_mode(SidebarMode::Details),
+        CommandId::Probes => ui.write().sidebar.show_mode(SidebarMode::Probes),
+        CommandId::Server => run_server_command(ui, &arguments),
+        CommandId::Settings => ui.write().open_settings(crate::app::SETTINGS_FIRST_TAB),
+        CommandId::Help => ui.write().open_settings("commands"),
+        CommandId::PinnedModels => ui.write().open_settings("models"),
+        CommandId::PinnedDecisionModels => ui.write().open_settings("decision-models"),
+        CommandId::Quit => {
+            let result = try_consume_context::<crate::GuiBootstrap>()
+                .ok_or_else(|| "Quitting is unavailable here.".to_owned())
+                .and_then(|bootstrap| bootstrap.platform.request_quit());
+            if let Err(error) = result {
+                ui.write().error = Some(error);
+            }
+        }
+        // TUI-only: desktop drafts are created sessions on a fixed probe.
+        CommandId::Probe => {}
+        CommandId::SessionModel
+        | CommandId::SessionEffort
+        | CommandId::Agent
+        | CommandId::Compact
+        | CommandId::Goal
+        | CommandId::Refresh => {}
+    }
+}
+
+/// Leaving `/model`'s arguments collapses its list back to pinned models, so
+/// the next `/model` starts from them again.
+fn collapse_model_list(mut all_models: Signal<bool>, text: &str) {
+    if *all_models.peek() && argument_command(text) != Some(CommandId::SessionModel) {
+        all_models.set(false);
+    }
+}
+
+/// `/new`: name a session in this session's folder, as its + button does.
+fn start_session_naming(mut ui: Signal<Ui>, target: TranscriptTarget) {
+    let folder = ui
+        .peek()
+        .sessions
+        .iter()
+        .find(|session| session.id == target.session_id)
+        .map(|session| crate::creation::CreationTarget {
+            probe: session.probe_id,
+            directory: session.working_directory.to_string_lossy().into_owned(),
+        });
+    let mut state = ui.write();
+    let Some(folder) = folder else {
+        state.error = Some("The session is still loading; try again.".into());
+        return;
+    };
+    crate::creation::select_target(&mut state, folder);
+    state.sidebar.show_mode(SidebarMode::Browser);
+}
+
+/// `/server status|restart|stop` through the desktop's local server controls.
+fn run_server_command(mut ui: Signal<Ui>, arguments: &str) {
+    let Some(action) = ServerAction::parse(arguments) else {
+        ui.write().error = Some(format!("Usage: {}", CommandId::Server.spec().usage()));
+        return;
+    };
+    let Some(bootstrap) = try_consume_context::<crate::GuiBootstrap>() else {
+        return;
+    };
+    let platform = bootstrap.platform.clone();
+    spawn(async move {
+        let result = match action {
+            ServerAction::Status => platform.local_server_status().await,
+            ServerAction::Restart => platform.local_server_restart().await,
+            ServerAction::Stop => platform.local_server_stop().await,
+        };
+        let mut state = ui.write();
+        match (action, result) {
+            (_, Err(error)) => state.error = Some(format!("Server {}: {error}", action.as_str())),
+            (ServerAction::Restart, Ok(LocalServerStatus::Running { connection })) => {
+                state.change_connection(connection.api_url, connection.client_key);
+                state.notice = Some("Local server restarted.".into());
+            }
+            (_, Ok(LocalServerStatus::Running { connection })) => {
+                state.notice = Some(format!("Local server running at {}", connection.api_url));
+            }
+            (_, Ok(LocalServerStatus::Stopped)) => {
+                state.notice = Some("Local server stopped.".into())
+            }
+        }
+    });
+}
+
+fn menu_label(menu: &ComposerMenu, root: bool) -> &'static str {
+    if !root {
+        return "Slash commands";
+    }
+    if menu.root_model {
+        return "Root agent model policy";
+    }
+    match menu.menu.command {
+        None => "Slash commands",
+        Some(CommandId::SessionModel) => "Session default model",
+        Some(CommandId::SessionEffort) => "Session default effort",
+        Some(CommandId::Agent) => "Agent configurations",
+        Some(_) => menu.menu.title,
     }
 }
 
 fn render_command_menu(
-    menu: &CommandMenu,
+    menu: &ComposerMenu,
     root: bool,
-    mut selected: Signal<usize>,
-    mut all_models: Signal<bool>,
+    selected: Signal<usize>,
     mut popup: Signal<Option<std::rc::Rc<MountedData>>>,
     nodes: MenuNodes,
     onselect: EventHandler<MenuAction>,
 ) -> Element {
-    let stage = menu.stage;
-    let label = if !root {
-        "Slash commands"
-    } else {
-        match stage {
-            DraftCommandStage::Completion => "Slash commands",
-            DraftCommandStage::Configurations => "Agent configurations",
-            DraftCommandStage::Models => "Root agent model policy",
-            DraftCommandStage::SessionModels => "Session default model",
-            DraftCommandStage::SessionEfforts => "Session default effort",
-            DraftCommandStage::SandboxActions => "Session sandbox",
-        }
-    };
-    let heading = match stage {
-        DraftCommandStage::Completion => "Commands",
-        DraftCommandStage::Configurations => "Choose a root agent",
-        DraftCommandStage::Models => "Choose the root agent model policy",
-        DraftCommandStage::SessionModels => "Session default model (not individual agents)",
-        DraftCommandStage::SessionEfforts => "Session default effort (not individual agents)",
-        DraftCommandStage::SandboxActions => "Session sandbox",
-    };
+    let label = menu_label(menu, root);
     rsx! {
         div { class:"popup command-popup", role:"listbox", "aria-label":label,
             onmounted:move |event| popup.set(Some(event.data())),
-            div { class:"command-heading", "{heading}" }
-            if stage == DraftCommandStage::SessionModels {
-                if let Some(config) = &menu.current {
-                    p { class:"muted", "Current: {config.model.provider.as_str()}/{config.model.api_name} · {config.effort.as_str()}" }
-                }
-                button { onclick:move |_| { all_models.set(!all_models()); selected.set(0); },
-                    if all_models() { "Show favorites" } else { "All models…" }
-                }
+            div { class:"command-heading", "{menu.menu.title}" }
+            if let Some(note) = &menu.menu.note { p { class:"muted", "{note}" } }
+            if menu.menu.candidates.iter().all(|option| option.kind == CandidateKind::Toggle) {
+                p { class:"command-empty", "{menu.menu.empty_hint}" }
             }
-            if stage == DraftCommandStage::SessionEfforts {
-                if let Some(config) = &menu.current { p { class:"muted", "Current: {config.effort.as_str()}" } }
-            }
-            if menu.options.is_empty() {
-                p { class:"command-empty",
-                    match stage {
-                        DraftCommandStage::Configurations => "No matching usable configurations.",
-                        DraftCommandStage::SessionModels if menu.filtered => "No matching models. Try another search or choose All models.",
-                        DraftCommandStage::SessionModels => "No favorite models. Open settings to pin models, or choose All models.",
-                        DraftCommandStage::SessionEfforts => "No matching effort options for the current model.",
-                        _ => "No matching options.",
-                    }
-                }
-            }
-            for (index, option) in menu.options.iter().enumerate() {
-                { let action = option.action.clone(); rsx! {
+            for (index, option) in menu.menu.candidates.iter().enumerate() {
+                { let action = option.action.clone(); let toggle = option.kind == CandidateKind::Toggle; rsx! {
                     button {
-                        class:if selected() == index { "command-option selected" } else { "command-option" },
+                        class:match (selected() == index, toggle) {
+                            (true, true) => "command-option command-toggle selected",
+                            (true, false) => "command-option selected",
+                            (false, true) => "command-option command-toggle",
+                            (false, false) => "command-option",
+                        },
                         role:"option",
                         "aria-selected":if root { AttributeValue::Bool(selected() == index) } else { AttributeValue::Text((selected() == index).to_string()) },
                         onmounted:move |event| register_menu_option(nodes, index, event.data()),
                         onmousedown:move |event| event.prevent_default(),
                         onclick:move |_| onselect.call(action.clone()),
-                        span { class:"command-title", "{option.title}" }
-                        if !option.description.is_empty() { span { class:"command-description", "{option.description}" } }
+                        span { class:"command-title", "{option.label}" }
+                        if !option.detail.is_empty() { span { class:"command-description", "{option.detail}" } }
                     }
                 }}
             }
             div { class:"command-hint",
-                if menu.options.iter().any(|option| option.completion.is_some()) { "↑↓ navigate · Enter select · Tab complete · Esc dismiss" }
+                if menu.menu.candidates.iter().any(|option| option.completion.is_some()) { "↑↓ navigate · Enter select · Tab complete · Esc dismiss" }
                 else { "↑↓ navigate · Enter select · Esc dismiss" }
             }
         }
@@ -900,13 +735,22 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
         }
         ui.write().drafts.ensure_browser_key(target)
     });
-    let mut selected = use_signal(|| 0usize);
-    // Menu state expires on a shared browser edit, not intentional replacements.
-    let mut dismissed = use_signal(|| None::<u64>);
-    let mut choosing_model = use_signal(|| None::<u64>);
-    let all_models = use_signal(|| false);
-    let mut info_open = use_signal(|| false);
-    let mut prompt = use_signal(|| None::<SlashPrompt>);
+    let composer = ComposerState {
+        selected: use_signal(|| 0usize),
+        dismissed: use_signal(|| None::<u64>),
+        choosing_model: use_signal(|| None::<u64>),
+        all_models: use_signal(|| false),
+        info_open: use_signal(|| false),
+        prompt: use_signal(|| None::<SlashPrompt>),
+    };
+    let ComposerState {
+        mut selected,
+        mut dismissed,
+        mut choosing_model,
+        mut all_models,
+        mut info_open,
+        mut prompt,
+    } = composer;
     let menu_popup = use_signal(|| None::<std::rc::Rc<MountedData>>);
     let menu_nodes = use_signal(Vec::new);
     let mut textarea_node = use_signal(|| None::<std::rc::Rc<MountedData>>);
@@ -959,21 +803,17 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
     use_ui_subscription(move |state| {
         let snapshot = state.drafts.snapshot(&target);
         let clock = snapshot.map(|snapshot| snapshot.revision.clock);
-        let stage = command_stage(
-            state
-                .drafts
-                .get(&target)
-                .map(String::as_str)
-                .unwrap_or_default(),
-            root,
-            dismissed().is_some_and(|value| Some(value) == clock),
-            choosing_model().is_some_and(|value| Some(value) == clock),
+        let text = state
+            .drafts
+            .get(&target)
+            .map(String::as_str)
+            .unwrap_or_default();
+        let open = !dismissed().is_some_and(|value| Some(value) == clock);
+        let picking = matches!(
+            argument_command(text),
+            Some(CommandId::SessionModel | CommandId::SessionEffort)
         );
-        matches!(
-            stage,
-            Some(DraftCommandStage::SessionModels | DraftCommandStage::SessionEfforts)
-        )
-        .then(|| state.models.clone())
+        (open && picking).then(|| state.models.clone())
     });
     let status = use_memo(move || {
         #[cfg(test)]
@@ -1044,7 +884,7 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
             .is_none_or(|draft| draft.loading || draft.pending);
     let uncertain = state.uncertain_submissions.contains(&target)
         || root && source.as_ref().is_some_and(|draft| draft.uncertain);
-    let parsed = parse_composer_input(&text);
+    let parsed = parse_composer_input(&text, Frontend::Gui);
     let blocked = pending || uncertain || matches!(parsed, ComposerInput::Command { .. });
     let browser_key = state
         .drafts
@@ -1063,10 +903,12 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
     let onselect = EventHandler::new(move |action: MenuAction| {
         let keeps_focus = matches!(
             &action,
-            MenuAction::Command(command) if matches!(command.id, CommandId::Info | CommandId::Rename)
+            MenuAction::Run {
+                id: CommandId::Info | CommandId::Rename,
+                ..
+            }
         );
-        select_menu_action(ui, target, action, choosing_model, info_open, prompt);
-        selected.set(0);
+        apply_menu_choice(ui, target, root, action, composer);
         dismissed.set(None);
         if !keeps_focus {
             focus_node(textarea_node);
@@ -1103,6 +945,7 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
             selected.set(0);
             dismissed.set(None);
             choosing_model.set(None);
+            collapse_model_list(all_models, &event.snapshot.text);
         }
         let menu = build_command_menu(
             &ui.peek(),
@@ -1114,7 +957,7 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
             *all_models.peek(),
         );
         if let Some(menu) = menu {
-            let count = menu.options.len();
+            let count = menu.menu.candidates.len();
             match event.key() {
                 Key::ArrowDown | Key::ArrowUp => {
                     event.prevent_default();
@@ -1134,47 +977,45 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
                     event.stop_propagation();
                     dismissed.set(Some(event.snapshot.revision.clock));
                     choosing_model.set(None);
+                    all_models.set(false);
                 }
                 Key::Tab if !event.modifiers().contains(Modifiers::SHIFT) => {
                     event.prevent_default();
-                    let completion =
-                        menu.options
-                            .get(selected() % count.max(1))
-                            .and_then(|option| {
-                                Some((option.title.clone(), option.completion.clone()?))
-                            });
-                    if let Some((title, text)) = completion {
-                        // Keep the completed option selected under the narrowed filter.
-                        let narrowed = build_command_menu(
-                            &ui.peek(),
-                            target,
-                            &text,
-                            root,
-                            false,
-                            false,
-                            *all_models.peek(),
-                        );
-                        let index = narrowed
-                            .and_then(|menu| {
-                                menu.options.iter().position(|option| option.title == title)
-                            })
-                            .unwrap_or(0);
-                        ui.write().drafts.insert(target, text);
-                        selected.set(index);
+                    let Some(option) = menu.menu.candidates.get(selected() % count.max(1)) else {
+                        return;
+                    };
+                    if option.kind == CandidateKind::Toggle {
+                        apply_menu_choice(ui, target, root, option.action.clone(), composer);
+                        return;
                     }
+                    let Some(text) = option.completion.clone() else {
+                        return;
+                    };
+                    // Keep the completed option selected under the narrowed filter.
+                    let narrowed = build_command_menu(
+                        &ui.peek(),
+                        target,
+                        &text,
+                        root,
+                        false,
+                        false,
+                        *all_models.peek(),
+                    );
+                    let index = narrowed
+                        .and_then(|menu| {
+                            menu.menu
+                                .candidates
+                                .iter()
+                                .position(|o| o.label == option.label)
+                        })
+                        .unwrap_or(0);
+                    ui.write().drafts.insert(target, text);
+                    selected.set(index);
                 }
                 Key::Enter if !event.modifiers().contains(Modifiers::SHIFT) => {
                     event.prevent_default();
-                    if let Some(option) = menu.options.get(selected()) {
-                        select_menu_action(
-                            ui,
-                            target,
-                            option.action.clone(),
-                            choosing_model,
-                            info_open,
-                            prompt,
-                        );
-                        selected.set(0);
+                    if let Some(option) = menu.menu.candidates.get(selected()) {
+                        apply_menu_choice(ui, target, root, option.action.clone(), composer);
                     }
                 }
                 _ => {}
@@ -1191,72 +1032,9 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
             return;
         }
         event.prevent_default();
-        match parse_composer_input(&event.snapshot.text) {
-            ComposerInput::Command {
-                id: CommandId::Refresh,
-                ..
-            } => refresh_configs(ui, target),
-            ComposerInput::Command {
-                id: CommandId::Info,
-                ..
-            } => {
-                ui.write().drafts.remove(&target);
-                info_open.set(true);
-                record_info(ui, target);
-            }
-            ComposerInput::Command {
-                id: CommandId::Rename,
-                arguments,
-            } => {
-                if arguments.is_empty() {
-                    open_slash_prompt(ui, target, prompt, SlashPrompt::RenameSession);
-                } else {
-                    ui.write().drafts.remove(&target);
-                    spawn_rename(ui, target, arguments);
-                }
-            }
-            ComposerInput::Command {
-                id: CommandId::Sandbox,
-                arguments,
-            } => match SandboxAction::parse(&arguments) {
-                Some(action) => {
-                    ui.write().drafts.remove(&target);
-                    spawn(network::record_command(
-                        ui,
-                        target,
-                        "sandbox",
-                        action.as_str().into(),
-                        network::change_session_sandbox(ui, target.session_id, action),
-                    ));
-                }
-                None => {
-                    ui.write().drafts.insert(target, "/sandbox ".into());
-                }
-            },
-            ComposerInput::Command {
-                id: CommandId::Fork,
-                arguments,
-            } if !root => {
-                ui.write().drafts.remove(&target);
-                spawn(network::record_command(
-                    ui,
-                    target,
-                    "fork",
-                    arguments.clone(),
-                    network::fork_session(ui, target, arguments),
-                ));
-            }
-            ComposerInput::Command {
-                id: CommandId::Compact,
-                arguments,
-            } if !root => {
-                spawn(network::submit_compact(ui, target, arguments));
-            }
-            ComposerInput::Command {
-                id: CommandId::Goal,
-                arguments,
-            } if !root => {
-                spawn(network::submit_goal(ui, target, arguments));
+        match parse_composer_input(&event.snapshot.text, Frontend::Gui) {
+            ComposerInput::Command { id, arguments } if id.is_available(command_context(root)) => {
+                run_command(ui, target, root, id, arguments, composer);
             }
             _ if root => {
                 spawn_forever(network::submit_draft_root(ui, target.session_id));
@@ -1286,12 +1064,12 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
                 }
             }
             if let Some(menu) = &menu {
-                {render_command_menu(menu, root, selected, all_models, menu_popup, menu_nodes, onselect)}
+                {render_command_menu(menu, root, selected, menu_popup, menu_nodes, onselect)}
             }
             if !root && matches!(parsed, ComposerInput::Command { id:CommandId::Agent, .. }) {
                 p { class:"command-hint", "The /agent command is only available before creating the root agent. Use //agent to send it as text." }
             }
-            if root && matches!(parsed, ComposerInput::Command { id:CommandId::Compact | CommandId::Goal | CommandId::Fork, .. }) {
+            if root && matches!(parsed, ComposerInput::Command { id, .. } if !id.is_available(CommandContext::DraftRoot)) {
                 p { class:"command-hint", "This command needs an existing agent. Start with // to send it as text." }
             }
             if let Some(kind) = prompt() {
@@ -1327,19 +1105,21 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
                     onmounted:move |event: MountedEvent| textarea_node.set(Some(event.data())),
                     onedit:move |snapshot: InputSnapshot| {
                         let edited = snapshot.is_edit();
+                        let text = snapshot.text.clone();
                         let accepted = ui.write().drafts.apply_snapshot(target, snapshot);
                         if accepted && edited {
                             ui.write().workspace.promote(tab.id);
                             selected.set(0);
                             dismissed.set(None);
                             choosing_model.set(None);
+                            collapse_model_list(all_models, &text);
                         }
                     },
                     onsubmit:move |snapshot:InputSnapshot| {
                         if snapshot.composing || !ui.write().drafts.apply_snapshot(target, snapshot.clone()) {
                             return;
                         }
-                        if matches!(parse_composer_input(&snapshot.text), ComposerInput::Command { .. })
+                        if matches!(parse_composer_input(&snapshot.text, Frontend::Gui), ComposerInput::Command { .. })
                             || ui.peek().drafts.mutation(&target).is_some()
                                 && ui.peek().drafts.get(&target).map(String::as_str).unwrap_or_default() != snapshot.text
                         {

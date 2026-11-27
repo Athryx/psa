@@ -117,9 +117,10 @@ label = "build-box"
 supports_sandboxes = false
 
 # Static probe executable mounted into sandboxes. Optional; defaults to the
-# running executable when that is `psa_probe*`. Required with
-# `supports_sandboxes = true` when the probe is embedded in another binary
-# (such as the server's local probe). Must be UTF-8 without commas.
+# running executable when that is `psa_probe*`. When the probe is embedded in
+# another binary (such as the server's local probe), it defaults to the
+# server's `--probe-binary`, which `psa server` sets; without either it is
+# required with `supports_sandboxes = true`. Must be UTF-8 without commas.
 sandbox_probe_path = "/opt/psa/psa_probe"
 ```
 

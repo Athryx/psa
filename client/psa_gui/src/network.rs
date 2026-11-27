@@ -1587,7 +1587,7 @@ pub type CommandEnd = Option<Result<(), String>>;
 pub async fn record_command(
     mut ui: Signal<Ui>,
     target: TranscriptTarget,
-    name: &'static str,
+    id: client_shared::CommandId,
     args: String,
     action: impl std::future::Future<Output = CommandEnd>,
 ) {
@@ -1597,20 +1597,13 @@ pub async fn record_command(
     if target.agent_id == crate::app::DRAFT_ROOT {
         return;
     }
+    let Some(record) = client_shared::build_command_record(id, &args, ended) else {
+        return;
+    };
     let Ok(api) = client(ui) else {
         return;
     };
-
-    let (outcome, output) = match ended {
-        Ok(()) => (CommandOutcome::Succeeded, None),
-        Err(message) => (CommandOutcome::Failed, Some(message)),
-    };
-    let record = events::CommandRecord {
-        name: name.into(),
-        args: args.trim().into(),
-        outcome,
-        output,
-    };
+    let name = id.spec().name;
     if let Err(error) = api
         .record_command(target.session_id, target.agent_id, record)
         .await
@@ -1732,7 +1725,7 @@ async fn submit_captured(
     if !interrupt && (text.trim().is_empty() || ui.read().uncertain_submissions.contains(&target)) {
         return;
     }
-    let parsed = parse_composer_input(&text);
+    let parsed = parse_composer_input(&text, Frontend::Gui);
     if !interrupt && matches!(parsed, ComposerInput::Command { .. }) {
         ui.write().error = Some(
             "Choose a session default from /model, or use // to send literal slash text.".into(),
@@ -1800,51 +1793,6 @@ async fn submit_captured(
     }
 }
 
-fn apply_draft_configs(
-    draft: &mut crate::app::DraftRoot,
-    items: Vec<AgentConfigStatus>,
-    default_name: &str,
-) {
-    let previous_config = draft.selected.clone();
-    let previous_model = draft.model.clone();
-    draft.configs = items
-        .into_iter()
-        .filter(|c| {
-            c.config.selectable
-                && c.status.missing_components.is_empty()
-                && !c.config.models.is_empty()
-        })
-        .collect();
-    let mut defaults = draft
-        .configs
-        .iter()
-        .filter(|c| c.config.config_id.name == default_name);
-    let first = defaults.next().map(|c| c.config.config_id.clone());
-    let default = if defaults.next().is_none() {
-        first
-    } else {
-        None
-    };
-    let preserved =
-        previous_config.filter(|id| draft.configs.iter().any(|c| c.config.config_id == *id));
-    draft.selected = None;
-    draft.model = None;
-    if let Some(id) = preserved.clone().or(default) {
-        draft.select_config(id);
-        if preserved.is_some() {
-            // Preserve an explicitly selected wire policy only if it is still allowed.
-            if previous_model.as_ref().is_some_and(|model| {
-                draft.configs.iter().any(|c| {
-                    Some(&c.config.config_id) == draft.selected.as_ref()
-                        && c.config.models.contains(model)
-                })
-            }) {
-                draft.model = previous_model;
-            }
-        }
-    }
-}
-
 /// Load the draft's choices without creating an agent.
 pub async fn load_draft_root(mut ui: Signal<Ui>, session_id: SessionId) {
     if ui
@@ -1877,7 +1825,7 @@ pub async fn load_draft_root(mut ui: Signal<Ui>, session_id: SessionId) {
     draft.loading = false;
     match result {
         Ok((config, items)) => {
-            apply_draft_configs(draft, items, &config.default_agent_name);
+            draft.apply_configs(items, &config.default_agent_name);
             draft.ready = true;
         }
         Err(_) => {
@@ -1950,7 +1898,10 @@ fn capture_root_submission(
         },
     );
     if draft.text.trim().is_empty()
-        || !matches!(parse_composer_input(&draft.text), ComposerInput::Text(_))
+        || !matches!(
+            parse_composer_input(&draft.text, Frontend::Gui),
+            ComposerInput::Text(_)
+        )
     {
         return None;
     }
@@ -2527,15 +2478,15 @@ mod draft_root_tests {
         draft.configs.push(status.clone());
         draft.select_config(id.clone());
         draft.model = Some(policy.clone());
-        apply_draft_configs(&mut draft, vec![status.clone()], "other");
+        draft.apply_configs(vec![status.clone()], "other");
         assert_eq!(draft.selected, Some(id.clone()));
         assert_eq!(draft.model, Some(policy));
         let mut changed = status;
         changed.config.models.truncate(1);
-        apply_draft_configs(&mut draft, vec![changed], "other");
+        draft.apply_configs(vec![changed], "other");
         assert_eq!(draft.selected, Some(id));
         assert_eq!(draft.model, Some(ModelSelection::Global));
-        apply_draft_configs(&mut draft, vec![], "other");
+        draft.apply_configs(vec![], "other");
         assert_eq!(draft.selected, None);
         assert_eq!(draft.model, None);
     }

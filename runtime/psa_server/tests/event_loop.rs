@@ -430,6 +430,47 @@ async fn interactive_and_hidden_metadata_survive_http_create_get_list_and_fork()
 }
 
 #[tokio::test]
+async fn configs_are_discovered_for_a_directory_before_its_session_exists() {
+    let harness = Harness::start_with_files(
+        vec![],
+        true,
+        fake_probe::FakeFiles::default()
+            .directory("/work/.agents")
+            .directory("/work/project/.agents"),
+    )
+    .await;
+    let probe_id = support::probe_metadata().id;
+    let found = harness
+        .client
+        .discover_configs(probe_id, std::path::Path::new("/work/project/nested"))
+        .await
+        .unwrap();
+    assert!(found.searched);
+    assert_eq!(
+        found.group,
+        Some(wire::ConfigGroup::AgentsDir {
+            path: "/work/project/.agents".into(),
+            probe_id,
+        })
+    );
+
+    let none = harness
+        .client
+        .discover_configs(probe_id, std::path::Path::new("/outside"))
+        .await
+        .unwrap();
+    assert_eq!(none.group, None);
+    assert!(
+        harness
+            .client
+            .discover_configs(probe_id, std::path::Path::new("relative"))
+            .await
+            .is_err()
+    );
+    harness.close().await;
+}
+
+#[tokio::test]
 async fn session_project_selection_persists_and_rediscovery_tracks_cwd_and_forks() {
     let harness = Harness::start_with_files(
         vec![],

@@ -6,7 +6,7 @@ helpers. It does not hold runtime behaviour.
 
 | Module | File | Used by |
 | --- | --- | --- |
-| `paths` | data-directory layout and file names | server, probe |
+| `paths` | data-directory layout and file names, including the server's lock, control-socket, and log paths | server, probe, local clients |
 | `auth` | `auth.toml`: `[psa]` probe/client keys and provider credential tables | server, probe, `psa_models` |
 | `server` | `config.toml`: server schema, generated default config and agents, `AgentDefaults` | server, probe (`host` marker only) |
 | `agent_definition` | `agents/*.toml` agent definitions and their inclusion rules | server config discovery |

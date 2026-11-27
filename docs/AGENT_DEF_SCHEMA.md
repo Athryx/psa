@@ -31,6 +31,7 @@ in `runtime/psa_store/src/configurations.rs`.
 | `POST /skills` | `NewSkill` JSON body | `Skill` (201) | `upload_skill(&NewSkill)` |
 | `GET /skills` | none | `Vec<Skill>` | `list_skills()` |
 | `POST /configs/refresh` | `RefreshConfigs { session_ids }` | 204 | `refresh_configs(&[SessionId])` |
+| `POST /configs/discover` | `DiscoverConfigs { probe_id, working_directory }` | `DiscoveredConfigs` | `discover_configs(ProbeId, &Path)` |
 | `POST /sessions/{session_id}/agents` | `CreateAgent` | `Agent` (201) | `create_agent(SessionId, &CreateAgent)` |
 
 Lookup by compound config ID uses a body rather than path encoding. An unknown
@@ -38,7 +39,9 @@ snapshot returns JSON `null`; a missing current config produces a not-found
 error. Listing never rescans; it returns every registered group. `POST
 /configs/refresh` rescans the global directory and the `.agents` directory of
 each listed session (discovering it on first use), for agent configurations and
-skills together. Snapshot reads and current-config lookup do not perform
+skills together. `POST /configs/discover` finds and rescans the `.agents`
+directory a session in a directory would use before the session exists, and
+returns its group. Snapshot reads and current-config lookup do not perform
 discovery.
 
 There is **no backwards compatibility**: `/agent-definitions` CRUD routes,

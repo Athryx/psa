@@ -111,3 +111,43 @@ impl SessionIndex {
         groups
     }
 }
+
+/// Characters a name taken from a message keeps before it is cut.
+const MESSAGE_NAME_LENGTH: usize = 48;
+
+/// A session name from its first message, for a session not named first: the
+/// first non-blank line with its spaces collapsed, cut at a word boundary
+/// with "…" when it is long.
+pub fn name_from_message(message: &str) -> String {
+    let line = message
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default();
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let full = words.join(" ");
+    if full.chars().count() <= MESSAGE_NAME_LENGTH {
+        return full;
+    }
+
+    let mut name = String::new();
+    for word in &words {
+        let extra = usize::from(!name.is_empty()) + word.chars().count();
+        if name.chars().count() + extra > MESSAGE_NAME_LENGTH {
+            break;
+        }
+        if !name.is_empty() {
+            name.push(' ');
+        }
+        name.push_str(word);
+    }
+    // A first word longer than the limit is cut inside the word.
+    if name.is_empty() {
+        name = full.chars().take(MESSAGE_NAME_LENGTH).collect();
+    }
+    name.push('…');
+    name
+}
+
+#[cfg(test)]
+#[path = "tests/sessions/tests.rs"]
+mod tests;

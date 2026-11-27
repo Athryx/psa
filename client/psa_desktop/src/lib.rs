@@ -33,12 +33,9 @@ pub enum SettingsError {
 pub fn resolve_settings_path(data_dir: Option<PathBuf>) -> Result<PathBuf, SettingsError> {
     let directory = match data_dir {
         Some(directory) => directory,
-        None => directories::ProjectDirs::from("", "", "psa")
-            .ok_or(SettingsError::MissingDataDirectory)?
-            .data_local_dir()
-            .to_path_buf(),
+        None => psa_config::paths::default_data_dir().ok_or(SettingsError::MissingDataDirectory)?,
     };
-    Ok(directory.join("desktop.toml"))
+    Ok(directory.join(psa_config::paths::DESKTOP_SETTINGS_FILE))
 }
 
 /// Missing settings use defaults without touching server/probe configuration.
@@ -66,6 +63,8 @@ pub struct DesktopPlatform {
     writes: tokio::sync::Mutex<()>,
     local_server: LocalServerManager,
     settings_flush: RefCell<Option<SettingsFlush>>,
+    /// Closes the window the way its close button does; set by the window.
+    quit: RefCell<Option<std::rc::Rc<dyn Fn()>>>,
 }
 
 impl DesktopPlatform {
@@ -82,9 +81,16 @@ impl DesktopPlatform {
         Self {
             path,
             writes: tokio::sync::Mutex::new(()),
+            // The server listens where config.toml says, like one started by
+            // `psa`, so remote probes and clients find it at a stable address.
             local_server: LocalServerManager::new(executable, data_dir),
             settings_flush: RefCell::new(None),
+            quit: RefCell::new(None),
         }
+    }
+
+    pub fn set_quit_handler(&self, quit: Option<std::rc::Rc<dyn Fn()>>) {
+        *self.quit.borrow_mut() = quit;
     }
 
     pub fn settings_path(&self) -> &Path {
@@ -156,6 +162,13 @@ impl DesktopPlatform {
 impl GuiPlatform for DesktopPlatform {
     fn set_settings_flush(&self, flush: Option<SettingsFlush>) {
         *self.settings_flush.borrow_mut() = flush;
+    }
+
+    fn request_quit(&self) -> Result<(), String> {
+        let quit = self.quit.borrow().clone();
+        let quit = quit.ok_or("The window is not ready to close yet.")?;
+        quit();
+        Ok(())
     }
 
     fn local_server_status(

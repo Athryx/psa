@@ -26,7 +26,14 @@ The first build needs network access. For a standalone probe, run `scripts/packa
 
 ## Run locally
 
-Start the server, which creates its configuration, authentication keys, and database on first run:
+The `psa` command manages a local server in the background. It finds `psa_server`, `psa_desktop`, and `psa_probe` beside itself, so it works from `target/debug`. The server creates its configuration, authentication keys, and database on first run:
+
+```sh
+./target/debug/psa --data-dir ./target/psa-server-dev server start   # also stop, restart, status
+./target/debug/psa --data-dir ./target/psa-server-dev gui
+```
+
+See the [CLI README](client/psa_cli/README.md) for details. To run the server in the foreground instead:
 
 ```sh
 ./target/debug/psa_server start --data-dir ./target/psa-server-dev --listen 127.0.0.1:8080

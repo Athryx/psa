@@ -30,6 +30,10 @@ pub struct StartOptions {
     pub config: Option<PathBuf>,
     #[arg(long)]
     pub listen: Option<SocketAddr>,
+    /// Static probe executable the local probe mounts into sandboxes when
+    /// probe.toml sets no `sandbox_probe_path`.
+    #[arg(long)]
+    pub probe_binary: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -45,6 +49,7 @@ pub struct ResolvedConfig {
     pub agent_defaults: AgentDefaults,
     pub default_sandbox_image: Option<String>,
     pub max_concurrent_decision_calls: NonZeroUsize,
+    pub probe_binary: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -132,6 +137,7 @@ impl StartOptions {
                 .default_image
                 .filter(|image| !image.trim().is_empty()),
             max_concurrent_decision_calls: config.decisions.max_concurrent_calls,
+            probe_binary: self.probe_binary,
         })
     }
 }

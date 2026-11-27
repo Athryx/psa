@@ -2,6 +2,7 @@
 //! from ever targeting another running server; no PID is used for shutdown.
 #[cfg(unix)]
 mod unix {
+    use psa_config::paths;
     use std::{
         io,
         os::unix::fs::{FileTypeExt, PermissionsExt},
@@ -21,7 +22,7 @@ mod unix {
                 .create(true)
                 .truncate(false)
                 .write(true)
-                .open(dir.join("server.lifetime.lock"))?;
+                .open(dir.join(paths::SERVER_LIFETIME_LOCK))?;
             lock.try_lock()?;
             Ok(lock)
         }
@@ -32,10 +33,10 @@ mod unix {
             address: std::net::SocketAddr,
             key: &str,
         ) -> io::Result<(Self, tokio::sync::oneshot::Receiver<()>)> {
-            let control_dir = dir.join("server.control");
+            let control_dir = dir.join(paths::SERVER_CONTROL_DIR);
             std::fs::create_dir_all(&control_dir)?;
             std::fs::set_permissions(&control_dir, std::fs::Permissions::from_mode(0o700))?;
-            let path = control_dir.join("socket");
+            let path = paths::server_control_socket(dir);
             match std::fs::symlink_metadata(&path) {
                 Ok(metadata) if metadata.file_type().is_socket() => std::fs::remove_file(&path)?,
                 Ok(_) => {

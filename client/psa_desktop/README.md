@@ -12,7 +12,8 @@ From the workspace root:
 cargo run --locked --bin psa_desktop
 # Use a different PSA data directory:
 cargo run --locked --bin psa_desktop -- --data-dir /custom/psa
-# Select the server executable for managed local startup:
+# Select the server executable for managed local startup (default: $PSA_SERVER_BIN,
+# then psa_server beside this executable, then PATH):
 cargo run --locked --bin psa_desktop -- --server-binary /path/to/psa_server
 ```
 
@@ -75,7 +76,16 @@ shared with its other clients, not a local desktop favorites list.
   persistence, CLI, window configuration, and renderer launch.
 
 The `/model` command changes the focused tab's **session default**. It does not
-override agents whose definitions pin their own model.
+override agents whose definitions pin their own model. It lists pinned models
+and the current one; the menu's last item shows every model.
+
+Slash commands match the terminal client's, from the shared registry in
+`client_shared::commands`. Commands that show something open the desktop's own
+view of it: `/sessions`, `/agents` and `/probes` switch the sidebar, `/new`
+opens the session name field for the current session's folder (as its +
+button does), `/pinned-models` and `/pinned-decision-models` open their
+Settings tabs, and `/help` opens the Commands tab in Settings, which lists every
+command with its arguments.
 
 ## Checks
 

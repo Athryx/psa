@@ -398,6 +398,22 @@ impl Client {
             .await
     }
 
+    /// Find and rescan the `.agents` directory a session in `working_directory`
+    /// on `probe_id` would use, before the session exists. Globals are
+    /// rescanned too.
+    pub async fn discover_configs(
+        &self,
+        probe_id: crate::api::ProbeId,
+        working_directory: &std::path::Path,
+    ) -> Result<crate::api::DiscoveredConfigs, ClientError> {
+        let request = crate::api::DiscoverConfigs {
+            probe_id,
+            working_directory: working_directory.to_path_buf(),
+        };
+        self.send(Method::POST, routes::CONFIGS_DISCOVER, &request)
+            .await
+    }
+
     /// Create a session with a registered probe and optional model configuration.
     /// Omitted model configuration uses the server's configured session defaults.
     /// The probe may be offline; paths refer to its filesystem.

@@ -47,6 +47,11 @@ pub type SettingsFlush = Rc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), S
 pub trait GuiPlatform {
     fn set_settings_flush(&self, _flush: Option<SettingsFlush>) {}
 
+    /// Close the app as its window's close button does, saving settings first.
+    fn request_quit(&self) -> Result<(), String> {
+        Err("Quitting is unavailable here; close the window instead.".into())
+    }
+
     fn save_settings(
         &self,
         settings: DesktopSettings,

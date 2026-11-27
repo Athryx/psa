@@ -228,6 +228,7 @@ pub fn router(state: AppState) -> Router {
             ),
         )
         .route(routes::CONFIGS_REFRESH, post(refresh_configs))
+        .route(routes::CONFIGS_DISCOVER, post(discover_configs))
         .route(routes::SESSIONS, post(create_session))
         .route(routes::SESSIONS_QUERY, post(list_sessions))
         .route(routes::PROJECTS, get(list_projects))
@@ -413,6 +414,18 @@ async fn refresh_configs(
     state.require_accepting()?;
     state.runtime.refresh_configs(&request.session_ids).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn discover_configs(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<api::DiscoverConfigs>,
+) -> Result<Json<api::DiscoveredConfigs>, HttpError> {
+    state.require_accepting()?;
+    let discovered = state
+        .runtime
+        .discover_location_configs(request.probe_id, &request.working_directory)
+        .await?;
+    Ok(Json(discovered))
 }
 
 async fn get_agent_config(
@@ -1324,6 +1337,7 @@ mod tests {
             ("GET", routes::SKILLS),
             ("POST", routes::SKILLS),
             ("POST", routes::CONFIGS_REFRESH),
+            ("POST", routes::CONFIGS_DISCOVER),
             ("POST", routes::SESSIONS),
             ("POST", routes::SESSIONS_QUERY),
             ("GET", routes::PROJECTS),

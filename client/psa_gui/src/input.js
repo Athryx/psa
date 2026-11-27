@@ -216,8 +216,11 @@ if (!window.psaInputs) {
                 const delimiter = prefix.search(/[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/u);
                 const commands = config.commands ?? [];
                 const completion = slash && delimiter === -1 && commands.some(command => command.name.startsWith(prefix));
+                const whitespace = /[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/u;
+                const argumentText = delimiter === -1 ? '' : prefix.slice(delimiter + 1).replace(/^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/u, '');
                 const picker = slash && delimiter !== -1 && commands.some(command =>
-                    command.picker && command.name === prefix.slice(0, delimiter));
+                    command.picker && command.name === prefix.slice(0, delimiter) &&
+                    !(command.one_word && whitespace.test(argumentText)));
                 // A root-model chooser can be open with empty text. A stale
                 // menu render must not capture arrows in newly typed plain text.
                 const rootChooser = composer && !dismissed && node.dataset.psaMenu === 'true' && node.value === '';
