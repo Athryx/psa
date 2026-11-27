@@ -1212,24 +1212,26 @@ fn ProviderSettings() -> Element {
     }
 }
 
-/// Device-code sign-in: shows the code and link, then waits for the server
-/// to report that the user approved it.
+/// Device-code sign-in, started when the card opens it: shows the code and
+/// link, then waits for the server to report that the user approved it.
 #[component]
 fn ProviderSignIn(
     id: ProviderType,
-    signed_in: bool,
     mut providers: Signal<Vec<ProviderInfo>>,
+    on_close: EventHandler<()>,
+    on_manual: EventHandler<()>,
 ) -> Element {
     let ui = use_context::<Signal<Ui>>();
     let mut login = use_signal(|| None::<psa::api::ProviderLogin>);
     let mut error = use_signal(|| None::<String>);
-    let start = move |_| {
+    let mut start = move || {
         let generation = ui.read().generation;
         let Ok(api) = network::client(ui) else {
             error.set(Some("Unable to connect to the server.".into()));
             return;
         };
         error.set(None);
+        login.set(None);
         spawn(async move {
             let request = psa::api::StartProviderLogin { provider: id };
             let mut current = match api.start_provider_login(&request).await {
@@ -1255,14 +1257,6 @@ fn ProviderSignIn(
                     }
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                // A login that is no longer pending here was cancelled.
-                if login
-                    .peek()
-                    .as_ref()
-                    .is_none_or(|shown| shown.id != login_id)
-                {
-                    return;
-                }
                 current = match api.get_provider_login(login_id).await {
                     Ok(current) => current,
                     Err(_) => {
@@ -1273,35 +1267,39 @@ fn ProviderSignIn(
                 };
             }
 
-            login.set(None);
             if let Ok(items) = api.list_providers().await {
                 providers.set(items);
             }
             spawn(network::refresh_metadata(ui));
+            on_close.call(());
         });
     };
-    let cancel = move |_| {
-        let Some(current) = login.take() else {
-            return;
-        };
-        if let Ok(api) = network::client(ui) {
-            spawn(async move {
+    use_hook(start);
+    // Closing the panel drops this scope, which also stops the polling task.
+    let mut cancel_login = move || {
+        if let (Some(current), Ok(api)) = (login.take(), network::client(ui)) {
+            dioxus::core::spawn_forever(async move {
                 let _ = api.cancel_provider_login(current.id).await;
             });
         }
     };
     rsx! {
-        if let Some(message) = error() { p { class:"error", role:"alert", "{message}" } }
-        if let Some(current) = login() {
-            div { class:"provider-sign-in", role:"status",
+        div { class:"provider-sign-in", role:"status",
+            if let Some(message) = error() {
+                p { class:"error", role:"alert", "{message}" }
+            } else if let Some(current) = login() {
                 p { "Open " a { href:"{current.verification_url}", target:"_blank", "{current.verification_url}" } " and enter this code:" }
                 p { strong { class:"provider-user-code", "{current.user_code}" } }
                 p { class:"muted", "Waiting for approval…" }
-                button { r#type:"button", onclick:cancel, "Cancel sign-in" }
+            } else {
+                p { class:"muted", "Starting sign-in…" }
             }
-        } else {
-            button { r#type:"button", "aria-label":format!("Sign in to {}", id.name()), onclick:start,
-                if signed_in { "Sign in again with ChatGPT" } else { "Sign in with ChatGPT" }
+            div { class:"provider-actions",
+                if error().is_some() {
+                    button { class:"primary", r#type:"button", onclick:move |_| start(), "Try again" }
+                }
+                button { r#type:"button", onclick:move |_| { cancel_login(); on_manual.call(()); }, "Enter access token instead" }
+                button { class:"profile-delete", r#type:"button", onclick:move |_| { cancel_login(); on_close.call(()); }, "Cancel sign-in" }
             }
         }
     }
@@ -1317,6 +1315,7 @@ pub(crate) fn ProviderCard(
 ) -> Element {
     let ui = use_context::<Signal<Ui>>();
     let mut editing = use_signal(|| false);
+    let mut signing_in = use_signal(|| false);
     let mut credential = use_signal(String::new);
     let mut confirming = use_signal(|| false);
     let mut pending = use_signal(|| false);
@@ -1369,8 +1368,12 @@ pub(crate) fn ProviderCard(
         article { class:"profile-card provider-card",
             div { class:"profile-card-heading",
                 div { strong { "{name}" } div { class:"muted", if signed_in { "Signed in" } else if authed { "Configured" } else { "Not configured" } } }
-                if !editing() {
-                    button { disabled:pending(), "aria-label":format!("{} credentials for {}", if authed { "Edit" } else { "Add" }, name), onclick:move |_| { confirming.set(false); error.set(None); editing.set(true); }, if authed { "Edit" } else { "Add" } }
+                if !editing() && !signing_in() {
+                    button { disabled:pending(), "aria-label":format!("{} credentials for {}", if authed { "Edit" } else { "Add" }, name), onclick:move |_| {
+                        confirming.set(false);
+                        error.set(None);
+                        if supports_login { signing_in.set(true) } else { editing.set(true) }
+                    }, if authed { "Edit" } else { "Add" } }
                 }
             }
             if let Some(message) = error() { p { class:"error", role:"alert", "{message}" } }
@@ -1391,10 +1394,13 @@ pub(crate) fn ProviderCard(
                 }
                 }
             }
-            if supports_login && !editing() && !confirming() {
-                ProviderSignIn { id, signed_in, providers }
+            if signing_in() {
+                ProviderSignIn { id, providers,
+                    on_close:move |_| signing_in.set(false),
+                    on_manual:move |_| { signing_in.set(false); editing.set(true); },
+                }
             }
-            if authed && !editing() && !confirming() {
+            if authed && !editing() && !signing_in() && !confirming() {
                 button { class:"profile-delete", disabled:pending(), "aria-label":format!("Delete credentials for {}", name), onclick:move |_| { error.set(None); confirming.set(true); }, "Delete credentials" }
             }
             if confirming() {

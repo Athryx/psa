@@ -1176,6 +1176,20 @@ textarea {
   flex-wrap:wrap;
   gap:6px
 }
+.provider-actions .profile-delete {
+  margin-top:0
+}
+.provider-sign-in {
+  margin-top:12px
+}
+.provider-sign-in p {
+  margin:0 0 8px
+}
+.provider-user-code {
+  font-family:ui-monospace,monospace;
+  font-size:1.2em;
+  letter-spacing:.08em
+}
 .profile-select {
   border-color:var(--line)
 }

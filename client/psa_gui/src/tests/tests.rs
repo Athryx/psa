@@ -900,6 +900,35 @@ fn provider_cards_show_redacted_status_and_confirm_deletion() {
 }
 
 #[test]
+fn codex_add_opens_sign_in_with_outlined_cancel() {
+    use dioxus::core::Mutation;
+    dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+    let mut dom = VirtualDom::new(provider_cards_test_root);
+    let mutations = dom.rebuild_to_vec();
+    let add = mutations
+        .edits
+        .iter()
+        .filter_map(|edit| match edit {
+            Mutation::NewEventListener { name, id } if name == "click" => Some(*id),
+            _ => None,
+        })
+        .last()
+        .unwrap();
+    assert!(!dioxus_ssr::render(&dom).contains("Sign in with ChatGPT"));
+
+    click(&dom, add.0);
+    dom.render_immediate_to_vec();
+    let html = dioxus_ssr::render(&dom);
+    assert!(html.contains("provider-sign-in"), "{html}");
+    assert!(
+        html.contains("class=\"profile-delete\" type=\"button\">Cancel sign-in"),
+        "{html}"
+    );
+    assert!(html.contains("Enter access token instead"), "{html}");
+    assert!(!html.contains("type=\"password\""), "{html}");
+}
+
+#[test]
 fn provider_editor_uses_password_and_clears_on_cancel() {
     use dioxus::{
         core::Mutation,
