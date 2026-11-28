@@ -718,14 +718,14 @@ fn enter_rebuilds_model_candidates_from_current_metadata() {
 #[test]
 fn agent_command_is_explained_and_literal_slashes_do_not_show_commands() {
     let (mut dom, textarea) = mount();
-    input(&mut dom, textarea, "/agent worker");
+    input(&mut dom, textarea, "/select agent worker");
     let html = dioxus_ssr::render(&dom);
     assert!(
         html.contains("only available before creating the root agent"),
         "{html}"
     );
     assert!(!html.contains("aria-label=\"Slash commands\""), "{html}");
-    input(&mut dom, textarea, "//agent worker");
+    input(&mut dom, textarea, "//select agent worker");
     let html = dioxus_ssr::render(&dom);
     assert!(
         !html.contains("only available before creating the root agent"),

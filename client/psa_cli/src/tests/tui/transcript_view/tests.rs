@@ -305,3 +305,31 @@ fn text_results_and_tool_output_follow_their_settings() {
     };
     assert!(render_with(&transcript, &shown, false).contains(&"  done".to_owned()));
 }
+
+#[test]
+fn system_prompts_show_as_a_label_by_default() {
+    let mut transcript = Transcript::new(SessionId(1), Some(AgentId(1)));
+    commit(
+        &mut transcript,
+        1,
+        EventType::Message(Message::system("Be brief.", "Base prompt")),
+    );
+    let with = |system_prompts| TuiPreferences {
+        system_prompts,
+        turn_dividers: TurnDividerDisplay::Hidden,
+        ..TuiPreferences::default()
+    };
+    assert_eq!(
+        render(&transcript, false),
+        vec!["· System prompt · Base prompt"]
+    );
+    assert!(render_with(&transcript, &with(SystemPromptDisplay::Hidden), false).is_empty());
+    assert_eq!(
+        render_with(&transcript, &with(SystemPromptDisplay::Full), false),
+        vec!["· System prompt · Base prompt", "  Be brief."]
+    );
+    assert!(
+        render(&transcript, true).contains(&"  Be brief.".to_owned()),
+        "Ctrl+O shows it in full"
+    );
+}

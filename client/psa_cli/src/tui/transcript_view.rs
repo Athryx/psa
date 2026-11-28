@@ -1,7 +1,7 @@
 //! Transcript rows as styled terminal lines.
 use super::{
     commands::describe_count,
-    settings::TuiPreferences,
+    settings::{SystemPromptDisplay, TuiPreferences},
     text::{truncate_line, wrap_text},
     theme::Palette,
 };
@@ -140,16 +140,19 @@ fn describe_row(
                     )
                 }
                 MessageType::Harness if !preferences.show_harness_messages => None,
-                MessageType::System if !options.details => None,
-                MessageType::Harness | MessageType::System => {
-                    let label =
-                        message
-                            .description
-                            .as_deref()
-                            .unwrap_or(match message.message_type {
-                                MessageType::System => "system",
-                                _ => "harness",
-                            });
+                MessageType::System => match preferences.system_prompts {
+                    SystemPromptDisplay::Hidden => None,
+                    SystemPromptDisplay::Label => {
+                        let label = describe_system_prompt(message.description.as_deref(), &text);
+                        Some(Item::new("· ", muted).with(label, muted))
+                    }
+                    SystemPromptDisplay::Full => {
+                        let label = describe_system_prompt(message.description.as_deref(), &text);
+                        Some(Item::new("· ", muted).with(format!("{label}\n{text}"), muted))
+                    }
+                },
+                MessageType::Harness => {
+                    let label = message.description.as_deref().unwrap_or("harness");
                     Some(Item::new("· ", muted).with(format!("{label}\n{text}"), muted))
                 }
             }
@@ -331,6 +334,16 @@ fn summarize_arguments(arguments: &str) -> String {
         .find_map(|name| fields.get(*name).and_then(|value| value.as_str()))
         .map(|value| value.trim().to_owned())
         .unwrap_or_else(|| serde_json::Value::Object(fields).to_string())
+}
+
+/// A system prompt's one-line label: its description, or its size when it has
+/// none, as the desktop's collapsed prompt shows.
+fn describe_system_prompt(description: Option<&str>, text: &str) -> String {
+    let detail = match description {
+        Some(description) => description.to_owned(),
+        None => format!("{} characters", text.chars().count()),
+    };
+    format!("System prompt · {detail}")
 }
 
 fn content_text(content: &[ContentBlock]) -> String {

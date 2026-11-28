@@ -212,15 +212,17 @@ if (!window.psaInputs) {
                 // Names and picker capability come from Rust's COMMANDS, not a
                 // duplicated list or a previous render's menu. Match Rust's
                 // char::is_whitespace, not JS's different whitespace class.
+                // Names can be several words, such as `select agent`.
                 const prefix = slash ? node.value.slice(1) : '';
-                const delimiter = prefix.search(/[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/u);
                 const commands = config.commands ?? [];
-                const completion = slash && delimiter === -1 && commands.some(command => command.name.startsWith(prefix));
                 const whitespace = /[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/u;
-                const argumentText = delimiter === -1 ? '' : prefix.slice(delimiter + 1).replace(/^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/u, '');
-                const picker = slash && delimiter !== -1 && commands.some(command =>
-                    command.picker && command.name === prefix.slice(0, delimiter) &&
-                    !(command.one_word && whitespace.test(argumentText)));
+                const completion = slash && commands.some(command => command.name.startsWith(prefix));
+                // The longest name the text starts with, followed by whitespace.
+                const typed = slash ? commands
+                    .filter(command => prefix.startsWith(command.name) && whitespace.test(prefix.charAt(command.name.length)))
+                    .sort((a, b) => b.name.length - a.name.length)[0] : undefined;
+                const argumentText = typed ? prefix.slice(typed.name.length + 1).replace(/^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/u, '') : '';
+                const picker = !!typed && typed.picker && !(typed.one_word && whitespace.test(argumentText));
                 // A root-model chooser can be open with empty text. A stale
                 // menu render must not capture arrows in newly typed plain text.
                 const rootChooser = composer && !dismissed && node.dataset.psaMenu === 'true' && node.value === '';

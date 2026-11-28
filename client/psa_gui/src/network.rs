@@ -1877,12 +1877,14 @@ fn require_root_selection(
         .configs
         .iter()
         .find(|config| Some(&config.config.config_id) == draft.selected.as_ref())
-        .ok_or("Select an available agent configuration first using /agent.")?;
+        .ok_or("Select an available agent configuration first using /select agent.")?;
     let model = draft
         .model
         .clone()
         .filter(|model| config.config.models.contains(model))
-        .ok_or("Choose an allowed model policy using /agent before sending the first message.")?;
+        .ok_or(
+            "Choose an allowed model policy using /select agent before sending the first message.",
+        )?;
     Ok((config.config.clone(), model))
 }
 
@@ -2408,7 +2410,9 @@ mod draft_root_tests {
                 session_id: SessionId(1),
                 agent_id: crate::app::DRAFT_ROOT,
             };
-            ui.write().drafts.insert(target, "/agent alternate".into());
+            ui.write()
+                .drafts
+                .insert(target, "/select agent alternate".into());
             submit_draft_root(ui, SessionId(1)).await;
             assert_eq!(
                 requests.lock().unwrap().len(),

@@ -169,8 +169,8 @@ impl App {
             // Reached only with the menu dismissed: reopen it on the typed text.
             CommandId::SessionModel
             | CommandId::SessionEffort
-            | CommandId::Agent
-            | CommandId::Probe => {
+            | CommandId::SelectAgent
+            | CommandId::SelectProbe => {
                 self.composer
                     .set_text(format!("/{} {arguments}", id.spec().name));
             }
@@ -211,7 +211,7 @@ impl App {
         self.set_notice(format!("Effort set to {}.", effort.as_str()));
     }
 
-    /// `/agent`'s choice; a configuration with several model policies asks
+    /// `/select agent`'s choice; a configuration with several model policies asks
     /// for one next.
     pub fn choose_draft_config(&mut self, id: ConfigId) {
         let Some(draft) = self.draft.as_mut() else {
@@ -229,7 +229,7 @@ impl App {
         self.choosing_root_model = false;
     }
 
-    /// `/probe`: the same directory on the same probe, otherwise the probe's
+    /// `/select probe`: the same directory on the same probe, otherwise the probe's
     /// home directory.
     pub fn choose_draft_probe(&mut self, probe_id: ProbeId) {
         let Some(probe) = self.probes.iter().find(|p| p.metadata.id == probe_id) else {
@@ -254,12 +254,12 @@ impl App {
             return;
         }
         let Some(probe_id) = draft.probe_id else {
-            self.set_error("No connected probe to start the session on; see /probe.");
+            self.set_error("No connected probe to start the session on; see /select probe.");
             return;
         };
         let Some(config_id) = draft.root.selected.clone() else {
             let message = if draft.root.ready {
-                "Choose the root agent first: /agent."
+                "Choose the root agent first: /select agent."
             } else {
                 "Agent configurations are still loading; try again."
             };
@@ -335,11 +335,11 @@ impl App {
                 group => format!("{} ({})", id.name, describe_config_group(group)),
             },
             (None, true) => "loading…".into(),
-            (None, false) => "none chosen; see /agent".into(),
+            (None, false) => "none chosen; see /select agent".into(),
         };
         let policy = match &draft.root.model {
             Some(model) => draft_model_label(model),
-            None if draft.root.model_choices().len() > 1 => "not chosen; see /agent".into(),
+            None if draft.root.model_choices().len() > 1 => "not chosen; see /select agent".into(),
             None => "the configuration's default".into(),
         };
         let model = match &draft.model_config {

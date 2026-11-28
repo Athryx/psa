@@ -39,17 +39,17 @@ fn commands_are_not_model_prompts_and_literals_are_preserved() {
 }
 
 #[test]
-fn agent_is_gui_only_and_distinct_from_agents() {
+fn select_commands_are_distinct_from_agents_and_probes() {
     assert_eq!(
-        parse_composer_input("/agent  worker  ", Frontend::Gui),
+        parse_composer_input("/select agent  worker  ", Frontend::Gui),
         ComposerInput::Command {
-            id: CommandId::Agent,
+            id: CommandId::SelectAgent,
             arguments: "worker".into(),
         }
     );
     assert_eq!(
-        parse_composer_input("/probe", Frontend::Gui),
-        ComposerInput::Text("/probe".into())
+        parse_composer_input("/select probe", Frontend::Gui),
+        ComposerInput::Text("/select probe".into())
     );
     assert_eq!(
         parse_composer_input("/agents", Frontend::Gui),
@@ -58,28 +58,59 @@ fn agent_is_gui_only_and_distinct_from_agents() {
             arguments: String::new(),
         }
     );
-    assert!(complete_commands("/agent worker", Frontend::Gui).is_empty());
+    assert_eq!(
+        parse_composer_input("/select probe builder", Frontend::Tui),
+        ComposerInput::Command {
+            id: CommandId::SelectProbe,
+            arguments: "builder".into(),
+        }
+    );
+    assert_eq!(
+        parse_composer_input("/select", Frontend::Tui),
+        ComposerInput::Text("/select".into())
+    );
+    assert!(complete_commands("/select agent worker", Frontend::Gui).is_empty());
+    let names: Vec<_> = complete_commands("/select ", Frontend::Tui)
+        .iter()
+        .map(|c| c.name)
+        .collect();
+    assert_eq!(names, ["select agent", "select probe"]);
 }
 
 #[test]
 fn an_exact_name_completes_first() {
-    let names: Vec<_> = complete_commands("/agent", Frontend::Gui)
+    let names: Vec<_> = complete_commands("/agents", Frontend::Gui)
         .iter()
         .map(|c| c.name)
         .collect();
-    assert_eq!(names, ["agent", "agents"]);
+    assert_eq!(names, ["agents"]);
+    let names: Vec<_> = complete_commands("/pinned-models", Frontend::Gui)
+        .iter()
+        .map(|c| c.name)
+        .collect();
+    assert_eq!(names, ["pinned-models"]);
     let names: Vec<_> = complete_commands("/s", Frontend::Tui)
         .iter()
         .map(|c| c.name)
         .collect();
-    assert_eq!(names, ["sandbox", "sessions", "server", "settings"]);
+    assert_eq!(
+        names,
+        [
+            "select agent",
+            "sandbox",
+            "sessions",
+            "select probe",
+            "server",
+            "settings"
+        ]
+    );
 }
 
 #[test]
 fn every_command_runs_in_both_clients_except_probe() {
     for spec in COMMANDS {
         let both = spec.supports(Frontend::Gui) && spec.supports(Frontend::Tui);
-        assert_eq!(both, spec.id != CommandId::Probe, "/{}", spec.name);
+        assert_eq!(both, spec.id != CommandId::SelectProbe, "/{}", spec.name);
     }
 }
 
@@ -90,11 +121,11 @@ fn scopes_follow_the_composer_context() {
     assert!(!CommandId::Compact.is_available(DraftRoot));
     assert!(!CommandId::Goal.is_available(DraftRoot));
     assert!(!CommandId::Fork.is_available(DraftRoot));
-    assert!(CommandId::Agent.is_available(DraftRoot));
-    assert!(CommandId::Agent.is_available(SessionDraft));
-    assert!(!CommandId::Agent.is_available(Agent));
-    assert!(CommandId::Probe.is_available(SessionDraft));
-    assert!(!CommandId::Probe.is_available(DraftRoot));
+    assert!(CommandId::SelectAgent.is_available(DraftRoot));
+    assert!(CommandId::SelectAgent.is_available(SessionDraft));
+    assert!(!CommandId::SelectAgent.is_available(Agent));
+    assert!(CommandId::SelectProbe.is_available(SessionDraft));
+    assert!(!CommandId::SelectProbe.is_available(DraftRoot));
     for id in [
         CommandId::SessionModel,
         CommandId::Rename,

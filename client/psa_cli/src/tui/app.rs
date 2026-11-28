@@ -15,6 +15,7 @@ use psa::api::{
     Agent, AgentContextState, AgentId, AgentState, ClientQueryId, ClientQueryRequest, EventsPage,
     ModelInfo, ModelUsage, Probe, Sandbox, Session, SessionId, StreamMessage,
 };
+use ratatui::layout::Rect;
 use std::{path::PathBuf, sync::Arc};
 use tokio::task::JoinHandle;
 
@@ -126,6 +127,14 @@ impl AgentView {
             .is_some_and(|agent| agent.state == AgentState::Running)
     }
 
+    /// Replace the agent's entry in the session's list, or add a new one.
+    pub fn update_agent(&mut self, agent: Agent) {
+        match self.agents.iter_mut().find(|known| known.id == agent.id) {
+            Some(known) => *known = agent,
+            None => self.agents.push(agent),
+        }
+    }
+
     /// The oldest pending question for this agent.
     pub fn pending_query(&self) -> Option<&ClientQueryRequest> {
         self.transcript.queries.values().next()
@@ -224,7 +233,7 @@ pub struct App {
     /// A new session not created yet; never open together with `view`.
     pub draft: Option<super::draft::SessionDraft>,
     pub draft_generation: u64,
-    /// The menu offers the draft root's model policies, after `/agent`.
+    /// The menu offers the draft root's model policies, after `/select agent`.
     pub choosing_root_model: bool,
     pub composer: Composer,
     pub completion: CommandSelection,
@@ -238,6 +247,11 @@ pub struct App {
     pub page_height: usize,
     /// Transcript line count at the last draw, to hold a scrolled view in place.
     pub last_line_count: usize,
+    /// The transcript scrollbar's column at the last draw, when it overflows.
+    pub scrollbar: Option<Rect>,
+    /// The first agent the status bar showed at the last draw, so cycling
+    /// only scrolls the bar when the open agent would leave it.
+    pub agent_bar_offset: usize,
     /// Show thinking, harness messages, and longer tool output.
     pub details: bool,
     pub quit: bool,
@@ -280,6 +294,8 @@ impl App {
             scroll: 0,
             page_height: 10,
             last_line_count: 0,
+            scrollbar: None,
+            agent_bar_offset: 0,
             details: false,
             quit: false,
             exit_message: None,
@@ -382,6 +398,7 @@ impl App {
     /// Whether the screen changes without new events, such as a spinner.
     pub fn is_animating(&self) -> bool {
         self.view.as_ref().is_some_and(AgentView::is_running)
+            || self.draft.as_ref().is_some_and(|draft| draft.pending)
     }
 
     pub fn apply(&mut self, event: AppEvent) {
@@ -457,8 +474,18 @@ impl App {
                 let Some(view) = self.view.as_mut().filter(|v| v.generation == generation) else {
                     return;
                 };
-                if let StreamMessage::RequestFailed { message, .. } = &message {
-                    self.message = Some(StatusMessage::Error(message.clone()));
+                match &message {
+                    StreamMessage::RequestFailed {
+                        agent_id, message, ..
+                    } if *agent_id == view.agent_id => {
+                        self.message = Some(StatusMessage::Error(message.clone()));
+                    }
+                    StreamMessage::AgentUpdated { agent }
+                        if agent.session_id == view.session_id =>
+                    {
+                        view.update_agent(agent.clone());
+                    }
+                    _ => {}
                 }
                 view.transcript.apply(message);
                 self.open_pending_question();

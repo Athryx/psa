@@ -12,6 +12,7 @@ mod network;
 mod picker;
 mod render;
 mod settings;
+mod status_bar;
 mod text;
 mod theme;
 mod transcript_view;
@@ -20,7 +21,11 @@ use crate::CliError;
 use app::App;
 use client_shared::{ConnectionSettings, LocalServerManager, LocalServerStatus};
 use crossterm::{
-    event::{DisableBracketedPaste, EnableBracketedPaste, EventStream},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        EventStream, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
+    },
     execute,
 };
 use futures_util::StreamExt;
@@ -56,9 +61,22 @@ pub async fn run(target: Target, data_dir: &std::path::Path) -> Result<(), CliEr
     app.start();
 
     let mut terminal = ratatui::init();
-    let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+    let _ = execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture);
+    // Without it, Alt+[ starts an escape sequence instead of being a key.
+    let enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+    if enhanced {
+        let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES;
+        let _ = execute!(std::io::stdout(), PushKeyboardEnhancementFlags(flags));
+    }
     let result = run_event_loop(&mut terminal, &mut app, &mut receiver).await;
-    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+    if enhanced {
+        let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+    }
+    let _ = execute!(
+        std::io::stdout(),
+        DisableBracketedPaste,
+        DisableMouseCapture
+    );
     ratatui::restore();
 
     if let Some(message) = app.exit_message.take() {

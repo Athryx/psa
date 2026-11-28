@@ -17,22 +17,22 @@ a new session in the current directory on this machine's probe; `/sessions`
 opens an existing one instead. A new session exists only in the TUI until its
 first message, which creates the session, its root agent, and then sends the
 message. Before that, `/rename` names it (otherwise the first message does,
-cut to about 48 characters), `/agent` chooses the root agent and its model
+cut to about 48 characters), `/select agent` chooses the root agent and its model
 policy from the global configurations and the directory's own `.agents`,
-`/model` and `/effort` choose the session model, and `/probe` moves it to
+`/model` and `/effort` choose the session model, and `/select probe` moves it to
 another connected probe, in that probe's home directory.
 
 Type `/` for the command menu: Tab completes a command, Enter runs it.
 Commands with choices list them as you type their arguments, in the same menu
 as the desktop client: `/model` (pinned models and the current one, with a
 "Show all models" item at the end), `/effort` (the current model's efforts),
-`/agent`, `/probe`, `/goal`, `/sandbox` and `/server`. Typing the choice, as in
+`/select agent`, `/select probe`, `/goal`, `/sandbox` and `/server`. Typing the choice, as in
 `/effort high`, works too.
 
 | Command | |
 | --- | --- |
 | `/sessions`, `/new` | Open a recent session, or start a new one in the open session's probe and directory |
-| `/agent`, `/probe` | Before the first message: the root agent, or the probe to start on |
+| `/select agent`, `/select probe` | Before the first message: the root agent, or the probe to start on |
 | `/agents`, `/info` | The session's details and its agents to switch to, or the agent's details and token usage, broken down as in the desktop client |
 | `/model`, `/effort`, `/rename`, `/fork`, `/refresh`, `/compact`, `/goal`, `/sandbox` | As in the desktop client; `/rename` without a name opens an input with the current one |
 | `/settings`, `/help` | Settings; `/help` opens their commands and keys tab |
@@ -40,14 +40,24 @@ as the desktop client: `/model` (pinned models and the current one, with a
 | `/probes`, `/server status\|restart\|stop` | Probes and sandboxes; manage the local server |
 | `/quit` | |
 
-Esc interrupts a running agent, Ctrl+O shows everything (thinking, harness and
+Below the input, the first line shows the working directory, then the model,
+its effort (colored as in the desktop) and context usage. The second shows the
+session's name and its agents, each with a dot that is green while it runs and
+yellow when interrupted. Alt+[ and Alt+] open the previous and next agent, and
+the list scrolls, with ‹ and › marking agents past either end. Terminals that
+send Alt+[ as an escape sequence (without the kitty keyboard protocol, as in
+tmux by default) can use Alt+, and Alt+. instead.
+
+While the agent works, the input's › becomes a spinner. Ctrl+J inserts a new line. Esc interrupts a running agent, Ctrl+O shows everything (thinking, harness and
 system messages, logs, statuses, full tool output) regardless of settings, and
-PgUp/PgDn scroll. When an agent asks a question, a dialog
+PgUp/PgDn or the mouse wheel scroll; clicking or dragging on the scrollbar at
+the right edge jumps there. Mouse capture means selecting text needs your
+terminal's bypass modifier (usually Shift). When an agent asks a question, a dialog
 opens; Esc leaves it for later and Ctrl+Q reopens it. Commands come from the
 registry in `client_shared::commands`, shared with the desktop client. It says
 what each command's arguments are, where it can run, and whether it is saved in
 the agent's transcript: commands that change the agent or its session are, ones
-that only show something are not. `/probe` is the one TUI-only command.
+that only show something are not. `/select probe` is the one TUI-only command.
 
 ### Settings
 
@@ -56,8 +66,9 @@ data directory when the dialog closes. Settings the desktop client also has use
 its names and defaults: reasoning (hidden, first line, shown), turn dividers
 (hidden, line, line with turn number and usage), harness logs, harness
 messages, text recorded results, agent statuses, and internal agents. The TUI
-adds a theme (dark, light, or monochrome), tool output lines, and a maximum
-transcript width. The file is separate from `desktop.toml`, since each client
+adds a theme (dark, light, or monochrome), system prompts (hidden, a one-line
+label, or in full; a label by default, like the desktop's collapsed prompt),
+tool output lines, and a maximum transcript width. The file is separate from `desktop.toml`, since each client
 rewrites its whole file and would otherwise overwrite the other's changes. A
 malformed `tui.toml` stops the TUI with an error rather than being replaced.
 

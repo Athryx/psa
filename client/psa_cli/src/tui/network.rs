@@ -527,7 +527,9 @@ impl Network {
     }
 }
 
-/// Connect once: load the latest page, then follow events after its head.
+/// Connect once: subscribe to the whole session, so every agent's state
+/// stays current for the agent bar, then load the agent's latest page. Events
+/// committed while the page loads arrive in both and are kept once.
 async fn follow_agent_once(
     client: &psa::api::Client,
     events: &UnboundedSender<AppEvent>,
@@ -536,6 +538,27 @@ async fn follow_agent_once(
     agent_id: AgentId,
     connected: &mut bool,
 ) -> Result<(), ClientError> {
+    let boundary = client
+        .list_events(
+            session_id,
+            None,
+            &EventsQuery {
+                span: EventSpan::Latest,
+                limit: 1,
+                ..Default::default()
+            },
+        )
+        .await?;
+    let query = EventsQuery {
+        span: EventSpan::Forward {
+            after: boundary.head,
+            through: None,
+        },
+        include_pending: true,
+        ..Default::default()
+    };
+    let mut stream = client.stream_events(session_id, None, &query, None).await?;
+
     let session = client.get_session(session_id).await?;
     let agents = client.list_agents(session_id).await?;
     let page = client
@@ -555,19 +578,6 @@ async fn follow_agent_once(
         .await
         .ok();
 
-    // Agent routes use event IDs as cursors, so following after the page's
-    // head replays anything committed while the page loaded.
-    let query = EventsQuery {
-        span: EventSpan::Forward {
-            after: page.head,
-            through: None,
-        },
-        include_pending: true,
-        ..Default::default()
-    };
-    let mut stream = client
-        .stream_events(session_id, Some(agent_id), &query, None)
-        .await?;
     let opened = AppEvent::Opened {
         generation,
         session,

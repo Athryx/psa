@@ -135,7 +135,10 @@ async fn completion_offers_only_commands_usable_without_a_session() {
     assert!(names.contains(&"/sessions".into()) && names.contains(&"/new".into()));
     assert!(!names.contains(&"/compact".into()), "needs an open agent");
     assert!(!names.contains(&"/sandbox".into()), "needs a session");
-    assert!(!names.contains(&"/agent".into()), "GUI only");
+    assert!(
+        !names.contains(&"/select agent".into()),
+        "needs a new session"
+    );
     assert!(!names.contains(&"/server".into()), "no local server");
 
     type_text(&mut app, "sess");
@@ -338,4 +341,56 @@ async fn model_list_collapses_after_leaving_model() {
     app.show_all_models = true;
     app.handle_terminal_event(key(KeyCode::Backspace));
     assert!(!app.show_all_models);
+}
+
+#[tokio::test]
+async fn control_j_inserts_a_new_line() {
+    let mut app = new_app();
+    type_text(&mut app, "one");
+    app.handle_terminal_event(key_with(KeyCode::Char('j'), KeyModifiers::CONTROL));
+    type_text(&mut app, "two");
+    assert_eq!(app.composer.text(), "one\ntwo");
+
+    app.handle_terminal_event(key_with(KeyCode::Enter, KeyModifiers::ALT));
+    assert!(
+        !app.composer.text().contains("\n\n"),
+        "Alt+Enter no longer adds a line"
+    );
+}
+
+fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
+    Event::Mouse(MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+#[tokio::test]
+async fn the_wheel_scrolls_the_transcript() {
+    let mut app = new_app();
+    app.handle_terminal_event(mouse(MouseEventKind::ScrollUp, 5, 5));
+    app.handle_terminal_event(mouse(MouseEventKind::ScrollUp, 5, 5));
+    assert_eq!(app.scroll, 2 * WHEEL_LINES);
+    app.handle_terminal_event(mouse(MouseEventKind::ScrollDown, 5, 5));
+    assert_eq!(app.scroll, WHEEL_LINES);
+}
+
+#[tokio::test]
+async fn clicking_the_scrollbar_jumps_to_that_position() {
+    let mut app = new_app();
+    app.scrollbar = Some(ratatui::layout::Rect::new(79, 0, 1, 11));
+    app.last_line_count = 110;
+    app.page_height = 10;
+
+    let left = MouseEventKind::Down(MouseButton::Left);
+    app.handle_terminal_event(mouse(left, 79, 0));
+    assert_eq!(app.scroll, 100, "the top");
+    app.handle_terminal_event(mouse(MouseEventKind::Drag(MouseButton::Left), 79, 5));
+    assert_eq!(app.scroll, 50);
+    app.handle_terminal_event(mouse(left, 79, 10));
+    assert_eq!(app.scroll, 0, "the bottom follows new output");
+    app.handle_terminal_event(mouse(left, 40, 0));
+    assert_eq!(app.scroll, 0, "outside the scrollbar");
 }

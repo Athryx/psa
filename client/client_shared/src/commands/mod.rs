@@ -20,7 +20,7 @@ const TUI_ONLY: &[Frontend] = &[Frontend::Tui];
 pub enum CommandId {
     SessionModel,
     SessionEffort,
-    Agent,
+    SelectAgent,
     Refresh,
     Info,
     Compact,
@@ -30,7 +30,7 @@ pub enum CommandId {
     Sandbox,
     Sessions,
     NewSession,
-    Probe,
+    SelectProbe,
     Agents,
     Probes,
     PinnedModels,
@@ -279,8 +279,8 @@ pub const COMMANDS: &[CommandSpec] = &[
         frontends: ALL_FRONTENDS,
     },
     CommandSpec {
-        id: CommandId::Agent,
-        name: "agent",
+        id: CommandId::SelectAgent,
+        name: "select agent",
         description: "Choose the root agent and its model policy",
         arguments: Arguments::Configurations,
         scope: CommandScope::RootDraft,
@@ -386,8 +386,8 @@ pub const COMMANDS: &[CommandSpec] = &[
         frontends: ALL_FRONTENDS,
     },
     CommandSpec {
-        id: CommandId::Probe,
-        name: "probe",
+        id: CommandId::SelectProbe,
+        name: "select probe",
         description: "Choose the probe a new session starts on",
         arguments: Arguments::Probes,
         scope: CommandScope::SessionDraft,
@@ -609,16 +609,28 @@ pub fn parse_composer_input(input: &str, frontend: Frontend) -> ComposerInput {
     let Some(command) = input.strip_prefix('/') else {
         return ComposerInput::Text(input.to_owned());
     };
-    let (name, arguments) = command
-        .split_once(char::is_whitespace)
-        .unwrap_or((command, ""));
-    match find_command(name, frontend) {
-        Some(spec) => ComposerInput::Command {
+    match split_command_line(command, frontend) {
+        Some((spec, arguments)) => ComposerInput::Command {
             id: spec.id,
             arguments: arguments.trim().to_owned(),
         },
         None => ComposerInput::Text(input.to_owned()),
     }
+}
+
+/// The command `line` (without its slash) starts with, and the text after
+/// its name. Names can be several words, such as `select agent`; the longest
+/// matching name wins.
+pub fn split_command_line(line: &str, frontend: Frontend) -> Option<(&'static CommandSpec, &str)> {
+    COMMANDS
+        .iter()
+        .filter(|spec| spec.supports(frontend))
+        .filter_map(|spec| {
+            let rest = line.strip_prefix(spec.name)?;
+            let ends_name = rest.is_empty() || rest.starts_with(char::is_whitespace);
+            ends_name.then_some((spec, rest))
+        })
+        .max_by_key(|(spec, _)| spec.name.len())
 }
 
 pub fn find_command(name: &str, frontend: Frontend) -> Option<&'static CommandSpec> {
@@ -628,11 +640,12 @@ pub fn find_command(name: &str, frontend: Frontend) -> Option<&'static CommandSp
 }
 
 /// Commands whose name starts with the typed `/prefix`, an exact match first.
+/// The prefix can reach into a several-word name, as `/select a` does.
 pub fn complete_commands(input: &str, frontend: Frontend) -> Vec<CommandSpec> {
     let Some(prefix) = input.strip_prefix('/') else {
         return Vec::new();
     };
-    if prefix.contains(char::is_whitespace) || prefix.starts_with('/') {
+    if prefix.starts_with('/') {
         return Vec::new();
     }
     let mut commands: Vec<CommandSpec> = COMMANDS

@@ -1,16 +1,22 @@
-//! Keyboard and paste handling.
+//! Keyboard, mouse, and paste handling.
 use super::{
     app::{App, Overlay, QuestionDialog, SettingsTab},
     composer::Composer,
     settings::SettingRow,
 };
 use client_shared::{CandidateKind, ComposerInput, Frontend, parse_composer_input};
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+
+/// Transcript lines one mouse wheel step scrolls.
+const WHEEL_LINES: usize = 3;
 
 impl App {
     pub fn handle_terminal_event(&mut self, event: Event) {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key),
+            Event::Mouse(mouse) => self.handle_mouse(mouse),
             Event::Paste(text) => match &mut self.overlay {
                 Some(Overlay::Question(dialog)) => {
                     dialog.input.insert_str(&text);
@@ -26,6 +32,47 @@ impl App {
             },
             _ => {}
         }
+    }
+
+    /// The wheel scrolls the open panel or picker, otherwise the transcript;
+    /// clicking or dragging on the scrollbar jumps there.
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        let up = match mouse.kind {
+            MouseEventKind::ScrollUp => true,
+            MouseEventKind::ScrollDown => false,
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left) => {
+                if self.overlay.is_none() {
+                    self.scroll_to_scrollbar_row(mouse.column, mouse.row);
+                }
+                return;
+            }
+            _ => return,
+        };
+        match &mut self.overlay {
+            Some(Overlay::Panel { scroll, .. }) if up => *scroll = scroll.saturating_sub(1),
+            Some(Overlay::Panel { scroll, .. }) => *scroll = scroll.saturating_add(1),
+            Some(Overlay::Picker(picker)) if up => picker.select_previous(),
+            Some(Overlay::Picker(picker)) => picker.select_next(),
+            Some(_) => {}
+            None if up => self.scroll += WHEEL_LINES,
+            None => self.scroll = self.scroll.saturating_sub(WHEEL_LINES),
+        }
+    }
+
+    /// Scroll so the transcript's position matches `row` on the scrollbar.
+    fn scroll_to_scrollbar_row(&mut self, column: u16, row: u16) {
+        let Some(bar) = self.scrollbar else {
+            return;
+        };
+        let top = bar.y;
+        let bottom = bar.bottom().saturating_sub(1);
+        if column != bar.x || row < top || row > bottom.max(top) {
+            return;
+        }
+        let max_scroll = self.last_line_count.saturating_sub(self.page_height);
+        let track = usize::from(bottom - top).max(1);
+        let start = usize::from(row - top) * max_scroll / track;
+        self.scroll = max_scroll - start.min(max_scroll);
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -74,8 +121,12 @@ impl App {
     fn handle_view_key(&mut self, key: KeyEvent) -> bool {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
         let page = self.page_height.saturating_sub(2).max(1);
         match key.code {
+            // Alt+, and Alt+. for terminals that send Alt+[ as an escape sequence.
+            KeyCode::Char('[' | ',') if alt => self.cycle_agent(false),
+            KeyCode::Char(']' | '.') if alt => self.cycle_agent(true),
             KeyCode::Char('o') if control => self.details = !self.details,
             KeyCode::Char('q') if control => self.reopen_question(),
             KeyCode::PageUp => self.scroll += page,
@@ -87,6 +138,31 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    /// Open the next or previous agent in the status bar's order, wrapping
+    /// around.
+    fn cycle_agent(&mut self, forward: bool) {
+        let Some(view) = &self.view else {
+            return;
+        };
+        let show_hidden = self.settings.preferences.show_hidden_agents;
+        let agents: Vec<_> = super::status_bar::bar_agents(view, show_hidden)
+            .into_iter()
+            .map(|agent| agent.id)
+            .collect();
+        let Some(current) = agents.iter().position(|id| *id == view.agent_id) else {
+            return;
+        };
+        if agents.len() < 2 {
+            return;
+        }
+        let next = match forward {
+            true => (current + 1) % agents.len(),
+            false => (current + agents.len() - 1) % agents.len(),
+        };
+        let session_id = view.session_id;
+        self.open_agent(session_id, agents[next]);
     }
 
     /// Esc interrupts a running agent, otherwise clears the status message.
@@ -121,7 +197,7 @@ impl App {
                     self.select_candidate(&candidate.label);
                 }
             }
-            KeyCode::Enter if !key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Enter => {
                 if let Some(candidate) = selected {
                     self.apply_menu_action(candidate.action);
                 }
@@ -142,13 +218,8 @@ impl App {
     }
 
     fn handle_composer_key(&mut self, key: KeyEvent) {
-        let control = key.modifiers.contains(KeyModifiers::CONTROL);
-        let newline = key
-            .modifiers
-            .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT);
         match key.code {
-            KeyCode::Enter if newline => self.composer.insert_char('\n'),
-            KeyCode::Char('j') if control => self.composer.insert_char('\n'),
+            _ if is_newline_key(key) => self.composer.insert_char('\n'),
             KeyCode::Enter => self.submit(),
             _ if apply_edit_key(&mut self.composer, key) => {}
             _ => return,
@@ -314,9 +385,7 @@ fn handle_question_key(dialog: &mut QuestionDialog, key: KeyEvent) -> Option<Vec
                 Some(_) => None,
             };
         }
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
-            dialog.input.insert_char('\n')
-        }
+        _ if is_newline_key(key) => dialog.input.insert_char('\n'),
         KeyCode::Enter => return accept_answer(dialog),
         _ => {
             if apply_edit_key(&mut dialog.input, key) {
@@ -325,6 +394,11 @@ fn handle_question_key(dialog: &mut QuestionDialog, key: KeyEvent) -> Option<Vec
         }
     }
     None
+}
+
+/// Ctrl+J inserts a new line in every multi-line input.
+fn is_newline_key(key: KeyEvent) -> bool {
+    key.code == KeyCode::Char('j') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
 /// Line-editing keys shared by every input; false when `key` is not one.

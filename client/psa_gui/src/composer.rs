@@ -11,7 +11,7 @@ use dioxus::{
     core::{AttributeValue, spawn_forever},
     prelude::*,
 };
-use llm_api::providers::{Effort, Model, ModelConfig};
+use llm_api::providers::{Effort, ModelConfig};
 use psa::api::*;
 
 #[cfg(test)]
@@ -20,8 +20,8 @@ use crate::transcript_view::TranscriptView;
 /// The command whose arguments `text` is typing, such as `/model` for
 /// `/model gpt`.
 fn argument_command(text: &str) -> Option<CommandId> {
-    let (name, _) = text.strip_prefix('/')?.split_once(char::is_whitespace)?;
-    find_command(name, Frontend::Gui).map(|spec| spec.id)
+    let (spec, arguments) = split_command_line(text.strip_prefix('/')?, Frontend::Gui)?;
+    (!arguments.is_empty()).then_some(spec.id)
 }
 
 fn select_draft_config(
@@ -105,15 +105,6 @@ fn ComposerStatus(
     }
 }
 
-/// Catalog display name for a model, falling back to its API model name.
-pub(crate) fn model_display_name(models: &[ModelInfo], model: &Model) -> String {
-    models
-        .iter()
-        .find(|info| info.model == *model)
-        .map(|info| info.name.clone())
-        .unwrap_or_else(|| model.model_name().to_owned())
-}
-
 /// Model name and color-coded effort on one line, as in the composer status.
 #[component]
 pub(crate) fn ModelEffort(model: String, effort: Effort) -> Element {
@@ -122,51 +113,6 @@ pub(crate) fn ModelEffort(model: String, effort: Effort) -> Element {
         " · "
         span { class:"effort-{effort.as_str()}", "{effort.as_str()}" }
     }
-}
-
-fn format_context_usage(tokens: Option<u64>, window: Option<u64>) -> String {
-    let percent = match (tokens, window) {
-        (Some(tokens), Some(window)) if window > 0 => {
-            format!(
-                "{}%",
-                (u128::from(tokens) * 100 + u128::from(window) / 2) / u128::from(window)
-            )
-        }
-        _ => "?".to_string(),
-    };
-    let window = window
-        .filter(|window| *window > 0)
-        .map(format_token_count)
-        .unwrap_or_else(|| "?".to_string());
-    format!("({percent} / {window})")
-}
-
-fn draft_status_model(
-    selection: Option<&ModelSelection>,
-    session: Option<&ModelConfig>,
-) -> (Option<Model>, Option<Effort>) {
-    match selection {
-        Some(ModelSelection::Global | ModelSelection::Parent) => session
-            .map(|config| (Some(config.model.clone()), Some(config.effort)))
-            .unwrap_or_default(),
-        Some(ModelSelection::Fixed { model, effort }) => {
-            let effort = match effort {
-                EffortSelection::Fixed(effort) => Some(*effort),
-                EffortSelection::Global | EffortSelection::Parent => {
-                    session.map(|config| config.effort)
-                }
-            };
-            (Some(model.clone()), effort)
-        }
-        None => (None, None),
-    }
-}
-
-fn format_token_count(count: u64) -> String {
-    if count < 1_000 {
-        return count.to_string();
-    }
-    format!("{}k", (u128::from(count) + 500) / 1_000)
 }
 
 fn info_location(state: &Ui, session_id: SessionId) -> (Option<String>, Option<ProbeId>) {
@@ -354,7 +300,7 @@ async fn change_model(
     }
 }
 
-/// The shared menu, and whether it is `/agent`'s model policy step.
+/// The shared menu, and whether it is `/select agent`'s model policy step.
 struct ComposerMenu {
     menu: CommandMenu,
     root_model: bool,
@@ -513,7 +459,7 @@ fn run_command(
     }
     match id {
         // Reached only with the menu dismissed: reopen it on the typed text.
-        CommandId::SessionModel | CommandId::SessionEffort | CommandId::Agent => {
+        CommandId::SessionModel | CommandId::SessionEffort | CommandId::SelectAgent => {
             let text = format!("/{} {arguments}", id.spec().name);
             ui.write().drafts.insert(target, text);
             composer.dismissed.set(None);
@@ -581,10 +527,10 @@ fn run_command(
             }
         }
         // TUI-only: desktop drafts are created sessions on a fixed probe.
-        CommandId::Probe => {}
+        CommandId::SelectProbe => {}
         CommandId::SessionModel
         | CommandId::SessionEffort
-        | CommandId::Agent
+        | CommandId::SelectAgent
         | CommandId::Compact
         | CommandId::Goal
         | CommandId::Refresh => {}
@@ -663,7 +609,7 @@ fn menu_label(menu: &ComposerMenu, root: bool) -> &'static str {
         None => "Slash commands",
         Some(CommandId::SessionModel) => "Session default model",
         Some(CommandId::SessionEffort) => "Session default effort",
-        Some(CommandId::Agent) => "Agent configurations",
+        Some(CommandId::SelectAgent) => "Agent configurations",
         Some(_) => menu.menu.title,
     }
 }
@@ -1066,8 +1012,8 @@ fn ComposerEditor(tab: Tab, root: bool) -> Element {
             if let Some(menu) = &menu {
                 {render_command_menu(menu, root, selected, menu_popup, menu_nodes, onselect)}
             }
-            if !root && matches!(parsed, ComposerInput::Command { id:CommandId::Agent, .. }) {
-                p { class:"command-hint", "The /agent command is only available before creating the root agent. Use //agent to send it as text." }
+            if !root && matches!(parsed, ComposerInput::Command { id:CommandId::SelectAgent, .. }) {
+                p { class:"command-hint", "The /select agent command is only available before creating the root agent. Use //select to send it as text." }
             }
             if root && matches!(parsed, ComposerInput::Command { id, .. } if !id.is_available(CommandContext::DraftRoot)) {
                 p { class:"command-hint", "This command needs an existing agent. Start with // to send it as text." }

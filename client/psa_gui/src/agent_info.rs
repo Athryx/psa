@@ -246,7 +246,7 @@ pub(crate) fn AgentInfo(target: TranscriptTarget, onclose: EventHandler<()>) -> 
     });
     let model = model_config
         .as_ref()
-        .map(|config| crate::composer::model_display_name(&models, &config.model));
+        .map(|config| client_shared::model_display_name(&models, &config.model));
     let effort = model_config.as_ref().map(|config| config.effort);
 
     let active = tab();
@@ -524,7 +524,7 @@ fn render_model_usage(details: &DefinitionDetails, models: &[ModelInfo]) -> Elem
                 tbody {
                     for entry in usage {
                         tr {
-                            td { title: "{entry.model}", "{crate::composer::model_display_name(models, &entry.model)}" }
+                            td { title: "{entry.model}", "{client_shared::model_display_name(models, &entry.model)}" }
                             td { "{count(entry.usage.input_tokens)}" }
                             td { "{count(entry.usage.output_tokens)}" }
                             td { "{count(entry.usage.total_tokens)}" }

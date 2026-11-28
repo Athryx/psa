@@ -120,3 +120,18 @@ async fn a_failed_send_restores_the_text_only_into_an_empty_input() {
     app.apply(AppEvent::SendFailed("hello".into()));
     assert_eq!(app.composer.text(), "newer");
 }
+
+#[tokio::test]
+async fn the_input_has_no_key_hints_and_spins_while_a_new_session_starts() {
+    let mut app = new_app();
+    app.start_draft();
+    let text = screen(&mut app, 80, 12);
+    assert!(!text.contains("Ctrl+J newline"), "{text}");
+    assert!(text.contains("│› "), "{text}");
+
+    app.draft.as_mut().unwrap().pending = true;
+    let text = screen(&mut app, 80, 12);
+    assert!(text.contains("│⣾ "), "{text}");
+    app.tick = 3;
+    assert!(screen(&mut app, 80, 12).contains("│⣽ "));
+}

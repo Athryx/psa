@@ -209,7 +209,7 @@ test('keydown snapshots the live text/selection, not the previous rendered comma
 
 test('literal slash text keeps native Tab/caret navigation; command pickers capture Tab and arrows', () => {
     const { create } = fixture();
-    for (const text of ['/unknown', '/usr/bin', '/agent', '/agent worker', '/refresh', '/info arguments', '//model']) {
+    for (const text of ['/unknown', '/usr/bin', '/select agent', '/select agent worker', '/refresh', '/info arguments', '//model']) {
         const input = create(text);
         for (const key of ['Tab', 'ArrowUp', 'ArrowDown']) {
             const event = input.dispatch('keydown', { key });
@@ -223,11 +223,13 @@ test('literal slash text keeps native Tab/caret navigation; command pickers capt
         assert.equal(input.dispatch('keydown', { key: 'Tab' }).defaultPrevented, true, text);
         assert.equal(input.dispatch('keydown', { key: 'ArrowUp' }).defaultPrevented, true, text);
     }
-    const root = create('/agent worker', '', {}, { config: { commands: [{ name: 'agent', picker: true }] } });
+    const root = create('/select agent worker', '', {}, { config: { commands: [{ name: 'select agent', picker: true }] } });
     assert.equal(root.dispatch('keydown', { key: 'Tab' }).defaultPrevented, true);
     assert.equal(root.dispatch('keydown', { key: 'ArrowDown' }).defaultPrevented, true);
-    root.edit('/ag');
-    assert.equal(root.dispatch('keydown', { key: 'Tab' }).defaultPrevented, true);
+    for (const text of ['/sel', '/select ', '/select a']) {
+        root.edit(text);
+        assert.equal(root.dispatch('keydown', { key: 'Tab' }).defaultPrevented, true, text);
+    }
     const chooser = create('', '', { psaMenu: 'true' });
     assert.equal(chooser.dispatch('keydown', { key: 'Tab' }).defaultPrevented, false);
     assert.equal(chooser.dispatch('keydown', { key: 'ArrowUp' }).defaultPrevented, true);

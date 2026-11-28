@@ -12,6 +12,18 @@ const TOOL_OUTPUT_CHOICES: [u16; 5] = [0, 3, 10, 30, 100];
 /// Transcript widths the settings dialog offers; 0 uses the terminal's width.
 const MAX_WIDTH_CHOICES: [u16; 5] = [0, 80, 100, 120, 160];
 
+/// How the transcript shows the system prompts an agent starts with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemPromptDisplay {
+    Hidden,
+    /// One line: the prompt's description, or its size.
+    #[default]
+    Label,
+    /// The label and the whole prompt.
+    Full,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TuiSettings {
@@ -27,6 +39,7 @@ pub struct TuiPreferences {
     pub log_level: TranscriptLogLevel,
     /// Harness messages, such as goal reminders, sent to the model.
     pub show_harness_messages: bool,
+    pub system_prompts: SystemPromptDisplay,
     pub hide_text_recorded_results: bool,
     /// Hide running and idle changes; interruptions are always shown.
     pub hide_agent_statuses: bool,
@@ -45,6 +58,7 @@ impl Default for TuiPreferences {
             turn_dividers: TurnDividerDisplay::Labeled,
             log_level: TranscriptLogLevel::Error,
             show_harness_messages: true,
+            system_prompts: SystemPromptDisplay::default(),
             hide_text_recorded_results: true,
             hide_agent_statuses: true,
             show_hidden_agents: false,
@@ -61,6 +75,7 @@ impl TuiPreferences {
             reasoning_display: ReasoningDisplay::Shown,
             log_level: TranscriptLogLevel::Info,
             show_harness_messages: true,
+            system_prompts: SystemPromptDisplay::Full,
             hide_text_recorded_results: false,
             hide_agent_statuses: false,
             tool_output_lines: self.tool_output_lines.max(60),
@@ -77,6 +92,7 @@ pub enum SettingRow {
     TurnDividers,
     Logs,
     HarnessMessages,
+    SystemPrompts,
     TextResults,
     AgentStatuses,
     HiddenAgents,
@@ -85,12 +101,13 @@ pub enum SettingRow {
 }
 
 impl SettingRow {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Theme,
         Self::Reasoning,
         Self::TurnDividers,
         Self::Logs,
         Self::HarnessMessages,
+        Self::SystemPrompts,
         Self::TextResults,
         Self::AgentStatuses,
         Self::HiddenAgents,
@@ -105,6 +122,7 @@ impl SettingRow {
             Self::TurnDividers => "Dividers between model turns",
             Self::Logs => "Harness logs",
             Self::HarnessMessages => "Harness messages (goal reminders, nudges)",
+            Self::SystemPrompts => "System prompts",
             Self::TextResults => "Text recorded results",
             Self::AgentStatuses => "Agent statuses (interrupted always shown)",
             Self::HiddenAgents => "Internal agents in /agents",
@@ -135,6 +153,12 @@ impl SettingRow {
             }
             .into(),
             Self::HarnessMessages => describe_shown(preferences.show_harness_messages),
+            Self::SystemPrompts => match preferences.system_prompts {
+                SystemPromptDisplay::Hidden => "hidden",
+                SystemPromptDisplay::Label => "label",
+                SystemPromptDisplay::Full => "full",
+            }
+            .into(),
             Self::TextResults => describe_shown(!preferences.hide_text_recorded_results),
             Self::AgentStatuses => describe_shown(!preferences.hide_agent_statuses),
             Self::HiddenAgents => describe_shown(preferences.show_hidden_agents),
@@ -187,6 +211,17 @@ impl SettingRow {
                 )
             }
             Self::HarnessMessages => toggle(&mut preferences.show_harness_messages),
+            Self::SystemPrompts => {
+                preferences.system_prompts = step(
+                    &[
+                        SystemPromptDisplay::Hidden,
+                        SystemPromptDisplay::Label,
+                        SystemPromptDisplay::Full,
+                    ],
+                    preferences.system_prompts,
+                    forward,
+                )
+            }
             Self::TextResults => toggle(&mut preferences.hide_text_recorded_results),
             Self::AgentStatuses => toggle(&mut preferences.hide_agent_statuses),
             Self::HiddenAgents => toggle(&mut preferences.show_hidden_agents),

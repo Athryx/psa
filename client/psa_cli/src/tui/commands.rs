@@ -22,15 +22,19 @@ const INFO_TITLE: &str = "Agent";
 
 pub const KEYS: &[(&str, &str)] = &[
     ("Enter", "send, or run the highlighted command"),
-    ("Alt+Enter, Ctrl+J", "new line"),
+    ("Ctrl+J", "new line"),
     ("Tab", "complete a command or option"),
     ("Esc", "close a dialog, or interrupt the agent"),
-    ("PgUp, PgDn, Ctrl+End", "scroll the transcript"),
+    ("PgUp, PgDn, Ctrl+End, mouse wheel", "scroll the transcript"),
     (
         "Ctrl+O",
         "show everything: thinking, harness messages, logs, full tool output",
     ),
     ("Ctrl+Q", "answer the agent's pending question"),
+    (
+        "Alt+[, Alt+]",
+        "previous or next agent in the session (Alt+, and Alt+. also work)",
+    ),
     ("Ctrl+C", "clear the input; twice to quit"),
     ("Tab in /settings", "switch between appearance and commands"),
     ("//text", "send text starting with a slash"),
@@ -174,7 +178,7 @@ impl App {
                 self.run_agent_command(AgentCommand::Goal(GoalCommand::parse(&arguments)));
             }
             // Draft commands, handled above.
-            CommandId::Agent | CommandId::Probe => {}
+            CommandId::SelectAgent | CommandId::SelectProbe => {}
         }
     }
 

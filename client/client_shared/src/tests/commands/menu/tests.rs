@@ -322,13 +322,13 @@ fn agent_lists_configurations_and_then_their_model_policies() {
         root: Some(&root),
         ..context(&models, None)
     };
-    let menu = build_command_menu("/agent ", &cx).unwrap();
+    let menu = build_command_menu("/select agent ", &cx).unwrap();
     assert_eq!(labels(&menu), ["worker", "local"]);
     assert_eq!(menu.candidates[0].detail, "global · current");
     assert_eq!(menu.candidates[1].detail, "/work/.agents");
     assert_eq!(
         menu.candidates[1].completion.as_deref(),
-        Some("/agent local")
+        Some("/select agent local")
     );
     let MenuAction::ChooseConfig(id) = &menu.candidates[1].action else {
         panic!("not a configuration choice");
@@ -356,11 +356,11 @@ fn probe_lists_connected_probes_by_name() {
         probes: &probes,
         ..context(&models, None)
     };
-    let menu = build_command_menu("/probe ", &cx).unwrap();
+    let menu = build_command_menu("/select probe ", &cx).unwrap();
     assert_eq!(labels(&menu), ["laptop", "builder"]);
     assert_eq!(menu.candidates[0].detail, "linux/x86_64 · this machine");
     assert_eq!(
-        labels(&build_command_menu("/probe bui", &cx).unwrap()),
+        labels(&build_command_menu("/select probe bui", &cx).unwrap()),
         ["builder"]
     );
 
@@ -369,7 +369,7 @@ fn probe_lists_connected_probes_by_name() {
         ..cx
     };
     assert!(
-        build_command_menu("/probe ", &agent).is_none(),
+        build_command_menu("/select probe ", &agent).is_none(),
         "drafts only"
     );
 }

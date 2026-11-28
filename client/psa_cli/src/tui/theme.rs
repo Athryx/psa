@@ -9,7 +9,7 @@ pub enum Theme {
     Dark,
     /// Colors for a light terminal background.
     Light,
-    /// No colors; emphasis through bold, dim, and reversed text.
+    /// No colors; emphasis through bold, dim, and underlined text.
     Monochrome,
 }
 
@@ -33,10 +33,13 @@ impl Theme {
                 success: Style::new().fg(Color::Green),
                 error: Style::new().fg(Color::Red),
                 warning: Style::new().fg(Color::Yellow),
-                muted: Style::new().fg(Color::DarkGray),
+                // The desktop's muted text color.
+                muted: Style::new().fg(Color::Rgb(146, 155, 176)),
                 border: Style::new().fg(Color::DarkGray),
-                status: Style::new().bg(Color::DarkGray).fg(Color::White),
-                selected: Style::new().add_modifier(Modifier::REVERSED),
+                selected: Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                effort_low: Style::new().fg(Color::Rgb(155, 174, 201)),
+                effort_medium: Style::new().fg(Color::Rgb(213, 180, 123)),
+                effort_high: Style::new().fg(Color::Rgb(193, 165, 222)),
             },
             Self::Light => Palette {
                 user: Style::new().fg(Color::Blue),
@@ -47,8 +50,10 @@ impl Theme {
                 warning: Style::new().fg(Color::Rgb(150, 95, 0)),
                 muted: Style::new().fg(Color::Rgb(110, 110, 110)),
                 border: Style::new().fg(Color::Rgb(170, 170, 170)),
-                status: Style::new().bg(Color::Rgb(220, 220, 220)).fg(Color::Black),
-                selected: Style::new().add_modifier(Modifier::REVERSED),
+                selected: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                effort_low: Style::new().fg(Color::Rgb(60, 90, 140)),
+                effort_medium: Style::new().fg(Color::Rgb(150, 100, 0)),
+                effort_high: Style::new().fg(Color::Rgb(120, 70, 170)),
             },
             Self::Monochrome => Palette {
                 user: Style::new().add_modifier(Modifier::BOLD),
@@ -59,8 +64,10 @@ impl Theme {
                 warning: Style::new().add_modifier(Modifier::BOLD),
                 muted: Style::new().add_modifier(Modifier::DIM),
                 border: Style::new(),
-                status: Style::new().add_modifier(Modifier::REVERSED),
-                selected: Style::new().add_modifier(Modifier::REVERSED),
+                selected: Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                effort_low: Style::new(),
+                effort_medium: Style::new(),
+                effort_high: Style::new().add_modifier(Modifier::BOLD),
             },
         }
     }
@@ -78,6 +85,22 @@ pub struct Palette {
     /// Secondary text: hints, tool output, thinking.
     pub muted: Style,
     pub border: Style,
-    pub status: Style,
+    /// The highlighted row of a menu or list: colored and bold, never a
+    /// background fill.
     pub selected: Style,
+    /// Effort names, colored as in the desktop's status line.
+    pub effort_low: Style,
+    pub effort_medium: Style,
+    pub effort_high: Style,
+}
+
+impl Palette {
+    pub fn effort(&self, effort: llm_api::providers::Effort) -> Style {
+        use llm_api::providers::Effort;
+        match effort {
+            Effort::Off | Effort::Minimal | Effort::Low => self.effort_low,
+            Effort::Medium => self.effort_medium,
+            Effort::High | Effort::Xhigh | Effort::Max => self.effort_high,
+        }
+    }
 }

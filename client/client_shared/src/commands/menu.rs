@@ -3,7 +3,7 @@
 //! menu and maps keys to it; the choices and their meaning are shared.
 use super::{
     Arguments, CommandContext, CommandId, CommandSpec, Frontend, SubcommandSet, complete_commands,
-    find_command,
+    split_command_line,
 };
 use crate::{DraftRoot, draft_model_label};
 use llm_api::providers::{Effort, ModelConfig};
@@ -23,7 +23,7 @@ pub struct MenuContext<'a> {
     pub local_server: bool,
     /// The root agent being chosen, before it exists.
     pub root: Option<&'a DraftRoot>,
-    /// Probes `/probe` offers.
+    /// Probes `/select probe` offers.
     pub probes: &'a [Probe],
 }
 
@@ -101,11 +101,15 @@ pub fn build_command_menu(input: &str, cx: &MenuContext) -> Option<CommandMenu> 
     if rest.starts_with('/') {
         return None;
     }
-    let Some((name, arguments)) = rest.split_once(char::is_whitespace) else {
+    let Some((spec, arguments)) =
+        split_command_line(rest, cx.frontend).filter(|(_, arguments)| !arguments.is_empty())
+    else {
         return build_name_menu(input, cx);
     };
 
-    let spec = find_command(name, cx.frontend).filter(|spec| cx.offers(spec))?;
+    if !cx.offers(spec) {
+        return None;
+    }
     match spec.arguments {
         Arguments::Subcommands(set) => build_subcommand_menu(spec, set, arguments),
         Arguments::Models => Some(build_model_menu(arguments, cx)),
@@ -329,7 +333,7 @@ fn build_effort_menu(arguments: &str, cx: &MenuContext) -> CommandMenu {
     }
 }
 
-/// `/agent`: the root agent configurations, narrowed by the typed text.
+/// `/select agent`: the root agent configurations, narrowed by the typed text.
 fn build_configuration_menu(arguments: &str, cx: &MenuContext) -> CommandMenu {
     let filter = arguments.trim().to_lowercase();
     let configs = cx
@@ -361,13 +365,13 @@ fn build_configuration_menu(arguments: &str, cx: &MenuContext) -> CommandMenu {
                 label: config.config_id.name.clone(),
                 detail,
                 kind: CandidateKind::Choice,
-                completion: Some(format!("/agent {}", config.config_id.name)),
+                completion: Some(format!("/select agent {}", config.config_id.name)),
                 action: MenuAction::ChooseConfig(config.config_id.clone()),
             }
         })
         .collect();
     CommandMenu {
-        command: Some(CommandId::Agent),
+        command: Some(CommandId::SelectAgent),
         title: "Choose a root agent",
         note: None,
         candidates,
@@ -379,7 +383,7 @@ fn build_configuration_menu(arguments: &str, cx: &MenuContext) -> CommandMenu {
     }
 }
 
-/// The chosen configuration's model policies, offered after `/agent` when it
+/// The chosen configuration's model policies, offered after `/select agent` when it
 /// has more than one.
 pub fn build_root_model_menu(root: &DraftRoot) -> CommandMenu {
     let candidates = root
@@ -394,7 +398,7 @@ pub fn build_root_model_menu(root: &DraftRoot) -> CommandMenu {
         })
         .collect();
     CommandMenu {
-        command: Some(CommandId::Agent),
+        command: Some(CommandId::SelectAgent),
         title: "Choose the root agent model policy",
         note: None,
         candidates,
@@ -402,7 +406,7 @@ pub fn build_root_model_menu(root: &DraftRoot) -> CommandMenu {
     }
 }
 
-/// `/probe`: connected probes, narrowed by the typed words.
+/// `/select probe`: connected probes, narrowed by the typed words.
 fn build_probe_menu(arguments: &str, cx: &MenuContext) -> CommandMenu {
     let words: Vec<String> = arguments
         .split_whitespace()
@@ -428,7 +432,7 @@ fn build_probe_menu(arguments: &str, cx: &MenuContext) -> CommandMenu {
                 detail.push_str(" · this machine");
             }
             Candidate {
-                completion: Some(format!("/probe {name}")),
+                completion: Some(format!("/select probe {name}")),
                 label: name,
                 detail,
                 kind: CandidateKind::Choice,
@@ -437,7 +441,7 @@ fn build_probe_menu(arguments: &str, cx: &MenuContext) -> CommandMenu {
         })
         .collect();
     CommandMenu {
-        command: Some(CommandId::Probe),
+        command: Some(CommandId::SelectProbe),
         title: "Start the session on",
         note: None,
         candidates,

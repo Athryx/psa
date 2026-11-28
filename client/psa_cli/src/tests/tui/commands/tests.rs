@@ -28,8 +28,8 @@ fn help_lists_tui_commands_with_their_arguments() {
     assert!(help.contains("/sessions"));
     assert!(help.contains("/compact [focus]"));
     assert!(help.contains("/sandbox start | stop"));
-    assert!(help.contains("/agent [configuration]"));
-    assert!(help.contains("/probe [probe]"));
+    assert!(help.contains("/select agent [configuration]"));
+    assert!(help.contains("/select probe [probe]"));
 }
 
 #[tokio::test]

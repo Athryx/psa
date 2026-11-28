@@ -517,7 +517,7 @@ fn Details() -> Element {
             dt{"Default model"}
             dd{title:"{session.model_config.model.provider.as_str()}/{session.model_config.model.api_name}",
                 crate::composer::ModelEffort{
-                    model:crate::composer::model_display_name(&state.models,&session.model_config.model),
+                    model:client_shared::model_display_name(&state.models,&session.model_config.model),
                     effort:session.model_config.effort,
                 }
             }

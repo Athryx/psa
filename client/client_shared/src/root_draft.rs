@@ -1,5 +1,6 @@
 //! The root agent a new session will create: its configuration and model
 //! policy, chosen before the first message.
+use llm_api::providers::{Effort, Model, ModelConfig};
 use psa::api::{AgentConfigStatus, ConfigId, EffortSelection, ModelSelection};
 
 #[derive(Debug, Clone, Default)]
@@ -135,5 +136,28 @@ pub fn draft_model_label(model: &ModelSelection) -> String {
             };
             format!("{model} · {effort}")
         }
+    }
+}
+
+/// The model and effort a new root agent will use: its policy's own, or the
+/// session's for the parts it inherits.
+pub fn draft_status_model(
+    selection: Option<&ModelSelection>,
+    session: Option<&ModelConfig>,
+) -> (Option<Model>, Option<Effort>) {
+    match selection {
+        Some(ModelSelection::Global | ModelSelection::Parent) => session
+            .map(|config| (Some(config.model.clone()), Some(config.effort)))
+            .unwrap_or_default(),
+        Some(ModelSelection::Fixed { model, effort }) => {
+            let effort = match effort {
+                EffortSelection::Fixed(effort) => Some(*effort),
+                EffortSelection::Global | EffortSelection::Parent => {
+                    session.map(|config| config.effort)
+                }
+            };
+            (Some(model.clone()), effort)
+        }
+        None => (None, None),
     }
 }

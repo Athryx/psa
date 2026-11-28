@@ -137,7 +137,7 @@ async fn configurations_are_global_and_this_directorys_own() {
 #[tokio::test]
 async fn agent_with_several_policies_asks_for_one() {
     let mut app = ready_app();
-    type_text(&mut app, "/agent pick");
+    type_text(&mut app, "/select agent pick");
     app.handle_terminal_event(key(KeyCode::Enter));
     assert!(app.choosing_root_model);
     let menu = app.command_menu().expect("model policy menu");

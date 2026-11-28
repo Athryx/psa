@@ -1,6 +1,6 @@
 //! Per-agent status projected from a server snapshot and newer committed events.
 use crate::Transcript;
-use llm_api::providers::ModelConfig;
+use llm_api::providers::{Model, ModelConfig};
 use psa::api::ModelInfo;
 
 #[derive(Debug, Clone, Default)]
@@ -40,6 +40,42 @@ pub fn agent_status(transcript: &Transcript, models: &[ModelInfo]) -> AgentStatu
         context_tokens: snapshot.context_tokens,
         context_window,
     }
+}
+
+/// Catalog display name for a model, falling back to its API model name.
+pub fn model_display_name(models: &[ModelInfo], model: &Model) -> String {
+    models
+        .iter()
+        .find(|info| info.model == *model)
+        .map(|info| info.name.clone())
+        .unwrap_or_else(|| model.model_name().to_owned())
+}
+
+/// Last inference usage against the context window, as the composer status
+/// shows it: `(12% / 200k)`, with `?` for what is unknown.
+pub fn format_context_usage(tokens: Option<u64>, window: Option<u64>) -> String {
+    let percent = match (tokens, window) {
+        (Some(tokens), Some(window)) if window > 0 => {
+            format!(
+                "{}%",
+                (u128::from(tokens) * 100 + u128::from(window) / 2) / u128::from(window)
+            )
+        }
+        _ => "?".to_string(),
+    };
+    let window = window
+        .filter(|window| *window > 0)
+        .map(format_token_count)
+        .unwrap_or_else(|| "?".to_string());
+    format!("({percent} / {window})")
+}
+
+/// A token count rounded to thousands, such as `200k`.
+pub fn format_token_count(count: u64) -> String {
+    if count < 1_000 {
+        return count.to_string();
+    }
+    format!("{}k", (u128::from(count) + 500) / 1_000)
 }
 
 #[cfg(test)]

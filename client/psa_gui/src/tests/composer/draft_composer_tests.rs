@@ -2,8 +2,16 @@ use super::*;
 
 #[test]
 fn argument_menus_are_found_by_the_typed_command() {
-    for input in ["/agent ", "/agent worker", "/agent\tworker"] {
-        assert_eq!(argument_command(input), Some(CommandId::Agent), "{input}");
+    for input in [
+        "/select agent ",
+        "/select agent worker",
+        "/select agent\tworker",
+    ] {
+        assert_eq!(
+            argument_command(input),
+            Some(CommandId::SelectAgent),
+            "{input}"
+        );
     }
     assert_eq!(
         argument_command("/model search"),
@@ -13,7 +21,14 @@ fn argument_menus_are_found_by_the_typed_command() {
         argument_command("/effort high"),
         Some(CommandId::SessionEffort)
     );
-    for input in ["/", "/agent", "/model", "//agent ", "/unknown x", "hello"] {
+    for input in [
+        "/",
+        "/select agent",
+        "/model",
+        "//select agent ",
+        "/unknown x",
+        "hello",
+    ] {
         assert_eq!(argument_command(input), None, "{input}");
     }
 }
@@ -445,16 +460,16 @@ fn root_key(dom: &mut VirtualDom, id: ElementId, key: Key) {
 #[test]
 fn root_key_uses_fresh_text_before_the_next_render() {
     let (mut dom, textarea) = mount_root();
-    root_input_without_render(&mut dom, textarea, "/ag");
+    root_input_without_render(&mut dom, textarea, "/sel");
     root_key(&mut dom, textarea, Key::Enter);
-    assert_eq!(root_draft(&dom), "/agent ");
+    assert_eq!(root_draft(&dom), "/select agent ");
     assert!(dioxus_ssr::render(&dom).contains("Choose a root agent"));
 }
 
 #[test]
 fn root_key_rebuilds_configuration_candidates_from_current_metadata() {
     let (mut dom, textarea) = mount_root();
-    root_input(&mut dom, textarea, "/agent ");
+    root_input(&mut dom, textarea, "/select agent ");
     root_ui(&dom)
         .write()
         .draft_roots
@@ -463,18 +478,18 @@ fn root_key_rebuilds_configuration_candidates_from_current_metadata() {
         .configs
         .clear();
     root_key(&mut dom, textarea, Key::Enter);
-    assert_eq!(root_draft(&dom), "/agent ");
+    assert_eq!(root_draft(&dom), "/select agent ");
     assert!(dioxus_ssr::render(&dom).contains("No matching usable configurations"));
 }
 
 #[test]
 fn root_completion_and_two_step_selection() {
     let (mut dom, textarea) = mount_root();
-    root_input(&mut dom, textarea, "/ag");
+    root_input(&mut dom, textarea, "/sel");
     assert!(dioxus_ssr::render(&dom).contains("aria-label=\"Slash commands\""));
     root_key(&mut dom, textarea, Key::Tab);
     let html = dioxus_ssr::render(&dom);
-    assert_eq!(root_draft(&dom), "/agent ");
+    assert_eq!(root_draft(&dom), "/select agent ");
     assert!(html.contains("Choose a root agent"), "{html}");
     root_key(&mut dom, textarea, Key::Enter);
     let html = dioxus_ssr::render(&dom);
@@ -496,7 +511,7 @@ fn root_completion_and_two_step_selection() {
     );
     assert!(!html.contains("Model: openrouter/vendor/model"), "{html}");
     // Reselecting the configuration still exposes its model policies.
-    root_input(&mut dom, textarea, "/agent ");
+    root_input(&mut dom, textarea, "/select agent ");
     root_key(&mut dom, textarea, Key::Enter);
     assert!(dioxus_ssr::render(&dom).contains("Choose the root agent model policy"));
 }
@@ -542,12 +557,12 @@ async fn root_refresh_executes_from_completion_and_is_not_sent_as_text() {
 #[test]
 fn root_escape_and_literal_slash() {
     let (mut dom, textarea) = mount_root();
-    root_input(&mut dom, textarea, "/agent");
+    root_input(&mut dom, textarea, "/select agent");
     root_key(&mut dom, textarea, Key::Enter);
     assert!(dioxus_ssr::render(&dom).contains("Choose a root agent"));
     root_key(&mut dom, textarea, Key::Escape);
     assert!(!dioxus_ssr::render(&dom).contains("Choose a root agent"));
-    root_input(&mut dom, textarea, "//agent");
+    root_input(&mut dom, textarea, "//select agent");
     assert!(!dioxus_ssr::render(&dom).contains("aria-label=\"Slash commands\""));
 }
 
@@ -556,7 +571,10 @@ async fn root_supports_session_model_command_without_changing_root_policy() {
     let (mut dom, textarea) = mount_root();
     root_input(&mut dom, textarea, "/");
     let html = dioxus_ssr::render(&dom);
-    assert!(html.contains("/model") && html.contains("/agent"), "{html}");
+    assert!(
+        html.contains("/model") && html.contains("/select agent"),
+        "{html}"
+    );
     root_key(&mut dom, textarea, Key::Enter);
     let html = dioxus_ssr::render(&dom);
     assert_eq!(root_draft(&dom), "/model ");
